@@ -1,7 +1,12 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart'
-    show CloseReport, StudioTransport;
+    show
+        CloseReport,
+        DartResourceCloseResult,
+        StudioTransport,
+        UnresolvedResource;
+import 'package:anywork_client/lifecycle.dart' show ClientCloseBudget;
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -71,13 +76,15 @@ Future<StudioExitReport> runStudioShutdown(
   void Function(StudioShutdownProgress progress) onProgress, {
   required int remainingMs,
   StudioExitIntent intent = StudioExitIntent.exit,
-  Future<CloseReport> Function(DateTime deadline)? closeClient,
+  Future<CloseReport> Function(ClientCloseBudget budget)? closeClient,
+  Future<CloseReport> Function(ClientCloseBudget budget)? closeRoot,
 }) async {
-  // 本次清理预算的本地单调时钟：所有阶段共享并随时扣除真实耗时，绝不另起 2s。
-  final watch = Stopwatch()..start();
+  // 同一实例贯穿各作用域和最终报告；等待耗尽不取消原任务。
+  final budget = ClientCloseBudget(Duration(milliseconds: remainingMs));
   // Dart 拥有的外部 owner 与进度通道上的独立错误：累积后作为关闭的最终成功前置条件，
   // 随请求交给 runtime 单编排，绝不事后并入已释锁的 Clean。
   final issues = <StudioShutdownIssue>[];
+  final unresolved = <UnresolvedResource>[];
   void publish(StudioShutdownProgress progress) {
     if (progress.phase == StudioShutdownPhase.stopped) {
       // 缓冲终态：只有协调器在完整关闭报告（含 Dart 订阅 / 诊断收尾）确认可靠后才发布。
@@ -112,10 +119,28 @@ Future<StudioExitReport> runStudioShutdown(
   publish(const StoppingSubscriptionsProgress());
   // Seal the application owner at entry. It joins the same deadline before the
   // Rust finalizer decides Clean; account disposal has no role in cleanup.
-  final clientClosing = closeClient?.call(
-    DateTime.now().add(
-      Duration(milliseconds: _remainingBudget(remainingMs, watch)),
-    ),
+  final clientClosing = closeClient == null
+      ? null
+      : Future<CloseReport>.sync(() => closeClient(budget));
+  String? clientTimeoutCorrelation;
+  // A late result cannot change a finalizer request already sent, but its real
+  // failures still belong to the retained owner and must remain diagnosable.
+  clientClosing?.then<void>(
+    (report) {
+      if (clientTimeoutCorrelation case final correlationId?) {
+        _recordLateCloseReport(report, 'client-close-late', correlationId);
+      }
+    },
+    onError: (Object error, StackTrace stack) {
+      if (clientTimeoutCorrelation case final correlationId?) {
+        recordDartError(
+          error,
+          stack,
+          stage: 'client-close-late',
+          correlationId: correlationId,
+        );
+      }
+    },
   );
 
   // 在任何 Dart 外部取消等待之前，先有界封闭退出准入（native `begin_runtime_exit`）：即使
@@ -124,9 +149,7 @@ Future<StudioExitReport> runStudioShutdown(
   // runtime 无 owner 时跳过。失败/超时保留真实 code / 安全 cause / stack / correlation 作为
   // external issue 继续收尾，绝不 early return、绝不伪成功。
   try {
-    await api.beginRuntimeExit(
-      remainingMs: _remainingBudget(remainingMs, watch),
-    );
+    await api.beginRuntimeExit(remainingMs: _remainingBudget(budget));
   } on Object catch (error, stackTrace) {
     // Frb core 已用同一 correlation 记录脱敏诊断时复用 memoized issue，避免重复记录。
     final recorded = api.recordedBeginExitIssue(error);
@@ -164,66 +187,185 @@ Future<StudioExitReport> runStudioShutdown(
   // 完整等待两者收敛，等待顺序不改变并发关系；两实现内部都已把失败收敛为 typed issue
   // （不抛出），不会互相遮蔽，也不引入 unhandled error。
   final progressIssues = <StudioShutdownIssue>[];
-  final dartSubscriptionCancel = api.cancelDartSubscriptions(
-    budgetMs: _remainingBudget(remainingMs, watch),
+  Future<DartResourceCloseResult> joinTransportClose(
+    String stage,
+    Future<DartResourceCloseResult> Function() start,
+  ) async {
+    try {
+      return await Future<DartResourceCloseResult>.sync(start)
+          .timeout(budget.remaining);
+    } catch (error, stack) {
+      final correlationId = _correlationOf(error);
+      issues.add(
+        StudioShutdownIssue(
+          stage: stage,
+          code: error is TimeoutException ? 'timeout' : 'cleanupFailed',
+          message: 'Dart resource cleanup did not confirm',
+          retryable: true,
+          correlationId: correlationId,
+        ),
+      );
+      recordDartError(error, stack, stage: stage, correlationId: correlationId);
+      return DartResourceCloseResult();
+    }
+  }
+
+  final dartSubscriptionCancel = joinTransportClose(
+    'subscriptions',
+    () => api.cancelDartSubscriptions(budget: budget),
   );
   final progressCancel = _cancelBounded(
     subscription,
     progressIssues,
-    Duration(
-      milliseconds: _remainingBudget(remainingMs, watch).clamp(0, 2000).toInt(),
-    ),
+    budget.remaining,
+  );
+  final progressOwnerCancel = joinTransportClose(
+    'progress-owner',
+    () => api.closeShutdownProgress(budget: budget),
   );
   // 在 Rust finalizer 之前完整提交两组外部 issue：先并净产品/Thread 注册表的真实 ACK /
   // typed 失败，再并入进度流的真实失败（含正在返回的 error），绝不在 return 之后再合并。
-  issues.addAll(await dartSubscriptionCancel);
+  final contentResult = await dartSubscriptionCancel;
+  issues.addAll(contentResult.issues);
+  unresolved.addAll(contentResult.resources.unresolved);
   await progressCancel;
   issues.addAll(progressIssues);
+  final progressResult = await progressOwnerCancel;
+  issues.addAll(progressResult.issues);
+  unresolved.addAll(progressResult.resources.unresolved);
   if (clientClosing != null) {
     try {
-      final report = await clientClosing.timeout(
-        Duration(milliseconds: _remainingBudget(remainingMs, watch)),
-      );
-      for (final resource in report.unresolved) {
-        issues.add(
-          StudioShutdownIssue(
-            stage: 'client',
-            code: 'unresolvedResource',
-            message: 'client resource cleanup did not confirm',
-            retryable: false,
-            correlationId: newStudioCorrelationId(),
-          ),
-        );
-        recordDartError(resource.reason, null, stage: 'client-close');
-      }
+      final report = await clientClosing.timeout(budget.remaining);
+      unresolved.addAll(report.unresolved);
     } catch (error, stack) {
+      final correlationId = _correlationOf(error);
+      if (error is TimeoutException) clientTimeoutCorrelation = correlationId;
       issues.add(
         StudioShutdownIssue(
           stage: 'client',
           code: 'cleanupFailed',
           message: 'client cleanup did not confirm',
           retryable: false,
-          correlationId: newStudioCorrelationId(),
+          correlationId: correlationId,
         ),
       );
-      recordDartError(error, stack, stage: 'client-close');
+      recordDartError(
+        error,
+        stack,
+        stage: 'client-close',
+        correlationId: correlationId,
+      );
     }
+  }
+
+  // The root is closed only after the independent content/progress and app
+  // stages have settled or reported unresolved. Its report is still a native
+  // finalizer prerequisite, never an after-the-fact correction of Clean.
+  if (closeRoot != null) {
+    String? rootTimeoutCorrelation;
+    final rootClosing = Future<CloseReport>.sync(() => closeRoot(budget));
+    rootClosing.then<void>(
+      (report) {
+        if (rootTimeoutCorrelation case final correlationId?) {
+          _recordLateCloseReport(
+            report,
+            'lifecycle-root-close-late',
+            correlationId,
+          );
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        if (rootTimeoutCorrelation case final correlationId?) {
+          recordDartError(
+            error,
+            stack,
+            stage: 'lifecycle-root-close-late',
+            correlationId: correlationId,
+          );
+        }
+      },
+    );
+    try {
+      final report = await rootClosing.timeout(budget.remaining);
+      unresolved.addAll(report.unresolved);
+    } catch (error, stack) {
+      final correlationId = _correlationOf(error);
+      if (error is TimeoutException) rootTimeoutCorrelation = correlationId;
+      issues.add(
+        StudioShutdownIssue(
+          stage: 'lifecycle-root',
+          code: 'cleanupFailed',
+          message: 'lifecycle root cleanup did not confirm',
+          retryable: false,
+          correlationId: correlationId,
+        ),
+      );
+      recordDartError(
+        error,
+        stack,
+        stage: 'lifecycle-root-close',
+        correlationId: correlationId,
+      );
+    }
+  }
+  for (final resource in CloseReport(unresolved: unresolved).unresolved) {
+    final reason = resource.reason;
+    final correlationId = _correlationOf(reason);
+    final failedStages = resource.stages.where((stage) => stage.error != null);
+    final pending =
+        failedStages.isEmpty && resource.stages.any((stage) => stage.pending);
+    issues.add(
+      StudioShutdownIssue(
+        stage: 'subscriptions',
+        code: switch (reason) {
+          StudioFailure(:final code) => code.name,
+          TimeoutException() => 'timeout',
+          _ => pending ? 'timeout' : 'cancelFailed',
+        },
+        message: 'a Dart-owned resource has not confirmed cleanup',
+        retryable: true,
+        correlationId: correlationId,
+      ),
+    );
+    recordDartError(
+      reason,
+      failedStages.firstOrNull?.stackTrace,
+      stage: 'client-close',
+      correlationId: correlationId,
+    );
   }
 
   // 即使 Dart 取消已耗尽预算，也必须立即向已初始化的 runtime 广播封闭请求
   // （remainingMs=0，原生 hard deadline 照常），绝不整段跳过。全部外部 issue 作为同一
   // 编排的前置条件传入，仅消费返回的 BridgeShutdownReport。
   return api.shutdownRuntime(
-    remainingMs: _remainingBudget(remainingMs, watch),
+    remainingMs: _remainingBudget(budget),
     externalIssues: List<StudioShutdownIssue>.unmodifiable(issues),
+    externalDartResourcesReported: closeClient != null && closeRoot != null,
     intent: intent,
   );
 }
 
 /// 从本次预算里扣除某阶段已消耗的真实单调耗时；预算耗尽返回 0。
-int _remainingBudget(int remainingMs, Stopwatch watch) {
-  final left = remainingMs - watch.elapsedMilliseconds;
-  return left <= 0 ? 0 : left;
+int _remainingBudget(ClientCloseBudget budget) =>
+    budget.remaining.inMilliseconds;
+
+void _recordLateCloseReport(
+  CloseReport report,
+  String stage,
+  String correlationId,
+) {
+  for (final resource in report.unresolved) {
+    recordDartError(
+      resource.reason,
+      resource.stages
+          .where((stage) => stage.error != null)
+          .firstOrNull
+          ?.stackTrace,
+      stage: stage,
+      correlationId: correlationId,
+    );
+  }
 }
 
 StudioShutdownIssue _progressIssue(Object error, String correlationId) {
@@ -278,13 +420,10 @@ Future<void> _cancelBounded(
   // 伪故障。改为让 `.timeout` 超时时抛 `TimeoutException` 并单独捕获：成功 cancel 不伪报
   // Degraded，真实超时保留强 owner（进度 owner 仍在 registry 直到真正 ACK）并如实上报
   // timeout issue，绝不吞故障或退化成无界等待。
-  final effectiveBound = bound <= Duration.zero
-      ? const Duration(milliseconds: 1)
-      : bound;
   var timedOut = false;
   try {
     // Dart 侧 stream 取消挂住时 `.timeout` 抛 TimeoutException，单独识别为真实超时。
-    await subscription.cancel().timeout(effectiveBound);
+    await subscription.cancel().timeout(bound);
   } on TimeoutException {
     timedOut = true;
   } on Object catch (error, stackTrace) {

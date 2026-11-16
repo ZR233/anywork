@@ -1,3 +1,4 @@
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -127,10 +128,18 @@ final class _Transport extends TestConversationTransport {
 }
 
 AnyworkClient _client(_Transport port) {
-  final client = AnyworkClient(transport: port, clientId: 'directory-client');
+  final client = AnyworkClient(
+    transport: port,
+    scope: port.lifecycleScope.child('client'),
+    clientId: 'directory-client',
+  );
   addTearDown(() async {
-    expect((await client.close()).complete, isTrue);
-    await port.closeProductTopicStreams();
+    final budget = ClientCloseBudget(const Duration(seconds: 30));
+    expect((await client.close(budget: budget)).complete, isTrue);
+    expect(
+      (await port.closeProductTopicStreams(budget: budget)).complete,
+      isTrue,
+    );
   });
   return client;
 }

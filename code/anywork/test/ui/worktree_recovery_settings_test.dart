@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/settings_agents_tab.dart';
@@ -33,7 +35,7 @@ Future<AppGraph> _bootstrap(
   WidgetTester tester,
   RecordingDemoTransport transport,
 ) async {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     statisticsFeed: const TestStatisticsFeedPort(),
     transport: transport,
     clientId: 'worktree-recovery-settings',
@@ -53,7 +55,7 @@ Future<void> _close(WidgetTester tester, AppGraph graph) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'worktree settings teardown',
   );
 }

@@ -1,40 +1,67 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:test/test.dart';
 
 import 'support/timeline_transport.dart';
 
 final class _OpenThreads {
-  _OpenThreads(this.query, this.window);
+  _OpenThreads(this.query, this.window, this.resourceId);
   final DirectoryQuery query;
   final DirectoryWindow window;
-  final result = Completer<ThreadsObservationHandle>();
+  final ClientResourceId resourceId;
+  final result = Completer<_Handle>();
 }
 
 final class _Feed implements DirectoryFeedPort {
+  final lifecycleScope = ClientScope(owner: 'directory-observation-test');
   final List<_OpenThreads> threads = [];
+  final Map<int, Completer<_OpenThreads>> _opened = {};
+  void Function(_OpenThreads)? onOpen;
+
+  Future<_OpenThreads> opened(int index) => index < threads.length
+      ? Future.value(threads[index])
+      : (_opened[index] ??= Completer<_OpenThreads>()).future;
 
   @override
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  ) {
-    final open = _OpenThreads(query, window);
-    threads.add(open);
-    return open.result.future;
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  }) async {
+    final acquisition = lifecycleScope.open<_Handle>('test-directory-owner', (
+      operation,
+    ) async {
+      final open = _OpenThreads(query, window, operation.resourceId);
+      threads.add(open);
+      _opened.remove(threads.length - 1)?.complete(open);
+      final callback = onOpen;
+      onOpen = null;
+      callback?.call(open);
+      final handle = await open.result.future;
+      handle.resourceId = operation.resourceId;
+      return handle;
+    }, identity: resourceId);
+    await acquisition.ready;
+    return _HandleProxy(acquisition);
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) =>
-      throw UnsupportedError('metadata is not used by this fixture');
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) => throw UnsupportedError('metadata is not used by this fixture');
 }
 
 final class _Handle implements ThreadsObservationHandle {
+  @override
+  late final ClientResourceId resourceId;
   final List<ThreadDirectoryFrame> _queued = [];
   Completer<ThreadDirectoryFrame?>? _waiting;
   final closeEntered = Completer<void>();
   final allowClose = Completer<void>();
+  final reading = Completer<void>();
   bool closeRequested = false;
   Object? closeFailure;
   int closeCalls = 0;
@@ -58,6 +85,7 @@ final class _Handle implements ThreadsObservationHandle {
   Future<ThreadDirectoryFrame?> next() {
     if (_queued.isNotEmpty) return Future.value(_queued.removeAt(0));
     if (closeRequested) return Future.value();
+    if (!reading.isCompleted) reading.complete();
     return (_waiting = Completer<ThreadDirectoryFrame?>()).future;
   }
 
@@ -79,6 +107,26 @@ final class _Handle implements ThreadsObservationHandle {
     if (failure != null) throw failure;
     await allowClose.future;
   }
+
+  @override
+  Future<void> retryClose() => close();
+}
+
+final class _HandleProxy implements ThreadsObservationHandle {
+  _HandleProxy(this.acquisition);
+  final ClientAcquisition<_Handle> acquisition;
+
+  @override
+  ClientResourceId get resourceId => acquisition.resourceId;
+  @override
+  Future<ThreadDirectoryFrame?> next() async =>
+      (await acquisition.ready).next();
+  @override
+  void requestClose() => acquisition.requestClose();
+  @override
+  Future<void> close() => acquisition.close();
+  @override
+  Future<void> retryClose() => acquisition.retryClose();
 }
 
 SessionDirectoryRow _thread(String id, {String title = 'Thread'}) =>
@@ -120,8 +168,13 @@ ThreadDirectoryFrame _frame(
 void main() {
   test('directory identities and metadata retain ACP references and nullable mode without Native status', () async {
     final transport = TestConversationTransport();
-    final store = ThreadDirectoryStore(feed: transport);
-    addTearDown(store.close);
+    final store = ThreadDirectoryStore(
+      feed: transport,
+      scope: transport.lifecycleScope.child('directory-store'),
+    );
+    addTearDown(
+      () => store.close(budget: ClientCloseBudget(const Duration(seconds: 1))),
+    );
     const query = DirectoryQuery(archived: true);
     final window = DirectoryWindow();
     final native = _thread('native')
@@ -227,7 +280,10 @@ void main() {
     'same demand shares one owner and A to B to A retires exact slots',
     () async {
       final feed = _Feed();
-      final store = ThreadDirectoryStore(feed: feed);
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
+      );
       const a = DirectoryQuery(search: 'a');
       const b = DirectoryQuery(search: 'b');
       final window = DirectoryWindow();
@@ -248,12 +304,14 @@ void main() {
       expect(store.observedWindows.map((frame) => frame.query), {a, b});
 
       final releasingA1 = a1.release();
+      expect(a1.retirementResourceIds, isEmpty);
       expect(a1.release(), same(releasingA1));
       expect(aHandle.closeRequested, isFalse);
       await releasingA1;
       await expectLater(a1.refresh(), throwsStateError);
       expect(aHandle.closeRequested, isFalse);
       final closingA = a2.release();
+      expect(a2.retirementResourceIds, [feed.threads[0].resourceId]);
       expect(a2.release(), same(closingA));
       expect(aHandle.closeRequested, isTrue);
       expect(store.observedWindows.map((frame) => frame.query), {b});
@@ -289,7 +347,10 @@ void main() {
     'refresh reopens the exact non-first window after old close joins',
     () async {
       final feed = _Feed();
-      final store = ThreadDirectoryStore(feed: feed);
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
+      );
       const query = DirectoryQuery(workspaceId: 'workspace');
       final window = DirectoryWindow(before: 'cursor-20', limit: 20);
       final observation = store.observeThreads(query, window);
@@ -366,6 +427,7 @@ void main() {
       final feed = _Feed();
       final store = ThreadDirectoryStore(
         feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
         onCleanupFailure: failures.add,
       );
       final window = DirectoryWindow();
@@ -386,6 +448,7 @@ void main() {
       await expectLater(secondBorrow.refresh(), throwsStateError);
       expect(firstHandle.closeCalls, 1);
       expect(failures.single.reason, same(closeFailure));
+      expect(failures.single.resourceId, firstHandle.resourceId);
 
       const replacementQuery = DirectoryQuery(search: 'replacement');
       final replacement = store.observeThreads(replacementQuery, window);
@@ -399,7 +462,9 @@ void main() {
       replacementHandle.add(_frame(replacementQuery, window, ['replacement']));
       await replacement.state.waitFor((state) => state.frame != null);
 
-      final retrying = store.retryCleanup();
+      final retrying = store.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
       await firstHandle.closeCalled(2);
       expect(firstHandle.closeCalls, 2);
       firstHandle.allowClose.complete();
@@ -416,6 +481,7 @@ void main() {
     final transport = TestConversationTransport();
     final client = AnyworkClient(
       transport: transport,
+      scope: transport.lifecycleScope.child('client'),
       clientId: 'directory-cleanup',
     );
     final observation = client.threadDirectory.observeThreads(
@@ -430,26 +496,277 @@ void main() {
     expect(client.resourceFailure.value?.reason, same(closeFailure));
     expect(transport.directoryCloseCalls, 1);
 
-    final retried = await client.retryCleanup();
+    final retried = await client.retryCleanup(
+      budget: ClientCloseBudget(const Duration(seconds: 1)),
+    );
     expect(retried.complete, isTrue);
     expect(transport.directoryCloseCalls, 2);
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      )).complete,
+      isTrue,
+    );
+  });
+
+  test(
+    'same-query reacquire waits for old ACK and old lease keeps its identity',
+    () async {
+      final feed = _Feed();
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
+      );
+      const query = DirectoryQuery(search: 'same');
+      final window = DirectoryWindow();
+      final oldLease = store.observeThreads(query, window);
+      final old = _Handle();
+      feed.threads.single.result.complete(old);
+      old.add(_frame(query, window, ['old']));
+      await oldLease.state.waitFor((state) => state.frame != null);
+
+      final failure = StateError('old cleanup failed');
+      old.closeFailure = failure;
+      await expectLater(oldLease.release(), throwsA(same(failure)));
+      final oldIds = oldLease.retirementResourceIds;
+      expect(oldIds, [old.resourceId]);
+      final currentLease = store.observeThreads(query, window);
+      await currentLease.state.waitFor((state) => state.error != null);
+      await expectLater(currentLease.refresh(), throwsA(same(failure)));
+      expect(feed.threads, hasLength(1));
+      expect(old.closeCalls, 1, reason: 'refresh does not retry native close');
+
+      final retrying = store.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      await old.closeCalled(2);
+      expect(
+        feed.threads,
+        hasLength(1),
+        reason: 'retry must receive actual ACK',
+      );
+      old.allowClose.complete();
+      expect((await retrying).complete, isTrue);
+      final next = await feed.opened(1);
+      expect(next.resourceId, isNot(old.resourceId));
+      final current = _Handle();
+      next.result.complete(current);
+      current.add(_frame(query, window, ['new'], revision: 2));
+      await currentLease.state.waitFor(
+        (state) => state.frame?.stamp.revision == 2,
+      );
+
+      await oldLease.release();
+      expect(oldLease.retirementResourceIds, same(oldIds));
+      expect(old.closeCalls, 2);
+      expect(current.closeRequested, isFalse);
+      expect(store.observedWindows.single.threadIds, ['new']);
+      final closing = currentLease.release();
+      expect(currentLease.retirementResourceIds, [next.resourceId]);
+      await current.closeEntered.future;
+      current.allowClose.complete();
+      await closing;
+    },
+  );
+
+  test(
+    'refresh accepts a completed next while waiting for old close ACK',
+    () async {
+      final feed = _Feed();
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
+      );
+      const query = DirectoryQuery();
+      final window = DirectoryWindow();
+      final observation = store.observeThreads(query, window);
+      final old = _Handle();
+      feed.threads.single.result.complete(old);
+      old.add(_frame(query, window, ['first']));
+      await observation.state.waitFor((state) => state.frame != null);
+      await old.reading.future;
+      final acceptedNext = observation.state.waitFor(
+        (state) => state.frame?.stamp.revision == 2,
+      );
+      old.add(_frame(query, window, ['completed-next'], revision: 2));
+      final refreshing = observation.refresh();
+      await acceptedNext;
+      await old.closeEntered.future;
+      expect(observation.state.value.frame!.threadIds, ['completed-next']);
+      expect(feed.threads, hasLength(1));
+      old.allowClose.complete();
+      await refreshing;
+      final current = _Handle();
+      feed.threads.last.result.complete(current);
+      current.add(_frame(query, window, ['current'], revision: 3));
+      await observation.state.waitFor(
+        (state) => state.frame?.stamp.revision == 3,
+      );
+      final closing = observation.release();
+      await current.closeEntered.future;
+      current.allowClose.complete();
+      await closing;
+    },
+  );
+
+  test(
+    'refresh can release synchronously while its new acquisition registers',
+    () async {
+      final feed = _Feed();
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleScope.child('directory-store'),
+      );
+      const query = DirectoryQuery();
+      final window = DirectoryWindow();
+      final observation = store.observeThreads(query, window);
+      final old = _Handle();
+      feed.threads.single.result.complete(old);
+      old.add(_frame(query, window, ['old']));
+      await observation.state.waitFor((state) => state.frame != null);
+      late Future<void> releasing;
+      feed.onOpen = (open) {
+        releasing = observation.release();
+        expect(observation.retirementResourceIds, [open.resourceId]);
+      };
+      final refreshing = observation.refresh();
+      await old.closeEntered.future;
+      old.allowClose.complete();
+      await refreshing;
+      final late = _Handle();
+      feed.threads.last.result.complete(late);
+      await late.closeEntered.future;
+      late.allowClose.complete();
+      await releasing;
+      expect(observation.retirementResourceIds, [late.resourceId]);
+      expect(late.resourceId, isNot(old.resourceId));
+      expect((old.closeCalls, late.closeCalls), (1, 1));
+      expect(
+        late.reading.isCompleted,
+        isFalse,
+        reason: 'late source is not consumed',
+      );
+    },
+  );
+
+  test('reentrant scoped release reports the assigned source and preserves its close error', () async {
+    final feed = _Feed();
+    final consumerScope = feed.lifecycleScope.child('directory-consumer');
+    final failures = <UnresolvedResource>[];
+    final diagnosticFailure = StateError('diagnostic callback failed');
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: feed.lifecycleScope.child('directory-store'),
+      onCleanupFailure: (failure) {
+        failures.add(failure);
+        throw diagnosticFailure;
+      },
+    );
+    const query = DirectoryQuery();
+    final window = DirectoryWindow();
+    final observation = consumerScope.acquireLease(
+      'directory-lease',
+      () => store.observeThreads(query, window),
+    );
+    final old = _Handle();
+    feed.threads.single.result.complete(old);
+    old.add(_frame(query, window, ['old']));
+    await observation.state.waitFor((state) => state.frame != null);
+
+    late Future<CloseReport> closing;
+    late Future<void> releasing;
+    feed.onOpen = (open) {
+      closing = consumerScope.close(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      releasing = observation.release();
+      expect(observation.retirementResourceIds, [open.resourceId]);
+    };
+    final refreshing = observation.refresh();
+    await old.closeEntered.future;
+    old.allowClose.complete();
+    await refreshing;
+    final failure = StateError('late source close failed');
+    final late = _Handle()..closeFailure = failure;
+    final releaseFailed = expectLater(releasing, throwsA(same(failure)));
+    feed.threads.last.result.complete(late);
+    await releaseFailed;
+    final report = await closing;
+    expect(failures.single.resourceId, late.resourceId);
+    expect(failures.single.reason, same(failure));
+    expect(report.complete, isFalse);
+    expect(report.unresolved.single.resourceId, late.resourceId);
+    expect(report.unresolved.single.reason, same(failure));
+    expect(late.reading.isCompleted, isFalse);
+    expect(late.closeCalls, 1);
+
+    late.allowClose.complete();
+    final retried = await consumerScope.retryCleanup(
+      budget: ClientCloseBudget(const Duration(seconds: 1)),
+    );
+    expect(retried.complete, isTrue);
+    expect(late.closeCalls, 2);
+    expect(failures, hasLength(1));
+  });
+
+  test('scope rejection before source identity allocation creates no cleanup report', () async {
+    final feed = _Feed();
+    final sourceScope = feed.lifecycleScope.child('directory-store');
+    final consumerScope = feed.lifecycleScope.child('directory-consumer');
+    final failures = <UnresolvedResource>[];
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: sourceScope,
+      onCleanupFailure: failures.add,
+    );
+    const query = DirectoryQuery();
+    final window = DirectoryWindow();
+    final observation = consumerScope.acquireLease(
+      'directory-lease',
+      () => store.observeThreads(query, window),
+    );
+    final old = _Handle();
+    feed.threads.single.result.complete(old);
+    old.add(_frame(query, window, ['old']));
+    await observation.state.waitFor((state) => state.frame != null);
+
+    final refreshing = observation.refresh();
+    final rejected = expectLater(
+      refreshing,
+      throwsA(isA<ClientResourceClosed>()),
+    );
+    await old.closeEntered.future;
+    sourceScope.requestClose();
+    old.allowClose.complete();
+    await rejected;
+    expect(feed.threads, hasLength(1));
+    final report = await consumerScope.close(
+      budget: ClientCloseBudget(const Duration(seconds: 1)),
+    );
+    await observation.release();
+    expect(observation.retirementResourceIds, isEmpty);
+    expect(report.complete, isTrue);
+    expect(failures, isEmpty);
+    expect(old.closeCalls, 1);
   });
 
   test('last release joins an in-flight open and the native close', () async {
     final feed = _Feed();
-    final store = ThreadDirectoryStore(feed: feed);
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: feed.lifecycleScope.child('directory-store'),
+    );
     final observation = store.observeThreads(
       const DirectoryQuery(),
       DirectoryWindow(),
     );
 
     final closing = observation.release();
+    expect(observation.retirementResourceIds, [feed.threads.single.resourceId]);
     expect(observation.release(), same(closing));
     await expectLater(observation.refresh(), throwsStateError);
     var completed = false;
     unawaited(closing.then((_) => completed = true));
-    await Future<void>.delayed(Duration.zero);
     expect(completed, isFalse);
 
     final handle = _Handle();

@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -66,11 +67,11 @@ void main() {
     'demo adapter maps bot save, registration start and cancel states',
     () async {
       final transport = RecordingDemoTransport();
-      final client = AnyworkClient(
+      final client = testAnyworkClient(
         transport: transport,
         clientId: 'bots-adapter',
       );
-      addTearDown(client.close);
+      addTearDown(() => client.close(budget: testCloseBudget()));
       await client.bootstrap();
       final saved = await client.botsCommands.saveBot(
         expectedConfigRevision: 0,
@@ -105,16 +106,15 @@ void main() {
     'Driver bots projection excludes secrets and verification URLs',
     () async {
       final transport = RecordingDemoTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'bots-driver',
       );
       final client = graph.client;
       addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
+        () =>
+            graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       );
       await client.bootstrap();
       await client.botsCommands.startRegistration(
@@ -154,15 +154,14 @@ void main() {
   test(
     'settings navigation to bots does not close the active session',
     () async {
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: RecordingDemoTransport(),
         clientId: 'bots-session',
       );
       addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
+        () =>
+            graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       );
       await graph.client.bootstrap();
       await (graph

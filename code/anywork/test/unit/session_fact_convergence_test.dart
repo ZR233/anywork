@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 import '../support/recording_demo_transport.dart';
 
@@ -37,7 +38,7 @@ void main() {
 
   setUp(() async {
     transport = RecordingDemoTransport();
-    graph = AppGraph(
+    graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'canonical-convergence',
@@ -81,7 +82,7 @@ void main() {
     composerHold.close();
     container.dispose();
     final report = await graph.close(
-      deadline: DateTime.now().add(const Duration(seconds: 5)),
+      budget: ClientCloseBudget(const Duration(seconds: 5)),
     );
     expect(
       report.complete,

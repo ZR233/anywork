@@ -3,14 +3,16 @@ part of 'studio_api.dart';
 // The Client owns observation disposal. This adapter owns no registry, producer,
 // replay cache or second runtime, and never turns local release into a command.
 class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
-  const FrbAcpBusinessPort();
+  const FrbAcpBusinessPort({required this.ensureReady});
+
+  final Future<void> Function() ensureReady;
 
   @override
   Future<acp_business.AcpSessionObservationPort> open(
     acp_business.OpenAcpSessionRequestView request,
   ) async {
     final wire = acp_mapper.acpOpenToFrb(request);
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return _FrbAcpBusinessObservation(
       await _acpBusinessCall(
         () => frb_acp_business.openAcpSession(request: wire),
@@ -27,7 +29,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       target: acp_mapper.acpTargetToFrb(request.target),
       content: request.content.map(acp_mapper.acpContentToFrb).toList(),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return acp_mapper.acpRunFromFrb(
       await _acpBusinessCall(
         () => frb_acp_business.promptAcpSession(request: wire),
@@ -45,7 +47,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       run: acp_mapper.acpRunToFrb(request.run),
       content: request.content.map(acp_mapper.acpContentToFrb).toList(),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return acp_mapper.acpRunFromFrb(
       await _acpBusinessCall(
         () => frb_acp_business.replaceAcpSession(request: wire),
@@ -60,7 +62,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       target: acp_mapper.acpTargetToFrb(request.target),
       run: acp_mapper.acpRunToFrb(request.run),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await _acpBusinessCall(
       () => frb_acp_business.interruptAcpSession(request: wire),
       command: 'interrupt',
@@ -74,7 +76,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       configId: frb_acp_types.BridgeAcpConfigId(value: request.configId.value),
       value: acp_mapper.acpConfigValueToFrb(request.value),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await _acpBusinessCall(
       () => frb_acp_business.configureAcpSession(request: wire),
       command: 'configure',
@@ -87,7 +89,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       target: acp_mapper.acpTargetToFrb(request.target),
       modeId: frb_acp_types.BridgeAcpModeId(value: request.modeId.value),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await _acpBusinessCall(
       () => frb_acp_business.setAcpSessionMode(request: wire),
       command: 'setMode',
@@ -110,7 +112,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
               value: request.optionId!.value,
             ),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await _acpBusinessCall(
       () => frb_acp_business.answerAcpPermission(request: wire),
       command: 'answerPermission',
@@ -127,7 +129,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
       cursor: request.request.cursor,
       meta: acp_mapper.acpMetaToFrb(request.request.meta),
     );
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return acp_mapper.acpListFromFrb(
       await _acpBusinessCall(
         () => frb_acp_business.listAcpSessions(request: wire),
@@ -140,7 +142,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
     acp_business.AcpSessionTargetView target,
   ) async {
     final wire = acp_mapper.acpTargetToFrb(target);
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return acp_mapper.acpSnapshotFromFrb(
       await _acpBusinessCall(
         () => frb_acp_business.acpSessionSnapshot(target: wire),
@@ -153,7 +155,7 @@ class FrbAcpBusinessPort implements acp_business.AcpBusinessPort {
     acp_business.AcpSessionTargetView target,
   ) async {
     final wire = acp_mapper.acpTargetToFrb(target);
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     return acp_mapper.acpCloseFromFrb(
       await _acpBusinessCall(
         () => frb_acp_business.closeAcpSession(target: wire),

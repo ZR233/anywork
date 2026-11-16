@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -84,7 +85,7 @@ final class _Fixture {
 }
 
 Future<_Fixture> _fixture(WidgetTester tester) async {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: RecordingDemoTransport(),
     clientId: 'child-read-only',
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -93,7 +94,7 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'child read only teardown',
     );
   });
@@ -176,9 +177,7 @@ Future<void> _close(WidgetTester tester, _Fixture fixture) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    fixture.graph.close(
-      deadline: DateTime.now().add(const Duration(seconds: 5)),
-    ),
+    fixture.graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'child read only close',
   );
 }

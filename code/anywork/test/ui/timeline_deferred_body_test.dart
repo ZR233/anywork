@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -333,7 +335,7 @@ final class _Scope extends Fake implements ConversationQueryScope {
   @override
   void retire() {}
   @override
-  Future<CloseReport> close({DateTime? deadline}) async => CloseReport();
+  Future<CloseReport> close({ClientCloseBudget? budget}) async => CloseReport();
 }
 
 void main() {

@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -29,7 +30,7 @@ void main() {
     });
 
     final transport = RecordingDemoTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'plan-runtime-document',
@@ -384,7 +385,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'plan runtime document close',
     );
   });

@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/recording_demo_transport.dart' show timelineReady;
 import '../support/chat_fixtures.dart';
 
@@ -20,7 +21,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/presentation/providers/account_domains.dart';
 import 'package:anywork/src/presentation/providers/selection_store.dart';
 import 'package:anywork/src/presentation/providers/settings_store.dart';
@@ -77,7 +77,7 @@ void main() {
     clipboardReader = _DelayedClipboardReader();
     containerDisposed = false;
     graphClosed = false;
-    graph = AppGraph(
+    graph = testAppGraph(
       clipboardImageStager: _TestImageStager(),
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
@@ -115,7 +115,7 @@ void main() {
     }
     if (graphClosed) return;
     final report = await graph
-        .close(deadline: DateTime.now().add(const Duration(seconds: 5)))
+        .close(budget: ClientCloseBudget(const Duration(seconds: 5)))
         .timeout(const Duration(seconds: 6));
     expect(
       report.complete,
@@ -153,7 +153,7 @@ void main() {
     );
     final report = await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'start-page selector fixture close',
     );
     expect(
@@ -1417,7 +1417,7 @@ void main() {
       ThreadStatusView status = ThreadStatusView.idle,
     }) async {
       transport = _WorkflowScenarioTransport(threadStatus: status);
-      graph = AppGraph(
+      graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'workflow-route-test',
@@ -1450,7 +1450,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       final report = await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'workflow route scenario close',
       );
       expect(
@@ -1718,7 +1718,7 @@ class _DelayedClipboardReader implements ClipboardImageReader {
   }
 }
 
-class _ComposerStartTransport extends DemoStudioTransport {
+class _ComposerStartTransport extends TestDemoStudioTransport {
   _ComposerStartTransport() : super(lspActivityLoop: false);
   bool failPreparation = false;
   final failedWorkspaceModes = <String?>[];
@@ -1955,7 +1955,7 @@ Future<void> _waitForModelDirectory(AppGraph graph) async {
 /// 提交推进 Thread 目录 status；这里只在 canonical 帧上补齐这两类环境事实（active
 /// workflow run 与目录 status），命令、CAS 与帧收敛全部走真实 Demo transport 与
 /// Client，不在测试内复刻任何业务判定。
-class _WorkflowScenarioTransport extends DemoStudioTransport {
+class _WorkflowScenarioTransport extends TestDemoStudioTransport {
   _WorkflowScenarioTransport({this.threadStatus = ThreadStatusView.idle})
     : super(lspActivityLoop: false);
 
@@ -1984,9 +1984,10 @@ class _WorkflowScenarioTransport extends DemoStudioTransport {
 
   @override
   Future<ThreadObservationHandle> openThreadObservation(
-    String threadId,
-  ) async => _WorkflowThreadObservation(
-    await super.openThreadObservation(threadId),
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) async => _WorkflowThreadObservation(
+    await super.openThreadObservation(threadId, resourceId: resourceId),
     _thread,
   );
 
@@ -2091,4 +2092,8 @@ final class _WorkflowThreadObservation implements ThreadObservationHandle {
 
   @override
   Future<void> close() => _inner.close();
+  @override
+  ClientResourceId get resourceId => _inner.resourceId;
+  @override
+  Future<void> retryClose() => _inner.retryClose();
 }

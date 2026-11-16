@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+import '../support/test_resource_owners.dart';
 import '../support/chat_fixtures.dart';
 
 import '../support/test_statistics_feed.dart';
@@ -970,13 +972,13 @@ Future<_ColdFixture> _fixture({
     saved[1].threadId: child,
   });
   transport.child = child;
-  final graph = AppGraph(
+  final graph = testAppGraph(
     statisticsFeed: const TestStatisticsFeedPort(),
     transport: transport,
     clientId: 'cold-agent-selection',
   );
   addTearDown(
-    () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
   );
   StudioAgentView agent(SessionDirectoryRow row, {String? parentAgentId}) =>
       StudioAgentView(
@@ -1107,7 +1109,10 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) => ownTestThreadObservation(contentScope, resourceId, (operation) async {
     metadataReads.add(threadId);
     final override = savedThreadOverrides[threadId];
     final response =
@@ -1122,11 +1127,12 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
     final frameThreadId = frameThreadIdOverride ?? threadId;
     frameThreadIdOverride = null;
     return _ColdThreadObservation(
+      resourceId: operation.resourceId,
       threadId: frameThreadId,
       revision: ++_metadataRevision,
       response: response,
     );
-  }
+  });
 
   @override
   Future<void> activateProject(String workspaceId) =>
@@ -1181,6 +1187,7 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
 
 final class _ColdThreadObservation implements ThreadObservationHandle {
   _ColdThreadObservation({
+    required this.resourceId,
     required this.threadId,
     required this.revision,
     required this.response,
@@ -1202,6 +1209,10 @@ final class _ColdThreadObservation implements ThreadObservationHandle {
     );
   }
 
+  @override
+  final ClientResourceId resourceId;
+  @override
+  Future<void> retryClose() => close();
   final String threadId;
   final int revision;
   final Future<SessionDirectoryRow> response;

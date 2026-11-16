@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:math';
 
+import '../../../lifecycle.dart'
+    show ClientCloseBudget, ClientOwnership, ClientResourceId;
 import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
@@ -31,9 +34,11 @@ final class ConversationReadScope implements TimelineQueryScope {
   final Future<void> Function(ChatBatch)? _applyOlder;
   final TimelineReader? _timeline;
   final Set<_ScopedDisplayMembers> _members = {};
-  final Set<Future<void>> _pending = {};
+  final Map<Future<void>, ClientResourceId> _pending = {};
   final Set<_ContentWatch> _watches = {};
   final Set<_ResourceRead> _resourceReads = {};
+  final String _resourceScopeId = _newResourceScopeId();
+  int _resourceSequence = 0;
   bool _retired = false;
   Future<ChatBatch>? _older;
   Future<TimelinePage>? _timelineOlder;
@@ -49,8 +54,101 @@ final class ConversationReadScope implements TimelineQueryScope {
       _members.isEmpty &&
       _resourceReads.isEmpty;
 
+  /// The current cleanup obligations of this scope's retained resources.
+  ///
+  /// This synchronous snapshot preserves resource identities, original errors
+  /// and their stacks. Reading it does not retire the scope, request cancellation,
+  /// wait for completion, retry cleanup or change resource ownership.
+  CloseReport get cleanupReport => CloseReport(
+    unresolved: [
+      for (final resourceId in _pending.values)
+        UnresolvedResource(
+          resourceId: resourceId,
+          owner: 'chat-query:$threadId:$generation',
+          attemptId: AttemptId(generation),
+          reason: StateError('query still in flight'),
+          ownership: ClientOwnership.owned,
+          stages: [
+            ClientResourceStage(
+              owner: 'chat-query:$threadId:$generation',
+              phase: ClientClosePhase.consumer,
+              ownership: ClientOwnership.owned,
+              pending: true,
+            ),
+          ],
+        ),
+      for (final watch in _watches)
+        UnresolvedResource(
+          resourceId: watch.resourceId,
+          owner: 'chat-watch:$threadId:$generation',
+          attemptId: AttemptId(generation),
+          reason:
+              watch.errors.firstOrNull?.$1 ?? StateError('watch still closing'),
+          ownership: ClientOwnership.owned,
+          stages: [
+            if (watch.requestError case final failure?)
+              ClientResourceStage(
+                owner: 'chat-watch:$threadId:$generation',
+                phase: ClientClosePhase.closeRequest,
+                ownership: ClientOwnership.owned,
+                error: failure.$1,
+                stackTrace: failure.$2,
+              ),
+            ClientResourceStage(
+              owner: 'chat-watch:$threadId:$generation',
+              phase: ClientClosePhase.consumer,
+              ownership: ClientOwnership.owned,
+              pending: !watch.subscriptionSettled,
+              error: watch.subscriptionError?.$1,
+              stackTrace: watch.subscriptionError?.$2,
+            ),
+            ClientResourceStage(
+              owner: 'chat-watch:$threadId:$generation',
+              phase: ClientClosePhase.close,
+              ownership: ClientOwnership.owned,
+              pending: !watch.handleSettled,
+              error: watch.handleError?.$1,
+              stackTrace: watch.handleError?.$2,
+            ),
+          ],
+        ),
+      for (final member in _members)
+        UnresolvedResource(
+          resourceId: member.resourceId,
+          owner: 'display-members:$threadId:$generation',
+          attemptId: AttemptId(generation),
+          reason:
+              member.closeError?.$1 ??
+              member.requestError?.$1 ??
+              StateError('members still closing'),
+          ownership: ClientOwnership.owned,
+          stages: [
+            if (member.requestError case final failure?)
+              ClientResourceStage(
+                owner: 'display-members:$threadId:$generation',
+                phase: ClientClosePhase.closeRequest,
+                ownership: ClientOwnership.owned,
+                error: failure.$1,
+                stackTrace: failure.$2,
+              ),
+            ClientResourceStage(
+              owner: 'display-members:$threadId:$generation',
+              phase: ClientClosePhase.close,
+              ownership: ClientOwnership.owned,
+              pending: !member.closeSettled,
+              error: member.closeError?.$1,
+              stackTrace: member.closeError?.$2,
+            ),
+          ],
+        ),
+    ],
+  );
+
   TimelineReader get _timelineFeed =>
       _timeline ?? (throw StateError('Not a Timeline read scope'));
+
+  ClientResourceId _allocateResourceId() =>
+      ClientResourceId(_resourceScopeId, ++_resourceSequence);
 
   @override
   Future<TimelinePage> loadTimelineOlder({
@@ -93,12 +191,19 @@ final class ConversationReadScope implements TimelineQueryScope {
     required DisplayMemberWindow window,
     required ReadDemand demand,
   }) => _run(() async {
+    final resourceId = _allocateResourceId();
     final handle = await _timelineFeed.openDisplayMembers(
       reference: reference,
       window: window,
       demand: demand,
     );
-    final owned = _ScopedDisplayMembers(this, handle, reference, window);
+    final owned = _ScopedDisplayMembers(
+      this,
+      handle,
+      reference,
+      window,
+      resourceId,
+    );
     _members.add(owned);
     if (!isActive) {
       owned.requestClose();
@@ -196,7 +301,7 @@ final class ConversationReadScope implements TimelineQueryScope {
           _pending.remove(joined);
           _resourceReads.remove(qualification);
         });
-    _pending.add(joined);
+    _pending[joined] = _allocateResourceId();
     completion.complete(
       Future<T>.sync(operation).then(
         (value) {
@@ -229,7 +334,7 @@ final class ConversationReadScope implements TimelineQueryScope {
           return;
         }
         try {
-          final owned = _ContentWatch(reference, output);
+          final owned = _ContentWatch(reference, output, _allocateResourceId());
           watch = owned;
           _watches.add(owned);
           owned.handle = _reader.watchContent(
@@ -352,6 +457,7 @@ final class ConversationReadScope implements TimelineQueryScope {
     _requestWatchClose(watch);
     final existing = watch.cancelling;
     if (existing != null) return existing;
+    watch.handleSettled = false;
     final completion = Completer<void>();
     watch.cancelling = completion.future;
     watch.lastCancellation = completion.future;
@@ -365,9 +471,10 @@ final class ConversationReadScope implements TimelineQueryScope {
           // independent cancellation failure; native close cannot erase it.
           final cancelled = watch.subscriptionCancellation ??=
               Future<void>.sync(() async => subscription?.cancel()).then<void>(
-                (_) {},
+                (_) => watch.subscriptionSettled = true,
                 onError: (Object error, StackTrace stack) {
                   watch.subscriptionError = (error, stack);
+                  watch.subscriptionSettled = true;
                 },
               );
           final handle = watch.handle;
@@ -375,9 +482,13 @@ final class ConversationReadScope implements TimelineQueryScope {
           // transport join on the very same watch capability.
           final joined = Future<void>.sync(() async => handle?.close())
               .then<void>(
-                (_) => watch.handleError = null,
+                (_) {
+                  watch.handleError = null;
+                  watch.handleSettled = true;
+                },
                 onError: (Object error, StackTrace stack) {
                   watch.handleError = (error, stack);
+                  watch.handleSettled = true;
                 },
               );
           await Future.wait([cancelled, joined]);
@@ -405,18 +516,21 @@ final class ConversationReadScope implements TimelineQueryScope {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) =>
+      _join(budget: budget);
+
+  Future<CloseReport> _join({ClientCloseBudget? budget}) async {
     retire();
     final pending = [
-      ..._pending,
+      ..._pending.keys,
       for (final watch in List.of(_watches)) _cancelWatch(watch),
       for (final member in List.of(_members)) member._settle(),
     ];
     if (pending.isNotEmpty) {
-      if (deadline == null) {
+      if (budget == null) {
         await Future.wait(pending);
       } else {
-        final remaining = deadline.difference(DateTime.now());
+        final remaining = budget.remaining;
         if (remaining > Duration.zero) {
           try {
             await Future.wait(pending).timeout(remaining);
@@ -426,37 +540,19 @@ final class ConversationReadScope implements TimelineQueryScope {
         }
       }
     }
-    return CloseReport(
-      unresolved: [
-        for (var i = 0; i < _pending.length; i++)
-          UnresolvedResource(
-            owner: 'chat-query:$threadId:$generation',
-            attemptId: AttemptId(generation),
-            reason: StateError('query still in flight'),
-          ),
-        for (final watch in _watches)
-          for (final reason
-              in watch.errors.isEmpty
-                  ? [StateError('watch still closing')]
-                  : watch.errors.map((error) => error.$1))
-            UnresolvedResource(
-              owner: 'chat-watch:$threadId:$generation',
-              attemptId: AttemptId(generation),
-              reason: reason,
-            ),
-        for (final member in _members)
-          UnresolvedResource(
-            owner: 'display-members:$threadId:$generation',
-            attemptId: AttemptId(generation),
-            reason: member.error ?? StateError('members still closing'),
-          ),
-      ],
-    );
+    return cleanupReport;
   }
 }
 
 final class _ScopedDisplayMembers implements DisplayMembers {
-  _ScopedDisplayMembers(this.scope, this.handle, this.reference, this.window);
+  _ScopedDisplayMembers(
+    this.scope,
+    this.handle,
+    this.reference,
+    this.window,
+    this.resourceId,
+  );
+  final ClientResourceId resourceId;
   final ConversationReadScope scope;
   final DisplayMembers handle;
   final DisplayBlockRef reference;
@@ -467,7 +563,9 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   int revision = -1;
   bool sealed = false;
   bool ended = false;
-  Object? error;
+  (Object, StackTrace)? requestError;
+  (Object, StackTrace)? closeError;
+  bool closeSettled = false;
   Future<void>? _closing;
   DisplayMemberPage? _lastPage;
 
@@ -538,17 +636,17 @@ final class _ScopedDisplayMembers implements DisplayMembers {
     if (closed) return;
     try {
       handle.requestClose();
-      error = null;
-    } catch (failure) {
-      error = failure;
+      requestError = null;
+    } catch (failure, stack) {
+      requestError = (failure, stack);
     }
   }
 
   Future<void> _settle() async {
     try {
       await close();
-    } catch (failure) {
-      error = failure;
+    } catch (_) {
+      // The original request/join failure remains on this owned handle.
     }
   }
 
@@ -556,10 +654,22 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   Future<void> close() {
     if (closed) return Future.value();
     requestClose();
+    if (_closing != null) return _closing!;
+    closeSettled = false;
     return _closing ??= Future<void>.sync(() async {
       try {
-        await handle.close();
-        if (error != null) throw error!;
+        try {
+          await handle.close();
+          closeError = null;
+          closeSettled = true;
+        } catch (failure, stack) {
+          closeError = (failure, stack);
+          closeSettled = true;
+          rethrow;
+        }
+        if (requestError case final failure?) {
+          Error.throwWithStackTrace(failure.$1, failure.$2);
+        }
         closed = true;
         scope._members.remove(this);
       } finally {
@@ -668,7 +778,8 @@ bool _sameValues<T>(List<T> a, List<T> b, bool Function(T, T) equal) {
 }
 
 final class _ContentWatch {
-  _ContentWatch(this.reference, this.output);
+  _ContentWatch(this.reference, this.output, this.resourceId);
+  final ClientResourceId resourceId;
   final ContentRef reference;
   final StreamController<ContentWindow> output;
   final listening = Completer<void>();
@@ -682,6 +793,8 @@ final class _ContentWatch {
   (Object, StackTrace)? requestError;
   (Object, StackTrace)? subscriptionError;
   (Object, StackTrace)? handleError;
+  bool subscriptionSettled = false;
+  bool handleSettled = false;
   bool stopping = false;
   bool sourceEnded = false;
   bool released = false;
@@ -696,6 +809,15 @@ final class _ResourceRead {
   _ResourceRead(this.resource);
   final Object resource;
   bool stale = false;
+}
+
+String _newResourceScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'conversation-query-$nonce';
 }
 
 const _staleBusinessResource = StudioFailure(

@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
@@ -101,7 +103,7 @@ final class AcpComponentHarness {
           updatedAt: DateTime.utc(2025),
         ),
       );
-    final client = AnyworkClient(
+    final client = testAnyworkClient(
       transport: transport,
       clientId: 'acp-components',
       acpBusinessPort: port,
@@ -152,7 +154,7 @@ final class AcpComponentHarness {
   Future<void> close(WidgetTester tester) async {
     final report = await pumpClientFuture(
       tester,
-      client.close(),
+      client.close(budget: testCloseBudget()),
       'close ACP component Client',
     );
     expect(report.complete, isTrue, reason: '${report.unresolved}');

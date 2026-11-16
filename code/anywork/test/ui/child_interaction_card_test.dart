@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
@@ -210,9 +211,12 @@ final class _ChildCardTransport extends RecordingDemoTransport {
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  TestTopicFrames testProductTopicFrames(
+    ProductTopic topic,
+    TestTopicFrames upstream,
+  ) {
     if (topic is! ChildInteractionsTopic) {
-      return super.subscribeProductTopic(topic);
+      return upstream;
     }
     final host = topic.hostThreadId;
     topicSubscriptions++;
@@ -225,12 +229,12 @@ final class _ChildCardTransport extends RecordingDemoTransport {
     final from = failTopicFrom;
     if (failure != null && (from == null || topicSubscriptions >= from)) {
       scheduleMicrotask(() => sink.addError(failure));
-      return sink.stream;
+      return TestTopicFrames.controller(sink);
     }
     scheduleMicrotask(() {
       sink.add(_baselineFrame(host));
     });
-    return sink.stream;
+    return TestTopicFrames.controller(sink);
   }
 
   ProductTopicBaselineFrame _baselineFrame(String hostThreadId) {
@@ -389,7 +393,7 @@ Future<_Fixture> _fixture(
 }) async {
   final transport = _ChildCardTransport();
   configure?.call(transport);
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: transport,
     clientId: 'child-cards',
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -400,7 +404,7 @@ Future<_Fixture> _fixture(
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'child cards teardown',
     );
   });
@@ -462,9 +466,7 @@ Future<void> _close(WidgetTester tester, _Fixture fixture) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    fixture.graph.close(
-      deadline: DateTime.now().add(const Duration(seconds: 5)),
-    ),
+    fixture.graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'child cards close',
   );
 }

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/recording_demo_transport.dart';
@@ -16,6 +17,7 @@ final class _ExitTransport extends RecordingDemoTransport {
   Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    bool externalDartResourcesReported = false,
     StudioExitIntent intent = StudioExitIntent.exit,
   }) {
     this.intent = intent;
@@ -223,15 +225,15 @@ void main() {
     );
     final custom = Completer<void>();
     final client = Completer<CloseReport>();
-    final clientEntered = Completer<DateTime>();
+    final clientEntered = Completer<ClientCloseBudget>();
     var closes = 0;
     final coordinator = StudioExitCoordinator(
       RecordingDemoTransport(),
       (_) {},
       shutdownOverride: () => custom.future,
-      closeClient: (deadline) {
+      closeClient: (budget) {
         closes++;
-        clientEntered.complete(deadline);
+        clientEntered.complete(budget);
         return client.future;
       },
     );
@@ -239,12 +241,9 @@ void main() {
     await arming.future;
     expect(coordinator.cleanupOnly(), same(first));
     armed.complete(30000);
-    final deadline = await clientEntered.future;
-    expect(deadline.isAfter(DateTime.now()), isTrue);
-    expect(
-      deadline.difference(DateTime.now()) <= const Duration(seconds: 28),
-      isTrue,
-    );
+    final budget = await clientEntered.future;
+    expect(budget.expired, isFalse);
+    expect(budget.remaining <= const Duration(seconds: 28), isTrue);
     var finished = false;
     unawaited(
       first.then((_) {

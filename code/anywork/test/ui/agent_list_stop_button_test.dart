@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -156,7 +158,7 @@ Future<AppGraph> _graph(
   WidgetTester tester,
   _AgentStopTransport transport,
 ) async {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: transport,
     clientId: 'agent-list-stop',
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -165,7 +167,7 @@ Future<AppGraph> _graph(
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'agent list stop teardown',
     );
   });
@@ -195,7 +197,7 @@ Future<void> _close(WidgetTester tester, AppGraph graph) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'agent list stop close',
   );
 }

@@ -1,5 +1,4 @@
 //! Independent content/state observations sharing bounded delivery and retained native joins.
-mod close_failures;
 mod content_watch;
 mod owner;
 mod producer;
@@ -10,6 +9,10 @@ use std::sync::Arc;
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::chat;
+use crate::api::studio::subscription::{
+    error::{close_error, open_error},
+    factory::BridgeObservationFactory,
+};
 use crate::api::studio::types::{
     BridgeChatBatch, BridgeChatScope, BridgeCompletedEntry, BridgeContentManifestPage,
     BridgeContentRange, BridgeContentRef, BridgeContentWindow, BridgeConversationFrame,
@@ -17,38 +20,148 @@ use crate::api::studio::types::{
     BridgeThreadBusinessRefs,
 };
 use crate::frb_generated::StreamSink;
+use pl_lifecycle::{Managed, ManagedResource};
 
 pub(crate) use owner::ConversationOwner;
 use owner::closed;
 
 /// Opaque owner of one captured native feed. Dropping this facade requests cancellation; the opening
-/// registry retains the real owner until close confirms every task, query and native observation.
+/// scope retains the real owner until close confirms every task, query and native observation.
 pub struct BridgeConversationFeed {
     inner: Arc<ConversationOwner>,
+    managed: Managed<ConversationResource>,
+    #[cfg(test)]
+    test_scope: Option<pl_lifecycle::ScopeOwner<BridgeError>>,
 }
 
 /// State-only observation. It owns no content reader and does not activate execution.
 pub struct BridgeConversationStateFeed {
     inner: Arc<ConversationOwner>,
+    managed: Managed<ConversationResource>,
+    #[cfg(test)]
+    test_scope: Option<pl_lifecycle::ScopeOwner<BridgeError>>,
+}
+
+struct ConversationResource(Arc<ConversationOwner>);
+
+impl ManagedResource for ConversationResource {
+    type Error = BridgeError;
+
+    fn request_close(&self) {
+        self.0.request_close();
+    }
+
+    async fn close(&self) -> Result<(), BridgeError> {
+        self.0.close().await
+    }
+}
+
+impl BridgeConversationFeed {
+    fn from_managed(managed: Managed<ConversationResource>) -> Self {
+        Self {
+            inner: Arc::clone(&managed.get().0),
+            managed,
+            #[cfg(test)]
+            test_scope: None,
+        }
+    }
+
+    #[cfg(test)]
+    async fn from_test_owner(inner: Arc<ConversationOwner>) -> Self {
+        let (managed, scope) = test_managed_conversation(inner).await;
+        let mut facade = Self::from_managed(managed);
+        facade.test_scope = Some(scope);
+        facade
+    }
+}
+
+impl BridgeConversationStateFeed {
+    fn from_managed(managed: Managed<ConversationResource>) -> Self {
+        Self {
+            inner: Arc::clone(&managed.get().0),
+            managed,
+            #[cfg(test)]
+            test_scope: None,
+        }
+    }
+
+    #[cfg(test)]
+    async fn from_test_owner(inner: Arc<ConversationOwner>) -> Self {
+        let (managed, scope) = test_managed_conversation(inner).await;
+        let mut facade = Self::from_managed(managed);
+        facade.test_scope = Some(scope);
+        facade
+    }
+}
+
+#[cfg(test)]
+async fn test_managed_conversation(
+    inner: Arc<ConversationOwner>,
+) -> (
+    Managed<ConversationResource>,
+    pl_lifecycle::ScopeOwner<BridgeError>,
+) {
+    let scope = pl_lifecycle::ScopeOwner::new("test", tokio::runtime::Handle::current());
+    let managed = scope
+        .handle()
+        .open("conversation", move |_| async move {
+            Ok(ConversationResource(inner))
+        })
+        .await
+        .unwrap();
+    (managed, scope)
 }
 
 pub async fn open_conversation_state_feed(
     thread_id: String,
 ) -> Result<BridgeConversationStateFeed, BridgeError> {
     let bridge = active_bridge().await?;
-    let cancel = bridge.shutdown.child_token();
-    let feed = tokio::select! {
-        biased;
-        () = cancel.cancelled() => return Err(closed()),
-        feed = bridge.studio.open_conversation_state_feed(&thread_id) => feed?,
-    };
-    let inner = Arc::new(ConversationOwner::new_state(feed, cancel));
-    let opening = inner.cancel.clone().drop_guard();
     bridge
-        .subscriptions
-        .register_conversation(&inner, &bridge.shutdown)?;
-    drop(opening.disarm());
-    Ok(BridgeConversationStateFeed { inner })
+        .observation_factory
+        .open_conversation_state(thread_id)
+        .await
+}
+
+impl BridgeObservationFactory {
+    pub(crate) async fn open_conversation_state(
+        &self,
+        thread_id: String,
+    ) -> Result<BridgeConversationStateFeed, BridgeError> {
+        let source = self.source.clone();
+        let managed = self
+            .scope
+            .open("conversations", move |cancel| async move {
+                let feed = source.open_conversation_state_feed(&thread_id).await?;
+                Ok(ConversationResource(Arc::new(
+                    ConversationOwner::new_state(feed, cancel),
+                )))
+            })
+            .await
+            .map_err(open_error)?;
+        Ok(BridgeConversationStateFeed::from_managed(managed))
+    }
+
+    pub(crate) async fn open_conversation(
+        &self,
+        thread_id: String,
+        scope: BridgeChatScope,
+        demand: BridgeReadDemand,
+    ) -> Result<BridgeConversationFeed, BridgeError> {
+        let source = self.source.clone();
+        let managed = self
+            .scope
+            .open("conversations", move |cancel| async move {
+                let feed = source
+                    .open_conversation_feed(&thread_id, chat::scope(scope), chat::demand(demand))
+                    .await?;
+                Ok(ConversationResource(Arc::new(ConversationOwner::new(
+                    feed, cancel,
+                ))))
+            })
+            .await
+            .map_err(open_error)?;
+        Ok(BridgeConversationFeed::from_managed(managed))
+    }
 }
 
 impl BridgeConversationStateFeed {
@@ -80,17 +193,11 @@ impl BridgeConversationStateFeed {
 
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close(&self) {
-        self.inner.request_close();
+        self.managed.request_close();
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.inner.close().await
-    }
-}
-
-impl Drop for BridgeConversationStateFeed {
-    fn drop(&mut self) {
-        self.inner.request_close();
+        self.managed.retry_close().await.map_err(close_error)
     }
 }
 
@@ -102,25 +209,10 @@ pub async fn open_conversation_feed(
     demand: BridgeReadDemand,
 ) -> Result<BridgeConversationFeed, BridgeError> {
     let bridge = active_bridge().await?;
-    let cancel = bridge.shutdown.child_token();
-    let feed = tokio::select! {
-        biased;
-        () = cancel.cancelled() => return Err(closed()),
-        feed = bridge.studio.open_conversation_feed(
-            &thread_id,
-            chat::scope(scope),
-            chat::demand(demand),
-        ) => feed?,
-    };
-    let inner = Arc::new(ConversationOwner::new(feed, cancel));
-    let opening = inner.cancel.clone().drop_guard();
-    // Register the owner and its cancellation-driven lifecycle task in one synchronous publication
-    // boundary. The opening guard cancels any installed responsibility if publication fails.
     bridge
-        .subscriptions
-        .register_conversation(&inner, &bridge.shutdown)?;
-    drop(opening.disarm());
-    Ok(BridgeConversationFeed { inner })
+        .observation_factory
+        .open_conversation(thread_id, scope, demand)
+        .await
 }
 
 impl BridgeConversationFeed {
@@ -304,24 +396,18 @@ impl BridgeConversationFeed {
     /// Seals admission and wakes credit and receive waits without issuing business cancellation.
     #[flutter_rust_bridge::frb(sync)]
     pub fn request_close(&self) {
-        self.inner.request_close();
+        self.managed.request_close();
     }
 
     /// Joins retained work and closes native capabilities. Cancelled close waits can be repeated;
-    /// failed closes retain the original owner and diagnostic in the opening registry.
+    /// failed closes retain the original owner and diagnostic in the observation scope.
     pub async fn close(&self) -> Result<(), BridgeError> {
-        self.inner.close().await
-    }
-}
-
-impl Drop for BridgeConversationFeed {
-    fn drop(&mut self) {
-        self.inner.request_close();
+        self.managed.retry_close().await.map_err(close_error)
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! Real Runtime fixture shared by owner tests. Only the final Dart port is substituted.
     use anyhow::{Context, Result, ensure};
     use pl_model::{
@@ -347,15 +433,15 @@ mod tests {
     const INPUT: &str = "input-bridge-chat";
     pub(super) const FOLLOWUP: &str = "conversation live range";
 
-    pub(super) struct Environment {
+    pub(crate) struct Environment {
         _temp: tempfile::TempDir,
         provider: FixtureServer,
-        pub(super) runtime: StudioRuntime,
-        pub(super) thread_id: String,
+        pub(crate) runtime: StudioRuntime,
+        pub(crate) thread_id: String,
     }
 
     impl Environment {
-        pub(super) async fn new() -> Result<Self> {
+        pub(crate) async fn new() -> Result<Self> {
             Self::with_followup(None).await
         }
 
@@ -558,7 +644,7 @@ mod tests {
             Ok(())
         }
 
-        pub(super) async fn finish(self, result: Result<()>) -> Result<()> {
+        pub(crate) async fn finish(self, result: Result<()>) -> Result<()> {
             let shutdown = self.runtime.shutdown_runtime().await;
             let provider = self.provider.finish().await;
             drop(self.runtime);

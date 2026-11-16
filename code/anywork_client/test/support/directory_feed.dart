@@ -1,8 +1,12 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/lifecycle.dart';
 
 mixin DirectoryFeedFixture on StudioTransport {
+  ClientScope? _directoryLifecycleScope;
+  ClientScope get lifecycleScope =>
+      _directoryLifecycleScope ??= ClientScope(owner: 'directory-test-runtime');
   String directoryOwnerEpoch = 'test-runtime';
   int directoryRevision = 1;
   final Map<String, SessionDirectoryRow?> directoryThreads = {};
@@ -39,57 +43,83 @@ mixin DirectoryFeedFixture on StudioTransport {
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
-    openedMetadataThreadIds.add(threadId);
-    final signal = _metadataOpenSignals.putIfAbsent(
-      threadId,
-      Completer<void>.new,
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) async {
+    final acquisition = lifecycleScope.open<_MetadataHandle>(
+      'test-metadata-owner',
+      (operation) async {
+        openedMetadataThreadIds.add(threadId);
+        final signal = _metadataOpenSignals.putIfAbsent(
+          threadId,
+          Completer<void>.new,
+        );
+        if (!signal.isCompleted) signal.complete();
+        await metadataOpenGates[threadId]?.future;
+        final handle = _MetadataHandle(
+          operation.resourceId,
+          _closeDirectoryHandle,
+        );
+        _metadataHandles.putIfAbsent(threadId, () => []).add(handle);
+        handle.add(
+          ThreadMetadataFrame(
+            threadId: threadId,
+            stamp: _stamp(directoryRevision),
+            row: directoryThreads[threadId],
+          ),
+        );
+        return handle;
+      },
+      identity: resourceId,
     );
-    if (!signal.isCompleted) signal.complete();
-    await metadataOpenGates[threadId]?.future;
-    final handle = _MetadataHandle(_closeDirectoryHandle);
-    _metadataHandles.putIfAbsent(threadId, () => []).add(handle);
-    handle.add(
-      ThreadMetadataFrame(
-        threadId: threadId,
-        stamp: _stamp(directoryRevision),
-        row: directoryThreads[threadId],
-      ),
-    );
-    return handle;
+    await acquisition.ready;
+    return _MetadataProxy(acquisition);
   }
 
   @override
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  ) async {
-    openedDirectoryQueries.add(query);
-    final handle = _ThreadsHandle(_closeDirectoryHandle);
-    _threadsHandles.add(handle);
-    handle.add(
-      ThreadDirectoryFrame(
-        query: query,
-        window: window,
-        stamp: _stamp(directoryRevision),
-        threadIds: directoryThreads.entries
-            .where((entry) {
-              final row = entry.value;
-              return row != null &&
-                  row.isRootRow &&
-                  row.archived == query.archived &&
-                  (query.workspaceId == null ||
-                      row.workspaceId == query.workspaceId) &&
-                  (query.threadIds == null ||
-                      query.threadIds!.contains(row.threadId)) &&
-                  !query.excludedThreadIds.contains(row.threadId);
-            })
-            .map((entry) => entry.key)
-            .take(window.limit)
-            .toList(),
-      ),
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  }) async {
+    final acquisition = lifecycleScope.open<_ThreadsHandle>(
+      'test-directory-owner',
+      (operation) async {
+        openedDirectoryQueries.add(query);
+        final handle = _ThreadsHandle(
+          operation.resourceId,
+          _closeDirectoryHandle,
+        );
+        _threadsHandles.add(handle);
+        handle.add(
+          ThreadDirectoryFrame(
+            query: query,
+            window: window,
+            stamp: _stamp(directoryRevision),
+            threadIds: directoryThreads.entries
+                .where((entry) {
+                  final row = entry.value;
+                  return row != null &&
+                      row.isRootRow &&
+                      row.archived == query.archived &&
+                      (query.workspaceId == null ||
+                          row.workspaceId == query.workspaceId) &&
+                      (query.threadIds == null ||
+                          query.threadIds!.contains(row.threadId)) &&
+                      !query.excludedThreadIds.contains(row.threadId);
+                })
+                .map((entry) => entry.key)
+                .take(window.limit)
+                .toList(),
+          ),
+        );
+        return handle;
+      },
+      identity: resourceId,
     );
-    return handle;
+    await acquisition.ready;
+    return _ThreadsProxy(acquisition);
   }
 
   ResourceStamp _stamp(int revision) => ResourceStamp(
@@ -106,9 +136,11 @@ mixin DirectoryFeedFixture on StudioTransport {
   }
 }
 
-abstract base class _PullHandle<T> {
-  _PullHandle(this._close);
+abstract base class _PullHandle<T> implements ClientResource {
+  _PullHandle(this.resourceId, this._close);
 
+  @override
+  final ClientResourceId resourceId;
   final Future<void> Function() _close;
   final List<T> _queued = [];
   Completer<T?>? _waiting;
@@ -142,11 +174,19 @@ abstract base class _PullHandle<T> {
     request();
     await _close();
   }
+
+  @override
+  void requestClose() => request();
+  @override
+  Future<void> close() => finish();
+  @override
+  Future<void> retryClose() => finish();
 }
 
 final class _MetadataHandle extends _PullHandle<ThreadMetadataFrame>
     implements ThreadObservationHandle {
-  _MetadataHandle(Future<void> Function() close) : super(close);
+  _MetadataHandle(ClientResourceId resourceId, Future<void> Function() close)
+    : super(resourceId, close);
 
   @override
   Future<ThreadMetadataFrame?> next() => pull();
@@ -158,7 +198,8 @@ final class _MetadataHandle extends _PullHandle<ThreadMetadataFrame>
 
 final class _ThreadsHandle extends _PullHandle<ThreadDirectoryFrame>
     implements ThreadsObservationHandle {
-  _ThreadsHandle(Future<void> Function() close) : super(close);
+  _ThreadsHandle(ClientResourceId resourceId, Future<void> Function() close)
+    : super(resourceId, close);
 
   @override
   Future<ThreadDirectoryFrame?> next() => pull();
@@ -166,4 +207,37 @@ final class _ThreadsHandle extends _PullHandle<ThreadDirectoryFrame>
   void requestClose() => request();
   @override
   Future<void> close() => finish();
+}
+
+final class _MetadataProxy implements ThreadObservationHandle {
+  _MetadataProxy(this.acquisition);
+  final ClientAcquisition<_MetadataHandle> acquisition;
+
+  @override
+  ClientResourceId get resourceId => acquisition.resourceId;
+  @override
+  Future<ThreadMetadataFrame?> next() async => (await acquisition.ready).next();
+  @override
+  void requestClose() => acquisition.requestClose();
+  @override
+  Future<void> close() => acquisition.close();
+  @override
+  Future<void> retryClose() => acquisition.retryClose();
+}
+
+final class _ThreadsProxy implements ThreadsObservationHandle {
+  _ThreadsProxy(this.acquisition);
+  final ClientAcquisition<_ThreadsHandle> acquisition;
+
+  @override
+  ClientResourceId get resourceId => acquisition.resourceId;
+  @override
+  Future<ThreadDirectoryFrame?> next() async =>
+      (await acquisition.ready).next();
+  @override
+  void requestClose() => acquisition.requestClose();
+  @override
+  Future<void> close() => acquisition.close();
+  @override
+  Future<void> retryClose() => acquisition.retryClose();
 }

@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -20,11 +22,14 @@ import '../support/test_statistics_feed.dart';
 const _longTitle = '侧栏长会话名称在狭窄窗口与大字号下保持单行省略，目录内容不会被布局裁剪';
 
 final class _ShellTransport extends RecordingDemoTransport
-    with DirectoryFeedFixture {}
+    with DirectoryFeedFixture {
+  @override
+  ClientScope get lifecycleScope => contentScope;
+}
 
 Future<AppGraph> _mount(WidgetTester tester, {double scale = 1}) async {
   final transport = _ShellTransport();
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: transport,
     statisticsFeed: const TestStatisticsFeedPort(),
   );
@@ -36,7 +41,7 @@ Future<AppGraph> _mount(WidgetTester tester, {double scale = 1}) async {
     router.dispose();
     final report = await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'close sidebar shell',
     );
     expect(report.complete, isTrue, reason: '${report.unresolved}');

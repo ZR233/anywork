@@ -154,6 +154,24 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
+    final content = _buildContent(context);
+    if (item.authorId != 'parentAgent') return content;
+    // Identity is independent of payload availability. Keep the same read
+    // widgets below it when metadata or body ranges have not arrived yet.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          context.l10n.timelineParentAgent,
+          key: StudioDriverKeys.parentAgentLabel(item.id),
+          style: context.text.bodySmall,
+        ),
+        content,
+      ],
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     if (item.observationUnavailable) {
       final record = item.displayRecord!;
       return Text(
@@ -284,14 +302,9 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _text(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      if (item.atom?.source case InboxMessageChatSource(:final sourceId))
-        Text('来源 · $sourceId')
-      else if (item.data['channel'] == 'parentAgent')
-        Text(
-          context.l10n.timelineParentAgent,
-          key: StudioDriverKeys.parentAgentLabel(item.id),
-          style: context.text.bodySmall,
-        ),
+      if (item.authorId != 'parentAgent')
+        if (item.atom?.source case InboxMessageChatSource(:final sourceId))
+          Text('来源 · $sourceId'),
       for (final body in _textBodies) _body(body, disclosed: true),
       _media(),
       // The independent Turn receipt owns terminal reasons. Accepted partial

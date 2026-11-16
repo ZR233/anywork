@@ -1,9 +1,13 @@
 import 'dart:async';
 
+import 'support/product_topic_owner.dart';
+
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 final class _BotsTransport implements StudioTransport {
+  final lifecycleScope = ClientScope(owner: 'test-runtime');
   BotsStateSnapshot snapshot = const BotsStateSnapshot.empty();
   final conversationCalls = <ListBotConversationsRequest>[];
   final messageCalls = <ReadBotMessagesRequest>[];
@@ -14,8 +18,17 @@ final class _BotsTransport implements StudioTransport {
   BotSendStatus sendStatus = BotSendStatus.succeeded;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    return const Stream.empty();
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
+    final controller = StreamController<ProductTopicFrame>();
+    unawaited(controller.close());
+    return openTestProductTopic(
+      lifecycleScope.child('topic-owner'),
+      resourceId,
+      controller,
+    );
   }
 
   @override
@@ -296,8 +309,15 @@ void main() {
 
   test('secret never enters setup draft and is released after save', () async {
     final transport = _BotsTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'bots');
-    addTearDown(() => client.close());
+    final client = AnyworkClient(
+      transport: transport,
+      scope: transport.lifecycleScope.child('client'),
+      clientId: 'bots',
+    );
+    addTearDown(
+      () =>
+          client.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
+    );
     client.botsCommands.updateSetupDraft(
       const BotSetupDraft(name: 'Feishu', workspaceId: 'p1', appId: 'cli_1'),
     );
@@ -339,8 +359,15 @@ void main() {
 
   test('conversation and message queries drop stale results after selection change', () async {
     final transport = _BotsTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'bots-query');
-    addTearDown(() => client.close());
+    final client = AnyworkClient(
+      transport: transport,
+      scope: transport.lifecycleScope.child('client'),
+      clientId: 'bots-query',
+    );
+    addTearDown(
+      () =>
+          client.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
+    );
     transport.conversationsGate = Completer();
     final first = client.botsQueries.listConversations('bot-a');
     await Future<void>.delayed(Duration.zero);
@@ -394,8 +421,15 @@ void main() {
 
   test('send freezes target before await and unknown results are retained without replay', () async {
     final transport = _BotsTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'bots-send');
-    addTearDown(() => client.close());
+    final client = AnyworkClient(
+      transport: transport,
+      scope: transport.lifecycleScope.child('client'),
+      clientId: 'bots-send',
+    );
+    addTearDown(
+      () =>
+          client.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
+    );
     transport.sendStatus = BotSendStatus.unknown;
     transport.sendGate = Completer();
     client.botsCommands.updateMessageDraft('bot-1', 'chat-1', 'first');
@@ -454,10 +488,16 @@ void main() {
 
   test('client close joins bot commands and queries', () async {
     final transport = _BotsTransport();
-    final client = AnyworkClient(transport: transport, clientId: 'bots-close');
+    final client = AnyworkClient(
+      transport: transport,
+      scope: transport.lifecycleScope.child('client'),
+      clientId: 'bots-close',
+    );
     transport.conversationsGate = Completer();
     unawaited(client.botsQueries.listConversations('bot-1'));
-    final closed = client.close();
+    final closed = client.close(
+      budget: ClientCloseBudget(const Duration(seconds: 30)),
+    );
     transport.conversationsGate!.complete(
       const BotConversationPage(botId: 'bot-1', conversations: []),
     );
@@ -469,6 +509,7 @@ void main() {
     final transport = _BotsTransport();
     final client = AnyworkClient(
       transport: transport,
+      scope: transport.lifecycleScope.child('client'),
       clientId: 'bots-retired',
     );
     final gate = Completer<BotConversationPage>();
@@ -478,7 +519,9 @@ void main() {
       transport.conversationsGate = null;
       await client.botsQueries.listConversations('bot-b');
       await first; // Display cancellation is not transport completion.
-      final report = await client.close(deadline: DateTime.now());
+      final report = await client.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
       expect(report.complete, isFalse);
       var queryOwnerClosed = false;
       final queryOwnerClose = client.botsQueries.close().then((_) {
@@ -497,7 +540,9 @@ void main() {
           const BotConversationPage(botId: 'bot-a', conversations: []),
         );
       }
-      await client.close();
+      await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
     }
   });
 
@@ -507,9 +552,14 @@ void main() {
       final transport = _BotsTransport();
       final client = AnyworkClient(
         transport: transport,
+        scope: transport.lifecycleScope.child('client'),
         clientId: 'bots-foreign',
       );
-      addTearDown(client.close);
+      addTearDown(
+        () => client.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        ),
+      );
       transport.conversationsGate = Completer<BotConversationPage>();
       final query = client.botsQueries.listConversations('bot-b');
       final rejected = expectLater(

@@ -12,7 +12,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
+import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
 final _project = StudioProject(id: 'project', name: 'Demo', path: '/workspace');
@@ -105,22 +107,29 @@ Widget _host(HeaderView state, {double width = 900, required AppGraph graph}) =>
       ),
     );
 
-void main() {
-  late AppGraph graph;
-  setUp(() {
-    graph = AppGraph(
-      transport: RecordingDemoTransport(),
-      clientId: 'acp-header-test',
-      statisticsFeed: const TestStatisticsFeedPort(),
-    );
-  });
-  tearDown(
-    () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+AppGraph _testGraph(WidgetTester tester) {
+  final graph = testAppGraph(
+    transport: RecordingDemoTransport(),
+    clientId: 'acp-header-test',
+    statisticsFeed: const TestStatisticsFeedPort(),
   );
+  addTearDown(() async {
+    await tester.pumpWidget(const SizedBox.shrink());
+    final report = await pumpClientFuture(
+      tester,
+      graph.close(budget: testCloseBudget()),
+      'ACP header graph teardown',
+    );
+    expect(report.complete, isTrue, reason: describeTestCloseReport(report));
+  });
+  return graph;
+}
 
+void main() {
   testWidgets(
     'ACP root without members retains workspace entry and no Native details',
     (tester) async {
+      final graph = _testGraph(tester);
       await tester.pumpWidget(
         _host(
           _header(row: _root(acp: true), project: _project),
@@ -144,6 +153,7 @@ void main() {
   testWidgets(
     'Native root retains member menu and workspace entry at narrow and wide widths',
     (tester) async {
+      final graph = _testGraph(tester);
       final state = _header(
         row: _root(acp: false),
         project: _project,
@@ -174,6 +184,7 @@ void main() {
   testWidgets('workspace menu is absent without project qualification', (
     tester,
   ) async {
+    final graph = _testGraph(tester);
     await tester.pumpWidget(
       _host(_header(row: _root(acp: true), project: null), graph: graph),
     );
@@ -189,6 +200,7 @@ void main() {
   testWidgets('workspace click uses the canonical selected workspace path', (
     tester,
   ) async {
+    final graph = _testGraph(tester);
     String? openedUri;
     await tester.pumpWidget(
       ProviderScope(

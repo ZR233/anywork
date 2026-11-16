@@ -5,6 +5,8 @@ import '../../../../xtask/dart/client_boundary_check.dart';
 const _client = 'code/anywork_client/lib/src/fixture.dart';
 const _feature = 'code/anywork/lib/src/features/chat/chat_view.dart';
 const _account = 'code/anywork/lib/src/presentation/providers/fixture.dart';
+const _lifecycleHelper =
+    'code/anywork/lib/src/presentation/providers/use_client_resource.dart';
 const _accountsFeature = 'code/anywork/lib/src/features/settings/accounts/';
 const _acpFeature = 'code/anywork/lib/src/features/conversation/acp/';
 
@@ -249,6 +251,24 @@ void main() {
           'ref.onDispose(() { store.remove("thread"); }); }',
       rule: 'LIFE-02',
     ),
+    (
+      name: 'Lifecycle helper cannot close the application owner',
+      path: _lifecycleHelper,
+      source:
+          'void useClientResource(dynamic ref, dynamic owner) { '
+          'final scope = ref.read(appGraphProvider); '
+          'ref.onDispose(scope.requestClose); }',
+      rule: 'LIFE-02',
+    ),
+    (
+      name: 'Other providers cannot bypass the lifecycle helper',
+      path: _account,
+      source:
+          'void useClientResource(dynamic ref, dynamic owner) { '
+          'final scope = ref.read(appGraphProvider).uiResources.child(owner); '
+          'ref.onDispose(scope.requestClose); }',
+      rule: 'LIFE-02',
+    ),
     for (final owner in ['session', 'composer', 'skills', 'sessionCosts'])
       (
         name: 'Provider cannot admit a $owner owner',
@@ -355,6 +375,22 @@ Object rowKey(String itemId) => new ValueKey(itemId);
       );
     },
   );
+
+  test('lifecycle helper may close only its locally created UI child', () {
+    expect(
+      checkClientSource(
+        path: _lifecycleHelper,
+        source: '''
+void useClientResource(dynamic ref, dynamic owner) {
+  final scope = ref.read(appGraphProvider).uiResources.child(owner);
+  ref.onDispose(scope.requestClose);
+  scope.acquireLease(owner, () {});
+}
+''',
+      ),
+      isEmpty,
+    );
+  });
 
   test(
     'pure account presentation and injected VM dependencies are allowed',

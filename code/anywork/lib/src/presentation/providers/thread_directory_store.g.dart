@@ -74,7 +74,7 @@ final class ThreadMetadataDemandProvider
 }
 
 String _$threadMetadataDemandHash() =>
-    r'4594cb7970b6aea42a63f244357a83d751234c7c';
+    r'f4a0d99df1fb644cafebf3936cf2d302538155be';
 
 final class ThreadMetadataDemandFamily extends $Family
     with

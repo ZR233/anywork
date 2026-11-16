@@ -140,20 +140,35 @@ pub async fn begin_runtime_exit(remaining_ms: u32) -> Result<(), BridgeError> {
     // runtime is never published after closing and an already-published runtime is always observed.
     let bridge = arm_exit_latch();
     // Fix the single first deadline; a later `shutdown_runtime` can only reuse or shorten it.
-    let _ = fix_exit_deadline(remaining_ms);
+    let deadline = fix_exit_deadline(remaining_ms);
     // Exit has begun: invalidate the startup token and wake any not-yet-settled pre-active startup
     // observer synchronously, before the first await below and independent of whether a runtime is
     // installed, so a later `start_studio_runtime` attempt can never publish.
     STARTUP.begin_shutdown();
+    crate::api::studio::subscription::close_startup_scope();
     if let Some(bridge) = bridge {
         // Broadcast native subscription cancellation early (a synchronous token cancel with no
         // await/join): the content streams wind down so Dart's later cancel ACK completes faster.
         // The shutdown-progress stream uses its own token and is deliberately left running until
         // its explicit cancel in `shutdown_runtime`.
+        bridge.observation_scope.request_close();
         bridge.shutdown.cancel();
         // Broadcast update cancellation without joining; real errors are retained for the same
         // collector and never block the remaining broadcasts.
-        record_bridge_early_issues(broadcast_cancel_update_operations().await);
+        match tokio::time::timeout(
+            remaining_until(deadline),
+            broadcast_cancel_update_operations(),
+        )
+        .await
+        {
+            Ok(issues) => record_bridge_early_issues(issues),
+            Err(_) => record_bridge_early_issues(vec![bridge_issue(
+                "updateOperations",
+                "timeout",
+                "Update cancellation did not start within the exit budget",
+                true,
+            )]),
+        }
         // Fence admission + broadcast independent cancels. Bounded internally; issues are retained
         // on the runtime and seeded by the same collector in `shutdown_runtime`.
         let _ = bridge.studio.fence_exit_admission().await;
@@ -191,6 +206,11 @@ pub async fn shutdown_runtime(
     // Invalidate the startup token and wake a pre-active observer before the first await (the
     // bounded lifecycle-gate lock below): once exit has begun no attempt may still publish.
     STARTUP.begin_shutdown();
+    crate::api::studio::subscription::close_startup_scope();
+    if let Some(bridge) = bridge {
+        bridge.observation_scope.request_close();
+        bridge.shutdown.cancel();
+    }
     let started = Instant::now();
 
     // Bounded observation of the lifecycle gate: if initialization is still in flight we give up
@@ -215,19 +235,36 @@ pub async fn shutdown_runtime(
             // can never consume the shared first deadline before another owner has been cancelled.
             // Their errors become runtime shutdown preconditions below.
             bridge.shutdown.cancel();
-            let pending_subscriptions = bridge.subscriptions.broadcast_cancel(deadline).await;
-            let pending_updates = collect_cancel_update_operations(true).await;
-            // Two independent owner groups (bridge-owned subscriptions and update operations) are
-            // observed **concurrently** under the same first deadline: a slow join of one group must
-            // not consume the budget before the other group has been observed. Broadcast already
-            // happened above, so this is join-only.
-            let (subscription_issues, update_issues) = futures::join!(
+            // All owner groups are observed concurrently under the first deadline. Update
+            // collection only awaits its registry lock; cancellation occurs synchronously after
+            // acquiring it, so abandoning that wait cannot discard an in-flight update owner.
+            let update_issues = async {
+                match tokio::time::timeout(
+                    remaining_until(deadline),
+                    collect_cancel_update_operations(true),
+                )
+                .await
+                {
+                    Ok(pending) => observe_update_operations(pending, deadline).await,
+                    Err(_) => vec![bridge_issue(
+                        "updateOperations",
+                        "timeout",
+                        "Update cancellation did not start within the exit budget",
+                        true,
+                    )],
+                }
+            };
+            let (observation_report, startup_issues, update_issues) = futures::join!(
                 bridge
-                    .subscriptions
-                    .join_cancelled(pending_subscriptions, deadline),
-                observe_update_operations(pending_updates, deadline),
+                    .observation_scope
+                    .retry_cleanup(tokio::time::Instant::from_std(deadline)),
+                crate::api::studio::subscription::wait_startup_scope(deadline),
+                update_issues,
             );
-            bridge_issues.extend(subscription_issues);
+            bridge_issues.extend(crate::api::studio::subscription::error::shutdown_issues(
+                observation_report,
+            ));
+            bridge_issues.extend(startup_issues);
             bridge_issues.extend(update_issues);
             // Fold the caller-observed external failures, the early-exit bridge broadcast failures
             // and the bridge-owned ones into the runtime orchestration itself. The runtime finalizer
@@ -306,25 +343,35 @@ pub async fn shutdown_runtime(
             }
             report
         }
-        None if gate_acquired && !late_install_refused() && !external_issues_present => {
-            BridgeShutdownReport::not_started()
-        }
         None => {
-            // Either initialization is still in flight (gate not acquired) or it started and was
-            // refused after exit began, or the caller already observed an unresolved external
-            // owner. None of these may masquerade as `NotStarted`.
-            let mut issues = external_issues;
-            issues.extend(take_bridge_early_issues());
-            issues.push(bridge_issue(
-                "installation",
-                "deadlineExceeded",
-                "Studio runtime initialization did not commit before the exit deadline; created resources are being reclaimed",
-                true,
-            ));
-            BridgeShutdownReport {
-                outcome: BridgeShutdownOutcome::Degraded,
-                issues,
-                persistence: BridgePendingPersistence::Unknown,
+            let startup_issues =
+                crate::api::studio::subscription::wait_startup_scope(deadline).await;
+            if gate_acquired
+                && !late_install_refused()
+                && !external_issues_present
+                && startup_issues.is_empty()
+            {
+                BridgeShutdownReport::not_started()
+            } else {
+                // Either initialization is still in flight (gate not acquired) or it started and was
+                // refused after exit began, or the caller already observed an unresolved external
+                // owner. None of these may masquerade as `NotStarted`.
+                let mut issues = external_issues;
+                issues.extend(startup_issues);
+                issues.extend(take_bridge_early_issues());
+                if !gate_acquired || late_install_refused() {
+                    issues.push(bridge_issue(
+                        "installation",
+                        "deadlineExceeded",
+                        "Studio runtime initialization did not commit before the exit deadline; created resources are being reclaimed",
+                        true,
+                    ));
+                }
+                BridgeShutdownReport {
+                    outcome: BridgeShutdownOutcome::Degraded,
+                    issues,
+                    persistence: BridgePendingPersistence::Unknown,
+                }
             }
         }
     };
@@ -557,6 +604,7 @@ impl StartupOwner {
             StartupPhase::Initial | StartupPhase::Prepared { .. } | StartupPhase::Failed { .. } => {
                 let attempt = self.next_attempt.fetch_add(1, Ordering::Relaxed);
                 *phase = StartupPhase::Prepared { attempt };
+                crate::api::studio::subscription::prepare_startup_scope(attempt);
                 // 新尝试的站立阶段：订阅首帧是本尝试的真实阶段，绝不会先拿到旧终态。
                 self.sender.send_replace(StartupFrame {
                     attempt,
@@ -679,7 +727,7 @@ impl StartupOwner {
             | StartupPhase::Failed { attempt }
             | StartupPhase::Stopped { attempt } => {
                 *phase = StartupPhase::Stopped { attempt };
-                // 唤醒尚未读到终态的 pre-active 观察者；它们不依赖 runtime 订阅注册表取消。
+                // 唤醒尚未读到终态的 pre-active 观察者；它们不依赖已安装的 runtime。
                 self.sender.send_replace(StartupFrame {
                     attempt,
                     stage: super::super::types::BridgeStartupStage::Failed,

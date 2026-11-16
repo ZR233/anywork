@@ -14,7 +14,9 @@ import '../types/thread_stream/item.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `drop`, `drop`
+// These functions are ignored because they are not marked as `pub`: `from_managed`, `from_managed`, `open_conversation_state`, `open_conversation`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ConversationResource`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `close`, `request_close`
 
 Future<BridgeConversationStateFeed> openConversationStateFeed({
   required String threadId,
@@ -44,7 +46,7 @@ abstract class BridgeConversationFeed implements RustOpaqueInterface {
   });
 
   /// Joins retained work and closes native capabilities. Cancelled close waits can be repeated;
-  /// failed closes retain the original owner and diagnostic in the opening registry.
+  /// failed closes retain the original owner and diagnostic in the observation scope.
   Future<void> close();
 
   /// Cancels first, then joins the retained native watch before releasing its identity/capacity.

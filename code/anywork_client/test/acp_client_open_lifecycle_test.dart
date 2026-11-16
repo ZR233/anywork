@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/acp_sessions.dart';
@@ -22,6 +23,7 @@ final class _Harness {
     final board = MutationBoard(clientId: 'acp-open-lifecycle');
     domains = AccountDomainResources(
       feed: transport,
+      scope: transport.lifecycleScope.child('account-domains'),
       configuration: transport,
       modelPort: transport,
       usagePort: transport,
@@ -32,6 +34,7 @@ final class _Harness {
     )..adoptOwnerEpoch(transport.epoch);
     client = AnyworkClient(
       transport: transport,
+      scope: transport.lifecycleScope.child('client'),
       clientId: 'acp-open-lifecycle',
       settingsWrites: coordinator,
       mutationBoard: board,
@@ -81,10 +84,10 @@ final class _Harness {
   }
 
   Future<void> close() async {
-    final deadline = DateTime.now().add(_budget);
+    final budget = ClientCloseBudget(_budget);
     final reports = await Future.wait([
-      client.close(deadline: deadline),
-      domains.close(deadline: deadline),
+      client.close(budget: budget),
+      domains.close(budget: budget),
     ]).timeout(_budget);
     for (final report in reports) {
       expect(report.complete, isTrue, reason: '${report.unresolved}');
@@ -243,7 +246,7 @@ void main() {
     // Keep account domains alive until the opening has rejected: closing their
     // read mirror must not accidentally rescue an uncancelled Client query.
     final clientReport = await harness.client
-        .close(deadline: DateTime.now().add(_budget))
+        .close(budget: ClientCloseBudget(_budget))
         .timeout(_budget);
     expect(clientReport.complete, isTrue, reason: '${clientReport.unresolved}');
     await rejected;

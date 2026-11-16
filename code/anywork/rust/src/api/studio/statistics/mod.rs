@@ -4,7 +4,3 @@ pub mod feed;
 pub mod types;
 
 mod convert;
-pub(crate) mod registry;
-
-pub(crate) use feed::BridgeStatisticsFeedInner;
-pub(crate) use registry::{PendingStatisticsFeedCancellation, StatisticsFeedRegistry};

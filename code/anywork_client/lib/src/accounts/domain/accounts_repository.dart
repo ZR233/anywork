@@ -1,5 +1,6 @@
 import '../../contracts/stamps.dart';
 import '../../commands/mutation_board.dart';
+import '../../lifecycle/client_resource.dart';
 import '../../models/delegation_models.dart';
 import '../../observation/latest_value.dart';
 import 'account_identity.dart';
@@ -8,9 +9,7 @@ import 'account_values.dart';
 import 'account_authentication.dart';
 
 /// Releasing display demand never cancels a previously admitted mutation.
-abstract interface class AccountDemand {
-  Future<void> release();
-}
+abstract interface class AccountDemand implements ClientLease {}
 
 /// All settings writes return this operation's frozen failure after admission;
 /// errors before admission still throw. A normal return may still be pending.

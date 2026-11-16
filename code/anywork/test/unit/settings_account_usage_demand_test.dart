@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/settings/accounts/state/account_presentations.dart';
 import 'package:anywork/src/features/settings/accounts/view_models/account_card_view_model.dart';
@@ -16,7 +18,7 @@ const _b = AccountDisplayKey(kind: AccountKind.native, id: 'b');
 
 final class _Harness {
   _Harness({bool summariesLoaded = true}) {
-    graph = AppGraph(
+    graph = testAppGraph(
       transport: transport,
       statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'usage-card',
@@ -34,9 +36,7 @@ final class _Harness {
     container.listen(accountsViewModelProvider, (_, _) {});
     addTearDown(() async {
       container.dispose();
-      await graph.close(
-        deadline: DateTime.now().add(const Duration(seconds: 3)),
-      );
+      await graph.close(budget: ClientCloseBudget(const Duration(seconds: 3)));
     });
   }
 

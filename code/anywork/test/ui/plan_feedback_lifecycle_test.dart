@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 import '../support/recording_demo_transport.dart';
 
@@ -50,7 +51,7 @@ void main() {
       tester.view.resetDevicePixelRatio();
     });
     final transport = _PlanFeedbackTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'plan-feedback',
@@ -310,7 +311,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'plan feedback lifecycle close',
     );
   });
@@ -326,7 +327,7 @@ void main() {
       tester.view.resetDevicePixelRatio();
     });
     final transport = _PlanFeedbackTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'plan-actions-layout',
@@ -536,7 +537,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'plan actions layout close',
     );
   });

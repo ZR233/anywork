@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -215,7 +216,9 @@ void main() {
       throwsA(isA<StaleConversationScope>()),
     );
     fixture.repository.setVisibleThread(null);
-    final partial = await content.joinRetired(deadline: DateTime.now());
+    final partial = await content.joinRetired(
+      budget: ClientCloseBudget(Duration.zero),
+    );
     expect(partial.complete, isFalse);
     response.complete(completedFixture('detail'));
     await rejected;

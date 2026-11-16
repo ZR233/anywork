@@ -204,6 +204,9 @@ class _MemberViewportState extends State<_MemberViewport> {
               child: SingleChildScrollView(
                 controller: _scroll,
                 primary: false,
+                // A short page can still have older or newer members. Allow
+                // edge gestures so the connector can request those pages.
+                physics: const AlwaysScrollableScrollPhysics(),
                 child: Builder(builder: widget.childBuilder),
               ),
             ),

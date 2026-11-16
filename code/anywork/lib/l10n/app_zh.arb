@@ -737,7 +737,7 @@
   "timelineToolGroupSummaryRunningWithIssues": "{count} 个工具，{runningCount} 个运行中，{issueCount} 个需要注意",
   "timelineSkillActivated": "已激活技能 · {name}",
   "timelineSkillAgentActivated": "智能体已激活技能 · {name}",
-  "timelineParentAgent": "主智能体",
+  "timelineParentAgent": "上级智能体",
   "timelineSkillUserActivated": "用户激活技能 · {name}",
   "timelineAgentFallback": "智能体",
   "timelineViewImageRead": "已读取图片",

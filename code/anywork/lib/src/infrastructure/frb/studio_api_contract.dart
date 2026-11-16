@@ -31,135 +31,226 @@ AttachmentDraftView _attachmentDraftFromFrb(
   );
 }
 
-/// Dart 侧一次 FRB 订阅的取消句柄（native 句柄 + 派生 Dart stream 的单一 owner）。
-///
-/// 取消只启动一条 owned future：normal `stream.onCancel` 与关闭协调器复用同一 future，
-/// 绝不重复调用 native `cancel()` / `dispose()`。创建尚未完成时 owned future 会等待
-/// [markCreated]，因此 `await createBridgeSubscription` 期间发生的关闭会把迟到的句柄交给
-/// registry 持有并等 cancel 完成，而不是误报 settled。
-///
-/// 只有 owned future 无异常完成才标记 `drained` 并从 registry 删除；超时或异常保留
-/// pending owner，safeDispose 不会与仍活动的 bridge 回调并发。具体错误与堆栈仅供脱敏
-/// 诊断，报告侧一律使用固定安全文案。
-class _DartSubscription {
-  _DartSubscription(
-    this.stage,
-    this._release,
-    this._onDrained, {
-    this.externallyCoordinated = false,
-    this.retryFailedRelease = false,
-  });
+void _observeBackground(Future<void> future) {
+  unawaited(future.then<void>((_) {}, onError: (Object _, StackTrace _) {}));
+}
 
-  final String stage;
-  final Future<void> Function() _release;
-  final void Function(_DartSubscription subscription) _onDrained;
+/// Adapter-owned layers only. ClientScope owns opening, close attempts and retry.
+abstract class _FrbRawResource implements ClientResource {
+  _FrbRawResource(this.resourceId);
+  @override
+  final ClientResourceId resourceId;
+  bool stopping = false;
+  bool _nativeAcknowledged = false;
+  bool _nativeDisposed = false;
 
-  /// 由关闭协调器在自身预算内单独 join / 回报取消（如关机进度流）：进程级 registry 仍
-  /// 强持有它直到真正 ACK（阻止 GC / safeDispose 并发），但通用 `cancelDartSubscriptions`
-  /// 汇总不重复 cancel / settle，避免两份取消事实与重复 issue。
-  final bool externallyCoordinated;
-  final bool retryFailedRelease;
+  void requestNativeClose();
+  Future<void> cancelNative();
+  void disposeNative();
+  void stopDelivery() {}
+  Future<void> closeChildren() async {}
+  Future<void> closeDart() async {}
 
-  final Completer<void> _created = Completer<void>();
-  Future<void>? _cancellation;
-  bool _cancelRequested = false;
-  bool _drained = false;
-  Object? _error;
-  StackTrace? _stackTrace;
-  // create 本身失败（尚未产出 native 句柄）时的真实原因与堆栈：owner 保留它，并在取消
-  // 收束时如实作为取消 ACK failure 上报，绝不把真实创建异常静默成 Clean。
-  Object? _createFailure;
-  StackTrace? _createFailureStack;
-
-  /// 是否已请求取消（`onCancel` 或关闭协调器），同步可见——`start()` 据此在 create
-  /// 之前/之后放弃发布，绝不向已取消的 controller 派发事件。
-  bool get cancelRequested => _cancelRequested;
-
-  /// 记录 create 决策过程中的真实失败（原始 error/stack，调用方只放脱敏诊断字段）。
-  void recordCreateFailure(Object error, StackTrace stackTrace) {
-    _createFailure ??= error;
-    _createFailureStack ??= stackTrace;
+  @override
+  void requestClose() {
+    if (stopping) return;
+    stopping = true;
+    stopDelivery();
+    requestNativeClose();
   }
 
-  /// `start()` 完成创建决策后调用：native 句柄（若建立）已由 [release] 闭包捕获，迟到
-  /// 句柄同样走这条释放路径。若取消已请求则立即启动 owned cancellation。
-  void markCreated() {
-    if (!_created.isCompleted) _created.complete();
-    if (_cancelRequested) unawaited(_ownedCancellation());
+  Future<void> _joinNative() async {
+    if (_nativeAcknowledged) return;
+    await cancelNative();
+    _nativeAcknowledged = true;
   }
 
-  /// 启动（或复用）唯一一条 owned cancellation future。
-  Future<void> _ownedCancellation() {
-    final existing = _cancellation;
-    if (existing != null) return existing;
-    _cancelRequested = true;
-    final started = () async {
-      // 先等创建决策再释放：迟到句柄被 registry 持有并等 cancel 完成，绝不绕过闩。
-      await _created.future;
-      await _release();
-      // create 自身失败：owner 没有真正的 native 资源，仍如实把原始失败作为取消 ACK
-      // failure 上报（wire 文案固定安全）；绝不把真实创建异常静默成 Clean。
-      final createFailure = _createFailure;
-      if (createFailure != null) {
-        Error.throwWithStackTrace(
-          createFailure,
-          _createFailureStack ?? StackTrace.current,
-        );
-      }
-    }();
-    _cancellation = started;
+  @override
+  Future<void> close() async {
+    requestClose();
+    // Start every independent child before joining; a failure cannot skip siblings.
+    await Future.wait<void>([_joinNative(), Future<void>.sync(closeChildren)]);
+    if (!_nativeDisposed) {
+      disposeNative();
+      _nativeDisposed = true;
+    }
+    // Never cancel the original Dart subscription before real native ACK/dispose.
+    await closeDart();
+  }
+
+  @override
+  Future<void> retryClose() => close();
+}
+
+/// A public port references an entry; it is never that entry's actual resource.
+abstract class _FrbPortProxy<R extends _FrbRawResource>
+    implements ClientResource {
+  _FrbPortProxy(this._entry, this._raw);
+  final ClientAcquisition<R> _entry;
+  final R _raw;
+  @override
+  ClientResourceId get resourceId => _entry.resourceId;
+  @override
+  void requestClose() => _entry.requestClose();
+  @override
+  Future<void> close() => _entry.close();
+  @override
+  Future<void> retryClose() => _entry.retryClose();
+}
+
+/// Retains a raw pull handle and the existing single-next protocol guard.
+final class _FrbRawPull<H, T> extends _FrbRawResource {
+  _FrbRawPull(
+    super.resourceId,
+    H handle,
+    this._nextFrame,
+    this._request,
+    this._cancel,
+    this._dispose,
+  ) : _handle = handle;
+  H? _handle;
+  H get handle => _handle as H;
+  final Future<T?> Function(H) _nextFrame;
+  final void Function(H) _request;
+  final Future<void> Function(H) _cancel;
+  final void Function(H) _dispose;
+  Future<T?>? _reading;
+
+  Future<T?> next() {
+    if (stopping) return Future.value(null);
+    if (_reading != null) {
+      return Future.error(StateError('Observation next is already in flight'));
+    }
+    final work = FrbStudioTransport._bridgeCall(() => _nextFrame(handle));
+    _reading = work;
     unawaited(
-      started.then<void>(
+      work.then<void>(
         (_) {
-          _drained = true;
-          _onDrained(this);
+          if (identical(_reading, work)) _reading = null;
         },
-        onError: (Object error, StackTrace stackTrace) {
-          // 保留 pending owner，但保留具体（脱敏）错因与堆栈供同步诊断。
-          _error ??= error;
-          _stackTrace ??= stackTrace;
-          if (retryFailedRelease) _cancellation = null;
+        onError: (Object _, StackTrace _) {
+          if (identical(_reading, work)) _reading = null;
         },
       ),
     );
-    return started;
+    return work;
   }
 
-  Future<void> beginCancel() {
-    if (_drained) return Future<void>.value();
-    return _ownedCancellation();
+  @override
+  void requestNativeClose() => _request(handle);
+  @override
+  Future<void> cancelNative() =>
+      FrbStudioTransport._bridgeCall(() => _cancel(handle));
+  @override
+  void disposeNative() {
+    _dispose(handle);
+    _handle = null;
   }
 
-  /// 有界等待 owned cancellation 收敛；返回是否排空与真实（脱敏）错误、堆栈。
-  Future<_DartCancelResult> settle(Duration bound) async {
-    if (_drained) return const _DartCancelResult(drained: true);
-    final started = _ownedCancellation();
-    try {
-      await started.timeout(
-        bound <= Duration.zero ? const Duration(milliseconds: 1) : bound,
-      );
-      _drained = true;
-      _onDrained(this);
-      return const _DartCancelResult(drained: true);
-    } on Object catch (error, stackTrace) {
-      _error ??= error;
-      _stackTrace ??= stackTrace;
-      return _DartCancelResult(
-        drained: _drained,
-        error: _error,
-        stackTrace: _stackTrace,
-      );
+  @override
+  Future<void> closeDart() async {
+    final pending = _reading;
+    if (pending != null) {
+      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     }
   }
 }
 
-/// 一次 Dart 侧订阅取消的有界结果：是否真正排空 + 具体（脱敏）错误与堆栈。
-class _DartCancelResult {
-  const _DartCancelResult({required this.drained, this.error, this.stackTrace});
+/// Raw subscription, native ACK and Dart listener are kept in this one entry.
+final class _FrbRawEvent<E, T> extends _FrbRawResource {
+  _FrbRawEvent(
+    super.resourceId,
+    frb.BridgeEventSubscription handle,
+    this._stream,
+    this._convert, {
+    this.startupAttempt,
+    this.isTerminal,
+  }) : _handle = handle;
+  frb.BridgeEventSubscription? _handle;
+  frb.BridgeEventSubscription get handle => _handle!;
+  final Stream<E> Function(frb.BridgeEventSubscription) _stream;
+  final T? Function(E) _convert;
+  final BigInt? startupAttempt;
+  final bool Function(E)? isTerminal;
+  final output = StreamController<T>();
+  StreamSubscription<E>? _subscription;
 
-  final bool drained;
-  final Object? error;
-  final StackTrace? stackTrace;
+  Stream<T> get frames => output.stream;
+  void attach({void Function()? onFailure}) {
+    if (stopping) return;
+    _subscription = _stream(handle).listen(
+      (event) {
+        if (stopping || output.isClosed) return;
+        try {
+          if (isTerminal?.call(event) ?? false) {
+            _observeBackground(output.close());
+            return;
+          }
+          final frame = _convert(event);
+          if (frame != null && !stopping && !output.isClosed) output.add(frame);
+        } catch (error, stack) {
+          if (!output.isClosed) output.addError(_studioFailure(error), stack);
+          onFailure?.call();
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        if (!stopping && !output.isClosed) {
+          output.addError(_studioFailure(error), stack);
+        }
+      },
+      onDone: () => _observeBackground(output.close()),
+    );
+  }
+
+  @override
+  void stopDelivery() => _observeBackground(output.close());
+  @override
+  void requestNativeClose() {} // This endpoint has asynchronous cancel only.
+  @override
+  Future<void> cancelNative() => handle.cancel();
+  @override
+  void disposeNative() {
+    handle.dispose();
+    _handle = null;
+  }
+
+  @override
+  Future<void> closeDart() async {
+    final subscription = _subscription;
+    if (subscription != null) {
+      await subscription.cancel();
+      _subscription = null;
+    }
+  }
+}
+
+final class _FrbProductTopicObservation
+    extends
+        _FrbPortProxy<
+          _FrbRawEvent<
+            frb_topic_types.BridgeProductTopicStreamEnvelope,
+            ProductTopicFrame
+          >
+        >
+    implements ProductTopicObservation {
+  _FrbProductTopicObservation(super.entry, super.raw);
+  @override
+  Stream<ProductTopicFrame> get frames => _raw.frames;
+}
+
+Future<T> _publishRaw<R extends _FrbRawResource, T>(
+  ClientAcquisition<R> entry,
+  T Function(R) publish,
+) async {
+  try {
+    final raw = await entry.ready;
+    if (raw.stopping) throw const ClientResourceClosed();
+    return publish(raw);
+  } catch (error, stack) {
+    entry.requestClose();
+    if (error is ClientResourceClosed) Error.throwWithStackTrace(error, stack);
+    Error.throwWithStackTrace(_studioFailure(error), stack);
+  }
 }
 
 /// 一次早期退出封闭（[StudioTransport.beginRuntimeExit]）的单一 one-shot 结果。
@@ -214,279 +305,49 @@ frb_accounts.BridgeAccountTextPatch _textPatchInput(AccountTextPatch patch) =>
         const frb_accounts.BridgeAccountTextPatch.restore(),
     };
 
-final class _FrbThreadsObservation implements ThreadsObservationHandle {
-  _FrbThreadsObservation(this.transport, this.query, this.window) {
-    registration = _DartSubscription(
-      'thread-directory:$query:$window',
-      _release,
-      transport._forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    transport._trackDartSubscription(registration);
-  }
-
-  final FrbStudioTransport transport;
-  final DirectoryQuery query;
-  final DirectoryWindow window;
-  late final _DartSubscription registration;
-  final Completer<void> _opened = Completer<void>();
-  frb_directory_feed.BridgeThreadsObservation? _handle;
-  Future<ThreadDirectoryFrame?>? _next;
-  bool _stop = false;
-
-  Future<void> open() async {
-    try {
-      final handle = await FrbStudioTransport._bridgeCall(
-        () => frb_directory_feed.openThreadsObservation(
-          query: frb_directory_types.BridgeThreadDirectoryQuery(
-            workspaceId: query.workspaceId,
-            search: query.search,
-            archived: query.archived,
-            filter: switch (query.filter) {
-              DirectoryFilter.all =>
-                frb_directory_types.BridgeThreadDirectoryFilter.all,
-              DirectoryFilter.running =>
-                frb_directory_types.BridgeThreadDirectoryFilter.running,
-              DirectoryFilter.attention =>
-                frb_directory_types.BridgeThreadDirectoryFilter.attention,
-            },
-            threadIds: query.threadIds,
-            excludedThreadIds: query.excludedThreadIds,
-          ),
-          window: frb_directory_types.BridgeThreadDirectoryWindow(
-            before: window.before,
-            limit: window.limit,
-          ),
-        ),
-      );
-      _handle = handle;
-      if (_stop || registration.cancelRequested) handle.requestClose();
-    } finally {
-      _opened.complete();
-      registration.markCreated();
-    }
-  }
-
+final class _FrbThreadsObservation
+    extends
+        _FrbPortProxy<
+          _FrbRawPull<
+            frb_directory_feed.BridgeThreadsObservation,
+            ThreadDirectoryFrame
+          >
+        >
+    implements ThreadsObservationHandle {
+  _FrbThreadsObservation(super.entry, super.raw);
   @override
-  Future<ThreadDirectoryFrame?> next() {
-    if (_stop || registration.cancelRequested) return Future.value(null);
-    if (_next != null) {
-      return Future.error(StateError('Directory next is already in flight'));
-    }
-    final work = () async {
-      await _opened.future;
-      final handle = _handle;
-      if (handle == null || _stop || registration.cancelRequested) return null;
-      final frame = await FrbStudioTransport._bridgeCall(handle.next);
-      return frame == null ? null : _threadDirectoryFrameFromFrb(frame);
-    }();
-    _next = work;
-    unawaited(
-      work.then<void>(
-        (_) {
-          _next = null;
-        },
-        onError: (Object _, StackTrace _) {
-          _next = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  @override
-  void requestClose() {
-    _stop = true;
-    _handle?.requestClose();
-  }
-
-  Future<void> _release() async {
-    requestClose();
-    await _opened.future;
-    final handle = _handle;
-    if (handle != null) {
-      handle.requestClose();
-      await FrbStudioTransport._bridgeCall(handle.close);
-    }
-    final pending = _next;
-    if (pending != null) {
-      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    }
-  }
-
-  @override
-  Future<void> close() => registration.beginCancel();
+  Future<ThreadDirectoryFrame?> next() => _raw.next();
 }
 
-final class _FrbThreadObservation implements ThreadObservationHandle {
-  _FrbThreadObservation(this.transport, this.threadId) {
-    registration = _DartSubscription(
-      'thread-metadata:$threadId',
-      _release,
-      transport._forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    transport._trackDartSubscription(registration);
-  }
-
-  final FrbStudioTransport transport;
-  final String threadId;
-  late final _DartSubscription registration;
-  final Completer<void> _opened = Completer<void>();
-  frb_directory_feed.BridgeThreadObservation? _handle;
-  Future<ThreadMetadataFrame?>? _next;
-  bool _stop = false;
-
-  Future<void> open() async {
-    try {
-      final handle = await FrbStudioTransport._bridgeCall(
-        () => frb_directory_feed.openThreadObservation(threadId: threadId),
-      );
-      _handle = handle;
-      if (_stop || registration.cancelRequested) handle.requestClose();
-    } finally {
-      _opened.complete();
-      registration.markCreated();
-    }
-  }
-
+final class _FrbThreadObservation
+    extends
+        _FrbPortProxy<
+          _FrbRawPull<
+            frb_directory_feed.BridgeThreadObservation,
+            ThreadMetadataFrame
+          >
+        >
+    implements ThreadObservationHandle {
+  _FrbThreadObservation(super.entry, super.raw);
   @override
-  Future<ThreadMetadataFrame?> next() {
-    if (_stop || registration.cancelRequested) return Future.value(null);
-    if (_next != null) {
-      return Future.error(
-        StateError('Thread metadata next is already in flight'),
-      );
-    }
-    final work = () async {
-      await _opened.future;
-      final handle = _handle;
-      if (handle == null || _stop || registration.cancelRequested) return null;
-      final frame = await FrbStudioTransport._bridgeCall(handle.next);
-      return frame == null ? null : _threadMetadataFrameFromFrb(frame);
-    }();
-    _next = work;
-    unawaited(
-      work.then<void>(
-        (_) {
-          _next = null;
-        },
-        onError: (Object _, StackTrace _) {
-          _next = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  @override
-  void requestClose() {
-    _stop = true;
-    _handle?.requestClose();
-  }
-
-  Future<void> _release() async {
-    requestClose();
-    await _opened.future;
-    final handle = _handle;
-    if (handle != null) {
-      handle.requestClose();
-      await FrbStudioTransport._bridgeCall(handle.close);
-    }
-    final pending = _next;
-    if (pending != null) {
-      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    }
-  }
-
-  @override
-  Future<void> close() => registration.beginCancel();
+  Future<ThreadMetadataFrame?> next() => _raw.next();
 }
 
-final class _FrbAccountDomainObservation implements AccountDomainObservation {
-  _FrbAccountDomainObservation(this.transport, this.target) {
-    registration = _DartSubscription(
-      'account-observation:${target.key}',
-      _release,
-      transport._forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    transport._trackDartSubscription(registration);
-  }
-  final FrbStudioTransport transport;
-  final AccountObservationTarget target;
-  late final _DartSubscription registration;
-  final Completer<void> _opened = Completer<void>();
-  frb_account_feed.BridgeAccountObservation? _handle;
-  Future<AccountDomainFrame?>? _next;
-  bool _stop = false;
-
-  Future<void> open() async {
-    try {
-      final handle = await FrbStudioTransport._bridgeCall(
-        () => frb_account_feed.openAccountObservation(
-          target: _accountTargetToFrb(target),
-        ),
-      );
-      _handle = handle;
-      if (_stop || registration.cancelRequested) handle.requestClose();
-    } finally {
-      _opened.complete();
-      registration.markCreated();
-    }
-  }
-
+final class _FrbAccountDomainObservation
+    extends
+        _FrbPortProxy<
+          _FrbRawPull<
+            frb_account_feed.BridgeAccountObservation,
+            AccountDomainFrame
+          >
+        >
+    implements AccountDomainObservation {
+  _FrbAccountDomainObservation(super.entry, super.raw);
   @override
-  Future<AccountDomainFrame?> next() {
-    if (_stop || registration.cancelRequested) return Future.value(null);
-    if (_next != null) {
-      return Future.error(StateError('Account next is already in flight'));
-    }
-    final work = () async {
-      await _opened.future;
-      final handle = _handle;
-      if (handle == null || _stop || registration.cancelRequested) return null;
-      final frame = await FrbStudioTransport._bridgeCall(handle.next);
-      return frame == null ? null : _accountFrameFromFrb(frame);
-    }();
-    _next = work;
-    unawaited(
-      work.then<void>(
-        (_) {
-          _next = null;
-        },
-        onError: (Object _, StackTrace _) {
-          _next = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  @override
-  void requestClose() {
-    _stop = true;
-    _handle?.requestClose();
-  }
-
-  Future<void> _release() async {
-    requestClose();
-    await _opened.future;
-    final handle = _handle;
-    if (handle != null) {
-      handle.requestClose();
-      await FrbStudioTransport._bridgeCall(handle.close);
-    }
-    final pending = _next;
-    if (pending != null) {
-      await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
-    }
-  }
-
-  @override
-  Future<void> close() => registration.beginCancel();
+  Future<AccountDomainFrame?> next() => _raw.next();
 }
 
+/// Adapts native ports with independently injected content and progress owners.
 class FrbStudioTransport
     implements
         StudioTransport,
@@ -497,10 +358,15 @@ class FrbStudioTransport
         AccountUsagePort,
         TimelineTransport,
         AcpPort {
-  static final startupProgress = ValueNotifier(
-    StudioStartupPhase.loadingBridge,
-  );
-  static final startupRecovery = ValueNotifier<StartupRecoveryReport?>(null);
+  FrbStudioTransport({
+    required this.runtime,
+    required this.contentScope,
+    required this.progressScope,
+  });
+
+  final FrbRuntimeOwner runtime;
+  final ClientScope contentScope;
+  final ClientScope progressScope;
 
   @override
   Future<RecoveryStateSnapshot> retryRecovery() async {
@@ -510,25 +376,35 @@ class FrbStudioTransport
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
-    await _ensureReady();
-    if (_dartSubscriptionsSealed) {
-      throw StateError('Studio transport is closed');
-    }
-    final observation = _FrbAccountDomainObservation(this, target);
-    try {
-      await observation.open();
-      return observation;
-    } catch (_) {
-      unawaited(
-        observation.close().then<void>(
-          (_) {},
-          onError: (Object _, StackTrace _) {},
-        ),
-      );
-      rethrow;
-    }
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) async {
+    final entry = contentScope
+        .open<
+          _FrbRawPull<
+            frb_account_feed.BridgeAccountObservation,
+            AccountDomainFrame
+          >
+        >('account-observation', (operation) async {
+          await _ensureReady();
+          final handle = await _bridgeCall(
+            () => frb_account_feed.openAccountObservation(
+              target: _accountTargetToFrb(target),
+            ),
+          );
+          return _FrbRawPull(
+            operation.resourceId,
+            handle,
+            (handle) async {
+              final frame = await handle.next();
+              return frame == null ? null : _accountFrameFromFrb(frame);
+            },
+            (handle) => handle.requestClose(),
+            (handle) => handle.close(),
+            (handle) => handle.dispose(),
+          );
+        }, identity: resourceId);
+    return _FrbAccountDomainObservation(entry, await entry.ready);
   }
 
   @override
@@ -718,709 +594,59 @@ class FrbStudioTransport
     return frame;
   }
 
-  static Future<void>? _initFuture;
-  static Future<StudioExitReport>? _shutdownFuture;
-  // 早期退出封闭的单一 one-shot 结果：首次调用锚定，重复 close / dispose / driver 复用，
-  // 绝不重复并行封闭，也绝不延长单一期限。
-  static Future<_BeginExitOutcome>? _beginExitOutcome;
-  // 早期退出封闭失败时的 memoized 原始错误与 typed issue：协调器据此复用同一 correlation，
-  // 避免重复生成 / 重复记录；成功或无 owner 时均为 null。
-  static Object? _beginExitFailure;
-  static StudioShutdownIssue? _beginExitIssue;
-  static Future<void> Function()? _initializationOverrideForTesting;
-  static bool _rustInitialized = false;
-  // runtime owner 是否已成功安装；无 init 的只读事实，供关闭路径在不触发初始化的
-  // 前提下判定「确无 owner」还是「未决」。
-  static bool _runtimeReady = false;
-  // Dart 侧 FRB 订阅的单一所有权登记：关闭时先封闭创建，再逐个有界取消；未取消
-  // 成功的 owner 被保留，因此不会与仍活动的 bridge 回调并发 dispose。
-  final List<_DartSubscription> _dartSubscriptions = [];
-  // The native library has one process initializer; only its startup observation
-  // is process-owned. Product/thread/shutdown handles belong to this transport.
-  static final List<_DartSubscription> _startupSubscriptions = [];
-  static int _liveDartSubscriptions = 0;
-  bool _dartSubscriptionsSealed = false;
-  // 只有确认 runtime 从未安装/已 Clean，且初始化已完成时，才在订阅收束后释放 RustLib。
-  static bool _safeToDisposeAfterShutdown = false;
-  // 单向终止闩：一经置位，本进程余下生命周期内不再启动或发布运行时。
-  static bool _closing = false;
   AccountCatalogView? _accountCatalogCache;
   Future<AccountCatalogView>? _accountCatalogFuture;
   AcpAccountCatalogView? _acpCatalogCache;
   Future<AcpAccountCatalogView>? _acpCatalogFuture;
 
-  static Future<void> ensureReady() => _ensureReady();
-
-  /// 无 init 的只读 owner 事实：runtime 是否已安装。
-  static bool get runtimeOwnerPresent => _runtimeReady;
-
-  /// 登记一个 Dart 侧 FRB 订阅。封闭后仍**保留登记**并立即启动取消：迟到的 create 句柄
-  /// 由 owner 持有并等 cancel 完成，未收束的 owner 继续挡住 safeDispose，绝不误报 settled。
-  void _trackDartSubscription(_DartSubscription subscription) {
-    _dartSubscriptions.add(subscription);
-    _liveDartSubscriptions += 1;
-    // 外部协调的 owner（进度流）不在 seal 时抢先 cancel：它按本地显示策略先 create，再由
-    // 协调器在预算内取消并取 ACK；registry 在这里只负责强持有（阻止 GC）。
-    if (_dartSubscriptionsSealed && !subscription.externallyCoordinated) {
-      unawaited(subscription.beginCancel());
-    }
+  Future<void> _ensureReady() async {
+    await runtime.ensureReady();
+    if (runtime._closing) throw const ClientResourceClosed();
   }
 
-  void _forgetDartSubscription(_DartSubscription subscription) {
-    if (_dartSubscriptions.remove(subscription)) _liveDartSubscriptions -= 1;
-  }
-
-  static void _trackStartupSubscription(_DartSubscription subscription) {
-    _startupSubscriptions.add(subscription);
-    _liveDartSubscriptions += 1;
-    if (_closing) unawaited(subscription.beginCancel());
-  }
-
-  static void _forgetStartupSubscription(_DartSubscription subscription) {
-    if (_startupSubscriptions.remove(subscription)) _liveDartSubscriptions -= 1;
-  }
-
-  /// 封闭创建并**并发**有界取消全部 Dart 侧 FRB 订阅（shutdown-progress 由协调器单独
-  /// 收束）。先同时发出所有独立 cancel，任何一个 hang 都不会让其余 entry 拿不到 cancel；
-  /// 随后按同一 absolute deadline 有界 join。未在预算内收敛的 owner 被保留并回报真实
-  /// issue（含脱敏具体错因），因此 safeDispose 只有在 native 与 Dart 两侧全部收束后才可能。
   @override
-  Future<List<StudioShutdownIssue>> cancelDartSubscriptions({
-    required int budgetMs,
+  void sealForShutdown() => runtime.sealForShutdown();
+
+  @override
+  void revokeSafeDispose() => runtime.revokeSafeDispose();
+
+  /// Closes content and startup concurrently using the caller's shared budget.
+  ///
+  /// Progress remains open for its independent shutdown phase.
+  @override
+  Future<DartResourceCloseResult> cancelDartSubscriptions({
+    required ClientCloseBudget budget,
   }) async {
-    _dartSubscriptionsSealed = true;
-    // 通用汇总只负责产品/Thread 等自持 owner；外部协调的 owner（进度流）仍留在 registry
-    // 里强持有，但其取消/回报由协调器在自身预算内单独 join，避免重复 cancel 与重复 issue。
-    final entries = <_DartSubscription>[
-      for (final entry in [..._startupSubscriptions, ..._dartSubscriptions])
-        if (!entry.externallyCoordinated) entry,
-    ];
-    for (final entry in entries) {
-      unawaited(entry.beginCancel());
-    }
-    final watch = Stopwatch()..start();
-    final remaining = budgetMs - watch.elapsedMilliseconds;
-    final bound = Duration(milliseconds: remaining <= 0 ? 1 : remaining);
-    final results = await Future.wait([
-      for (final entry in entries) entry.settle(bound),
+    final reports = await Future.wait([
+      contentScope.close(budget: budget),
+      runtime.startupScope.close(budget: budget),
     ]);
-    final issues = <StudioShutdownIssue>[];
-    for (var index = 0; index < entries.length; index += 1) {
-      final entry = entries[index];
-      final result = results[index];
-      if (result.drained) {
-        _forgetDartSubscription(entry);
-        _forgetStartupSubscription(entry);
-        continue;
-      }
-      // 同一次失败只生成一次 correlation：report issue 与同步诊断共用同一编号。
-      final correlationId = newStudioCorrelationId();
-      issues.add(_dartSubscriptionIssue(entry, result, correlationId));
-      final error = result.error;
-      if (error != null) {
-        recordDartError(
-          error,
-          result.stackTrace,
-          stage: 'subscriptions',
-          correlationId: correlationId,
-          elapsedMs: watch.elapsedMilliseconds,
-        );
-      }
-    }
-    return issues;
-  }
-
-  static StudioShutdownIssue _dartSubscriptionIssue(
-    _DartSubscription entry,
-    _DartCancelResult result,
-    String correlationId,
-  ) {
-    return StudioShutdownIssue(
-      stage: 'subscriptions',
-      code: switch (result.error) {
-        final StudioFailure failure => failure.code.name,
-        TimeoutException() => 'timeout',
-        _ => 'cancelFailed',
-      },
-      // 固定安全文案：绝不把任意 error.toString()（可能含正文/凭据）当 wire 安全消息。
-      message:
-          'the ${entry.stage} bridge subscription did not cancel within the '
-          'exit budget',
-      retryable: true,
-      correlationId: correlationId,
-    );
-  }
-
-  static bool get _dartSubscriptionsSettled => _liveDartSubscriptions == 0;
-
-  /// 协调器在合并 Dart 侧关闭阶段问题之后调用：只要最终报告不是可靠 Clean/NotStarted，
-  /// 就撤销安全 dispose，绝不在仍有 Dart 订阅或事件循环占用时释放 RustLib。
-  @override
-  void revokeSafeDispose() {
-    _safeToDisposeAfterShutdown = false;
-  }
-
-  static void retryInitialization() {
-    // 退出闩不因启动重试复位；进入退出后不再重新初始化。
-    if (_closing) return;
-    if (startupProgress.value == StudioStartupPhase.failed) {
-      _initFuture = null;
-    }
-  }
-
-  @visibleForTesting
-  static void debugOverrideInitialization(
-    Future<void> Function()? initialization,
-  ) {
-    _initFuture = null;
-    _shutdownFuture = null;
-    _beginExitOutcome = null;
-    _beginExitFailure = null;
-    _beginExitIssue = null;
-    // 仅供隔离测试复位单向闩；生产路径不得复位。
-    _closing = false;
-    _runtimeReady = false;
-    // Test override must only be used before installing live resources.
-    if (_liveDartSubscriptions != 0) {
-      throw StateError('Native subscriptions remain owned');
-    }
-    _startupSubscriptions.clear();
-    _safeToDisposeAfterShutdown = false;
-    _initializationOverrideForTesting = initialization;
-  }
-
-  static Future<void> _ensureReady() {
-    if (_closing) {
-      return Future<void>.error(
-        _studioFailure(StateError('Studio runtime is shutting down')),
-      );
-    }
-    final existing = _initFuture;
-    if (existing != null) {
-      return existing;
-    }
-    late final Future<void> attempt;
-    attempt = () async {
-      try {
-        final initializationOverride = _initializationOverrideForTesting;
-        if (initializationOverride != null) {
-          await initializationOverride();
-        } else {
-          if (!_rustInitialized) {
-            startupProgress.value = StudioStartupPhase.loadingBridge;
-            final bridgeWatch = Stopwatch()..start();
-            // Native startup owns the lease in this exact packaged library.
-            // FRB's default search can select a development library from CWD or
-            // environment, which would have a different set of Rust statics.
-            final executable = File(Platform.resolvedExecutable);
-            final bundle = Platform.isLinux || Platform.isMacOS
-                ? File(executable.resolveSymbolicLinksSync()).parent
-                : executable.parent;
-            final libraryPath = bundle.uri
-                .resolve(
-                  Platform.isWindows
-                      ? 'pl_studio_bridge.dll'
-                      : Platform.isMacOS
-                      ? '../Frameworks/libpl_studio_bridge.dylib'
-                      : 'lib/libpl_studio_bridge.so',
-                )
-                .toFilePath();
-            await RustLib.init(
-              // FRB exposes custom loading through its generated entrypoint.
-              // ignore: invalid_use_of_internal_member
-              externalLibrary: ExternalLibrary.open(libraryPath),
-            );
-            _rustInitialized = true;
-            debugPrint(
-              'startup_stage=load_bridge elapsed_ms=${bridgeWatch.elapsedMilliseconds}',
-            );
-          }
-          // 关闭不触发初始化：RustLib.init() 完成后必须再检查单向闩，绝不再调用
-          // native startStudioRuntime，也不发布 ready。
-          if (_closing) return;
-          await _startStudioRuntimeAttempt();
-        }
-      } catch (error, stackTrace) {
-        _runtimeReady = false;
-        // 迟到的失败：退出已开始，绝不把 UI 拉回 failed；仍以错误完成 init future，
-        // 让关闭路径据此视为未决而不是「从未安装」。
-        if (!_closing) {
-          startupProgress.value = StudioStartupPhase.failed;
-        }
-        Error.throwWithStackTrace(_studioFailure(error), stackTrace);
-      }
-    }();
-    _initFuture = attempt;
-    return attempt;
-  }
-
-  /// 尽早同步封闭退出准入：关闭协调器在收束任何 owner 之前调用。该闩一经置位，本进程
-  /// 余下生命周期内不再启动/发布运行时，也不再创建新的 Dart FRB 订阅；即使随后 Dart 进度
-  /// 订阅取消挂住，也不允许新的 mutation 借此进入。
-  @override
-  void sealForShutdown() {
-    _closing = true;
-    _dartSubscriptionsSealed = true;
-  }
-
-  /// 一次启动尝试：先领取 attempt token 并订阅其进度流，再安装 runtime。
-  ///
-  /// 进度是事件驱动的当前帧（不再 100ms 轮询），完整映射 bridge 的全部启动阶段；
-  /// `Ready`/`Failed` 为终态，成功后发布主线 `ready`。订阅登记为进程级 owned
-  /// cancellation：启动仍 pending 时进入退出也会由 `cancelDartSubscriptions` 在预算内取消并
-  /// 如实回报；本订阅只服务本次尝试，成功/失败/退出后都异步注销，避免重试累积。
-  /// 同一次尝试失败后，重试会领取新的 token（每次调用都 `prepareStartupAttempt`）。
-  static Future<void> _startStudioRuntimeAttempt() async {
-    frb.BridgeEventSubscription? handle;
-    StreamSubscription<frb.BridgeStartupStage>? progress;
-    // 创建决策是否已完成（native 句柄已产出且可取消）：据此区分「真实 create/prepare
-    // 失败、未产句柄」与「start/发布失败、已持有可取消资源」，避免篡改 create-error owner。
-    var creationDecisionCompleted = false;
-
-    Future<void> release() async {
-      // 只有 native cancel 真正 ACK 才丢弃强引用并 dispose；抛错/超时保留 handle，owner
-      // 仍强持有 opaque 句柄直到确认或进程终止，绝不先清后 cancel 让对象被 GC/finalizer。
-      final activeHandle = handle;
-      if (activeHandle != null) {
-        if (RustLib.instance.initialized) {
-          await activeHandle.cancel();
-        }
-        handle = null;
-        activeHandle.dispose();
-      }
-      // native 已 ACK 后再收束本地进度监听；抛错保留这一活动层，不二次 cancel/dispose。
-      final activeProgress = progress;
-      if (activeProgress != null) {
-        await activeProgress.cancel();
-        progress = null;
-      }
-    }
-
-    final tracked = _DartSubscription(
-      'startup',
-      release,
-      _forgetStartupSubscription,
-    );
-    _trackStartupSubscription(tracked);
-
-    try {
-      // 退出/封闭/已取消时不新建桥订阅；本订阅是 pre-active，不在此触发 _ensureReady
-      // （否则会递归初始化）。
-      if (tracked.cancelRequested || _closing || _closing) {
-        return;
-      }
-      final attempt = await _bridgeCall(frb.prepareStartupAttempt);
-      // prepare await 期间退出已开始：不再新建订阅。
-      if (tracked.cancelRequested || _closing || _closing) {
-        return;
-      }
-      final created = await _bridgeCall(
-        () => frb_startup_sub.subscribeStartupProgress(attempt: attempt),
-      );
-      // await create 期间退出已开始：句柄交给 owner 的 release 闭包，由 registry 持有并等
-      // cancel 完成，绝不在这里自行 dispose 后误报 settled。
-      handle = created;
-      creationDecisionCompleted = true;
-      if (tracked.cancelRequested || _closing || _closing) {
-        return;
-      }
-      progress = created.startupStream().listen(
-        (stage) {
-          // 关闭/已取消：拒迟到帧，绝不把 UI 拉回启动态。
-          if (tracked.cancelRequested || _closing || _closing) {
-            return;
-          }
-          startupProgress.value = switch (stage) {
-            frb.BridgeStartupStage.preparing => StudioStartupPhase.preparing,
-            frb.BridgeStartupStage.waitingForSteps =>
-              StudioStartupPhase.waitingForSteps,
-            frb.BridgeStartupStage.closingResources =>
-              StudioStartupPhase.closingResources,
-            frb.BridgeStartupStage.backingUp => StudioStartupPhase.backingUp,
-            frb.BridgeStartupStage.resetting => StudioStartupPhase.resetting,
-            frb.BridgeStartupStage.startingServices =>
-              StudioStartupPhase.startingServices,
-            frb.BridgeStartupStage.openingStorage =>
-              StudioStartupPhase.openingStorage,
-            frb.BridgeStartupStage.loadingConfiguration =>
-              StudioStartupPhase.loadingConfiguration,
-            frb.BridgeStartupStage.readingProjects =>
-              StudioStartupPhase.readingProjects,
-            frb.BridgeStartupStage.preparingResources =>
-              StudioStartupPhase.preparingResources,
-            frb.BridgeStartupStage.ready => StudioStartupPhase.ready,
-            frb.BridgeStartupStage.failed => StudioStartupPhase.failed,
-          };
-        },
-        onError: (Object error, StackTrace stackTrace) {
-          // 进度流失败不改变启动结果：成败由 startStudioRuntime 的返回/异常决定。
-          debugPrint('startup_progress_error error=$error');
-        },
-      );
-      // 创建决策（native 句柄 + 本地监听）已完成：立即开创建闩，令退出/取消能真实 cancel
-      // 已持有资源，而不必等待随后 startStudioRuntime 的长 await。
-      tracked.markCreated();
-      // mark 后若已进入退出或收到取消：不再安装运行时（避免退出期间新建 runtime）。
-      if (tracked.cancelRequested || _closing || _closing) {
-        return;
-      }
-      final runtime = await frb.startStudioRuntime(attempt: attempt);
-      // 迟到的运行时安装：退出已开始，绝不重新发布运行时或把 UI 拉回 ready。
-      if (_closing) {
-        _runtimeReady = false;
-        return;
-      }
-      _runtimeReady = true;
-      final report = runtime.startupRecovery;
-      startupRecovery.value = report == null
-          ? null
-          : StartupRecoveryReport(
-              backupPath: report.backupPath,
-              reason: report.reason,
-              createdAt: report.createdAt.toInt(),
-            );
-      startupProgress.value = StudioStartupPhase.ready;
-    } catch (error, stackTrace) {
-      // 仅「真实 create/prepare 失败、尚未产出可取消句柄」时记录 create failure：owner 据此
-      // 在取消时如实回报，绝不静默成 Clean。start/发布失败已持有可取消资源，仅原样上报
-      // initFuture typed error，不篡改 create-error owner 语义，cleanup 真成功仍可 forget。
-      if (!creationDecisionCompleted) {
-        tracked.recordCreateFailure(_studioFailure(error), stackTrace);
-      }
-      rethrow;
-    } finally {
-      // 完成创建闩，令取消可推进（含 create 未决 / 迟到的 native 句柄）。
-      tracked.markCreated();
-      // 本订阅只服务本次启动尝试：无论成功、失败还是退出都启动唯一 owned cancellation，
-      // 异步注销以免重试累积；退出路径由 registry 在预算内 join 并写入关闭报告。
-      unawaited(tracked.beginCancel());
-    }
-  }
-
-  /// 共享同一退出 future：重复调用（重复退出请求、dispose、driver）复用同一次收束，
-  /// 绝不复位或延长单一期限。[externalIssues] 是 Dart 拥有的外部 owner 在本次预算内收束
-  /// 得到的 typed issue，作为关闭的最终成功前置条件随请求交给 runtime 单编排。
-  static Future<StudioExitReport> shutdownAndDispose({
-    required int remainingMs,
-    List<StudioShutdownIssue> externalIssues = const [],
-    StudioExitIntent intent = StudioExitIntent.exit,
-  }) {
-    final running = _shutdownFuture;
-    if (running != null) return running;
-    _closing = true;
-    final attempt = _runShutdownAndDispose(remainingMs, externalIssues, intent);
-    _shutdownFuture = attempt;
-    return attempt;
-  }
-
-  static Future<StudioExitReport> _runShutdownAndDispose(
-    int remainingMs,
-    List<StudioShutdownIssue> externalIssues,
-    StudioExitIntent intent,
-  ) async {
-    final stopwatch = Stopwatch()..start();
-    // 早期退出封闭是同一 coordinator 的第一步：直接消费者（不经 runStudioShutdown）也必须在
-    // 任何后续阶段前有界封闭准入，把失败/超时保留为 external issue 继续收尾。经
-    // runStudioShutdown 的路径已调用同一 one-shot，这里复用结果，绝不重复并行封闭；已由协调器
-    // 并入 externalIssues 的同一 issue（同 correlation）不再重复添加。
-    final beginExit = await _runBeginRuntimeExit(remainingMs);
-    final beginExitIssue = beginExit.issue;
-    var mergedExternalIssues = beginExitIssue == null
-        ? externalIssues
-        : <StudioShutdownIssue>[
-            ...externalIssues,
-            if (!externalIssues.any(
-              (issue) => issue.correlationId == beginExitIssue.correlationId,
-            ))
-              beginExitIssue,
-          ];
-    final initialization = _initFuture;
-    var initCompleted = initialization == null;
-    // 初始化是否已「有结果」（成功或失败）。与 initCompleted 不同：失败完成也视为已定，
-    // 据此区分「确无 owner」与「永久未决」。
-    var initSettled = initialization == null;
-    if (initialization != null) {
-      try {
-        // 等待初始化有界：初始化未在预算内完成即视为未决，不无限挂起退出。
-        final wait = remainingMs <= 0 ? 0 : remainingMs.clamp(0, 5000).toInt();
-        await initialization.timeout(Duration(milliseconds: wait));
-        initCompleted = true;
-        initSettled = true;
-      } on TimeoutException {
-        initCompleted = false;
-        initSettled = false;
-      } on Object {
-        // 初始化失败完成：若 RustLib 未装载则确无 owner；若已装载则由真实报告判定。
-        initCompleted = false;
-        initSettled = true;
-      }
-    }
-    // Dart 侧外部 owner（产品/Thread 流与关机进度流）的取消已在协调器的同一预算内、于
-    // 本次请求之前完成（见 runStudioShutdown / cancelDartSubscriptions），此处绝不再取消，
-    // 避免两份关闭事实。即使 Dart 取消已耗尽预算，仍以 remainingMs=0 立即向已初始化的
-    // runtime 广播封闭，绝不整段跳过；bridge 上限 28s、原生 hard deadline 照常。
-    if (!initSettled) {
-      // Initialization is an owner too. Pass its unresolved fact before native
-      // finalization so an installer cannot launch before this owner confirms.
-      mergedExternalIssues = [
-        ...mergedExternalIssues,
-        ..._unresolvedInitReport().issues,
-      ];
-    }
-    final rustBudget = _remainingAfter(remainingMs, stopwatch);
-    StudioShutdownReport report;
-    StudioUpdateHandoff updateHandoff = const NoStudioUpdateHandoff();
-    var bridgeConsulted = false;
-    if (_rustInitialized) {
-      bridgeConsulted = true;
-      try {
-        // 用真实 Rust 报告判定是否安装 runtime，而不是本地标志；外部 issue 随请求交给
-        // runtime 与 bridge 自身取消结果一并裁决 Clean/Stopped/实例锁释放。
-        final exitReport = await _bridgeCall(
-          () => frb.shutdownRuntime(
-            remainingMs: rustBudget,
-            intent: switch (intent) {
-              StudioExitIntent.exit => frb_shutdown.BridgeExitIntent.exit,
-              StudioExitIntent.updateRestart =>
-                frb_shutdown.BridgeExitIntent.updateRestart,
-            },
-            externalIssues: [
-              for (final issue in mergedExternalIssues)
-                _bridgeIssueFromStudio(issue),
-            ],
-          ),
-        );
-        report = _shutdownReportFromFrb(exitReport.shutdown);
-        updateHandoff = switch (exitReport.updateHandoff) {
-          frb_shutdown.BridgeUpdateHandoff_NotRequested() =>
-            const NoStudioUpdateHandoff(),
-          frb_shutdown.BridgeUpdateHandoff_Launched(:final version) =>
-            LaunchedStudioUpdateHandoff(version: version),
-          frb_shutdown.BridgeUpdateHandoff_Failed(:final error) =>
-            FailedStudioUpdateHandoff(code: error.code, message: error.message),
-        };
-      } on Object catch (error, stackTrace) {
-        // 同一次失败只生成一次 correlation：report issue 与同步诊断共用同一编号。
-        final correlationId = _correlationOf(error);
-        // 不扔掉已有阶段问题：把桥错误本身与 Dart 订阅问题一起如实上报为 Degraded。
-        recordDartError(
-          error,
-          stackTrace,
-          stage: 'shutdown',
-          correlationId: correlationId,
-        );
-        report = StudioShutdownReport(
-          outcome: StudioShutdownOutcome.degraded,
-          issues: [
-            StudioShutdownIssue(
-              stage: 'shutdown',
-              code: _codeOf(error),
-              message: 'studio runtime shutdown reported an error',
-              retryable: false,
-              correlationId: correlationId,
-            ),
-          ],
-          persistence: const UnknownStudioPendingPersistence(),
-        );
-      }
-      _runtimeReady = false;
-    } else if (initSettled) {
-      // 初始化已定且 RustLib 未装载：确无 owner，才视为从未安装。
-      report = StudioShutdownReport.notStarted;
-    } else {
-      // 初始化永久未决：可能仍持有 native owner，如实为 Degraded + Unknown。
-      report = _unresolvedInitReport();
-    }
-    // 初始化永久未决时绝不允许正常退出：即使桥报告 NotStarted，也可能仍有尚未安装完成的
-    // owner；只有在初始化确有结果（成功或失败完成）时，NotStarted 才能据实判定为 exit 0。
-    if (!initSettled && report.allowsCleanExit) {
-      report = StudioShutdownReport(
-        outcome: StudioShutdownOutcome.degraded,
-        issues: [...report.issues, ..._unresolvedInitReport().issues],
-        persistence: const UnknownStudioPendingPersistence(),
-      );
-    }
-    // 外部（Dart）issue 是本次关闭的最终成功前置条件：桥未咨询（无 runtime）时在此如实
-    // 并入；桥已咨询时以桥的裁决为准，但绝不静默吞掉真实 issue —— 只要事后仍能可靠
-    // Clean/NotStarted，就说明这些真实问题未被承认，必须本地降级。
-    report = _reflectExternalIssues(
-      report,
-      mergedExternalIssues,
-      bridgeConsulted,
-    );
-    // 仅 Clean/NotStarted 且初始化已完成才允许稍后安全 dispose；Degraded 或未决初始化
-    // 保留 owner 与句柄至进程终止，避免与仍在写库的 writer 竞争。native 与 Dart 订阅
-    // 两侧都收敛才允许 dispose；真正的 dispose 由 [finishShutdownDiagnostics] 在调用方
-    // 收束/取消 shutdown-progress 订阅之后执行。
-    _safeToDisposeAfterShutdown =
-        _rustInitialized &&
-        initCompleted &&
-        report.allowsCleanExit &&
-        _dartSubscriptionsSettled;
-    return StudioExitReport(shutdown: report, updateHandoff: updateHandoff);
-  }
-
-  static int _remainingAfter(int remainingMs, Stopwatch watch) {
-    if (remainingMs <= 0) return 0;
-    final left = remainingMs - watch.elapsedMilliseconds;
-    return left <= 0 ? 0 : left;
-  }
-
-  /// 早期退出封闭本身的有界上限：绝不无界等待桥，也绝不延长单一 30s / 28s 期限。
-  static const int _beginExitBoundMs = 2000;
-
-  /// [StudioTransport.beginRuntimeExit] 的单一 one-shot 实现。
-  ///
-  /// 未加载 runtime（`RustLib.init` 未完成）时确无 owner，跳过且**不**触发初始化；库已加载
-  /// 即直接调用 native `begin_runtime_exit` 封闭准入并广播一次取消（令在途 start 无法再发布
-  /// runtime），**不**等待 `initFuture`。自身有界（≤2s，随剩余清理预算收紧）。失败/超时保留
-  /// 原始错误、堆栈与 memoized typed issue，并记录一次脱敏诊断；调用方据此作为 external
-  /// issue 继续收尾，绝不伪成功或 early return。重复调用复用同一结果，绝不重复并行封闭。
-  static Future<_BeginExitOutcome> _runBeginRuntimeExit(int remainingMs) {
-    final existing = _beginExitOutcome;
-    if (existing != null) return existing;
-    final attempt = () async {
-      if (!_rustInitialized) {
-        // RustLib 未加载：确无 runtime owner 可封闭。迟到初始化 / start 由单向闩拒绝，
-        // 这里跳过而不是触发初始化。
-        return const _BeginExitOutcome.success();
-      }
-      final bound = remainingMs <= 0
-          ? 1
-          : (remainingMs > _beginExitBoundMs ? _beginExitBoundMs : remainingMs);
-      try {
-        await _bridgeCall(() => frb.beginRuntimeExit(remainingMs: remainingMs))
-            .timeout(Duration(milliseconds: bound));
-        return const _BeginExitOutcome.success();
-      } on Object catch (error, stackTrace) {
-        // 同一次失败只生成一次 correlation：memoized issue 与脱敏诊断共用同一编号。
-        final correlationId = _correlationOf(error);
-        final issue = StudioShutdownIssue(
-          stage: 'exit-seal',
-          code: _codeOf(error),
-          // 固定安全文案：绝不把任意 error.toString()（可能含正文/凭据）当 wire 安全消息。
-          message: 'studio runtime early exit seal did not confirm',
-          retryable: false,
-          correlationId: correlationId,
-        );
-        _beginExitFailure = error;
-        _beginExitIssue = issue;
-        recordDartError(
-          error,
-          stackTrace,
-          stage: 'exit-seal',
-          correlationId: correlationId,
-        );
-        return _BeginExitOutcome.failed(
-          issue: issue,
-          error: error,
-          stackTrace: stackTrace,
-        );
-      }
-    }();
-    _beginExitOutcome = attempt;
-    return attempt;
-  }
-
-  /// 当 [error] 正是早期退出封闭 core 记录的原始失败时，返回其 memoized typed issue（协调器
-  /// 据此复用同一 correlation，绝不重复生成 / 重复记录）；否则（测试替身自抛的失败）返回
-  /// `null`，由调用方走自身脱敏诊断路径。
-  @override
-  StudioShutdownIssue? recordedBeginExitIssue(Object error) {
-    final issue = _beginExitIssue;
-    return issue != null && identical(error, _beginExitFailure) ? issue : null;
-  }
-
-  /// 让最终报告如实反映 Dart 外部取消 issue。
-  ///
-  /// 桥已被咨询（有 runtime）时，external issue 由 bridge 与自身取消结果一起裁决；只有
-  /// 返回仍为可靠 `Clean`/`NotStarted`（无问题）时才说明这些真实 issue 被吞掉，必须本地
-  /// 降级，绝不伪 Clean —— 正常情况下桥已并入，不会重复计数。桥未被咨询（无 runtime）时
-  /// 直接并入。绝不改写 runtime 报出的待保存事实（未知保持未知）。
-  static StudioShutdownReport _reflectExternalIssues(
-    StudioShutdownReport report,
-    List<StudioShutdownIssue> externalIssues,
-    bool bridgeConsulted,
-  ) {
-    if (externalIssues.isEmpty) return report;
-    if (bridgeConsulted && !report.allowsCleanExit) return report;
-    return StudioShutdownReport(
-      outcome: StudioShutdownOutcome.degraded,
-      issues: [...report.issues, ...externalIssues],
-      persistence: report.persistence,
-    );
-  }
-
-  /// 领域 issue 到 bridge wire 的一次穷尽映射；只传允许的诊断字段，绝不携带正文/凭据。
-  static frb_shutdown.BridgeShutdownIssue _bridgeIssueFromStudio(
-    StudioShutdownIssue issue,
-  ) {
-    return frb_shutdown.BridgeShutdownIssue(
-      stage: issue.stage,
-      code: issue.code,
-      message: issue.message,
-      retryable: issue.retryable,
-      correlationId: issue.correlationId,
-    );
-  }
-
-  static String _correlationOf(Object error) =>
-      error is StudioFailure && error.correlationId.isNotEmpty
-      ? error.correlationId
-      : newStudioCorrelationId();
-
-  static String _codeOf(Object error) => switch (error) {
-    StudioFailure(:final code) => code.name,
-    TimeoutException() => 'timeout',
-    _ => 'unexpected',
-  };
-
-  /// 初始化永久未决时的报告：不伪「从未安装」，待保存事实未知。correlation 非空，
-  /// 便于与同步日志/桥诊断关联。
-  static StudioShutdownReport _unresolvedInitReport() => StudioShutdownReport(
-    outcome: StudioShutdownOutcome.degraded,
-    issues: [
-      StudioShutdownIssue(
-        stage: 'initialize',
-        code: 'initUnresolved',
-        message: 'studio runtime initialization did not complete',
-        retryable: false,
-        correlationId: newStudioCorrelationId(),
+    return DartResourceCloseResult(
+      resources: CloseReport(
+        unresolved: [for (final report in reports) ...report.unresolved],
       ),
-    ],
-    persistence: const UnknownStudioPendingPersistence(),
+    );
+  }
+
+  /// Joins the independent progress owner without closing content or the root.
+  @override
+  Future<DartResourceCloseResult> closeShutdownProgress({
+    required ClientCloseBudget budget,
+  }) async => DartResourceCloseResult(
+    resources: await progressScope.close(budget: budget),
   );
 
-  /// 独立诊断收尾：即使 runtime 从未安装或安装失败，也回收诊断资源。
-  ///
-  /// 调用方必须先收束/取消所有 Dart 订阅，之后这里才在必要时真正 `RustLib.dispose()`：
-  /// dispose 早于订阅取消正是桥在退出时挂起的点。
   @override
-  Future<void> finishShutdownDiagnostics() async {
-    if (_rustInitialized) {
-      try {
-        await _bridgeCall(frb.finishShutdownDiagnostics);
-      } on Object catch (error, stackTrace) {
-        // 诊断收尾失败不阻断退出；真实原因由报告与同步日志承载。
-        recordDartError(
-          error,
-          stackTrace,
-          stage: 'diagnostics',
-          correlationId: _correlationOf(error),
-        );
-      }
-    }
-    // 只有 native 与 Dart 两侧订阅全部收束后才真正 dispose；否则保留 owner，绝不在
-    // 仍有 bridge 回调时释放，也绝不把正常关闭拖成 watchdog 的 degraded。
-    if (_rustInitialized &&
-        _safeToDisposeAfterShutdown &&
-        _dartSubscriptionsSettled) {
-      RustLib.dispose();
-      _rustInitialized = false;
-      _initFuture = null;
-    }
-    _safeToDisposeAfterShutdown = false;
+  StudioShutdownIssue? recordedBeginExitIssue(Object error) {
+    final issue = runtime._beginExitIssue;
+    return issue != null && identical(error, runtime._beginExitFailure)
+        ? issue
+        : null;
   }
+
+  @override
+  Future<void> finishShutdownDiagnostics() =>
+      runtime.finishShutdownDiagnostics();
 
   @override
   Future<AccountCatalogView> loadAccountCatalog() async {
@@ -1737,46 +963,84 @@ class FrbStudioTransport
   @override
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  ) async {
-    await _ensureReady();
-    if (_dartSubscriptionsSealed) {
-      throw StateError('Studio transport is closed');
-    }
-    final observation = _FrbThreadsObservation(this, query, window);
-    try {
-      await observation.open();
-      return observation;
-    } catch (_) {
-      unawaited(
-        observation.close().then<void>(
-          (_) {},
-          onError: (Object _, StackTrace _) {},
-        ),
-      );
-      rethrow;
-    }
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  }) async {
+    final entry = contentScope
+        .open<
+          _FrbRawPull<
+            frb_directory_feed.BridgeThreadsObservation,
+            ThreadDirectoryFrame
+          >
+        >('thread-directory', (operation) async {
+          await _ensureReady();
+          final handle = await _bridgeCall(
+            () => frb_directory_feed.openThreadsObservation(
+              query: frb_directory_types.BridgeThreadDirectoryQuery(
+                workspaceId: query.workspaceId,
+                search: query.search,
+                archived: query.archived,
+                filter: switch (query.filter) {
+                  DirectoryFilter.all =>
+                    frb_directory_types.BridgeThreadDirectoryFilter.all,
+                  DirectoryFilter.running =>
+                    frb_directory_types.BridgeThreadDirectoryFilter.running,
+                  DirectoryFilter.attention =>
+                    frb_directory_types.BridgeThreadDirectoryFilter.attention,
+                },
+                threadIds: query.threadIds,
+                excludedThreadIds: query.excludedThreadIds,
+              ),
+              window: frb_directory_types.BridgeThreadDirectoryWindow(
+                before: window.before,
+                limit: window.limit,
+              ),
+            ),
+          );
+          return _FrbRawPull(
+            operation.resourceId,
+            handle,
+            (handle) async {
+              final frame = await handle.next();
+              return frame == null ? null : _threadDirectoryFrameFromFrb(frame);
+            },
+            (handle) => handle.requestClose(),
+            (handle) => handle.close(),
+            (handle) => handle.dispose(),
+          );
+        }, identity: resourceId);
+    return _FrbThreadsObservation(entry, await entry.ready);
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
-    await _ensureReady();
-    if (_dartSubscriptionsSealed) {
-      throw StateError('Studio transport is closed');
-    }
-    final observation = _FrbThreadObservation(this, threadId);
-    try {
-      await observation.open();
-      return observation;
-    } catch (_) {
-      unawaited(
-        observation.close().then<void>(
-          (_) {},
-          onError: (Object _, StackTrace _) {},
-        ),
-      );
-      rethrow;
-    }
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) async {
+    final entry = contentScope
+        .open<
+          _FrbRawPull<
+            frb_directory_feed.BridgeThreadObservation,
+            ThreadMetadataFrame
+          >
+        >('thread-metadata', (operation) async {
+          await _ensureReady();
+          final handle = await _bridgeCall(
+            () => frb_directory_feed.openThreadObservation(threadId: threadId),
+          );
+          return _FrbRawPull(
+            operation.resourceId,
+            handle,
+            (handle) async {
+              final frame = await handle.next();
+              return frame == null ? null : _threadMetadataFrameFromFrb(frame);
+            },
+            (handle) => handle.requestClose(),
+            (handle) => handle.close(),
+            (handle) => handle.dispose(),
+          );
+        }, identity: resourceId);
+    return _FrbThreadObservation(entry, await entry.ready);
   }
 
   @override
@@ -2264,139 +1528,54 @@ class FrbStudioTransport
 
   @override
   Stream<StudioShutdownProgress> subscribeShutdownProgress() {
-    if (!_runtimeReady) {
-      // 无 owner（未安装 / 第二实例 / 初始化失败）：不存在可观察的进度资源。返回空流，
-      // 绝不触发初始化，也不产生虚假的 NotInitialized 进度失败。
-      return Stream<StudioShutdownProgress>.empty();
-    }
-    late final StreamController<StudioShutdownProgress> controller;
-    frb.BridgeEventSubscription? handle;
-    StreamSubscription<frb.BridgeShutdownProgress>? subscription;
-
-    Future<void> release() async {
-      // 只有 native cancel 真正 ACK 才丢弃强引用并 dispose；抛错/超时保留 handle，owner
-      // 仍强持有 opaque 句柄直到确认或进程终止，绝不先清后 cancel 让对象被 GC/finalizer。
-      final activeHandle = handle;
-      if (activeHandle != null) {
-        if (RustLib.instance.initialized) {
-          await activeHandle.cancel();
-        }
-        handle = null;
-        activeHandle.dispose();
-      }
-      // native 已 ACK 后 handle 已清；若 Dart 订阅取消抛错则保留这一活动层，不二次
-      // cancel/dispose，也不把已 ACK 的 native 变成伪 pending。
-      final activeSubscription = subscription;
-      if (activeSubscription != null) {
-        await activeSubscription.cancel();
-        subscription = null;
-      }
-    }
-
-    // 与产品/Thread 流同一套 owned cancellation（`_DartSubscription`）：normal `onCancel`
-    // 只启动这一条 future，先等完整 create 决策再释放（含迟到句柄），绝不重复
-    // cancel/dispose，也绝不在创建未完成时早退伪造「已停止」。进度 owner **登记进进程级
-    // registry**：取消未 ACK 时 registry 强持有它（阻止 GC 与 safeDispose 并发），直到真正
-    // ACK 才删除；但标记为外部协调（`externallyCoordinated`），由关闭协调器在自身预算内
-    // 单独 join / 回报，`cancelDartSubscriptions` 汇总不重复 cancel，避免重复 issue。
-    final tracked = _DartSubscription(
-      'shutdown-progress',
-      release,
-      _forgetDartSubscription,
-      externallyCoordinated: true,
-    );
-    _trackDartSubscription(tracked);
-
-    Future<void> start() async {
-      try {
-        // 已取消则不再创建。进度流是退出作用域内的本地显示流，故与产品/Thread 不同：它在
-        // 退出已 seal 后仍按其本地策略创建，但 create 不设本地 timeout —— 有界等待落在
-        // owned cancellation（等完整 create 决策）。因此 create 未决 / 超时 / 迟到都不会被
-        // 误判为已停止，迟到句柄仍由 owner 的 release 真实 cancel 并取 ACK。也绝不触发
-        // _ensureReady。
-        if (tracked.cancelRequested) {
-          return;
-        }
-        final created = await _bridgeCall(
-          frb_shutdown_sub.subscribeShutdownProgress,
+    if (!runtime.runtimeOwnerPresent) return const Stream.empty();
+    final entry = progressScope
+        .open<_FrbRawEvent<frb.BridgeShutdownProgress, StudioShutdownProgress>>(
+          'shutdown-progress',
+          (operation) async {
+            final handle = await _bridgeCall(
+              frb_shutdown_sub.subscribeShutdownProgress,
+            );
+            return _FrbRawEvent(
+              operation.resourceId,
+              handle,
+              (handle) => handle.shutdownStream(),
+              (event) => switch (event) {
+                frb.BridgeShutdownProgress_StoppingSubscriptions() =>
+                  const StoppingSubscriptionsProgress(),
+                frb.BridgeShutdownProgress_CancellingTurns() =>
+                  const CancellingTurnsProgress(),
+                frb.BridgeShutdownProgress_FlushingPersistence(
+                  :final pendingCommits,
+                ) =>
+                  FlushingPersistenceProgress(
+                    pendingCommits: pendingCommits.toInt(),
+                  ),
+                frb.BridgeShutdownProgress_StoppingAgents() =>
+                  const StoppingAgentsProgress(),
+                frb.BridgeShutdownProgress_StoppingMcp() =>
+                  const StoppingMcpProgress(),
+                frb.BridgeShutdownProgress_StoppingLsp() =>
+                  const StoppingLspProgress(),
+                frb.BridgeShutdownProgress_Stopped() => const StoppedProgress(),
+              },
+            );
+          },
         );
-        handle = created;
-        // 取消在 create 期间到达：不派发任何事件，句柄交给 owner 的 release 真实 cancel。
-        if (tracked.cancelRequested) {
-          return;
-        }
-        subscription = created.shutdownStream().listen(
-          (event) => controller.add(switch (event) {
-            frb.BridgeShutdownProgress_StoppingSubscriptions() =>
-              const StoppingSubscriptionsProgress(),
-            frb.BridgeShutdownProgress_CancellingTurns() =>
-              const CancellingTurnsProgress(),
-            frb.BridgeShutdownProgress_FlushingPersistence(
-              :final pendingCommits,
-            ) =>
-              FlushingPersistenceProgress(
-                pendingCommits: pendingCommits.toInt(),
-              ),
-            frb.BridgeShutdownProgress_StoppingAgents() =>
-              const StoppingAgentsProgress(),
-            frb.BridgeShutdownProgress_StoppingMcp() =>
-              const StoppingMcpProgress(),
-            frb.BridgeShutdownProgress_StoppingLsp() =>
-              const StoppingLspProgress(),
-            frb.BridgeShutdownProgress_Stopped() => const StoppedProgress(),
-          }),
-          onError: (Object error, StackTrace stackTrace) =>
-              controller.addError(_studioFailure(error), stackTrace),
-          onDone: controller.close,
-        );
-      } catch (error, stackTrace) {
-        if (!tracked.cancelRequested) {
-          // 尚未取消：向仍活动的 listener 下发 typed 失败。
-          // 创建已确定失败，先释放创建闩；否则 listener 在处理错误时 cancel 会等待
-          // `markCreated`，而这里等待 controller.close，形成互相等待。
-          tracked.markCreated();
-          controller.addError(_studioFailure(error), stackTrace);
-          await controller.close();
-        } else {
-          // 取消已请求：listener / controller 多半已取消、不能 addError。把真实创建异常
-          // 记入 owner，做成取消 ACK failure 让预算内的取消等待（`_cancelBounded`）如实回报
-          // 为 external issue，绝不静默成 Clean；保留 typed code / correlation 与原始堆栈，
-          // wire / 日志文案固定安全（不泄漏 body/credential）。
-          final failure = _studioFailure(error);
-          tracked.recordCreateFailure(
-            failure is StudioFailure
-                ? StudioFailure(
-                    code: failure.code,
-                    message:
-                        'studio shutdown progress subscription failed to start',
-                    retryable: failure.retryable,
-                    correlationId: failure.correlationId,
-                  )
-                : failure,
-            stackTrace,
-          );
-          // 取消已经 owner 所有；记录故障后发布创建决策，让 owned cancellation 等 release ACK。
-          tracked.markCreated();
-        }
-      } finally {
-        // 无论是否创建成功都完成创建闩：owned cancellation 据此释放已建立或迟到的 native
-        // 句柄；create 永久未决则不完成该闩，owner 被保留并由预算内的取消等待如实回报。
-        tracked.markCreated();
-      }
-    }
-
-    controller = StreamController<StudioShutdownProgress>(
-      onListen: () => unawaited(start()),
-      // 不吞取消错误：owned cancellation 的原始 cause/stack 交给预算内的取消等待
-      // （runStudioShutdown 的 `_cancelBounded`）回报为 typed issue 并记录同一 correlation。
-      onCancel: () => tracked.beginCancel(),
-    );
-    return controller.stream;
+    // Stream cancellation controls only its consumer; the independent progress
+    // scope is closed and joined explicitly by the existing coordinator.
+    return Stream.fromFuture(
+      _publishRaw(entry, (raw) {
+        raw.attach(onFailure: entry.requestClose);
+        return raw.frames;
+      }),
+    ).asyncExpand((frames) => frames);
   }
 
   @override
   Future<void> beginRuntimeExit({required int remainingMs}) async {
-    final outcome = await _runBeginRuntimeExit(remainingMs);
+    runtime.sealForShutdown();
+    final outcome = await runtime._runBeginRuntimeExit(remainingMs);
     final error = outcome.error;
     if (error != null) {
       // 原始错误/堆栈抛给协调器：协调器据 memoized issue（同一 correlation）作为 external
@@ -2412,12 +1591,17 @@ class FrbStudioTransport
   Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    bool externalDartResourcesReported = false,
     StudioExitIntent intent = StudioExitIntent.exit,
-  }) => shutdownAndDispose(
-    remainingMs: remainingMs,
-    externalIssues: externalIssues,
-    intent: intent,
-  );
+  }) {
+    // The declaration never replaces the runtime's final root acknowledgement
+    // and is not part of the native FRB wire.
+    return runtime.shutdownAndDispose(
+      remainingMs: remainingMs,
+      externalIssues: externalIssues,
+      intent: intent,
+    );
+  }
 
   @override
   Future<InteractionCommandReply> respondInteraction(
@@ -2534,171 +1718,61 @@ class FrbStudioTransport
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    late final StreamController<ProductTopicFrame> controller;
-    frb.BridgeEventSubscription? handle;
-    StreamSubscription<frb_topic_types.BridgeProductTopicStreamEnvelope>?
-    subscription;
-
-    Future<void> release() async {
-      // 只有 native cancel 真正 ACK 才丢弃强引用并 dispose；抛错/超时保留 handle，owner
-      // 仍强持有 opaque 句柄直到确认或进程终止，绝不先清后 cancel 让对象被 GC/finalizer。
-      final activeHandle = handle;
-      if (activeHandle != null) {
-        if (RustLib.instance.initialized) {
-          await activeHandle.cancel();
-        }
-        handle = null;
-        activeHandle.dispose();
-      }
-      // native 已 ACK 后 handle 已清；若 Dart 订阅取消抛错则保留这一活动层，不二次
-      // cancel/dispose，也不把已 ACK 的 native 变成伪 pending。
-      final activeSubscription = subscription;
-      if (activeSubscription != null) {
-        await activeSubscription.cancel();
-        subscription = null;
-      }
-    }
-
-    final tracked = _DartSubscription(
-      'product',
-      release,
-      _forgetDartSubscription,
-    );
-    _trackDartSubscription(tracked);
-
-    Future<void> start() async {
-      try {
-        // 关闭/封闭/已取消时不创建新桥订阅；_ensureReady 也不在退出后被调用。
-        if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
-          return;
-        }
-        await _ensureReady();
-        if (tracked.cancelRequested || _dartSubscriptionsSealed || _closing) {
-          return;
-        }
-        final created = await _bridgeCall(
-          () => frb_topic_sub.createProductTopicSubscription(
-            topic: bridgeProductTopic(topic),
-          ),
-        );
-        // await create 期间关闭：句柄交给 owner 的 release 闭包，由 registry 持有并等
-        // cancel 完成，绝不在这里自行 dispose 后误报 settled。
-        handle = created;
-        if (tracked.cancelRequested || _dartSubscriptionsSealed || _closing) {
-          return;
-        }
-        subscription = created.productTopicStream().listen(
-          (envelope) {
-            if (envelope
-                is frb_topic_types.BridgeProductTopicStreamEnvelope_Closed) {
-              controller.close();
-              return;
-            }
-            final frame = productTopicFrameFromEnvelope(topic, envelope);
-            if (frame != null) controller.add(frame);
-          },
-          onError: (Object error, StackTrace stackTrace) =>
-              controller.addError(_studioFailure(error), stackTrace),
-          onDone: controller.close,
-        );
-      } catch (error, stackTrace) {
-        if (!tracked.cancelRequested) {
-          // create/stream attach 已确定失败；先结束创建决策，避免 controller.close 等待
-          // 的 onCancel 反向等待本 start future 的 finally。
-          tracked.markCreated();
-          controller.addError(_studioFailure(error), stackTrace);
-          await controller.close();
-        }
-      } finally {
-        // 封闭/退出中：即使本 entry 尚未收到取消请求，也启动唯一 owned cancellation，
-        // 保证任何已建立（或迟到）的 native 句柄都被释放，绝不让 owner 逃逸 settle 检查。
-        if (_dartSubscriptionsSealed || _closing) {
-          unawaited(tracked.beginCancel());
-        }
-        // 无论是否创建成功都完成创建闩：取消不必永远等待一个不会发生的创建。
-        tracked.markCreated();
-      }
-    }
-
-    controller = StreamController<ProductTopicFrame>(
-      onListen: () => unawaited(start()),
-      onCancel: () async {
-        try {
-          await tracked.beginCancel();
-        } on Object {
-          // 具体（脱敏）错因与堆栈已由 owner 保留，用于关闭报告的同步诊断；onCancel
-          // 不抛出，避免未 await 的 cancel 变成未处理异步错误。失败即保留 pending owner。
-        }
-      },
-    );
-    return controller.stream;
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) {
+    final entry = contentScope
+        .open<
+          _FrbRawEvent<
+            frb_topic_types.BridgeProductTopicStreamEnvelope,
+            ProductTopicFrame
+          >
+        >('product-topic', (operation) async {
+          await _ensureReady();
+          final handle = await _bridgeCall(
+            () => frb_topic_sub.createProductTopicSubscription(
+              topic: bridgeProductTopic(topic),
+            ),
+          );
+          return _FrbRawEvent(
+            operation.resourceId,
+            handle,
+            (handle) => handle.productTopicStream(),
+            (envelope) => productTopicFrameFromEnvelope(topic, envelope),
+            isTerminal: (envelope) =>
+                envelope
+                    is frb_topic_types.BridgeProductTopicStreamEnvelope_Closed,
+          );
+        }, identity: resourceId);
+    return _publishRaw(entry, (raw) {
+      raw.attach(onFailure: entry.requestClose);
+      return _FrbProductTopicObservation(entry, raw);
+    });
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async {
-    if (_closing || _dartSubscriptionsSealed) throw _conversationClosedFailure;
-    await _ensureReady();
-    frb_chat.BridgeConversationStateFeed? handle;
-    FrbConversationStateFeed? adapter;
-    final tracked = _DartSubscription(
-      'conversation-state:$threadId',
-      () async {
-        final feed = adapter;
-        if (feed != null) {
-          await feed._releaseNative();
-        } else {
-          final active = handle;
-          if (active == null) return;
-          active.requestClose();
-          await active.close();
-          active.dispose();
-        }
-      },
-      _forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    // Retain opening responsibility before any asynchronous native publication.
-    _trackDartSubscription(tracked);
-    try {
-      handle = await _bridgeCall(
-        () => frb_chat.openConversationStateFeed(threadId: threadId),
-      );
-      final feed = FrbConversationStateFeed(handle!);
-      adapter = feed;
-      tracked.markCreated();
-      feed._registration = tracked;
-      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
-        feed.requestClose();
-        await feed.close();
-        throw _conversationClosedFailure;
-      }
-      if (feed.threadId != threadId || feed.subscriptionId.isEmpty) {
-        feed.requestClose();
-        await feed.close();
-        throw const StudioFailure(
-          code: StudioFailureCode.internal,
-          message:
-              'Conversation state feed identity does not match its request',
-          retryable: false,
-          correlationId: 'client-conversation-state-identity',
+  Future<ConversationStateFeed> openConversationStateFeed(String threadId) {
+    final entry = contentScope.open<_FrbRawConversationState>(
+      'conversation-state',
+      (operation) async {
+        await _ensureReady();
+        final handle = await _bridgeCall(
+          () => frb_chat.openConversationStateFeed(threadId: threadId),
         );
-      }
+        return _FrbRawConversationState(operation.resourceId, handle);
+      },
+    );
+    return _publishRaw(entry, (raw) {
+      raw.requestCleanup = entry.requestClose;
+      final feed = FrbConversationStateFeed._(entry, raw);
+      _validateConversationIdentity(
+        threadId,
+        feed.threadId,
+        feed.subscriptionId,
+      );
       return feed;
-    } catch (error, stack) {
-      tracked.markCreated();
-      if (handle != null && adapter == null) {
-        handle.requestClose();
-        // A failed native join is propagated and stays registered for retry.
-        await tracked.beginCancel();
-      }
-      Error.throwWithStackTrace(_studioFailure(error), stack);
-    } finally {
-      tracked.markCreated();
-      if (handle == null) await tracked.beginCancel();
-    }
+    });
   }
 
   @override
@@ -2708,22 +1782,18 @@ class FrbStudioTransport
     required ReadDemand demand,
   }) => _openConversationOwner(
     threadId,
-    () async => _FrbNativeConversation.conversation(
-      await frb_chat.openConversationFeed(
-        threadId: threadId,
-        scope: frb_chat_types.BridgeChatScope(
-          queryClass: switch (scope.queryClass) {
-            ExactChatClass(:final value) =>
-              frb_chat_types.BridgeChatClassFilter.class_(value: value),
-            AllChatClasses() =>
-              const frb_chat_types.BridgeChatClassFilter.all(),
-          },
-          parentId: scope.parentId,
-        ),
-        demand: _readDemandToFrb(demand),
+    () => frb_chat.openConversationFeed(
+      threadId: threadId,
+      scope: frb_chat_types.BridgeChatScope(
+        queryClass: switch (scope.queryClass) {
+          ExactChatClass(:final value) =>
+            frb_chat_types.BridgeChatClassFilter.class_(value: value),
+          AllChatClasses() => const frb_chat_types.BridgeChatClassFilter.all(),
+        },
+        parentId: scope.parentId,
       ),
+      demand: _readDemandToFrb(demand),
     ),
-    FrbConversationFeed._,
   );
 
   @override
@@ -2732,28 +1802,13 @@ class FrbStudioTransport
     required int presentationVersion,
     required int readerProtocolVersion,
     required ReadDemand demand,
-  }) async {
-    await _ensureReady();
-    frb_timeline.BridgeTimelineReader? handle;
-    FrbTimelineReader? adapter;
-    final tracked = _DartSubscription(
-      'timeline:$threadId',
-      () async {
-        final owned = adapter;
-        if (owned != null) {
-          await owned._releaseNative();
-        } else if (handle != null) {
-          handle.requestClose();
-          await handle.close();
-          handle!.dispose();
-        }
-      },
-      _forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    _trackDartSubscription(tracked);
-    try {
-      handle = await _bridgeCall(
+  }) {
+    final membersScope = contentScope.child('timeline-members');
+    final entry = contentScope.open<_FrbRawTimelineReader>('timeline', (
+      operation,
+    ) async {
+      await _ensureReady();
+      final handle = await _bridgeCall(
         () => frb_timeline.openTimelineReader(
           threadId: threadId,
           presentationVersion: presentationVersion,
@@ -2761,84 +1816,38 @@ class FrbStudioTransport
           initialDemand: _readDemandToFrb(demand),
         ),
       );
-      adapter = FrbTimelineReader(handle!);
-      adapter._registration = tracked;
-      tracked.markCreated();
-      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
-        await adapter.close();
-        throw _conversationClosedFailure;
-      }
-      return adapter;
-    } catch (error, stack) {
-      tracked.markCreated();
-      await tracked.beginCancel();
-      Error.throwWithStackTrace(_studioFailure(error), stack);
-    } finally {
-      tracked.markCreated();
-    }
+      return _FrbRawTimelineReader(operation.resourceId, handle, membersScope);
+    }, onFailure: (_, _) => membersScope.requestClose());
+    return _publishRaw(entry, (raw) {
+      final reader = FrbTimelineReader._(entry, raw);
+      // Conversion and identity calls run only after the raw handle is owned.
+      reader.metadata;
+      reader.threadId;
+      return reader;
+    });
   }
 
-  Future<T> _openConversationOwner<T extends FrbConversationFeed>(
+  Future<FrbConversationFeed> _openConversationOwner(
     String threadId,
-    Future<_FrbNativeConversation> Function() open,
-    T Function(_FrbNativeConversation) adapt,
-  ) async {
-    await _ensureReady();
-    _FrbNativeConversation? handle;
-    FrbConversationFeed? adapter;
-    final tracked = _DartSubscription(
-      'conversation:$threadId',
-      () async {
-        final active = handle;
-        final ownedAdapter = adapter;
-        if (ownedAdapter != null) {
-          await ownedAdapter._releaseNative();
-        } else if (active != null) {
-          active.requestClose();
-          await active.close();
-          active.dispose();
-        }
-      },
-      _forgetDartSubscription,
-      retryFailedRelease: true,
-    );
-    _trackDartSubscription(tracked);
-    try {
-      handle = await _bridgeCall(open);
-      final feed = adapt(handle!);
-      adapter = feed;
-      // Register before awaiting open: exit must retain a late native owner.
-      tracked.markCreated();
-      feed._registration = tracked;
-      if (tracked.cancelRequested || _closing || _dartSubscriptionsSealed) {
-        feed.requestClose();
-        await feed.close();
-        throw _conversationClosedFailure;
-      }
-      if (feed.threadId != threadId || feed.subscriptionId.isEmpty) {
-        feed.requestClose();
-        await feed.close();
-        throw const StudioFailure(
-          code: StudioFailureCode.internal,
-          message: 'Conversation feed identity does not match its request',
-          retryable: false,
-          correlationId: 'client-conversation-identity',
-        );
-      }
+    Future<frb_chat.BridgeConversationFeed> Function() open,
+  ) {
+    final entry = contentScope.open<_FrbRawConversationFeed>('conversation', (
+      operation,
+    ) async {
+      await _ensureReady();
+      final handle = await _bridgeCall(open);
+      return _FrbRawConversationFeed(operation.resourceId, handle);
+    });
+    return _publishRaw(entry, (raw) {
+      raw.requestCleanup = entry.requestClose;
+      final feed = FrbConversationFeed._(entry, raw);
+      _validateConversationIdentity(
+        threadId,
+        feed.threadId,
+        feed.subscriptionId,
+      );
       return feed;
-    } catch (error, stack) {
-      tracked.markCreated();
-      if (handle != null && adapter == null) {
-        // A synchronous identity getter may fail after open. The registered owner
-        // still owns that native handle, even though no Dart feed was published.
-        handle.requestClose();
-        await tracked.beginCancel();
-      }
-      Error.throwWithStackTrace(_studioFailure(error), stack);
-    } finally {
-      tracked.markCreated();
-      if (handle == null) await tracked.beginCancel();
-    }
+    });
   }
 
   @override
@@ -3611,5 +2620,19 @@ StudioShutdownReport _shutdownReportFromFrb(
       frb_shutdown.BridgePendingPersistence_Drained() =>
         const DrainedStudioPendingPersistence(),
     },
+  );
+}
+
+void _validateConversationIdentity(
+  String requested,
+  String actual,
+  String subscriptionId,
+) {
+  if (requested == actual && subscriptionId.isNotEmpty) return;
+  throw const StudioFailure(
+    code: StudioFailureCode.internal,
+    message: 'Conversation feed identity does not match its request',
+    retryable: false,
+    correlationId: 'client-conversation-identity',
   );
 }

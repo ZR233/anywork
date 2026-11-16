@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:ui' as ui;
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -131,7 +133,7 @@ List<StudioAgentView> _deepLayoutAgents() => [
 ];
 
 Future<AppGraph> _layoutGraph(WidgetTester tester) async {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: RecordingDemoTransport(),
     clientId: 'agent-list-layout-test',
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -263,7 +265,7 @@ Future<void> _closeLayoutGraph(WidgetTester tester, AppGraph graph) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+    graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'agent list layout teardown',
   );
 }

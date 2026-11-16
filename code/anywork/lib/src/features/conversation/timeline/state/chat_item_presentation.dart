@@ -176,9 +176,7 @@ final class ChatItemPresentation {
       reference: value.reference,
       byteLength: value.byteLength,
       createdAt: value.createdAt,
-      authorId: message.source is InboxMessageChatSource
-          ? 'inbox:${(message.source as InboxMessageChatSource).sourceId}'
-          : value.authorId,
+      authorId: _inboxAuthor(message) ?? value.authorId,
       presentationContract: value.presentationContract,
       diagnostic: value.diagnostic,
       atom: message,
@@ -206,15 +204,15 @@ final class ChatItemPresentation {
     if (record.contentSource case FrozenObservation(available: false)) {
       return _unavailableObservation(unit.id, record);
     }
-    final author = item.source is InboxMessageChatSource
-        ? 'inbox:${(item.source as InboxMessageChatSource).sourceId}'
-        : switch (item.textChannel) {
-            ThreadTextChannel.user => 'user',
-            ThreadTextChannel.parentAgent => 'parentAgent',
-            ThreadTextChannel.commentary ||
-            ThreadTextChannel.finalAnswer => 'assistant',
-            null => null,
-          };
+    final author =
+        _inboxAuthor(item) ??
+        switch (item.textChannel) {
+          ThreadTextChannel.user => 'user',
+          ThreadTextChannel.parentAgent => 'parentAgent',
+          ThreadTextChannel.commentary ||
+          ThreadTextChannel.finalAnswer => 'assistant',
+          null => null,
+        };
     final finishedAt = item.finishedAt;
     final time =
         finishedAt != null &&
@@ -231,6 +229,7 @@ final class ChatItemPresentation {
         bodies: const [],
         displayUnit: unit,
         displayRecord: record,
+        atom: item,
         authorId: author ?? 'unknown',
         createdAt: time,
       );
@@ -254,6 +253,16 @@ final class ChatItemPresentation {
       displayRecord: (unit.body as SingleDisplayBlock).record,
     );
   }
+
+  // Inbox payloads cannot grant parent identity. Only the runtime's typed
+  // channel records admission from the direct parent; sourceId stays opaque.
+  static String? _inboxAuthor(ChatAtom atom) => switch (atom.source) {
+    InboxMessageChatSource(:final sourceId) =>
+      atom.textChannel == ThreadTextChannel.parentAgent
+          ? 'parentAgent'
+          : 'inbox:$sourceId',
+    _ => null,
+  };
 
   static ChatItemPresentation _unavailableObservation(
     String id,

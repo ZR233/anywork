@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/drafts_ports.dart';
@@ -119,7 +120,10 @@ final class _Harness {
     AcpAgentCapabilitiesView? capabilities = _capabilities,
   }) {
     transport.seedThread(_row());
-    directory = ThreadDirectoryStore(feed: transport);
+    directory = ThreadDirectoryStore(
+      feed: transport,
+      scope: transport.lifecycleScope.child('directory'),
+    );
     source = ControlledAcpObservation([
       AcpAcceptedFrameView(target: _target, hasObservation: true),
       if (ready) ...[
@@ -196,7 +200,9 @@ final class _Harness {
     addTearDown(() async {
       await repository.close();
       await sessions.dispose();
-      await directory.close();
+      await directory.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
       expect(
         native.calls,
         0,

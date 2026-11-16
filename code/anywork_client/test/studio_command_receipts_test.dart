@@ -2,6 +2,9 @@ import 'support/conversation_delivery.dart';
 
 import 'dart:async';
 
+import 'support/product_topic_owner.dart';
+
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/accounts.dart' show NativeAccountIdentity;
 import 'package:anywork_client/accounts_ports.dart'
     show SettingsWriteOwnerChanged;
@@ -138,6 +141,18 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   final List<StreamController<ProductTopicFrame>> topicSinks = [];
   final Map<ProductTopic, StreamController<ProductTopicFrame>>
   topicSinksByTopic = {};
+  final Map<ProductTopic, List<_TopicBinding>> topicBindings = {};
+  final Map<(ProductTopic, int), Completer<_TopicBinding>> _topicOpening = {};
+
+  Future<_TopicBinding> topicBinding(ProductTopic topic, int index) async {
+    final bindings = topicBindings[topic] ?? const <_TopicBinding>[];
+    final binding = bindings.length > index
+        ? bindings[index]
+        : await _topicOpening.putIfAbsent((topic, index), Completer.new).future;
+    await binding.listening;
+    return binding;
+  }
+
   final List<StreamController<ThreadStreamFrame>> threadBindings = [];
   final List<ScriptedConversationFeed> contentWindows = [];
   final List<ContinuationOperationView> continuationReads = [];
@@ -208,12 +223,29 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    final sink = StreamController<ProductTopicFrame>(sync: true);
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
+    final listening = Completer<void>();
+    final sink = StreamController<ProductTopicFrame>(
+      sync: true,
+      onListen: listening.complete,
+    );
     addTearDown(() => sink.close());
     topicSinks.add(sink);
     topicSinksByTopic[topic] = sink;
-    return sink.stream;
+    final observation = await openTestProductTopic(
+      lifecycleScope.child('topic-owner'),
+      resourceId,
+      sink,
+    );
+    final binding = _TopicBinding(sink, observation, listening.future);
+    final bindings = topicBindings.putIfAbsent(topic, () => []);
+    final index = bindings.length;
+    bindings.add(binding);
+    _topicOpening.remove((topic, index))?.complete(binding);
+    return observation;
   }
 
   @override
@@ -353,6 +385,14 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnsupportedError('Unused transport: ${invocation.memberName}');
+}
+
+final class _TopicBinding {
+  _TopicBinding(this.sink, this.observation, this.listening);
+
+  final StreamController<ProductTopicFrame> sink;
+  final TestProductTopicObservation observation;
+  final Future<void> listening;
 }
 
 final class _RouteConflictFeed extends ScriptedConversationFeed {
@@ -1142,7 +1182,7 @@ void main() {
     expect(operation.effective, isTrue);
     expect(operation.phase, OperationPhase.syncFailed);
     listener.cancel();
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   });
 
   for (final routeWrite in [false, true]) {
@@ -1263,7 +1303,9 @@ void main() {
           expect(after.receipt!.disposition, CommitDisposition.applied);
           expect(after.effective, isTrue);
           expect(after.durable, isTrue);
-          final report = await client.close();
+          final report = await client.close(
+            budget: ClientCloseBudget(const Duration(seconds: 30)),
+          );
           expect(report.complete, isFalse);
           expect(
             report.unresolved.any(
@@ -1286,8 +1328,17 @@ void main() {
         AccountsTestRuntime? runtime;
         final client = withDomains
             ? await _client(transport, onRuntime: (value) => runtime = value)
-            : AnyworkClient(transport: transport, clientId: 'reentrant-read');
-        if (!withDomains) addTearDown(client.close);
+            : AnyworkClient(
+                transport: transport,
+                scope: transport.lifecycleScope.child('client'),
+                clientId: 'reentrant-read',
+              );
+        if (!withDomains)
+          addTearDown(
+            () => client.close(
+              budget: ClientCloseBudget(const Duration(seconds: 30)),
+            ),
+          );
         client.applyBootstrap(_bootstrap('old', _settings(99)));
         var replaced = false;
         final listener = client.settings.source.watch((state) {
@@ -1329,7 +1380,12 @@ void main() {
           expect(models.single.stamp!.revision, 1);
         }
         listener.cancel();
-        expect((await client.close()).complete, isTrue);
+        expect(
+          (await client.close(
+            budget: ClientCloseBudget(const Duration(seconds: 30)),
+          )).complete,
+          isTrue,
+        );
       },
     );
   }
@@ -1404,7 +1460,12 @@ void main() {
       1,
     );
     listener.cancel();
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('settings owner change back to the same epoch name cannot revive an old queued intent', () async {
@@ -1434,7 +1495,12 @@ void main() {
       client.mutations.latest('settings:instructions:user')!.state.value.phase,
       OperationPhase.rejected,
     );
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('settings owner change rejects a queued intent before transport and admits the new low revision', () async {
@@ -1471,7 +1537,12 @@ void main() {
       (transport.settingsCalls.single.command as InstructionUserCommand).value,
       'next-owner-input',
     );
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('settings owner change while acquiring CAS rejects the old read before publication or dispatch', () async {
@@ -1515,7 +1586,12 @@ void main() {
       client.mutations.latest('settings:instructions:user')!.state.value.phase,
       OperationPhase.rejected,
     );
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('settings owner change during conflict refresh does not retry or rebind the late canonical read', () async {
@@ -1557,7 +1633,12 @@ void main() {
       reason: 'The old RPC was definitely rejected, even though its retry owner retired',
     );
     expect(operation.error, same(conflict));
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('settings owner change joins a sent RPC but cannot apply its late response to the new owner', () async {
@@ -1571,10 +1652,12 @@ void main() {
     final call = await transport.settingsCall(0);
     client.applyBootstrap(_bootstrap('next', _settings(1)));
     var closed = false;
-    final closing = client.close().then((report) {
-      closed = true;
-      return report;
-    });
+    final closing = client
+        .close(budget: ClientCloseBudget(const Duration(seconds: 30)))
+        .then((report) {
+          closed = true;
+          return report;
+        });
     expect(closed, isFalse);
     call.reply.complete(
       SettingsCommandReply(
@@ -1664,7 +1747,12 @@ void main() {
       OperationPhase.rejected,
     );
     expect(client.settings.state.commands, isEmpty);
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('thread route owner change during settings refresh cannot publish or retry an old request', () async {
@@ -1707,7 +1795,12 @@ void main() {
         .value;
     expect(operation.phase, OperationPhase.rejected);
     expect(operation.error, same(conflict));
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('thread route owner change joins the sent response without applying old settings or warnings', () async {
@@ -1734,10 +1827,12 @@ void main() {
     transport.epoch = 'next';
     runtime.seed(_settings(1));
     var closed = false;
-    final closing = client.close().then((report) {
-      closed = true;
-      return report;
-    });
+    final closing = client
+        .close(budget: ClientCloseBudget(const Duration(seconds: 30)))
+        .then((report) {
+          closed = true;
+          return report;
+        });
     expect(closed, isFalse);
     call.reply.complete(
       ThreadModelRouteCommandReply(
@@ -1817,7 +1912,12 @@ void main() {
       client.mutations.latest('thread-route:thread')!.state.value.phase,
       OperationPhase.rejected,
     );
-    expect((await client.close()).complete, isTrue);
+    expect(
+      (await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
   });
 
   test('thread route rechecks recovery after queueing and does not confuse execution or unrelated access with its own access gate', () async {
@@ -2482,8 +2582,12 @@ void main() {
         expect(transport.stateBindings, hasLength(2));
         expect(transport.attempts, hasLength(1));
         final closing = closeClient
-            ? client.close()
-            : client.conversations.close(deadline: DateTime.utc(2000));
+            ? client.close(
+                budget: ClientCloseBudget(const Duration(seconds: 30)),
+              )
+            : client.conversations.close(
+                budget: ClientCloseBudget(Duration.zero),
+              );
         await cancelEntered.future;
         await rejected;
         expect(
@@ -2504,7 +2608,12 @@ void main() {
         if (closeClient) {
           expect((await closing).complete, isTrue);
         } else {
-          expect((await client.conversations.retryCleanup()).complete, isTrue);
+          final cleanupBudget = ClientCloseBudget(const Duration(seconds: 30));
+          expect(
+            (await client.conversations.retryCleanup(budget: cleanupBudget))
+                .complete,
+            isTrue,
+          );
         }
       },
     );
@@ -2542,7 +2651,9 @@ void main() {
       await transport.refreshEntered.future;
       expect(transport.stateBindings, hasLength(2));
       expect(transport.refreshEntered.isCompleted, isTrue);
-      final closing = client.close();
+      final closing = client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
       await rejected;
       expect(transport.attempts, hasLength(1));
       cleanup.complete();
@@ -2596,7 +2707,7 @@ void main() {
       ),
     );
     expect(await stopping, isA<StopRequested>());
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   });
 
   for (final framesFirst in [false, true]) {
@@ -3722,10 +3833,14 @@ void main() {
     final transport = _Transport();
     final client = AnyworkClient(
       transport: transport,
+      scope: transport.lifecycleScope.child('client'),
       clientId: 'client',
       threadCommandsClock: () => clock,
     );
-    addTearDown(client.close);
+    addTearDown(
+      () =>
+          client.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
+    );
     client.project.applyProjectDirectory(
       ProjectDirectoryState(values: [_project], revision: 1),
     );
@@ -4564,7 +4679,7 @@ void main() {
             as LatestValue<ThreadSessionState>;
     final observersBeforeClose = observedSource.observerCount;
     expect(observersBeforeClose, greaterThan(0));
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
     expect(
       observedSource.observerCount,
       0,
@@ -5145,10 +5260,12 @@ void main() {
       await Future<void>.value();
       expect(commandsClosed, isFalse, reason: 'The query still owns its gate');
       var closed = false;
-      final closing = client.close().then((report) {
-        closed = true;
-        return report;
-      });
+      final closing = client
+          .close(budget: ClientCloseBudget(const Duration(seconds: 30)))
+          .then((report) {
+            closed = true;
+            return report;
+          });
       // Close releases the page topic share; the domain mirror keeps the last
       // known facts and the pending explicit query still owns its lane.
       expect(
@@ -5183,6 +5300,9 @@ void main() {
         final reenter = ordering == 'new intent during acceptance';
         final transport = _Transport();
         final client = await _client(transport);
+        const topic = ChildInteractionsTopic(hostThreadId: 'thread');
+        final originalBinding = await transport.topicBinding(topic, 0);
+        final originalOwner = originalBinding.observation.source;
         final summary = _childSummary(revision: 3);
         _emitChildBaseline(transport, 'thread', revision: 1, items: [summary]);
         expect(transport.childInteractionReads, 0);
@@ -5315,6 +5435,20 @@ void main() {
           store.state.canonical.value?.state.value?.items,
           framesFirst ? isEmpty : [summary],
         );
+        expect(
+          client.channels
+              .activeTopicRefCountViews()['childInteractions:thread'],
+          framesFirst ? 1 : greaterThan(1),
+          reason:
+              'Only unresolved business observations retain operation demand',
+        );
+        final closeAck = Completer<void>();
+        if (framesFirst) {
+          originalOwner.closeGate = closeAck;
+          addTearDown(() {
+            if (!closeAck.isCompleted) closeAck.complete();
+          });
+        }
         client.conversations.setVisibleThread('other');
         client.conversations.setVisibleThread('thread');
         expect(
@@ -5327,6 +5461,40 @@ void main() {
           reason:
               'Navigation only releases presentation, not the pending decision',
         );
+        if (framesFirst) {
+          // The decision was already observed, so navigation released the
+          // final share. A return must join this exact owner before reopening.
+          expect(originalOwner.closeRequested.isCompleted, isTrue);
+          expect(originalOwner.closeAcknowledged.isCompleted, isFalse);
+          expect(originalBinding.sink.isClosed, isTrue);
+          // Join the old stream's real consumer shutdown while native ACK is
+          // still gated; event-loop timing must not hide an early reopen.
+          await originalBinding.sink.done;
+          expect(originalOwner.closeAcknowledged.isCompleted, isFalse);
+          expect(transport.topicBindings[topic], hasLength(1));
+          closeAck.complete();
+          final reopened = await transport.topicBinding(topic, 1);
+          expect(transport.topicBindings[topic], hasLength(2));
+          expect(originalOwner.closeAcknowledged.isCompleted, isTrue);
+          expect(originalOwner.closeCalls, 1);
+          expect(originalOwner.retryCloseCalls, 0);
+          expect(reopened.sink, isNot(same(originalBinding.sink)));
+          expect(
+            reopened.observation.resourceId,
+            isNot(originalBinding.observation.resourceId),
+          );
+          // Script the new subscription's real baseline before subsequent
+          // events; do not push into the retired source or bypass its ACK.
+          _emitChildBaseline(transport, 'thread', revision: 2, items: const []);
+        } else {
+          expect(originalOwner.closeRequested.isCompleted, isFalse);
+          expect(originalOwner.closeCalls, 0);
+          expect(transport.topicBindings[topic], hasLength(1));
+          expect(
+            transport.topicSinksByTopic[topic],
+            same(originalBinding.sink),
+          );
+        }
         // The projection stops offering the interaction: the decision took effect.
         _emitChildTopicFrame(
           transport,

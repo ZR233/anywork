@@ -10,6 +10,7 @@ import '../../accounts/domain/account_values.dart';
 import '../../accounts/domain/accounts_repository.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
+import '../../lifecycle/client_resource.dart';
 import '../../models/acp_models.dart';
 import '../../models/acp_install_models.dart';
 import '../../models/acp_local_detection_models.dart';
@@ -1823,10 +1824,33 @@ final class _AuthDemand implements AccountDemand {
   final AccountDemand auth;
   final AccountDemand configuration;
   Future<void>? _releasing;
+  List<ClientResourceId>? _retirementResourceIds;
   @override
-  Future<void> release() =>
-      _releasing ??= Future.wait([auth.release(), configuration.release()])
-          .then<void>((_) {});
+  List<ClientResourceId> get retirementResourceIds =>
+      _retirementResourceIds ?? const [];
+  @override
+  Future<void> release() {
+    final existing = _releasing;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    final result = _releasing = completion.future;
+    final authClose = Future<void>.sync(auth.release);
+    final configurationClose = Future<void>.sync(configuration.release);
+    _retirementResourceIds ??= List.unmodifiable({
+      ...auth.retirementResourceIds,
+      ...configuration.retirementResourceIds,
+    });
+    completion.complete(
+      Future.wait<void>([authClose, configurationClose]).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          if (identical(_releasing, result)) _releasing = null;
+          Error.throwWithStackTrace(error, stack);
+        },
+      ),
+    );
+    return result;
+  }
 }
 
 AcpAuthSnapshotView _immutableAuth(AcpAuthSnapshotView snapshot) =>

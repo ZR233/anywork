@@ -6,6 +6,8 @@ import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import 'unused_account_ports.dart';
+import 'test_app_lifecycle.dart';
+import 'test_resource_owners.dart';
 
 AccountSummary usageAccount(String id, {String? name, int? query = 1}) =>
     AccountSummary(
@@ -142,10 +144,11 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) => ownTestAccountObservation(contentScope, resourceId, (operation) async {
     late final _UsageFeed feed;
-    feed = _UsageFeed(() => _feeds[target]?.remove(feed));
+    feed = _UsageFeed(operation.resourceId, () => _feeds[target]?.remove(feed));
     _feeds.putIfAbsent(target, () => {}).add(feed);
     final baseline = switch (target) {
       AccountSummariesTarget() => _summaries,
@@ -155,15 +158,19 @@ final class ScriptedUsageTransport extends UnusedAccountPorts
     };
     if (baseline != null) feed.emit(baseline);
     return feed;
-  }
+  });
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) => ownTestProductTopic(contentScope, resourceId, const Stream.empty());
 }
 
 final class _UsageFeed implements AccountDomainObservation {
-  _UsageFeed(this.onClosed);
+  _UsageFeed(this.resourceId, this.onClosed);
+  @override
+  final ClientResourceId resourceId;
   final void Function() onClosed;
   AccountDomainFrame? _latest;
   Completer<AccountDomainFrame?>? _pending;
@@ -204,4 +211,7 @@ final class _UsageFeed implements AccountDomainObservation {
     requestClose();
     onClosed();
   }
+
+  @override
+  Future<void> retryClose() => close();
 }

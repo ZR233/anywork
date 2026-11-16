@@ -2006,7 +2006,7 @@ class AppLocalizationsZh extends AppLocalizations {
   }
 
   @override
-  String get timelineParentAgent => '主智能体';
+  String get timelineParentAgent => '上级智能体';
 
   @override
   String timelineSkillUserActivated(String name) {

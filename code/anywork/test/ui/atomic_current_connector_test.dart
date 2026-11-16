@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -25,9 +27,8 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
-import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
+import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -79,13 +80,17 @@ final class _Content extends Fake implements ConversationContent {
   AttemptId get currentAttemptId => const AttemptId(1);
   @override
   ConversationQueryScope openScope({required int generation}) {
-    final scope = _Scope()..onRead = onRead;
+    final scope = _Scope(
+      ClientResourceId('atomic-current-fixture', scopes.length + 1),
+    )..onRead = onRead;
     scopes.add(scope);
     return scope;
   }
 }
 
 final class _Scope extends Fake implements ConversationQueryScope {
+  _Scope(this.resourceId);
+  final ClientResourceId resourceId;
   int completedReads = 0;
   @override
   Future<CompletedEntry> readCompleted({
@@ -138,12 +143,13 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     await cancelGate?.future;
     if (closeFailure case final failure?) {
       return CloseReport(
         unresolved: [
           UnresolvedResource(
+            resourceId: resourceId,
             owner: 'scope',
             attemptId: const AttemptId(1),
             reason: failure,
@@ -376,8 +382,9 @@ const _workReference = DisplayBlockRef(databaseId: 'database', blockId: 'work');
 Widget _workConnector(
   TimelineExpansionIntent expansion,
   _Content content,
-  TimelineImageResources images,
-) => CompletionRunConnector(
+  TimelineImageResources images, {
+  bool executionPresent = false,
+}) => CompletionRunConnector(
   unit: TimelineDisplayUnit.live(
     block: const LiveDisplayBlock(
       id: 'work',
@@ -388,7 +395,7 @@ Widget _workConnector(
         timing: WorkTiming(startedAt: 0),
       ),
     ),
-    executionPresent: false,
+    executionPresent: executionPresent,
     expansion: expansion,
   ),
   threadId: 'thread',
@@ -532,6 +539,170 @@ void main() {
     );
   }
 
+  testWidgets('short work pages can scroll to older and newer members', (
+    tester,
+  ) async {
+    final content = _Content();
+    final images = TimelineImageResources(threadId: 'thread');
+    final requests = <DisplayMemberWindow>[];
+    final expansion = TimelineExpansionIntent()..expanded = true;
+    expansion.openDisplayMembers = (_, window, _) async {
+      requests.add(window);
+      final end = window is BeforeDisplayMembers ? window.memberOrder - 1 : 4;
+      final start = (end - 1).clamp(1, 4);
+      return _FreezeMembers()..send(
+        DisplayMemberPage(
+          block: _workReference,
+          revision: requests.length,
+          sealed: false,
+          entries: [for (var i = start; i <= end; i++) _workRow(i)],
+          before: start > 1 ? start : null,
+        ),
+      );
+    };
+    addTearDown(() {
+      expansion.retire();
+      images.release();
+    });
+    await tester.pumpWidget(
+      _host(
+        Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            height: 600,
+            width: 600,
+            child: CompletionRunView(
+              id: 'short-scroll-work',
+              timing: displayTiming(),
+              location: WorkDisplayLocation.history,
+              initiallyExpanded: true,
+              childBuilder: (_) => _workConnector(expansion, content, images),
+            ),
+          ),
+        ),
+      ),
+    );
+    await _flush(tester);
+    final scope = tester.widget<CompletionRunScrollScope>(
+      find.byType(CompletionRunScrollScope),
+    );
+    final scroll = find.descendant(
+      of: find.byType(CompletionRunScrollScope),
+      matching: find.byType(SingleChildScrollView),
+    );
+    expect(scope.controller.position.maxScrollExtent, 0);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
+
+    Future<void> wheel(double delta) async {
+      await tester.sendEventToBinding(
+        PointerScrollEvent(
+          position: tester.getCenter(scroll),
+          scrollDelta: Offset(0, delta),
+        ),
+      );
+      await _flush(tester);
+    }
+
+    await wheel(-70);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [2, 3]);
+    await wheel(70);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
+    await tester.drag(scroll, const Offset(0, 70));
+    await _flush(tester);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [2, 3]);
+    await tester.drag(scroll, const Offset(0, -70));
+    await _flush(tester);
+    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
+    expect(requests, hasLength(5));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('nested body keeps wheel priority over work pagination', (
+    tester,
+  ) async {
+    final content = _Content();
+    final images = TimelineImageResources(threadId: 'thread');
+    final handle = _FreezeMembers();
+    var requests = 0;
+    final expansion = TimelineExpansionIntent()
+      ..expanded = true
+      ..openDisplayMembers = (_, _, _) async {
+        requests++;
+        return handle;
+      };
+    addTearDown(() {
+      expansion.retire();
+      images.release();
+    });
+    await tester.pumpWidget(
+      _host(
+        SizedBox(
+          height: 260,
+          child: CompletionRunView(
+            id: 'nested-wheel-work',
+            timing: displayTiming(),
+            location: WorkDisplayLocation.live,
+            initiallyExpanded: true,
+            childBuilder: (_) => _workConnector(
+              expansion,
+              content,
+              images,
+              executionPresent: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    handle.send(
+      DisplayMemberPage(
+        block: _workReference,
+        revision: 1,
+        sealed: false,
+        entries: [
+          DisplayMemberHead(
+            memberKey: 'response',
+            memberOrder: 2,
+            record: DisplayRecord(
+              atom: _textItem(),
+              contentSource: const CurrentAtom(),
+            ),
+          ),
+        ],
+        before: 1,
+      ),
+    );
+    await _flush(tester);
+    content.scopes.single.watches.single.add(
+      _window(List.generate(80, (index) => '正文第 $index 行').join('\n')),
+    );
+    await _flush(tester);
+    final body = find.descendant(
+      of: find.byType(TimelineMemberAtom),
+      matching: find.byType(SingleChildScrollView),
+    );
+    final position = tester
+        .state<ScrollableState>(
+          find.descendant(of: body, matching: find.byType(Scrollable)),
+        )
+        .position;
+    expect(position.maxScrollExtent, greaterThan(50));
+    position.jumpTo(50);
+    await tester.pump();
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(body),
+        scrollDelta: const Offset(0, -30),
+      ),
+    );
+    await _flush(tester);
+    expect(position.pixels, lessThan(50));
+    expect(requests, 1);
+    expect(expansion.members!.page!.before, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'work scroll boundaries read overlapping pages and keep the visible anchor without buttons',
     (tester) async {
@@ -625,6 +796,16 @@ void main() {
       expect(tester.state(anchor), same(original));
       expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
       expect(requests.length, 3);
+      // After navigating back to Latest, a large reverse gesture can reach
+      // the retained leading spacer before any member intersects the viewport.
+      await tester.drag(scroll, const Offset(0, -1000));
+      await _flush(tester);
+      expect(expansion.members!.window, isA<LatestDisplayMembers>());
+      await tester.drag(scroll, const Offset(0, 1000));
+      await _flush(tester);
+      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
+        for (var i = 18; i <= 29; i++) i,
+      ]);
       expect(
         content.scopes,
         isEmpty,

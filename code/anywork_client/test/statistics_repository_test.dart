@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/statistics_ports.dart';
 import 'package:test/test.dart';
@@ -134,10 +135,7 @@ void main() {
         expect(connection.acknowledgedSequences, [1, 2, 3]);
 
         demand.release();
-        expect(
-          (await repository.close(deadline: _deadline())).complete,
-          isTrue,
-        );
+        expect((await repository.close(budget: _budget())).complete, isTrue);
       },
     );
 
@@ -178,7 +176,7 @@ void main() {
       expect(connection.acknowledgedSequences, [1]);
 
       demand.release();
-      expect((await repository.close(deadline: _deadline())).complete, isTrue);
+      expect((await repository.close(budget: _budget())).complete, isTrue);
     });
 
     test(
@@ -263,10 +261,7 @@ void main() {
         expect(newConnection.scopeOpenCalls, 1);
 
         secondDemand.release();
-        expect(
-          (await repository.close(deadline: _deadline())).complete,
-          isTrue,
-        );
+        expect((await repository.close(budget: _budget())).complete, isTrue);
       },
     );
 
@@ -281,7 +276,7 @@ void main() {
         final demand = repository.acquireVisibleDemand();
         await port.waitForOpenCall(1).timeout(const Duration(seconds: 5));
 
-        final closing = repository.close(deadline: _deadline());
+        final closing = repository.close(budget: _budget());
         expect(
           repository.state.connection.phase,
           StatisticsConnectionPhase.closing,
@@ -311,7 +306,7 @@ void main() {
               closing != null) {
             return;
           }
-          closing = repository.close(deadline: _deadline());
+          closing = repository.close(budget: _budget());
           unawaited(
             closing!.then<void>(
               (_) {
@@ -373,10 +368,7 @@ void main() {
         );
 
         demand.release();
-        expect(
-          (await repository.close(deadline: _deadline())).complete,
-          isTrue,
-        );
+        expect((await repository.close(budget: _budget())).complete, isTrue);
         observation.cancel();
         expect(connection.isClosed, isTrue);
       },
@@ -396,7 +388,7 @@ void main() {
             initial: _publication(),
             onOpen: () {
               if (!openEntered.isCompleted) openEntered.complete();
-              closing = repository.close(deadline: _deadline());
+              closing = repository.close(budget: _budget());
               unawaited(
                 closing!.then<void>(
                   (_) {
@@ -475,10 +467,7 @@ void main() {
         );
 
         reopenedDemand.release();
-        expect(
-          (await repository.close(deadline: _deadline())).complete,
-          isTrue,
-        );
+        expect((await repository.close(budget: _budget())).complete, isTrue);
         expect(identical(port.connections.single, reopenedConnection), isTrue);
       },
     );
@@ -497,13 +486,15 @@ void main() {
       await port.waitForOpenCall(1);
       await openGate.entered.future.timeout(const Duration(seconds: 5));
 
-      final timedOut = await repository.close(deadline: DateTime.now());
+      final timedOut = await repository.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
       expect(timedOut.complete, isFalse);
       expect(timedOut.unresolved, hasLength(1));
       expect(port.openCalls, 1);
 
       openGate.release.complete();
-      final cleaned = await repository.retryCleanup(deadline: _deadline());
+      final cleaned = await repository.retryCleanup(budget: _budget());
       demand.release();
 
       expect(cleaned.complete, isTrue);
@@ -557,10 +548,7 @@ void main() {
         expect(port.openCalls, 5);
 
         demand.release();
-        expect(
-          (await repository.close(deadline: _deadline())).complete,
-          isTrue,
-        );
+        expect((await repository.close(budget: _budget())).complete, isTrue);
       },
     );
 
@@ -577,7 +565,7 @@ void main() {
         final connection = await port.waitForConnection(1);
         await ackGate.entered.future.timeout(const Duration(seconds: 5));
 
-        final closing = repository.close(deadline: _deadline());
+        final closing = repository.close(budget: _budget());
         ackGate.release.complete();
         final report = await closing;
         demand.release();
@@ -598,7 +586,7 @@ void main() {
       await port.waitForConnection(1);
       await pageGate.entered.future.timeout(const Duration(seconds: 5));
 
-      final closing = repository.close(deadline: _deadline());
+      final closing = repository.close(budget: _budget());
       expect(
         repository.state.connection.phase,
         StatisticsConnectionPhase.closing,
@@ -657,8 +645,8 @@ void main() {
       expect(connectionB.closeRequested, isFalse);
 
       otherGraphDemand.release();
-      expect((await first.close(deadline: _deadline())).complete, isTrue);
-      expect((await second.close(deadline: _deadline())).complete, isTrue);
+      expect((await first.close(budget: _budget())).complete, isTrue);
+      expect((await second.close(budget: _budget())).complete, isTrue);
     });
 
     test(
@@ -675,7 +663,7 @@ void main() {
           (state) => state.connection.phase == StatisticsConnectionPhase.ready,
         );
 
-        final unresolved = await repository.close(deadline: _deadline());
+        final unresolved = await repository.close(budget: _budget());
         expect(unresolved.complete, isFalse);
         expect(unresolved.unresolved, hasLength(1));
         final cleanupFailure = unresolved.unresolved.single.reason;
@@ -685,7 +673,7 @@ void main() {
         expect(typedCleanupFailure.cause, isA<StateError>());
         expect(connection.closeCalls, 1);
 
-        final retried = await repository.retryCleanup(deadline: _deadline());
+        final retried = await repository.retryCleanup(budget: _budget());
         demand.release();
         expect(retried.complete, isTrue);
         expect(port.openCalls, 1);
@@ -733,10 +721,10 @@ void main() {
       expect(connection.closeCalls, 2);
       expect(port.openCalls, 1);
 
-      final closing = await repository.close(deadline: _deadline());
+      final closing = await repository.close(budget: _budget());
       expect(closing.complete, isFalse);
       demand.release();
-      final retried = await repository.retryCleanup(deadline: _deadline());
+      final retried = await repository.retryCleanup(budget: _budget());
 
       expect(retried.complete, isTrue);
       expect(port.openCalls, 1);
@@ -757,9 +745,7 @@ void main() {
       );
 
       firstDemand.release();
-      final hiddenCleanup = await repository.retryCleanup(
-        deadline: _deadline(),
-      );
+      final hiddenCleanup = await repository.retryCleanup(budget: _budget());
       expect(hiddenCleanup.complete, isFalse);
 
       final reopenedDemand = repository.acquireVisibleDemand();
@@ -774,12 +760,12 @@ void main() {
       expect(connection.closeCalls, greaterThanOrEqualTo(2));
       expect(port.openCalls, 1);
 
-      final closing = await repository.close(deadline: _deadline());
+      final closing = await repository.close(budget: _budget());
       expect(closing.complete, isFalse);
       reopenedDemand.release();
       final closeCallsBeforeCleanup = connection.closeCalls;
       connection.allowCloseToSucceed();
-      final retried = await repository.retryCleanup(deadline: _deadline());
+      final retried = await repository.retryCleanup(budget: _budget());
 
       expect(retried.complete, isTrue);
       expect(port.openCalls, 1);
@@ -792,7 +778,7 @@ void main() {
 StatisticsRepository _repository(StatisticsFeedPort feed, String owner) =>
     createStatisticsRepository(feed: feed, owner: owner);
 
-DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
+ClientCloseBudget _budget() => ClientCloseBudget(const Duration(seconds: 5));
 
 Future<StatisticsRepositoryState> _waitForState(
   StatisticsRepository repository,

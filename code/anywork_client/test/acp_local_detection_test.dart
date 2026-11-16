@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
@@ -76,7 +77,7 @@ void main() {
     await Future<void>(() {});
     var closed = false;
     final closing = client.domains.close(
-      deadline: DateTime.now().add(const Duration(seconds: 2)),
+      budget: ClientCloseBudget(const Duration(seconds: 2)),
     );
     unawaited(
       closing.then((_) {

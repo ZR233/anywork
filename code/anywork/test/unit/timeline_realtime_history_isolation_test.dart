@@ -1,7 +1,7 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
-import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,14 +24,14 @@ void main() {
   const threadId = 'thread-main';
   test('实时正文/token/进度/计时/保存ACK更新不产生历史Controller操作或历史查询', () async {
     final transport = _IsolationTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'realtime-history-isolation',
     );
     addTearDown(() async {
       final report = await graph.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
+        budget: ClientCloseBudget(const Duration(seconds: 5)),
       );
       expect(
         report.complete,
@@ -303,7 +303,7 @@ void main() {
   });
 }
 
-final class _IsolationTransport extends DemoStudioTransport {
+final class _IsolationTransport extends TestDemoStudioTransport {
   final feeds = <_InjectingFeed>[];
   final stateFeeds = <RecordingConversationStateFeed>[];
   @override

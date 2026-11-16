@@ -1,20 +1,21 @@
 import 'package:anywork_client/studio_client.dart';
 
 import 'studio_bridge_api.dart' as frb;
-import 'studio_api.dart' show FrbStudioTransport;
 
 final class FrbStudioUpdateApi implements StudioUpdateApi {
-  const FrbStudioUpdateApi();
+  const FrbStudioUpdateApi({required this.ensureReady});
+
+  final Future<void> Function() ensureReady;
 
   @override
   Future<void> check() async {
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await frb.checkStudioUpdate();
   }
 
   @override
   Future<void> startAutomaticUpdate() async {
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     await frb.startStudioBackgroundUpdate();
   }
 
@@ -30,7 +31,7 @@ final class FrbStudioUpdateApi implements StudioUpdateApi {
     required int expectedRevision,
     required String version,
   }) async {
-    await FrbStudioTransport.ensureReady();
+    await ensureReady();
     try {
       return _FrbStudioUpdateOperation(
         await frb.prepareStudioUpdate(

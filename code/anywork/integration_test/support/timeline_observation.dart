@@ -7,6 +7,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
@@ -398,12 +399,32 @@ final class TimelineObservation {
     }
   }
 
+  bool matchesMountedRecord(
+    TimelineMemberAtom widget,
+    ObservedLiveDisplayRecord head,
+  ) {
+    if (widget.displayId != head.displayId) return false;
+    final group = lease.groupDisplays.where(
+      (display) => display.unitId == head.blockId && display.isCurrent,
+    );
+    if (group.isNotEmpty) {
+      // Unchanged rows retain their notifier value even when a later page has
+      // equivalent new record objects. Match the value actually rendered.
+      final controller = unit(head.blockId).expansion.members;
+      return controller != null &&
+          identical(
+            widget.record,
+            controller.member(head.displayId).value?.record,
+          );
+    }
+    return identical(widget.record, head.record);
+  }
+
   Finder liveRenderer(ObservedLiveDisplayRecord head) {
     final row = find.byWidgetPredicate(
       (widget) =>
           widget is TimelineMemberAtom &&
-          widget.displayId == head.displayId &&
-          widget.record == head.record &&
+          matchesMountedRecord(widget, head) &&
           identical(widget.content, lease) &&
           widget.isActive(),
     );
@@ -1707,32 +1728,49 @@ final class TimelineObservation {
       if (display.error case final error?) throw StateError('$error');
     }
 
-    final older = find.descendant(
+    while (true) {
+      await until(
+        () {
+          requireOriginal();
+          return !display.loading;
+        },
+        'original member page ready',
+        timeout: remaining(),
+      );
+      if (display.before != before) return;
+      await _scrollMembers(display, 300, timeout: remaining());
+    }
+  }
+
+  Future<void> _scrollMembers(
+    TimelineGroupDisplay display,
+    double distance, {
+    required Duration timeout,
+  }) async {
+    final viewport = find.descendant(
       of: groupRow(display.unitId),
-      matching: find.widgetWithText(TextButton, '更早成员'),
+      matching: find.descendant(
+        of: find.byType(CompletionRunScrollScope),
+        matching: find.byType(SingleChildScrollView),
+      ),
     );
     await until(
-      () {
-        requireOriginal();
-        expect(display.before, before);
-        final matches = older.evaluate().length;
-        expect(matches, lessThanOrEqualTo(1));
-        return matches == 1 &&
-            tester.widget<TextButton>(older).onPressed != null;
-      },
-      'enabled original member pagination control',
-      timeout: remaining(),
+      () => viewport.evaluate().length == 1,
+      'original member scroll viewport',
+      timeout: timeout,
     );
-    await tap(older, timeout: remaining());
-    await until(
-      () {
-        requireOriginal();
-        return !display.loading && display.before != before;
-      },
-      'explicit original member page advanced',
-      timeout: remaining(),
+    await Scrollable.ensureVisible(tester.element(viewport), alignment: .5);
+    await tester.pump();
+    expect(display.isCurrent && display.expanded, isTrue);
+    // A tool body may contain its own scrollable. Start in the Work's leading
+    // gutter so this gesture reaches the member viewport, not that body.
+    final bounds = tester.getRect(viewport);
+    await tester.dragFrom(
+      Offset(bounds.left + 4, bounds.center.dy),
+      Offset(0, distance),
     );
-    remaining();
+    await tester.pump();
+    expect(tester.takeException(), isNull);
   }
 
   Future<void> selectLatestMembers(
@@ -1740,27 +1778,32 @@ final class TimelineObservation {
     Duration timeout = const Duration(seconds: 60),
   }) async {
     final original = lease;
-    if (unit(display.unitId).expansion.members!.window
-        is LatestDisplayMembers) {
-      return;
+    final clock = Stopwatch()..start();
+    Duration remaining() {
+      final value = timeout - clock.elapsed;
+      if (value <= Duration.zero) {
+        fail('Timed out returning to latest members ${display.unitId}');
+      }
+      return value;
     }
-    final latest = find.descendant(
-      of: groupRow(display.unitId),
-      matching: find.widgetWithText(TextButton, '最新成员'),
-    );
-    await tap(latest, timeout: timeout);
-    await until(
-      () {
-        expect(lease, same(original));
-        expect(display.isCurrent, isTrue);
-        if (display.error case final error?) throw StateError('$error');
-        return !display.loading &&
-            unit(display.unitId).expansion.members!.window
-                is LatestDisplayMembers;
-      },
-      'latest bounded member page',
-      timeout: timeout,
-    );
+
+    while (true) {
+      await until(
+        () {
+          expect(lease, same(original));
+          expect(display.isCurrent, isTrue);
+          if (display.error case final error?) throw StateError('$error');
+          return !display.loading;
+        },
+        'original member page ready',
+        timeout: remaining(),
+      );
+      if (unit(display.unitId).expansion.members!.window
+          is LatestDisplayMembers) {
+        return;
+      }
+      await _scrollMembers(display, -300, timeout: remaining());
+    }
   }
 
   Future<void> revealSingle(

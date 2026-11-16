@@ -3997,6 +3997,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "pl-lifecycle"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "pl-lsp"
 version = "0.1.0"
 dependencies = [
@@ -4171,6 +4180,7 @@ dependencies = [
  "anyhow",
  "flutter_rust_bridge",
  "futures",
+ "pl-lifecycle",
  "pl-model",
  "pl-protocol",
  "pl-provider-fixture",

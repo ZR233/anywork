@@ -1,6 +1,7 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:convert';
 
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -89,16 +90,21 @@ final class _Harness {
     observe = TimelineReaderObservation(peer, evidence);
     addTearDown(() async {
       await observe.close();
-      expect(await api.cancelDartSubscriptions(budgetMs: 1000), isEmpty);
+      expect(
+        await api.cancelDartSubscriptions(
+          budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+        ),
+        isDartResourceCloseClean,
+      );
     });
   }
-  final DemoStudioTransport api;
+  final TestDemoStudioTransport api;
   final ScriptedTimelineReader peer;
   final CompletedEntry target;
   final evidence = <String, Object?>{};
   late final TimelineReaderObservation observe;
   static Future<_Harness> open() async {
-    final api = DemoStudioTransport();
+    final api = TestDemoStudioTransport();
     await api.readBootstrap();
     final original = await api.openTimelineReader(
       'thread-main',
