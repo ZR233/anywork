@@ -37,12 +37,19 @@ Widget acpTestApp(Widget child) => MaterialApp(
 
 /// Only controls source frames and records calls. All reduction is production.
 final class AcpComponentHarness {
-  AcpComponentHarness(this.graph, this.port, this.source, this.owner);
+  AcpComponentHarness(
+    this.graph,
+    this.port,
+    this.source,
+    this.owner,
+    this._transport,
+  );
   final AppGraph graph;
   AnyworkClient get client => graph.client;
   final ControlledAcpBusinessPort port;
   final ControlledAcpObservation source;
   final AcpConversationSession owner;
+  final TestConversationTransport _transport;
 
   static Future<AcpComponentHarness> create({
     String threadId = 'thread',
@@ -137,7 +144,52 @@ final class AcpComponentHarness {
             : const AcpLoadIntentView(acpRemoteFixture),
       ),
     );
-    return AcpComponentHarness(graph, port, source, owner);
+    return AcpComponentHarness(graph, port, source, owner, transport);
+  }
+
+  Future<({ControlledAcpObservation source, AcpConversationSession owner})>
+  openSecondConversation() async {
+    const remote = AcpRemoteSessionId('remote-second');
+    final target = AcpSessionTargetView(
+      sessionId: 'session-second',
+      agentId: 'agent-second',
+      threadId: 'second',
+      instance: BigInt.from(20),
+    );
+    final source = ControlledAcpObservation([
+      AcpAcceptedFrameView(target: target, hasObservation: true),
+      AcpEventFrameView(
+        AcpReadyEventView(AcpNewSessionResponseView(sessionId: remote)),
+      ),
+      const AcpSettledFrameView(AcpSuccessView<void>(null)),
+    ]);
+    _transport.seedThread(
+      _transport.directoryThreads[owner.state.target!.threadId]!.copyWith(
+        sessionId: target.sessionId,
+        agentId: target.agentId,
+        threadId: target.threadId,
+        parentAgentId: null,
+        role: 'root',
+        backend: const AcpAgentBackendView(
+          reference: AcpSessionReferenceView(
+            accountId: 'account',
+            acpSessionId: 'remote-second',
+            cwd: '/project',
+          ),
+        ),
+      ),
+    );
+    port.sources.add(source);
+    final second = await client.acpSessions.openConversation(
+      OpenAcpSessionRequestView(
+        accountId: 'account',
+        expectedConnectionRevision: BigInt.one,
+        workspaceId: 'workspace',
+        threadId: target.threadId,
+        intent: const AcpLoadIntentView(remote),
+      ),
+    );
+    return (source: source, owner: second);
   }
 
   Widget scope(Widget child) => ProviderScope(
@@ -163,12 +215,25 @@ final class AcpComponentHarness {
 
   Future<void> close(WidgetTester tester) async {
     await tester.pumpWidget(const SizedBox.shrink());
-    final report = await pumpClientFuture(
+    final budget = testCloseBudget();
+    final graphClosing = graph.close(budget: budget);
+    final graphReport = await pumpClientFuture(
       tester,
-      graph.close(budget: testCloseBudget()),
+      graphClosing,
       'close ACP component AppGraph',
     );
-    expect(report.complete, isTrue, reason: '${report.unresolved}');
+    // As in application shutdown, join the app subtree before its final root.
+    final rootClosing = graph.closeLifecycleRoot(budget);
+    final rootReport = await pumpClientFuture(
+      tester,
+      rootClosing,
+      'close ACP component lifecycle root',
+    );
+    final details =
+        'AppGraph:\n${describeTestCloseReport(graphReport)}\n'
+        'Lifecycle root:\n${describeTestCloseReport(rootReport)}';
+    expect(graphReport.complete, isTrue, reason: details);
+    expect(rootReport.complete, isTrue, reason: details);
   }
 }
 

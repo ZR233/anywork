@@ -1,8 +1,6 @@
-import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_status_bar_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_external_history_view_model.dart';
-import 'package:anywork/src/features/conversation/acp/view_models/acp_session_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_status_bar_view_model.dart';
 import 'package:anywork/src/shared/studio_context_usage_ring.dart';
 import 'package:anywork_client/acp_sessions.dart';
@@ -284,35 +282,44 @@ void main() {
     final first = await AcpComponentHarness.create(
       updates: [_usage(25, 100, amount: 1)],
     );
-    final second = await AcpComponentHarness.create(threadId: 'second');
     addTearDown(() => first.close(tester));
-    addTearDown(() => second.close(tester));
+    final second = await first.openSecondConversation();
     final thread = ValueNotifier('thread');
     addTearDown(thread.dispose);
     await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          appGraphProvider.overrideWithValue(first.graph),
-          acpConversationOwnerProvider('second')
-              .overrideWith((ref) async => second.owner),
-        ],
-        child: acpTestApp(
-          ValueListenableBuilder<String>(
-            valueListenable: thread,
-            builder: (context, id, _) => AcpStatusBarConnector(threadId: id),
-          ),
+      first.scope(
+        ValueListenableBuilder<String>(
+          valueListenable: thread,
+          builder: (context, id, _) => AcpStatusBarConnector(threadId: id),
         ),
       ),
     );
     await tester.pumpAndSettle();
     expect(find.text('1.0 USD'), findsOneWidget);
+    expect(
+      tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
+      0.25,
+    );
     thread.value = 'second';
     await tester.pumpAndSettle();
     expect(find.byType(ContextUsageRing), findsNothing);
     expect(find.textContaining('USD'), findsNothing);
-    second.update(_usage(80, 100, amount: 3));
+    second.source.read!.complete(
+      AcpEventFrameView(
+        AcpUpdateEventView(
+          AcpSessionNotificationView(
+            sessionId: const AcpRemoteSessionId('remote-second'),
+            update: _usage(80, 100, amount: 3),
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
     expect(find.text('3.0 USD'), findsOneWidget);
+    expect(
+      tester.widget<ContextUsageRing>(find.byType(ContextUsageRing)).progress,
+      0.8,
+    );
     thread.value = 'thread';
     await tester.pumpAndSettle();
     expect(find.text('1.0 USD'), findsOneWidget);
@@ -322,8 +329,20 @@ void main() {
     );
     expect(first.source.closeSignals, 0);
     expect(second.source.closeSignals, 0);
-    expect(first.port.calls.where((call) => call.$1 == 'open'), hasLength(1));
-    expect(second.port.calls.where((call) => call.$1 == 'open'), hasLength(1));
+    expect(first.source.closes, 0);
+    expect(second.source.closes, 0);
+    expect(
+      first.client.acpSessions.conversationForThread('thread'),
+      first.owner,
+    );
+    expect(
+      first.client.acpSessions.conversationForThread('second'),
+      second.owner,
+    );
+    final opens = first.port.calls
+        .where((call) => call.$1 == 'open')
+        .map((call) => (call.$2 as OpenAcpSessionRequestView).threadId);
+    expect(opens, ['thread', 'second']);
   });
 
   testWidgets('narrow status bar scrolls horizontally without overflow', (
