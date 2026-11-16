@@ -995,7 +995,7 @@
       }
     }
   },
-  "timelineParentAgent": "Main agent",
+  "timelineParentAgent": "Parent agent",
   "timelineSkillUserActivated": "User activated skill · {name}",
   "@timelineSkillUserActivated": {
     "placeholders": {

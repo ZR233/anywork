@@ -3828,7 +3828,7 @@ abstract class AppLocalizations {
   /// No description provided for @timelineParentAgent.
   ///
   /// In en, this message translates to:
-  /// **'Main agent'**
+  /// **'Parent agent'**
   String get timelineParentAgent;
 
   /// No description provided for @timelineSkillUserActivated.

@@ -828,6 +828,82 @@ abstract final class TimelinePreviewFixtures {
     metadata: {chatItemPresentationKey: value},
   );
 
+  static ChatItemPresentation _parentMessage(
+    String id,
+    int order,
+    String text,
+  ) {
+    final bodyReference = ContentRef(
+      databaseId: 'preview',
+      target: BodyContentTarget(
+        owner: ItemContentOwner(itemId: id),
+        key: 'body',
+      ),
+    );
+    final atom = ChatAtom(
+      id: id,
+      completionItemId: id,
+      source: InboxMessageChatSource(
+        sourceId: 'agent:preview-parent',
+        messageId: id,
+      ),
+      sourceOrder: order,
+      kind: ChatAtomKind.text,
+      delivery: ChatDeliveryKind.independent,
+      lifecycle: const TerminalChatAtom(
+        started: null,
+        ended: null,
+        outcome: ChatTerminalOutcome.completed,
+      ),
+      textChannel: ThreadTextChannel.parentAgent,
+      contentPresent: true,
+      contents: [
+        ChatAtomContent(role: ChatContentRole.body, reference: bodyReference),
+      ],
+      payload: _payload(
+        'text',
+        const {'channel': 'parentAgent', 'attachments': []},
+        bodies: [body('body', text)],
+      ),
+    );
+    return ChatItemPresentation.forUnit(
+      TimelineDisplayUnit(
+        block: DisplayBlock(
+          id: id,
+          blockOrder: order,
+          body: SingleDisplayBlock(
+            visibility: SingleVisibility.content,
+            record: DisplayRecord(
+              atom: atom,
+              contentSource: CompletedOriginal(completionId: id),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static List<Message> parentAgentMessages() => [
+    _message(
+      _parentMessage(
+        'preview-parent-task',
+        1,
+        '请检查时间线中上级消息的展示，确认文字、间距和窄窗口换行与用户消息保持一致。',
+      ),
+    ),
+    _message(
+      item(
+        'preview-child-progress',
+        'text',
+        const {'channel': 'commentary', 'attachments': []},
+        bodies: [body('body', '已核对消息来源与展示路径，正在检查长文本和窄窗口效果。')],
+      ),
+    ),
+    _message(
+      _parentMessage('preview-parent-followup', 3, '请继续验证完整的前端测试，并在完成后报告结果。'),
+    ),
+  ];
+
   static List<Message> messages() => [
     for (final value in [
       user,
