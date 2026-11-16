@@ -6,7 +6,6 @@ use tokio::sync::watch;
 
 use crate::{
     AccountUsageStateSnapshot, PersistenceStateSnapshot, SkillsStateSnapshot,
-    StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
     StudioAgentProfilesStateSnapshot, StudioLspStateSnapshot, StudioModelCatalogStateSnapshot,
     StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope, StudioProductEventKind,
     StudioRecoveryStateSnapshot, StudioSessionCostsState, StudioSettingsConfigStateSnapshot,
@@ -17,101 +16,6 @@ use pl_studio_statistics::StudioModelPerformanceSnapshot;
 use super::ProductEventBus;
 
 impl ProductEventBus {
-    pub async fn read_agent_directory(&self) -> StudioAgentDirectoryState {
-        let catalog = self.store.catalog();
-        let mut agents = catalog
-            .agents()
-            .into_iter()
-            .filter(|agent| agent.parent_agent_id.is_some())
-            .filter_map(|agent| {
-                let session = catalog.get_session(&agent.session_id)?;
-                let id = agent.agent_id.clone();
-                let state = match agent.projected_backend().native_status()? {
-                    pl_protocol::ThreadStatus::Closed => {
-                        pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
-                    }
-                    pl_protocol::ThreadStatus::Closing => {
-                        pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
-                    }
-                    _ => pl_protocol::AgentState::idle(),
-                };
-                Some((
-                    id.clone(),
-                    StudioAgentDirectoryEntry {
-                        agent_id: id.clone(),
-                        session_id: agent.session_id.clone(),
-                        parent_agent_id: agent.parent_agent_id.clone(),
-                        thread_id: agent.thread_id.clone(),
-                        role: agent.role.clone(),
-                        task: agent.title.clone().unwrap_or_else(|| session.title.clone()),
-                        summary: None,
-                        state,
-                        // A cold directory row owns no live execution: the observation projection is
-                        // the only source of a stoppable identity, so nothing is fabricated here.
-                        execution: None,
-                        can_stop: false,
-                        // 冷目录行没有任何 continue 事实可读，不据旧运行摘要虚构“等待调度”。
-                        awaiting_scheduling: false,
-                        delegation_mode: session.delegation_mode,
-                        delegation_preference: session.delegation_preference,
-                        frozen_model: agent.frozen_model(),
-                        updated_at: agent.updated_at,
-                    },
-                ))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
-        for (id, mut observed) in self.agents.lock().await.clone() {
-            if let Some(agent) = catalog.get_agent(&id)
-                && agent.explicitly_closed
-            {
-                if agent.projected_backend().native_status()
-                    == Some(pl_protocol::ThreadStatus::Closed)
-                {
-                    observed.state =
-                        pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new());
-                } else if !matches!(observed.state, pl_protocol::AgentState::Closed(_)) {
-                    observed.state =
-                        pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new());
-                }
-            }
-            agents.insert(id, observed);
-        }
-        StudioAgentDirectoryState {
-            state: self.resource(
-                &self.revisions.agent,
-                StudioAgentDirectoryData {
-                    agents: agents.into_values().collect(),
-                },
-            ),
-        }
-    }
-
-    pub fn emit_agent_directory(
-        &self,
-        state: StudioAgentDirectoryState,
-    ) -> StudioProductEventEnvelope {
-        self.emit(StudioProductEventKind::AgentDirectoryChanged(state))
-    }
-
-    pub async fn update_agent_directory(
-        &self,
-        agent: StudioAgentDirectoryEntry,
-    ) -> Option<StudioProductEventEnvelope> {
-        {
-            let mut agents = self.agents.lock().await;
-            // A cold reconciliation or a redundant activation recomputes the very same row. Publishing
-            // it again would bump the directory revision and wake every observer for a fact that did
-            // not change, so an identical row is dropped here: revision and event mean "the directory
-            // really changed".
-            if agents.get(&agent.agent_id) == Some(&agent) {
-                return None;
-            }
-            agents.insert(agent.agent_id.clone(), agent);
-        }
-        self.bump(&self.revisions.agent);
-        Some(self.emit_agent_directory(self.read_agent_directory().await))
-    }
-
     pub fn emit_settings_config_state(
         &self,
         state: StudioSettingsConfigStateSnapshot,

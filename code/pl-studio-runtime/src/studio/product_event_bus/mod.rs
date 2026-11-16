@@ -20,13 +20,14 @@ use pl_protocol::ObservedResource;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::{
-    PersistenceStateSnapshot, StudioAgentDirectoryEntry, StudioPersistenceQueueStateSnapshot,
-    StudioProductEventEnvelope, StudioProductEventKind, StudioProductTopic,
+    PersistenceStateSnapshot, StudioPersistenceQueueStateSnapshot, StudioProductEventEnvelope,
+    StudioProductEventKind, StudioProductTopic,
 };
 
 use super::StudioStore;
 use super::agent_host::ThreadWriteBehindWriter;
 use super::ids::unix_seconds;
+pub(in crate::studio) use thread_directory::NativeAgentObservation;
 pub(crate) use thread_directory::ThreadMetadataSignal;
 pub(crate) use topics::ProductTopicSignal;
 use topics::TopicChannels;
@@ -54,7 +55,6 @@ pub struct ProductEventBus {
     project_snapshot: Arc<Mutex<Vec<crate::WorkspaceRecord>>>,
     persistence_snapshot: Arc<std::sync::Mutex<PersistenceStateSnapshot>>,
     persistence_queue: Arc<std::sync::Mutex<PersistenceQueuePublication>>,
-    agents: Arc<Mutex<BTreeMap<String, StudioAgentDirectoryEntry>>>,
     /// 唯一当前目录摘要；锁顺序为 index → child projection / writer / topics。
     /// 不跨 I/O 或 await；持久化批次不反写已提交的较新摘要。
     thread_index: Arc<std::sync::Mutex<thread_directory::ThreadDirectoryIndex>>,
@@ -168,7 +168,6 @@ impl ProductEventBus {
             persistence_queue: Arc::new(std::sync::Mutex::new(
                 PersistenceQueuePublication::default(),
             )),
-            agents: Arc::new(Mutex::new(BTreeMap::new())),
             thread_index: Arc::new(std::sync::Mutex::new(thread_index)),
             directory_commands: Arc::new(Mutex::new(())),
             #[cfg(test)]

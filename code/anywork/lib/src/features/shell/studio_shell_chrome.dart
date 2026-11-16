@@ -1,7 +1,7 @@
 part of 'studio_shell.dart';
 
-class _Header extends ConsumerWidget {
-  const _Header({required this.state});
+class SessionHeader extends ConsumerWidget {
+  const SessionHeader({required this.state, super.key});
 
   final HeaderView state;
 
@@ -33,7 +33,7 @@ class _Header extends ConsumerWidget {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              if (thread != null)
+              if (thread != null && thread.backend is NativeAgentBackendView)
                 Tooltip(
                   message: context.l10n.delegationFrozen,
                   child: Text(
@@ -65,35 +65,45 @@ class _Header extends ConsumerWidget {
           );
           // Actions stay on one row when they fit and stack vertically when the
           // window is too narrow, so the open-workspace menu never overflows.
+          final hasWorkspaceTarget =
+              state.selectedProject != null && state.selectedRootRow != null;
+          final hasHeaderActions =
+              state.agents.isNotEmpty || hasWorkspaceTarget;
           final actions = OverflowBar(
             spacing: 8,
             overflowSpacing: 4,
             overflowAlignment: OverflowBarAlignment.start,
             children: [
-              AgentSwitcherMenu(
-                agents: state.agents,
-                workspaceRows: state.workspaceRows,
-                recoveryIssues: recoveryIssues,
-                selectedThreadId: state.selectedThreadId,
-                pendingInteractionThreadIds: {
-                  for (final interaction in state.pendingInteractions)
-                    interaction.threadId,
-                },
-              ),
-              _SessionCostChip(cost: state.sessionCost),
-              _SessionOpenWorkspaceMenu(state: state),
+              if (state.agents.isNotEmpty) ...[
+                AgentSwitcherMenu(
+                  agents: state.agents,
+                  workspaceRows: state.workspaceRows,
+                  recoveryIssues: recoveryIssues,
+                  selectedThreadId: state.selectedThreadId,
+                  pendingInteractionThreadIds: {
+                    for (final interaction in state.pendingInteractions)
+                      interaction.threadId,
+                  },
+                ),
+                if (thread?.backend is NativeAgentBackendView &&
+                    state.agents.every(
+                      (agent) => agent.activity is NativeStudioAgentActivity,
+                    ))
+                  _SessionCostChip(cost: state.sessionCost),
+              ],
+              if (hasWorkspaceTarget) _SessionOpenWorkspaceMenu(state: state),
             ],
           );
           if (constraints.maxWidth < 520) {
             return Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [title, if (state.agents.isNotEmpty) actions],
+              children: [title, if (hasHeaderActions) actions],
             );
           }
           return Row(
             children: [
               Expanded(child: title),
-              if (state.agents.isNotEmpty) ...[
+              if (hasHeaderActions) ...[
                 const SizedBox(width: 16),
                 // Bound the actions: this non-flexible row child would
                 // otherwise receive unbounded width and let the overflow bar

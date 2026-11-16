@@ -1,5 +1,6 @@
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:riverpod/riverpod.dart' show ProviderListenableSelect;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../../../presentation/providers/client_provider.dart';
@@ -45,26 +46,42 @@ AcpExternalHistoryButtonState acpExternalHistoryButtonViewModel(
   Ref ref,
   String threadId,
 ) {
-  final ownerState = ref.watch(acpConversationOwnerProvider(threadId));
-  final owner = ownerState.asData?.value;
-  final conversation = ref.watch(acpConversationStateProvider(threadId));
-  final state = conversation.asData?.value;
-  final capabilities = state?.capabilities;
-  final status = ownerState.isLoading || conversation.isLoading
+  final owner = ref.watch(
+    acpConversationOwnerProvider(threadId).select(
+      (value) => (loading: value.isLoading, present: value.asData != null),
+    ),
+  );
+  final selected = ref.watch(
+    acpConversationStateProvider(threadId).select((value) {
+      final state = value.asData?.value;
+      return (
+        loading: value.isLoading,
+        hasCapabilities: state?.capabilities != null,
+        list: state?.capabilities?.listSessions == true,
+        load: state?.capabilities?.loadSession == true,
+        resume: state?.capabilities?.resumeSession == true,
+        ready:
+            state?.ready == true &&
+            state?.disconnected == false &&
+            state?.observationEnded == false,
+      );
+    }),
+  );
+  final status = owner.loading || selected.loading
       ? AcpExternalHistoryAvailability.loading
-      : owner == null
+      : !owner.present
       ? AcpExternalHistoryAvailability.noOwner
-      : capabilities == null
+      : !selected.hasCapabilities
       ? AcpExternalHistoryAvailability.unknownCapability
-      : !capabilities.listSessions
+      : !selected.list
       ? AcpExternalHistoryAvailability.unsupported
-      : !state!.ready || state.disconnected || state.observationEnded
+      : !selected.ready
       ? AcpExternalHistoryAvailability.notReady
       : AcpExternalHistoryAvailability.available;
   return AcpExternalHistoryButtonState(
     status: status,
-    canLoad: capabilities?.loadSession == true,
-    canResume: capabilities?.resumeSession == true,
+    canLoad: selected.load,
+    canResume: selected.resume,
   );
 }
 

@@ -302,14 +302,27 @@ pub struct BridgeAgentDirectoryEntryDto {
     pub frozen_model: Option<super::BridgeNewThreadModelRoute>,
     pub task: String,
     pub summary: Option<String>,
-    pub state: BridgeAgentState,
-    /// 该成员当前执行；未装载或无当前执行时为空。
-    pub execution: Option<BridgeAgentExecution>,
-    /// 用户是否可对这一行发起精确停止。
-    pub can_stop: bool,
-    /// 该成员已被停止/中断且尚无操作认领其继续点，等待主智能体调度。
-    pub awaiting_scheduling: bool,
+    pub activity: BridgeAgentActivity,
     pub updated_at: i64,
+}
+
+/// Native 执行状态与 ACP 未知状态属于不同后端，不互相补默认值。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BridgeAgentActivity {
+    Native {
+        state: BridgeAgentState,
+        execution: Option<BridgeAgentExecution>,
+        can_stop: bool,
+        awaiting_scheduling: bool,
+    },
+    Acp {
+        explicitly_closed: bool,
+    },
 }
 
 /// 目录行的当前执行身份与阶段：停止目标来自它，而不是当前选中会话的轮次。

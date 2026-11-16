@@ -1,8 +1,8 @@
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:riverpod/riverpod.dart' show ProviderListenableSelect;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../state/acp_view_state.dart';
-import 'acp_content_view_model.dart';
 import 'acp_session_view_model.dart';
 import 'acp_timeline_view_model.dart';
 
@@ -28,20 +28,22 @@ part 'acp_status_bar_view_model.g.dart';
 
 @riverpod
 AcpStatusBarViewState acpStatusBarViewModel(Ref ref, String threadId) {
-  final asyncState = ref.watch(acpConversationStateProvider(threadId));
-  final state = asyncState.value;
-  final selected = (
-    loading: asyncState.isLoading || state?.openPending == true,
-    ready: state?.ready ?? false,
-    disconnected: state?.disconnected ?? false,
-    ended: state?.observationEnded ?? false,
-    isRunning: state?.activeRun != null,
-    completed: state?.lastCompleted,
-    history: state?.history,
-    usage: state == null ? null : extractLatestAcpUsage(state.content),
+  final selected = ref.watch(
+    acpConversationStateProvider(threadId).select((asyncState) {
+      final state = asyncState.value;
+      return (
+        loading: asyncState.isLoading || state?.openPending == true,
+        ready: state?.ready ?? false,
+        disconnected: state?.disconnected ?? false,
+        ended: state?.observationEnded ?? false,
+        isRunning: state?.activeRun != null,
+        stopReason: _mapStopReason(state?.lastCompleted),
+        history: state?.history,
+      );
+    }),
   );
 
-  final (stopReason, stopReasonRaw) = _mapStopReason(selected.completed);
+  final (stopReason, stopReasonRaw) = selected.stopReason;
   final phase = selected.disconnected
       ? AcpSessionStatusPhase.disconnected
       : selected.ended
@@ -59,6 +61,25 @@ AcpStatusBarViewState acpStatusBarViewModel(Ref ref, String threadId) {
     stopReason: stopReason,
     stopReasonRaw: stopReasonRaw,
     provenance: mapAcpHistoryOrigin(selected.history),
-    usage: selected.usage,
+  );
+}
+
+@riverpod
+AcpContextUsageViewState? acpContextUsageViewModel(Ref ref, String threadId) {
+  return ref.watch(
+    acpConversationStateProvider(threadId).select((asyncState) {
+      final usage = asyncState.value?.latestUsage;
+      return usage == null || usage.size <= BigInt.zero
+          ? null
+          : (used: usage.used, size: usage.size);
+    }),
+  );
+}
+
+@riverpod
+AcpCostViewState? acpCostViewModel(Ref ref, String threadId) {
+  return ref.watch(
+    acpConversationStateProvider(threadId)
+        .select((asyncState) => asyncState.value?.latestUsage?.cost),
   );
 }

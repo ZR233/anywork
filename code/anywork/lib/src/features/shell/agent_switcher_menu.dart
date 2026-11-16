@@ -83,13 +83,13 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   /// elapsed 来自命令板 `startedAtMs`（跨重建稳定）；`_stopUnconfirmedFired` 只把
   /// 「计时器已到点」的时刻保留到下一次命令板更新。
   bool _stopUnconfirmedFor(StudioAgentView agent) {
-    if (agent.execution?.phase.isStopping ?? false) return false;
+    if (_nativeExecution(agent)?.phase.isStopping ?? false) return false;
     final command = _stopCommands[agent.threadId];
     if (command == null ||
         !command.isPending ||
         command.accepted ||
         command.startedAtMs == 0 ||
-        command.target.label != agent.execution?.id) {
+        command.target.label != _nativeExecution(agent)?.id) {
       return false;
     }
     // 用户已重试且被 Client 排队：按「请求在途」渲染，不显示未确认。
@@ -117,7 +117,7 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   StudioFailure? _stopFailureFor(StudioAgentView agent) {
     final command = _stopCommands[agent.threadId];
     if (command == null || command.phase != CommandPhase.failed) return null;
-    if (command.target.label != agent.execution?.id) return null;
+    if (command.target.label != _nativeExecution(agent)?.id) return null;
     return command.error;
   }
 
@@ -133,8 +133,8 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
           command != null &&
           command.isPending &&
           !command.accepted &&
-          !(agent.execution?.phase.isStopping ?? false) &&
-          command.target.label == agent.execution?.id;
+          !(_nativeExecution(agent)?.phase.isStopping ?? false) &&
+          command.target.label == _nativeExecution(agent)?.id;
       _stopTimers.remove(threadId)?.cancel();
       if (!awaitingReceipt || command.startedAtMs == 0) {
         _stopUnconfirmedFired.remove(threadId);
@@ -172,33 +172,39 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
   /// 这只影响标题里的数量，菜单仍列出全部成员，行内的停止、停止资格与选择行为
   /// 都不因计数而改变。
   int _countedMembers(List<StudioAgentView> agents) =>
-      agents.where((agent) => agent.state is! ClosedStudioAgent).length;
+      agents.where((agent) => _nativeState(agent) is! ClosedStudioAgent).length;
 
   Color _aggregateAgentColor(
     BuildContext context,
     List<StudioAgentView> agents,
   ) {
-    if (agents.any((agent) => agent.state is FaultedStudioAgent)) {
+    if (agents.any((agent) => _nativeState(agent) is FaultedStudioAgent)) {
       return context.colors.error;
     }
     if (agents.any(_hasPendingInteraction)) {
       return context.statusColors.warning;
     }
-    if (agents.any((agent) => agent.state.isActive)) {
+    if (agents.any((agent) => _nativeState(agent)?.isActive ?? false)) {
       return context.statusColors.activeIndicator;
+    }
+    if (agents.any((agent) => agent.activity is AcpStudioAgentActivity)) {
+      return context.colors.onSurfaceVariant;
     }
     return context.statusColors.success;
   }
 
   Color _statusColor(BuildContext context, StudioAgentView agent) {
-    if (agent.state is FaultedStudioAgent) {
+    if (_nativeState(agent) is FaultedStudioAgent) {
       return context.colors.error;
     }
     if (_hasPendingInteraction(agent)) {
       return context.statusColors.warning;
     }
-    if (agent.state.isActive) {
+    if (_nativeState(agent)?.isActive ?? false) {
       return context.statusColors.activeIndicator;
+    }
+    if (agent.activity is AcpStudioAgentActivity) {
+      return context.colors.onSurfaceVariant;
     }
     return context.statusColors.success;
   }
@@ -382,7 +388,8 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
       workspaceId: row?.workspaceId ?? rootProjectId,
       threadId: agent.threadId,
     ).firstOrNull;
-    final error = agent.error;
+    final nativeState = _nativeState(agent);
+    final error = nativeState?.errorMessage;
     final summary = row?.title.trim().isNotEmpty == true
         ? row!.title
         : agent.task.trim().isNotEmpty
@@ -404,12 +411,16 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
     final descriptor = account?.models
         .where((model) => model.modelId == frozen?.modelId)
         .firstOrNull;
-    final modelLabel = frozen == null
+    final modelLabel = agent.activity is AcpStudioAgentActivity
+        ? null
+        : frozen == null
         ? context.l10n.delegationModelNotRecorded
         : descriptor?.displayName.isNotEmpty == true
         ? descriptor!.displayName
         : frozen.modelId;
-    final modelTooltip = frozen == null
+    final modelTooltip = modelLabel == null
+        ? (roleLabel ?? role)
+        : frozen == null
         ? modelLabel
         : '$modelLabel\n${frozen.accountId} / ${frozen.modelId}\n${context.l10n.statusReasoningEffort}: ${frozen.effort ?? context.l10n.statisticsReasoningEffortUnspecified}';
     final stop = AgentListStopState.resolve(
@@ -427,13 +438,14 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
         context.l10n.agentStopWaitingScheduling,
       _ => null,
     };
+    final defaultStatus = nativeState == null
+        ? context.l10n.agentListStatusUnknown
+        : context.threadStatusLabel(_agentThreadStatus(nativeState));
     final statusDetail = stopFailure != null
         ? context.l10n.agentStopFailed(_stopFailureText(context, stopFailure))
         : unconfirmed
         ? context.l10n.composerBlockerUnknown
-        : stopNote ??
-              error ??
-              context.threadStatusLabel(_agentThreadStatus(agent.state));
+        : stopNote ?? error ?? defaultStatus;
     final status = stopFailure != null || error != null
         ? context.l10n.agentListStatusFailed
         : unconfirmed
@@ -442,13 +454,13 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
             AgentListStopAction.stopping => context.l10n.agentStopping,
             AgentListStopAction.stoppedWaitingScheduling =>
               context.l10n.agentListStatusWaiting,
-            _ => switch (agent.state) {
+            _ => switch (nativeState) {
               WaitingToolStudioAgent() => context.l10n.agentListStatusApproval,
               WaitingInteractionStudioAgent() =>
                 context.l10n.agentListStatusInput,
               CancellingStudioAgent() => context.l10n.agentStopping,
               FaultedStudioAgent() => context.l10n.agentListStatusFailed,
-              _ => context.threadStatusLabel(_agentThreadStatus(agent.state)),
+              _ => defaultStatus,
             },
           };
     final statusKey = stopFailure != null
@@ -537,7 +549,9 @@ class _AgentSwitcherMenuState extends ConsumerState<AgentSwitcherMenu> {
                     Tooltip(
                       message: modelTooltip,
                       child: Text(
-                        '${roleLabel ?? role} · $modelLabel',
+                        modelLabel == null
+                            ? (roleLabel ?? role)
+                            : '${roleLabel ?? role} · $modelLabel',
                         key: StudioDriverKeys.agentModel(agent.threadId),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -686,6 +700,18 @@ String _stopFailureText(BuildContext context, Object error) {
   final failure = error is StudioFailure ? error : null;
   return failure?.message ?? error.toString();
 }
+
+StudioAgentState? _nativeState(StudioAgentView agent) =>
+    switch (agent.activity) {
+      NativeStudioAgentActivity(:final state) => state,
+      AcpStudioAgentActivity() => null,
+    };
+
+AgentExecutionView? _nativeExecution(StudioAgentView agent) =>
+    switch (agent.activity) {
+      NativeStudioAgentActivity(:final execution) => execution,
+      AcpStudioAgentActivity() => null,
+    };
 
 ThreadStatusView _agentThreadStatus(StudioAgentState state) => switch (state) {
   IdleStudioAgent() => ThreadStatusView.idle,

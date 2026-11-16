@@ -327,13 +327,25 @@ StudioAgentView _agentDirectoryEntryFromFrb(
         : _savedRouteFromFrb(agent.frozenModel!),
     task: agent.task,
     summary: agent.summary,
-    state: _agentStateFromFrb(agent.state),
+    activity: switch (agent.activity) {
+      frb.BridgeAgentActivity_Native(
+        :final state,
+        :final execution,
+        :final canStop,
+        :final awaitingScheduling,
+      ) =>
+        NativeStudioAgentActivity(
+          state: _agentStateFromFrb(state),
+          execution: execution == null
+              ? null
+              : _agentExecutionFromFrb(execution),
+          canStop: canStop,
+          awaitingScheduling: awaitingScheduling,
+        ),
+      frb.BridgeAgentActivity_Acp(:final explicitlyClosed) =>
+        AcpStudioAgentActivity(explicitlyClosed: explicitlyClosed),
+    },
     updatedAt: _dateFromUnix(agent.updatedAt),
-    execution: agent.execution == null
-        ? null
-        : _agentExecutionFromFrb(agent.execution!),
-    canStop: agent.canStop,
-    awaitingScheduling: agent.awaitingScheduling,
   );
 }
 

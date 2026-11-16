@@ -123,7 +123,7 @@ Future<_Fixture> _fixture(WidgetTester tester) async {
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,
           task: 'Review the change',
-          state: const IdleStudioAgent(),
+          activity: const NativeStudioAgentActivity(state: IdleStudioAgent()),
           updatedAt: DateTime.utc(2026, 1, 1),
         ),
       ],

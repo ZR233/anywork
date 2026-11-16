@@ -13,6 +13,317 @@ part of 'runtime.dart';
 // dart format off
 T _$identity<T>(T value) => value;
 /// @nodoc
+mixin _$BridgeAgentActivity {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentActivity);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAgentActivity()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAgentActivityCopyWith<$Res>  {
+$BridgeAgentActivityCopyWith(BridgeAgentActivity _, $Res Function(BridgeAgentActivity) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAgentActivity].
+extension BridgeAgentActivityPatterns on BridgeAgentActivity {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAgentActivity_Native value)?  native,TResult Function( BridgeAgentActivity_Acp value)?  acp,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native() when native != null:
+return native(_that);case BridgeAgentActivity_Acp() when acp != null:
+return acp(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAgentActivity_Native value)  native,required TResult Function( BridgeAgentActivity_Acp value)  acp,}){
+final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native():
+return native(_that);case BridgeAgentActivity_Acp():
+return acp(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAgentActivity_Native value)?  native,TResult? Function( BridgeAgentActivity_Acp value)?  acp,}){
+final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native() when native != null:
+return native(_that);case BridgeAgentActivity_Acp() when acp != null:
+return acp(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function( BridgeAgentState state,  BridgeAgentExecution? execution,  bool canStop,  bool awaitingScheduling)?  native,TResult Function( bool explicitlyClosed)?  acp,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native() when native != null:
+return native(_that.state,_that.execution,_that.canStop,_that.awaitingScheduling);case BridgeAgentActivity_Acp() when acp != null:
+return acp(_that.explicitlyClosed);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function( BridgeAgentState state,  BridgeAgentExecution? execution,  bool canStop,  bool awaitingScheduling)  native,required TResult Function( bool explicitlyClosed)  acp,}) {final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native():
+return native(_that.state,_that.execution,_that.canStop,_that.awaitingScheduling);case BridgeAgentActivity_Acp():
+return acp(_that.explicitlyClosed);}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function( BridgeAgentState state,  BridgeAgentExecution? execution,  bool canStop,  bool awaitingScheduling)?  native,TResult? Function( bool explicitlyClosed)?  acp,}) {final _that = this;
+switch (_that) {
+case BridgeAgentActivity_Native() when native != null:
+return native(_that.state,_that.execution,_that.canStop,_that.awaitingScheduling);case BridgeAgentActivity_Acp() when acp != null:
+return acp(_that.explicitlyClosed);case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAgentActivity_Native extends BridgeAgentActivity {
+  const BridgeAgentActivity_Native({required this.state, this.execution, required this.canStop, required this.awaitingScheduling}): super._();
+
+
+ final  BridgeAgentState state;
+ final  BridgeAgentExecution? execution;
+ final  bool canStop;
+ final  bool awaitingScheduling;
+
+/// Create a copy of BridgeAgentActivity
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAgentActivity_NativeCopyWith<BridgeAgentActivity_Native> get copyWith => _$BridgeAgentActivity_NativeCopyWithImpl<BridgeAgentActivity_Native>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentActivity_Native&&(identical(other.state, state) || other.state == state)&&(identical(other.execution, execution) || other.execution == execution)&&(identical(other.canStop, canStop) || other.canStop == canStop)&&(identical(other.awaitingScheduling, awaitingScheduling) || other.awaitingScheduling == awaitingScheduling));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,state,execution,canStop,awaitingScheduling);
+}
+
+@override
+String toString() {
+    return 'BridgeAgentActivity.native(state: $state, execution: $execution, canStop: $canStop, awaitingScheduling: $awaitingScheduling)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAgentActivity_NativeCopyWith<$Res> implements $BridgeAgentActivityCopyWith<$Res> {
+  factory $BridgeAgentActivity_NativeCopyWith(BridgeAgentActivity_Native value, $Res Function(BridgeAgentActivity_Native) _then) = _$BridgeAgentActivity_NativeCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAgentState state, BridgeAgentExecution? execution, bool canStop, bool awaitingScheduling
+});
+
+
+$BridgeAgentStateCopyWith<$Res> get state;
+
+}
+/// @nodoc
+class _$BridgeAgentActivity_NativeCopyWithImpl<$Res>
+    implements $BridgeAgentActivity_NativeCopyWith<$Res> {
+  _$BridgeAgentActivity_NativeCopyWithImpl(this._self, this._then);
+
+  final BridgeAgentActivity_Native _self;
+  final $Res Function(BridgeAgentActivity_Native) _then;
+
+/// Create a copy of BridgeAgentActivity
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? state = null,Object? execution = freezed,Object? canStop = null,Object? awaitingScheduling = null,}) {
+  return _then(BridgeAgentActivity_Native(
+state: null == state ? _self.state : state // ignore: cast_nullable_to_non_nullable
+as BridgeAgentState,execution: freezed == execution ? _self.execution : execution // ignore: cast_nullable_to_non_nullable
+as BridgeAgentExecution?,canStop: null == canStop ? _self.canStop : canStop // ignore: cast_nullable_to_non_nullable
+as bool,awaitingScheduling: null == awaitingScheduling ? _self.awaitingScheduling : awaitingScheduling // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+/// Create a copy of BridgeAgentActivity
+/// with the given fields replaced by the non-null parameter values.
+@override
+@pragma('vm:prefer-inline')
+$BridgeAgentStateCopyWith<$Res> get state {
+
+  return $BridgeAgentStateCopyWith<$Res>(_self.state, (value) {
+    return _then(_self.copyWith(state: value));
+  });
+}
+}
+
+/// @nodoc
+
+
+class BridgeAgentActivity_Acp extends BridgeAgentActivity {
+  const BridgeAgentActivity_Acp({required this.explicitlyClosed}): super._();
+
+
+ final  bool explicitlyClosed;
+
+/// Create a copy of BridgeAgentActivity
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAgentActivity_AcpCopyWith<BridgeAgentActivity_Acp> get copyWith => _$BridgeAgentActivity_AcpCopyWithImpl<BridgeAgentActivity_Acp>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAgentActivity_Acp&&(identical(other.explicitlyClosed, explicitlyClosed) || other.explicitlyClosed == explicitlyClosed));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,explicitlyClosed);
+}
+
+@override
+String toString() {
+    return 'BridgeAgentActivity.acp(explicitlyClosed: $explicitlyClosed)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAgentActivity_AcpCopyWith<$Res> implements $BridgeAgentActivityCopyWith<$Res> {
+  factory $BridgeAgentActivity_AcpCopyWith(BridgeAgentActivity_Acp value, $Res Function(BridgeAgentActivity_Acp) _then) = _$BridgeAgentActivity_AcpCopyWithImpl;
+@useResult
+$Res call({
+ bool explicitlyClosed
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAgentActivity_AcpCopyWithImpl<$Res>
+    implements $BridgeAgentActivity_AcpCopyWith<$Res> {
+  _$BridgeAgentActivity_AcpCopyWithImpl(this._self, this._then);
+
+  final BridgeAgentActivity_Acp _self;
+  final $Res Function(BridgeAgentActivity_Acp) _then;
+
+/// Create a copy of BridgeAgentActivity
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? explicitlyClosed = null,}) {
+  return _then(BridgeAgentActivity_Acp(
+explicitlyClosed: null == explicitlyClosed ? _self.explicitlyClosed : explicitlyClosed // ignore: cast_nullable_to_non_nullable
+as bool,
+  ));
+}
+
+
+}
+
+/// @nodoc
 mixin _$BridgeAgentState {
 
  Object get field0;

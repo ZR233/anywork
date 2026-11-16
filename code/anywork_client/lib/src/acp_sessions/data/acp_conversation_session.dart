@@ -36,6 +36,13 @@ final class AcpConversationUpdateItem extends AcpConversationContentItem {
   final AcpSessionUpdateView update;
 }
 
+/// Latest complete usage report accepted by this owner, without protocol metadata.
+typedef AcpConversationUsage = ({
+  BigInt used,
+  BigInt size,
+  ({double amount, String currency})? cost,
+});
+
 final class AcpConversationState {
   const AcpConversationState._({
     this.target,
@@ -58,6 +65,7 @@ final class AcpConversationState {
     this.configOptions,
     this.modes,
     this.plan,
+    this.latestUsage,
     this.pendingPermissions = const [],
   });
 
@@ -81,6 +89,7 @@ final class AcpConversationState {
   final List<AcpSessionConfigOptionView>? configOptions;
   final AcpSessionModeStateView? modes;
   final AcpPlanView? plan;
+  final AcpConversationUsage? latestUsage;
   final List<AcpPermissionEventView> pendingPermissions;
 
   bool get usesLegacyModes => configOptions == null && modes != null;
@@ -140,6 +149,7 @@ final class AcpConversationSession {
   List<AcpSessionConfigOptionView>? _configOptions;
   AcpSessionModeStateView? _modes;
   AcpPlanView? _plan;
+  AcpConversationUsage? _latestUsage;
   List<AcpPermissionEventView> _permissions = const [];
 
   AcpConversationState get state => _source.value;
@@ -166,6 +176,7 @@ final class AcpConversationSession {
     configOptions: _configOptions,
     modes: _modes,
     plan: _plan,
+    latestUsage: _latestUsage,
     pendingPermissions: _permissions,
   );
 
@@ -225,6 +236,7 @@ final class AcpConversationSession {
   }
 
   void _loseObservation() {
+    _latestUsage = null;
     _pendingUserEcho = null;
     _disconnected = true;
     _history = AcpConversationHistory.incomplete;
@@ -243,6 +255,7 @@ final class AcpConversationSession {
         _configOptions = response.configOptions;
         _modes = response.modes;
       case AcpFailedEventView(:final error):
+        _latestUsage = null;
         _pendingUserEcho = null;
         _ready = false;
         _error = error;
@@ -283,6 +296,22 @@ final class AcpConversationSession {
   }
 
   void _update(AcpSessionUpdateView update) {
+    if (update case AcpUsageUpdateView(:final used, :final size, :final cost)) {
+      final replaying =
+          _history == AcpConversationHistory.loadReplay && !_ready;
+      if (!_disconnected &&
+          !_observationEnded &&
+          !replaying &&
+          _hasObservation == true) {
+        _latestUsage = (
+          used: used,
+          size: size,
+          cost: cost == null
+              ? null
+              : (amount: cost.amount, currency: cost.currency),
+        );
+      }
+    }
     if (update is! AcpUserMessageChunkView &&
         update is! AcpAgentMessageChunkView &&
         update is! AcpAgentThoughtChunkView) {
@@ -621,6 +650,7 @@ final class AcpConversationSession {
     final result = await _client.closeMember(target);
     if (!_disposing && result.localComplete) {
       _ready = false;
+      _latestUsage = null;
       _permissions = const [];
       _publish();
     }

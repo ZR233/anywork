@@ -375,24 +375,3 @@ AcpTimelineItemPresentation mapAcpTimelineItem({
       ),
   };
 }
-
-AcpUsagePresentation? extractLatestAcpUsage(
-  List<AcpConversationContentItem> content,
-) {
-  for (var i = content.length - 1; i >= 0; i--) {
-    final entry = content[i];
-    if (entry case AcpConversationUpdateItem(
-      update: AcpUsageUpdateView(:final used, :final size, :final cost),
-    )) {
-      final denom = size > BigInt.zero ? size.toDouble() : 0.0;
-      final ratio = denom > 0 ? (used.toDouble() / denom).clamp(0.0, 1.0) : 0.0;
-      return AcpUsagePresentation(
-        usedFormatted: formatCompactBigIntTokens(used),
-        sizeFormatted: formatCompactBigIntTokens(size),
-        ratio: ratio,
-        costLabel: cost == null ? null : '${cost.amount} ${cost.currency}',
-      );
-    }
-  }
-  return null;
-}

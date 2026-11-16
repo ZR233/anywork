@@ -505,10 +505,11 @@ mod tests {
         let mut next_structure = std::pin::pin!(list.next());
         assert!(futures::poll!(next_structure.as_mut()).is_pending());
         events.patch_thread_runtime(
-            "a",
+            events.begin_native_observation("a").as_ref(),
             pl_protocol::ThreadStatus::Running,
             2,
             &pl_core::thread::ThreadSnapshot::default(),
+            None,
         )?;
         assert_eq!(
             a.next().await?.unwrap().row.unwrap().native_status(),

@@ -37,11 +37,13 @@ StudioAgentView _layoutAgent({
     delegationMode: DelegationMode.profile,
     delegationPreference: DelegationPreference.balanced,
     task: task,
-    state: state,
+    activity: NativeStudioAgentActivity(
+      state: state,
+      execution: execution,
+      canStop: canStop,
+      awaitingScheduling: awaitingScheduling,
+    ),
     updatedAt: DateTime.utc(2026, 1, 1),
-    execution: execution,
-    canStop: canStop,
-    awaitingScheduling: awaitingScheduling,
   );
 }
 
@@ -269,6 +271,42 @@ Future<void> _closeLayoutGraph(WidgetTester tester, AppGraph graph) async {
 }
 
 void main() {
+  testWidgets(
+    'ACP member uses unknown state without inventing a model or stop',
+    (tester) async {
+      final graph = await _layoutGraph(tester);
+      final agent = StudioAgentView(
+        agentId: 'acp-agent',
+        sessionId: 'session',
+        parentAgentId: 'root-agent',
+        threadId: 'acp-thread',
+        role: 'executor',
+        delegationMode: DelegationMode.profile,
+        delegationPreference: DelegationPreference.balanced,
+        task: 'ACP child',
+        activity: const AcpStudioAgentActivity(explicitlyClosed: true),
+        updatedAt: DateTime.utc(2026),
+      );
+      await _pumpAgentMenu(tester, graph, [
+        agent,
+      ], selectedThreadId: 'acp-thread');
+      await _openLayoutMenu(tester);
+      final row = find.byKey(StudioDriverKeys.agentRow('acp-thread'));
+      expect(row, findsOneWidget);
+      expect(
+        find.descendant(of: row, matching: find.text('Unknown')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.agentStop('acp-thread')),
+        findsNothing,
+      );
+      expect(find.text('Model not recorded'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await _closeLayoutGraph(tester, graph);
+    },
+  );
+
   TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('shows agent state, actions, and diagnostics in the layout', (
