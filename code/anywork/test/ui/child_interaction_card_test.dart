@@ -267,7 +267,9 @@ final class _ChildCardTransport extends RecordingDemoTransport {
     if (next != null) summaries = next;
     final revision = (_childRevisions[hostThreadId] ?? 0) + 1;
     _childRevisions[hostThreadId] = revision;
-    _childSinks[hostThreadId]?.add(
+    final sink = _childSinks[hostThreadId];
+    if (sink == null || sink.isClosed) return;
+    sink.add(
       ProductTopicDataFrame(
         topic: ChildInteractionsTopic(hostThreadId: hostThreadId),
         event: ProductTopicEventEnvelope(
@@ -460,6 +462,36 @@ Future<void> _pump(
   );
   // 卡片面板只消费主题基线；挂载不发起任何查询。
   await tester.pumpAndSettle();
+}
+
+Future<void> _waitForTopicExhaustion(
+  WidgetTester tester,
+  _Fixture fixture, {
+  required int firstSubscription,
+}) async {
+  DomainSyncPhase? phase() => fixture.graph.client
+      .existingChildInteractions(_rootId)
+      ?.state
+      .canonical
+      .sync
+      .phase;
+
+  // One initial subscription followed by the registry's five retries. Wait
+  // for each actual subscription and failure before advancing its retry timer;
+  // lifecycle cleanup can span both the real and Flutter test event queues.
+  for (var retry = 0; retry <= 5; retry++) {
+    await pumpClientUntil(
+      tester,
+      () =>
+          phase() == DomainSyncPhase.failed ||
+          (fixture.transport.topicSubscriptions >= firstSubscription + retry &&
+              phase() == DomainSyncPhase.reconnecting),
+      'child topic failure for subscription ${firstSubscription + retry}',
+    );
+    if (phase() == DomainSyncPhase.failed) return;
+    await tester.pump(const Duration(seconds: 5));
+  }
+  expect(phase(), DomainSyncPhase.failed);
 }
 
 Future<void> _close(WidgetTester tester, _Fixture fixture) async {
@@ -892,23 +924,7 @@ void main() {
     );
     await _pump(tester, fixture);
     final transport = fixture.transport;
-    // The registry first reconnects within its existing bounded budget
-    // (250ms doubling retries) and only reports `failed` once exhausted.
-    // Release the production retry timers using Flutter's virtual clock,
-    // exactly like the directory outage test, until the real phase barrier.
-    for (var attempt = 0; attempt < 8; attempt++) {
-      if (fixture.graph.client
-              .existingChildInteractions(_rootId)
-              ?.state
-              .canonical
-              .sync
-              .phase ==
-          DomainSyncPhase.failed) {
-        break;
-      }
-      await tester.pump(const Duration(seconds: 5));
-      await tester.runAsync(() async {});
-    }
+    await _waitForTopicExhaustion(tester, fixture, firstSubscription: 1);
     expect(
       fixture.graph.client
           .existingChildInteractions(_rootId)
@@ -962,17 +978,14 @@ void main() {
     final client = fixture.graph.client;
     const hostB = 'thread-alt';
     final metadata = client.threadDirectory.observeThread(hostB);
-    expect(
-      (await metadata.state
-              .waitFor((state) => state.frame != null)
-              .timeout(const Duration(seconds: 5)))
-          .frame
-          ?.row
-          ?.threadId,
-      hostB,
+    final metadataState = await pumpClientFuture(
+      tester,
+      metadata.state.waitFor((state) => state.frame != null),
+      'alternate thread metadata',
     );
+    expect(metadataState.frame?.row?.threadId, hostB);
     await _pump(tester, fixture);
-    await metadata.release();
+    await pumpClientFuture(tester, metadata.release(), 'release metadata');
     await pumpClientUntil(
       tester,
       () => find
@@ -1018,24 +1031,15 @@ void main() {
     );
 
     // 返回 A 时订阅失败：失败来自真实 topic 状态，而不是查询错误。
+    final firstFailedSubscription = transport.topicSubscriptions + 1;
     transport.topicError = StateError('current A2 failure');
     client.conversations.setVisibleThread(_rootId);
     await _pump(tester, fixture);
-    // Returning A fails at the transport: release the registry's bounded
-    // retry budget on the virtual clock until the real failed barrier.
-    for (var attempt = 0; attempt < 8; attempt++) {
-      if (fixture.graph.client
-              .existingChildInteractions(_rootId)
-              ?.state
-              .canonical
-              .sync
-              .phase ==
-          DomainSyncPhase.failed) {
-        break;
-      }
-      await tester.pump(const Duration(seconds: 5));
-      await tester.runAsync(() async {});
-    }
+    await _waitForTopicExhaustion(
+      tester,
+      fixture,
+      firstSubscription: firstFailedSubscription,
+    );
     expect(
       fixture.graph.client
           .existingChildInteractions(_rootId)
@@ -1104,17 +1108,18 @@ void main() {
     const hostB = 'thread-alt';
     final client = fixture.graph.client;
     final metadata = client.threadDirectory.observeThread(hostB);
-    expect(
-      (await metadata.state
-              .waitFor((state) => state.frame != null)
-              .timeout(const Duration(seconds: 5)))
-          .frame
-          ?.row
-          ?.threadId,
-      hostB,
+    final metadataState = await pumpClientFuture(
+      tester,
+      metadata.state.waitFor((state) => state.frame != null),
+      'host B metadata',
     );
+    expect(metadataState.frame?.row?.threadId, hostB);
     await _pump(tester, fixture);
-    await metadata.release();
+    await pumpClientFuture(
+      tester,
+      metadata.release(),
+      'release host B metadata',
+    );
     await pumpClientUntil(
       tester,
       () => find

@@ -613,6 +613,11 @@ impl ThreadPersistenceCoordinator {
         self.0.state.subscribe()
     }
 
+    #[cfg(test)]
+    pub(crate) fn state_subscriber_count_for_test(&self) -> usize {
+        self.0.state.receiver_count()
+    }
+
     pub(crate) fn snapshot(&self) -> ThreadPersistenceSnapshot {
         self.0.state.borrow().clone()
     }

@@ -1,13 +1,14 @@
 //! typed 产品 topic 订阅：登记接收者、读取领域基线与帧交付。
 
 use anyhow::Result;
-use tokio::sync::broadcast;
 
 use crate::{
-    StudioProductBaseline, StudioProductBaselineState, StudioProductFrame, StudioProductTopic,
+    ProductTopicReceiver, ProductTopicRecvError, StudioProductBaseline, StudioProductBaselineState,
+    StudioProductFrame, StudioProductTopic,
 };
 
 use super::StudioRuntime;
+use crate::studio::product_event_bus::ProductEventBus;
 
 const BASELINE_THREAD_PAGE_LIMIT: usize = 50;
 
@@ -19,11 +20,27 @@ const BASELINE_THREAD_PAGE_LIMIT: usize = 50;
 /// activation、不扫描、不 mutation；订阅本身不创建新的 owner。
 pub struct StudioProductTopicSubscription {
     topic: StudioProductTopic,
-    receiver: broadcast::Receiver<crate::StudioProductEventEnvelope>,
+    receiver: ProductTopicReceiver,
     baseline: Option<StudioProductBaseline>,
 }
 
 impl StudioProductTopicSubscription {
+    async fn open(
+        events: &ProductEventBus,
+        topic: &StudioProductTopic,
+        baseline: impl std::future::Future<Output = Result<StudioProductBaseline>>,
+    ) -> Result<Self> {
+        // Polling the baseline may fail or be cancelled. The local credential owns registration
+        // throughout that wait and reclaims it automatically if it cannot be handed off.
+        let receiver = events.subscribe_topic(topic);
+        let baseline = baseline.await?;
+        Ok(Self {
+            topic: topic.clone(),
+            receiver,
+            baseline: Some(baseline),
+        })
+    }
+
     /// 订阅的 topic。
     pub fn topic(&self) -> &StudioProductTopic {
         &self.topic
@@ -36,13 +53,11 @@ impl StudioProductTopicSubscription {
         }
         match self.receiver.recv().await {
             Ok(event) => Ok(Some(StudioProductFrame::Event(Box::new(event)))),
-            Err(broadcast::error::RecvError::Lagged(dropped)) => {
-                Ok(Some(StudioProductFrame::Lagged {
-                    topic: self.topic.clone(),
-                    dropped,
-                }))
-            }
-            Err(broadcast::error::RecvError::Closed) => Ok(None),
+            Err(ProductTopicRecvError::Lagged(dropped)) => Ok(Some(StudioProductFrame::Lagged {
+                topic: self.topic.clone(),
+                dropped,
+            })),
+            Err(ProductTopicRecvError::Closed) => Ok(None),
         }
     }
 }
@@ -58,13 +73,12 @@ impl StudioRuntime {
         topic: StudioProductTopic,
     ) -> Result<StudioProductTopicSubscription> {
         topic.validate()?;
-        let receiver = self.agent_facility.product_events.subscribe_topic(&topic);
-        let baseline = self.read_product_baseline(&topic).await?;
-        Ok(StudioProductTopicSubscription {
-            topic,
-            receiver,
-            baseline: Some(baseline),
-        })
+        StudioProductTopicSubscription::open(
+            &self.agent_facility.product_events,
+            &topic,
+            self.read_product_baseline(&topic),
+        )
+        .await
     }
 
     /// 读取一个 topic 的当前 canonical 基线；纯查询，不产生副作用。
@@ -211,6 +225,121 @@ mod tests {
     use super::*;
     use crate::studio::store::directory::DirectoryDelta;
     use crate::{StudioHostKind, StudioProductEventKind, StudioRuntimeOptions};
+
+    async fn topic_fixture() -> Result<(tempfile::TempDir, ProductEventBus)> {
+        let temp = tempfile::tempdir()?;
+        let store = crate::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
+        let writer = crate::studio::agent_host::ThreadWriteBehindWriter::new(store.clone());
+        let events = ProductEventBus::new(store, writer);
+        events.initialize_directories().await?;
+        Ok((temp, events))
+    }
+
+    fn directory_event(revision: u64) -> StudioProductEventKind {
+        StudioProductEventKind::ThreadDirectoryChanged(crate::StudioThreadDirectoryDelta {
+            revision,
+            updated_at: 1,
+            upserted: vec![],
+            removed: vec![],
+        })
+    }
+
+    fn directory_baseline(revision: u64) -> StudioProductBaseline {
+        StudioProductBaseline {
+            topic: StudioProductTopic::ThreadDirectory,
+            revision,
+            state: StudioProductBaselineState::ThreadDirectory(Box::new(
+                crate::StudioThreadDirectoryPage {
+                    state: pl_protocol::ObservedResource::ready(
+                        revision,
+                        1,
+                        crate::StudioThreadDirectoryPageData {
+                            rows: vec![],
+                            next_cursor: None,
+                        },
+                    ),
+                },
+            )),
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_or_cancelled_baseline_reclaims_its_registered_topic() -> Result<()> {
+        let (_temp, events) = topic_fixture().await?;
+        let topic = StudioProductTopic::ThreadDirectory;
+        let counts = events.topic_registration_counts();
+        let failed = StudioProductTopicSubscription::open(&events, &topic, async {
+            assert_eq!(events.topic_registration_counts(), (counts.0 + 1, counts.1));
+            anyhow::bail!("baseline read failed");
+        })
+        .await;
+        assert_eq!(
+            failed
+                .err()
+                .context("expected baseline failure")?
+                .to_string(),
+            "baseline read failed"
+        );
+        assert_eq!(events.topic_registration_counts(), counts);
+
+        let (entered, mut started) = tokio::sync::oneshot::channel();
+        let mut opening = Box::pin(StudioProductTopicSubscription::open(
+            &events,
+            &topic,
+            async {
+                entered.send(()).unwrap();
+                std::future::pending::<Result<StudioProductBaseline>>().await
+            },
+        ));
+        assert!(futures::poll!(opening.as_mut()).is_pending());
+        started
+            .try_recv()
+            .expect("baseline was polled only after registration");
+        assert_eq!(events.topic_registration_counts(), (counts.0 + 1, counts.1));
+        drop(opening);
+        assert_eq!(events.topic_registration_counts(), counts);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn topic_frames_preserve_registration_baseline_lag_and_closed_mapping() -> Result<()> {
+        let (_temp, events) = topic_fixture().await?;
+        let topic = StudioProductTopic::ThreadDirectory;
+        let mut subscription = StudioProductTopicSubscription::open(&events, &topic, async {
+            assert_eq!(events.topic_registration_counts(), (1, 0));
+            // A domain publication occurs while the baseline is being read.
+            events.emit(directory_event(2));
+            Ok(directory_baseline(1))
+        })
+        .await?;
+        let Some(StudioProductFrame::Baseline(baseline)) = subscription.recv().await? else {
+            anyhow::bail!("baseline must be delivered first");
+        };
+        assert_eq!(baseline.revision, 1);
+        let Some(StudioProductFrame::Event(event)) = subscription.recv().await? else {
+            anyhow::bail!("publication during baseline read must be retained");
+        };
+        assert_eq!(event.kind, directory_event(2));
+        for revision in 3..=259 {
+            events.emit(directory_event(revision));
+        }
+        assert!(matches!(
+            subscription.recv().await?,
+            Some(StudioProductFrame::Lagged { topic: actual, dropped: 1 }) if actual == topic
+        ));
+        for revision in 4..=259 {
+            let Some(StudioProductFrame::Event(event)) = subscription.recv().await? else {
+                anyhow::bail!("expected retained event");
+            };
+            assert_eq!(event.kind, directory_event(revision));
+        }
+        drop(events);
+        assert!(
+            subscription.recv().await?.is_none(),
+            "Closed remains Ok(None)"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn child_interactions_topic_tracks_projection_without_activating_child() -> Result<()> {
