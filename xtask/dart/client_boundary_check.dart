@@ -402,7 +402,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
       for (final variable in statement.variables.variables) {
         if (variable.name.lexeme == 'scope' &&
             variable.initializer?.toSource() ==
-                'ref.read(appGraphProvider).uiResources.child(owner)') {
+                'ref.watch(appGraphProvider).uiResources.child(owner)') {
           return true;
         }
       }

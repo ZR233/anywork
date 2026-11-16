@@ -400,7 +400,8 @@ final class _DirectoryBorrow<T> implements DirectoryObservation<T> {
       _retirement = _slot.release();
       _lastBorrower = _slot._borrowers == 0;
       _retirementResourceIds = List.unmodifiable([
-        if (_retirement?.resourceId case final resourceId?) resourceId,
+        if (_retirement?.resourceId case final resourceId?)
+          if (_retirement?.acquisition?.isClosed != true) resourceId,
       ]);
     }
     final completion = Completer<void>();

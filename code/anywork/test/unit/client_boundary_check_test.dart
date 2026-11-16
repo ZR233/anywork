@@ -382,7 +382,7 @@ Object rowKey(String itemId) => new ValueKey(itemId);
         path: _lifecycleHelper,
         source: '''
 void useClientResource(dynamic ref, dynamic owner) {
-  final scope = ref.read(appGraphProvider).uiResources.child(owner);
+  final scope = ref.watch(appGraphProvider).uiResources.child(owner);
   ref.onDispose(scope.requestClose);
   scope.acquireLease(owner, () {});
 }
