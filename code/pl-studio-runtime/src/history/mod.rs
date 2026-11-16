@@ -3,6 +3,8 @@
 //! Accepting a batch publishes one historical cut. `flush` persists accepted immutable batches;
 //! it neither reads nor acknowledges `current.json`. The caller's existing writer lifecycle
 //! schedules flush and retains failures. No background task or second runtime is created here.
+//! History header timestamps use UTC epoch milliseconds. Native adapters convert seconds;
+//! canonical payloads keep their original representation and units.
 
 mod accounting;
 mod classifier;

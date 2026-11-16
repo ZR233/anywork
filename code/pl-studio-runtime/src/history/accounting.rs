@@ -1,3 +1,4 @@
+use super::types::milliseconds_from_seconds;
 use super::*;
 use pl_core::{
     model::ModelUsage,
@@ -21,7 +22,6 @@ impl HistoryStore {
     /// their exact purpose/currency key; committed calls and purpose lists are never replayed.
     pub async fn record_usage(&self, fact: &HistoryUsageFact) -> Result<u64> {
         let _admission = self.inner.admission.lock().await;
-        let payload = serde_json::to_vec(&fact)?;
         let pending = {
             let state = self
                 .inner
@@ -33,6 +33,8 @@ impl HistoryStore {
             }
             state.pending.clone()
         };
+        let recorded_at = milliseconds_from_seconds(fact.record.recorded_at)?;
+        let payload = serde_json::to_vec(&fact)?;
         if let Some(accepted) = pending.event(&fact.event_id) {
             let same = accepted
                 .event
@@ -145,14 +147,11 @@ impl HistoryStore {
             has_incomplete_usage: previous.has_incomplete_usage || summary.has_incomplete_usage(),
             has_unpriced_usage: previous.has_unpriced_usage
                 || fact.record.accounting.has_unpriced_usage(),
-            updated_at: fact.record.recorded_at,
+            updated_at: recorded_at,
             detail_event_id: Some(fact.event_id.clone()),
         };
-        let mut event = HistoryEvent::new(
-            &fact.event_id,
-            HistoryEventKind::UsageRecorded,
-            fact.record.recorded_at,
-        );
+        let mut event =
+            HistoryEvent::new(&fact.event_id, HistoryEventKind::UsageRecorded, recorded_at);
         event.header.run_id = Some(fact.runtime_epoch.to_string());
         event.header.turn_id = fact.turn_id.clone();
         event.header.row_key = Some("accounting:session".into());
@@ -170,7 +169,7 @@ impl HistoryStore {
                 cost_total: cost.amount,
                 cache_savings_delta: None,
                 cache_savings_total: None,
-                updated_at: fact.record.recorded_at,
+                updated_at: recorded_at,
                 detail_event_id: Some(fact.event_id.clone()),
             };
             let key = head.row_key()?;
@@ -204,7 +203,7 @@ impl HistoryStore {
             let mut event = HistoryEvent::new(
                 format!("usage_cost:{}:{key}", fact.event_id),
                 HistoryEventKind::UsageRecorded,
-                fact.record.recorded_at,
+                recorded_at,
             );
             event.header.run_id = Some(fact.runtime_epoch.to_string());
             event.header.turn_id = fact.turn_id.clone();

@@ -575,7 +575,15 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         contents: Vec::new(),
         payload: None,
     };
-    let mut change = HistoryEntityChange::from_atom(start, &atom, run);
+    let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
+    assert_eq!(change.entity.started_at, Some(10_000));
+    tool = change.entity.clone();
+    let mut invalid_atom = atom.clone();
+    invalid_atom.finished_at = Some(i64::MAX);
+    assert!(matches!(
+        HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
+        Err(HistoryError::InvalidEvent(_))
+    ));
     change.public_summary = Some("正在执行".into());
     classifier.record(&store, &change).await?;
     assert_eq!(
@@ -876,6 +884,7 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
     let totals = reader.accounting(None).await?.unwrap();
     assert_eq!(totals.inference_count, 2);
     assert_eq!(totals.total_tokens, 240);
+    assert_eq!(totals.updated_at, 20_000);
     assert!(totals.has_unpriced_usage);
     assert_eq!(
         reader.accounting(Some(old)).await?.unwrap().inference_count,
@@ -887,6 +896,26 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
         panic!("cost")
     };
     assert_eq!(cost.cost_total, 0.25);
+    assert_eq!(cost.updated_at, 20_000);
+    let original_usage = reader.read_event("usage-a".into(), demand()).await?;
+    assert_eq!(original_usage.header.recorded_at, 20_000);
+    let raw_usage = reader
+        .read_body(original_usage.payload_ref.unwrap(), 0, 65_536)
+        .await?;
+    assert_eq!(
+        serde_json::from_slice::<HistoryUsageFact>(&raw_usage.bytes)?
+            .record
+            .recorded_at,
+        20
+    );
+    let before_overflow = reader.capture().await?;
+    let mut invalid_usage = usage("overflow", run, false);
+    invalid_usage.record.recorded_at = i64::MAX;
+    assert!(matches!(
+        store.record_usage(&invalid_usage).await,
+        Err(HistoryError::InvalidEvent(_))
+    ));
+    assert_eq!(reader.capture().await?, before_overflow);
     let events = reader
         .events_page(HistoryEventsQuery::AllEvents, None, None, demand())
         .await?;

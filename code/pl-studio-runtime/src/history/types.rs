@@ -14,6 +14,12 @@ pub const HISTORY_PROTOCOL_VERSION: u32 = 1;
 pub const BODY_CHUNK_BYTES: usize = 64 * 1024;
 pub const HEAD_MAX_BYTES: usize = 16 * 1024;
 
+pub(super) fn milliseconds_from_seconds(seconds: i64) -> Result<i64> {
+    seconds.checked_mul(1000).ok_or_else(|| {
+        HistoryError::InvalidEvent("native timestamp exceeds the history millisecond range".into())
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum HistoryError {
     #[error("invalid history event: {0}")]
@@ -514,6 +520,7 @@ pub struct HistoryEvent {
     pub bodies: Vec<HistoryBody>,
 }
 impl HistoryEvent {
+    /// Builds an unaccepted event; `recorded_at` is UTC epoch milliseconds.
     pub fn new(event_id: impl Into<String>, kind: HistoryEventKind, recorded_at: i64) -> Self {
         Self {
             header: HistoryEventHeader {

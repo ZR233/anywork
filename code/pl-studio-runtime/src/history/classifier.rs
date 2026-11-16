@@ -1,3 +1,4 @@
+use super::types::milliseconds_from_seconds;
 use super::*;
 use pl_core::thread::current::RuntimeEpoch;
 use std::collections::BTreeMap;
@@ -27,8 +28,9 @@ pub struct HistoryEntityChange {
 }
 
 impl HistoryEntityHead {
-    /// Reuses the actual Native atomic fact; legacy absence remains unknown.
-    pub fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Self {
+    /// Native atomic timestamps use seconds; history heads use UTC milliseconds.
+    /// Legacy absence stays unknown, and out-of-range timestamps are rejected.
+    pub fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<Self> {
         let state = match atom.lifecycle {
             pl_protocol::ChatAtomLifecycle::Active { status, .. } => {
                 HistoryEntityState::KnownActive { status }
@@ -37,7 +39,7 @@ impl HistoryEntityHead {
                 HistoryEntityState::KnownTerminal { outcome }
             }
         };
-        Self {
+        Ok(Self {
             entity_id: atom.id.clone(),
             run_id: run,
             attempt_id: atom.attempt_id.clone(),
@@ -45,8 +47,11 @@ impl HistoryEntityHead {
             kind: atom.kind,
             delivery: atom.delivery,
             state,
-            started_at: atom.started_at,
-            finished_at: atom.finished_at,
+            started_at: atom.started_at.map(milliseconds_from_seconds).transpose()?,
+            finished_at: atom
+                .finished_at
+                .map(milliseconds_from_seconds)
+                .transpose()?,
             text_channel: atom.text_channel,
             tool: atom.tool.clone(),
             wait: atom
@@ -60,7 +65,7 @@ impl HistoryEntityHead {
             detail_event_id: atom.completion_item_id.clone(),
             input_manifest_event_id: None,
             body_manifest_event_id: None,
-        }
+        })
     }
 }
 impl HistoryEntityChange {
@@ -68,7 +73,7 @@ impl HistoryEntityChange {
         mut event: HistoryEvent,
         atom: &pl_protocol::ChatAtom,
         run: RuntimeEpoch,
-    ) -> Self {
+    ) -> Result<Self> {
         event.header.turn_id = atom.turn_id.clone();
         let placement = if crate::studio::thread_projection::hidden(atom) {
             HistoryPlacement::Hidden
@@ -77,13 +82,13 @@ impl HistoryEntityChange {
         } else {
             HistoryPlacement::Single
         };
-        Self {
+        Ok(Self {
             event,
-            entity: HistoryEntityHead::from_atom(atom, Some(run.to_string())),
+            entity: HistoryEntityHead::from_atom(atom, Some(run.to_string()))?,
             placement,
             boundary_observations: Vec::new(),
             public_summary: None,
-        }
+        })
     }
 }
 
