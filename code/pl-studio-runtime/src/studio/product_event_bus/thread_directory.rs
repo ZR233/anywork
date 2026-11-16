@@ -2099,7 +2099,7 @@ pub(super) mod tests {
         }
 
         fn changed(
-            rx: &mut tokio::sync::broadcast::Receiver<StudioProductEventEnvelope>,
+            rx: &mut crate::studio::product_event_bus::ProductTopicReceiver,
             state: &StudioAgentDirectoryState,
         ) {
             let StudioProductEventKind::AgentDirectoryChanged(event) =
