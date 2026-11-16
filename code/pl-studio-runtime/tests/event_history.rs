@@ -101,7 +101,7 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
     let run = RuntimeEpoch::new();
     let bytes: Vec<_> = (0..150_002).map(|index| (index % 251) as u8).collect();
     let first = single("first", run, &bytes);
-    store.accept_batch(&[first.clone()]).await?;
+    store.accept_batch(std::slice::from_ref(&first)).await?;
     let cut = reader.capture().await?;
     let before = reader
         .timeline_page(Some(cut.clone()), None, demand())
@@ -189,8 +189,11 @@ async fn event_retries_are_exact_and_sql_enforces_immutable_facts() -> Result<()
     let path = temp.path().join("history.sqlite");
     let store = HistoryStore::open(&path, "immutability", HistoryLimits::default()).await?;
     let event = single("idempotent", RuntimeEpoch::new(), b"retained");
-    let first = store.accept_batch(&[event.clone()]).await?;
-    assert_eq!(store.accept_batch(&[event.clone()]).await?, first);
+    let first = store.accept_batch(std::slice::from_ref(&event)).await?;
+    assert_eq!(
+        store.accept_batch(std::slice::from_ref(&event)).await?,
+        first
+    );
     let mut conflict = event.clone();
     conflict.bodies[1].bytes = Arc::from(&b"different"[..]);
     assert!(matches!(
@@ -868,6 +871,10 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
     assert_eq!(reader.accounting(None).await?.unwrap().inference_count, 2);
     reader.close().await;
     store.close().await?;
+    assert!(matches!(
+        store.record_usage(&first).await,
+        Err(HistoryError::Closed)
+    ));
     Ok(())
 }
 

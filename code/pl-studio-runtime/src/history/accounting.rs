@@ -22,13 +22,17 @@ impl HistoryStore {
     pub async fn record_usage(&self, fact: &HistoryUsageFact) -> Result<u64> {
         let _admission = self.inner.admission.lock().await;
         let payload = serde_json::to_vec(&fact)?;
-        let pending = self
-            .inner
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pending
-            .clone();
+        let pending = {
+            let state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.accepting {
+                return Err(HistoryError::Closed);
+            }
+            state.pending.clone()
+        };
         if let Some(accepted) = pending.event(&fact.event_id) {
             let same = accepted
                 .event
