@@ -353,24 +353,26 @@ Widget acpToolCardPreview() => _acpPreviewShell(
 @Preview(name: 'ACP 底部状态栏', group: 'ACP', size: Size(760, 80))
 Widget acpStatusBarPreview() => _acpPreviewShell(
   AcpStatusBarView(
-    threadId: 'preview-thread',
-    state: const AcpStatusBarViewState(
-      phase: AcpSessionStatusPhase.completed,
-      stopReason: AcpStopReasonKind.endTurn,
-      provenance: AcpHistoryOriginKind.loadReplay,
-      usage: AcpUsagePresentation(
-        usedFormatted: '18.4k',
-        sizeFormatted: '200k',
-        ratio: 0.092,
-        costLabel: '\$0.04',
+    status: const AcpConnectionStatusView(
+      state: AcpStatusBarViewState(
+        phase: AcpSessionStatusPhase.completed,
+        stopReason: AcpStopReasonKind.endTurn,
+        provenance: AcpHistoryOriginKind.loadReplay,
       ),
     ),
-    externalHistoryButton: const AcpExternalHistoryButtonState(
-      status: AcpExternalHistoryAvailability.available,
-      canLoad: true,
-      canResume: true,
+    contextUsage: AcpContextUsageView(
+      state: (used: BigInt.from(18400), size: BigInt.from(200000)),
     ),
-    onOpenExternalHistory: () {},
+    cost: const AcpCostReadoutView(state: (amount: 0.04, currency: 'USD')),
+    externalHistory: AcpExternalHistoryButtonView(
+      threadId: 'preview-thread',
+      state: const AcpExternalHistoryButtonState(
+        status: AcpExternalHistoryAvailability.available,
+        canLoad: true,
+        canResume: true,
+      ),
+      onOpen: () {},
+    ),
   ),
 );
 

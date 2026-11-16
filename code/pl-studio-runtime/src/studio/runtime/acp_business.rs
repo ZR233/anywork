@@ -951,9 +951,43 @@ mod tests {
 
     use anyhow::{Context, Result};
     use pl_protocol::studio::*;
-    use tokio::time::timeout;
+    use tokio::time::{timeout, timeout_at};
 
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
+
+    async fn wait_original_processes_reaped(
+        processes: &[(u32, u64)],
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        timeout_at(deadline, async {
+            loop {
+                let mut pending = false;
+                for &(pid, started) in processes {
+                    let current = pl_provider_fixture::proc_start_ticks(pid);
+                    if current == Some(started) {
+                        pending = true;
+                    } else if current.is_none() {
+                        anyhow::ensure!(
+                            !PathBuf::from(format!("/proc/{pid}")).try_exists()?,
+                            "cannot identify an existing process {pid}"
+                        );
+                    }
+                }
+                if !pending {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .with_context(|| {
+            let states: Vec<_> = processes
+                .iter()
+                .map(|(pid, _)| std::fs::read_to_string(format!("/proc/{pid}/stat")))
+                .collect();
+            format!("original ACP processes were not reaped: {states:?}")
+        })?
+    }
 
     #[tokio::test]
     async fn public_launch_failures_distinguish_install_required_from_missing_executable()
@@ -1372,6 +1406,12 @@ mod tests {
         .await?;
         let pid = fixture.pid("pid")?;
         let child = fixture.pid("child")?;
+        let processes = [pid, child].map(|pid| {
+            (
+                pid,
+                pl_provider_fixture::proc_start_ticks(pid).expect("original ACP process"),
+            )
+        });
         let owner = fixture
             .runtime
             .sessions
@@ -1401,9 +1441,11 @@ mod tests {
         assert!(!resources.has_obligations());
         assert!(PathBuf::from(format!("/proc/{pid}")).exists());
         assert!(PathBuf::from(format!("/proc/{child}")).exists());
-        fixture.runtime.shutdown_runtime().await?;
-        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
-        assert!(!PathBuf::from(format!("/proc/{child}")).exists());
+        // The container's init can reap an orphan after the managed root exits.
+        // Keep the original identities and one deadline for shutdown and observation.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        timeout_at(deadline, fixture.runtime.shutdown_runtime()).await??;
+        wait_original_processes_reaped(&processes, deadline).await?;
         Ok(())
     }
 
@@ -2054,6 +2096,12 @@ mod tests {
         );
         let pid = fixture.pid("pid")?;
         let child = fixture.pid("child")?;
+        let processes = [pid, child].map(|pid| {
+            (
+                pid,
+                pl_provider_fixture::proc_start_ticks(pid).expect("original ACP process"),
+            )
+        });
         let first = timeout(
             Duration::from_secs(15),
             fixture.runtime.archive_project(&fixture.workspace.id),
@@ -2104,9 +2152,9 @@ mod tests {
                 .count(),
             1
         );
-        fixture.runtime.shutdown_runtime().await?;
-        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
-        assert!(!PathBuf::from(format!("/proc/{child}")).exists());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        timeout_at(deadline, fixture.runtime.shutdown_runtime()).await??;
+        wait_original_processes_reaped(&processes, deadline).await?;
         Ok(())
     }
 }

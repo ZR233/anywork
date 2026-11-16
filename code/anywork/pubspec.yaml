@@ -38,6 +38,7 @@ dependencies:
   url_launcher: 6.3.3
   path: 1.9.1
   material_ui: ^1.11.0
+  riverpod: ^3.5.0
 dependency_overrides:
   cross_cache:
     path: packages/cross_cache

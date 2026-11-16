@@ -1,8 +1,6 @@
-import '../support/test_app_lifecycle.dart';
-
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -13,6 +11,9 @@ import '../../../anywork_client/test/support/acp_business_port.dart';
 import '../../../anywork_client/test/support/timeline_transport.dart'
     show TestConversationTransport;
 import '../support/pump_client_future.dart';
+import '../support/test_app_lifecycle.dart';
+import '../support/test_statistics_feed.dart';
+import '../support/unused_account_ports.dart';
 
 const acpRemoteFixture = AcpRemoteSessionId('remote');
 const acpBooleanFixture = AcpSessionConfigOptionView(
@@ -36,22 +37,32 @@ Widget acpTestApp(Widget child) => MaterialApp(
 
 /// Only controls source frames and records calls. All reduction is production.
 final class AcpComponentHarness {
-  AcpComponentHarness(this.client, this.port, this.source, this.owner);
-  final AnyworkClient client;
+  AcpComponentHarness(
+    this.graph,
+    this.port,
+    this.source,
+    this.owner,
+    this._transport,
+  );
+  final AppGraph graph;
+  AnyworkClient get client => graph.client;
   final ControlledAcpBusinessPort port;
   final ControlledAcpObservation source;
   final AcpConversationSession owner;
+  final TestConversationTransport _transport;
 
   static Future<AcpComponentHarness> create({
+    String threadId = 'thread',
     List<AcpSessionConfigOptionView>? options,
     AcpSessionModeStateView? modes,
     List<AcpSessionUpdateView> updates = const [],
     bool resume = false,
+    bool child = false,
   }) async {
     final target = AcpSessionTargetView(
       sessionId: 'session',
       agentId: 'agent',
-      threadId: 'thread',
+      threadId: threadId,
       instance: BigInt.from(19),
     );
     final source = ControlledAcpObservation([
@@ -82,14 +93,15 @@ final class AcpComponentHarness {
         SessionDirectoryRow(
           sessionId: 'session',
           agentId: 'agent',
-          threadId: 'thread',
+          parentAgentId: child ? 'root-agent' : null,
+          threadId: threadId,
           workspaceId: 'workspace',
           title: 'ACP 测试会话',
           mode: null,
           delegationMode: DelegationMode.profile,
           delegationPreference: DelegationPreference.balanced,
           workspacePath: '/project',
-          role: 'root',
+          role: child ? 'executor' : 'root',
           backend: const AcpAgentBackendView(
             reference: AcpSessionReferenceView(
               accountId: 'account',
@@ -100,11 +112,19 @@ final class AcpComponentHarness {
           updatedAt: DateTime.utc(2025),
         ),
       );
-    final client = testAnyworkClient(
+    final accounts = _AcpComponentAccountPorts();
+    final graph = testAppGraph(
       transport: transport,
+      statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'acp-components',
+      accountFeed: accounts,
+      accountConfiguration: accounts,
+      accountModels: accounts,
+      accountUsage: accounts,
+      acpPort: accounts,
       acpBusinessPort: port,
     );
+    final client = graph.client;
     client.project.applyProjectDirectory(
       ProjectDirectoryState(
         revision: 1,
@@ -118,17 +138,62 @@ final class AcpComponentHarness {
         accountId: 'account',
         expectedConnectionRevision: BigInt.one,
         workspaceId: 'workspace',
-        threadId: 'thread',
+        threadId: threadId,
         intent: resume
             ? const AcpResumeIntentView(acpRemoteFixture)
             : const AcpLoadIntentView(acpRemoteFixture),
       ),
     );
-    return AcpComponentHarness(client, port, source, owner);
+    return AcpComponentHarness(graph, port, source, owner, transport);
+  }
+
+  Future<({ControlledAcpObservation source, AcpConversationSession owner})>
+  openSecondConversation() async {
+    const remote = AcpRemoteSessionId('remote-second');
+    final target = AcpSessionTargetView(
+      sessionId: 'session-second',
+      agentId: 'agent-second',
+      threadId: 'second',
+      instance: BigInt.from(20),
+    );
+    final source = ControlledAcpObservation([
+      AcpAcceptedFrameView(target: target, hasObservation: true),
+      AcpEventFrameView(
+        AcpReadyEventView(AcpNewSessionResponseView(sessionId: remote)),
+      ),
+      const AcpSettledFrameView(AcpSuccessView<void>(null)),
+    ]);
+    _transport.seedThread(
+      _transport.directoryThreads[owner.state.target!.threadId]!.copyWith(
+        sessionId: target.sessionId,
+        agentId: target.agentId,
+        threadId: target.threadId,
+        parentAgentId: null,
+        role: 'root',
+        backend: const AcpAgentBackendView(
+          reference: AcpSessionReferenceView(
+            accountId: 'account',
+            acpSessionId: 'remote-second',
+            cwd: '/project',
+          ),
+        ),
+      ),
+    );
+    port.sources.add(source);
+    final second = await client.acpSessions.openConversation(
+      OpenAcpSessionRequestView(
+        accountId: 'account',
+        expectedConnectionRevision: BigInt.one,
+        workspaceId: 'workspace',
+        threadId: target.threadId,
+        intent: const AcpLoadIntentView(remote),
+      ),
+    );
+    return (source: source, owner: second);
   }
 
   Widget scope(Widget child) => ProviderScope(
-    overrides: [anyworkClientProvider.overrideWithValue(client)],
+    overrides: [appGraphProvider.overrideWithValue(graph)],
     child: acpTestApp(child),
   );
 
@@ -149,11 +214,27 @@ final class AcpComponentHarness {
   );
 
   Future<void> close(WidgetTester tester) async {
-    final report = await pumpClientFuture(
+    await tester.pumpWidget(const SizedBox.shrink());
+    final budget = testCloseBudget();
+    final graphClosing = graph.close(budget: budget);
+    final graphReport = await pumpClientFuture(
       tester,
-      client.close(budget: testCloseBudget()),
-      'close ACP component Client',
+      graphClosing,
+      'close ACP component AppGraph',
     );
-    expect(report.complete, isTrue, reason: '${report.unresolved}');
+    // As in application shutdown, join the app subtree before its final root.
+    final rootClosing = graph.closeLifecycleRoot(budget);
+    final rootReport = await pumpClientFuture(
+      tester,
+      rootClosing,
+      'close ACP component lifecycle root',
+    );
+    final details =
+        'AppGraph:\n${describeTestCloseReport(graphReport)}\n'
+        'Lifecycle root:\n${describeTestCloseReport(rootReport)}';
+    expect(graphReport.complete, isTrue, reason: details);
+    expect(rootReport.complete, isTrue, reason: details);
   }
 }
+
+final class _AcpComponentAccountPorts extends UnusedAccountPorts {}

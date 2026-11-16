@@ -3,9 +3,8 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/studio_chrome.dart';
+import '../../../../shared/studio_child_readonly_panel.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../../../../shared/studio_panel.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
 import '../state/composer_view_state.dart';
 
@@ -175,73 +174,45 @@ class AgentReadOnlyDockView extends StatelessWidget {
     // 执行中的成员不能同时显示「正在运行」和「等待调度」。
     final waitingForScheduling =
         execution == null && continuation != null && !continuation.claimed;
-    return StudioPanel(
-      key: StudioDriverKeys.agentReadOnlyPanel,
-      backgroundColor: context.colors.surfaceContainer,
-      borderColor: context.colors.outlineVariant,
-      radius: StudioRadii.lg,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Tooltip(
-                message: context.l10n.composerAgentReadOnlyScope,
-                child: Icon(
-                  Icons.lock_outline,
-                  size: 18,
-                  color: context.colors.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Text(
-                  context.l10n.composerAgentReadOnlyTitle,
-                  style: Theme.of(context).textTheme.bodyMedium
-                      ?.copyWith(color: context.colors.onSurfaceVariant),
-                ),
-              ),
-            ],
+    return StudioChildReadOnlyPanel(
+      showScopeTooltip: true,
+      children: [
+        if (waitingForScheduling)
+          Text(
+            context.l10n.composerAgentReadOnlyWaiting,
+            key: const ValueKey('agent-readonly-waiting'),
+            style: secondaryStyle,
           ),
-          if (waitingForScheduling)
-            Text(
-              context.l10n.composerAgentReadOnlyWaiting,
-              key: const ValueKey('agent-readonly-waiting'),
-              style: secondaryStyle,
-            ),
-          if (pending != null)
-            Text(
-              context.l10n.composerAgentReadOnlyPending,
-              key: const ValueKey('agent-readonly-pending'),
-              style: secondaryStyle,
-            ),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              InfoChip(
-                icon: execution == null
-                    ? Icons.timeline_outlined
-                    : Icons.bolt_outlined,
-                label: context.threadStatusLabel(
-                  execution == null
-                      ? (row.backend as NativeAgentBackendView).status
-                      : execution.phase == AgentExecutionPhase.stopping
-                      ? ThreadStatusView.cancelling
-                      : ThreadStatusView.running,
-                ),
-              ),
-              if (route != null)
-                InfoChip(icon: Icons.memory_outlined, label: route.modelId),
-              if (row.workspacePath.trim().isNotEmpty)
-                InfoChip(icon: Icons.folder_outlined, label: row.workspacePath),
-            ],
+        if (pending != null)
+          Text(
+            context.l10n.composerAgentReadOnlyPending,
+            key: const ValueKey('agent-readonly-pending'),
+            style: secondaryStyle,
           ),
-        ],
-      ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            InfoChip(
+              icon: execution == null
+                  ? Icons.timeline_outlined
+                  : Icons.bolt_outlined,
+              label: context.threadStatusLabel(
+                execution == null
+                    ? (row.backend as NativeAgentBackendView).status
+                    : execution.phase == AgentExecutionPhase.stopping
+                    ? ThreadStatusView.cancelling
+                    : ThreadStatusView.running,
+              ),
+            ),
+            if (route != null)
+              InfoChip(icon: Icons.memory_outlined, label: route.modelId),
+            if (row.workspacePath.trim().isNotEmpty)
+              InfoChip(icon: Icons.folder_outlined, label: row.workspacePath),
+          ],
+        ),
+      ],
     );
   }
 }

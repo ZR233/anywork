@@ -73,7 +73,7 @@ final class AcpStatusBarViewModelProvider
 }
 
 String _$acpStatusBarViewModelHash() =>
-    r'42590cf237f5e29f0ed421381c25c8ad10b086ee';
+    r'08f5459ac73dc90f69fdfd8c10e048db08e1bd18';
 
 final class AcpStatusBarViewModelFamily extends $Family
     with $FunctionalFamilyOverride<AcpStatusBarViewState, String> {
@@ -91,4 +91,172 @@ final class AcpStatusBarViewModelFamily extends $Family
 
   @override
   String toString() => r'acpStatusBarViewModelProvider';
+}
+
+@ProviderFor(acpContextUsageViewModel)
+final acpContextUsageViewModelProvider = AcpContextUsageViewModelFamily._();
+
+final class AcpContextUsageViewModelProvider
+    extends
+        $FunctionalProvider<
+          AcpContextUsageViewState?,
+          AcpContextUsageViewState?,
+          AcpContextUsageViewState?
+        >
+    with $Provider<AcpContextUsageViewState?> {
+  AcpContextUsageViewModelProvider._({
+    required AcpContextUsageViewModelFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'acpContextUsageViewModelProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$acpContextUsageViewModelHash();
+
+  @override
+  String toString() {
+    return r'acpContextUsageViewModelProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<AcpContextUsageViewState?> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  AcpContextUsageViewState? create(Ref ref) {
+    final argument = this.argument as String;
+    return acpContextUsageViewModel(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(AcpContextUsageViewState? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<AcpContextUsageViewState?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is AcpContextUsageViewModelProvider &&
+        other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$acpContextUsageViewModelHash() =>
+    r'b31bad67a23fc443fbcc104b7092d4fd230f1b98';
+
+final class AcpContextUsageViewModelFamily extends $Family
+    with $FunctionalFamilyOverride<AcpContextUsageViewState?, String> {
+  AcpContextUsageViewModelFamily._()
+    : super(
+        retry: null,
+        name: r'acpContextUsageViewModelProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  AcpContextUsageViewModelProvider call(String threadId) =>
+      AcpContextUsageViewModelProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'acpContextUsageViewModelProvider';
+}
+
+@ProviderFor(acpCostViewModel)
+final acpCostViewModelProvider = AcpCostViewModelFamily._();
+
+final class AcpCostViewModelProvider
+    extends
+        $FunctionalProvider<
+          AcpCostViewState?,
+          AcpCostViewState?,
+          AcpCostViewState?
+        >
+    with $Provider<AcpCostViewState?> {
+  AcpCostViewModelProvider._({
+    required AcpCostViewModelFamily super.from,
+    required String super.argument,
+  }) : super(
+         retry: null,
+         name: r'acpCostViewModelProvider',
+         isAutoDispose: true,
+         dependencies: null,
+         $allTransitiveDependencies: null,
+       );
+
+  @override
+  String debugGetCreateSourceHash() => _$acpCostViewModelHash();
+
+  @override
+  String toString() {
+    return r'acpCostViewModelProvider'
+        ''
+        '($argument)';
+  }
+
+  @$internal
+  @override
+  $ProviderElement<AcpCostViewState?> $createElement(
+    $ProviderPointer pointer,
+  ) => $ProviderElement(pointer);
+
+  @override
+  AcpCostViewState? create(Ref ref) {
+    final argument = this.argument as String;
+    return acpCostViewModel(ref, argument);
+  }
+
+  /// {@macro riverpod.override_with_value}
+  Override overrideWithValue(AcpCostViewState? value) {
+    return $ProviderOverride(
+      origin: this,
+      providerOverride: $SyncValueProvider<AcpCostViewState?>(value),
+    );
+  }
+
+  @override
+  bool operator ==(Object other) {
+    return other is AcpCostViewModelProvider && other.argument == argument;
+  }
+
+  @override
+  int get hashCode {
+    return argument.hashCode;
+  }
+}
+
+String _$acpCostViewModelHash() => r'd0991d3493afb8df43e4e49c5c53705901e8edb7';
+
+final class AcpCostViewModelFamily extends $Family
+    with $FunctionalFamilyOverride<AcpCostViewState?, String> {
+  AcpCostViewModelFamily._()
+    : super(
+        retry: null,
+        name: r'acpCostViewModelProvider',
+        dependencies: null,
+        $allTransitiveDependencies: null,
+        isAutoDispose: true,
+      );
+
+  AcpCostViewModelProvider call(String threadId) =>
+      AcpCostViewModelProvider._(argument: threadId, from: this);
+
+  @override
+  String toString() => r'acpCostViewModelProvider';
 }

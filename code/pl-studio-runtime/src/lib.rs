@@ -68,12 +68,12 @@ pub use first_run::{
 pub use host_mcp_assets::HostMcpSource;
 pub use protocol::{
     FlushingPersistenceProgress, LspAvailable, LspAvailableActivity, LspBusy, LspChecking,
-    LspDisabled, LspIdle, LspIndexing, LspUnavailable, StudioAgentDirectoryData,
-    StudioAgentDirectoryEntry, StudioAgentDirectoryState, StudioChildInteractionsState,
-    StudioLspHealth, StudioLspServer, StudioLspServerState, StudioLspStateSnapshot,
-    StudioModelCatalogStateSnapshot, StudioPendingPersistence, StudioProductBaseline,
-    StudioProductBaselineState, StudioProductEventEnvelope, StudioProductEventKind,
-    StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
+    LspDisabled, LspIdle, LspIndexing, LspUnavailable, StudioAgentActivity,
+    StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
+    StudioChildInteractionsState, StudioLspHealth, StudioLspServer, StudioLspServerState,
+    StudioLspStateSnapshot, StudioModelCatalogStateSnapshot, StudioPendingPersistence,
+    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
+    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
     StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
     StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
     StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,

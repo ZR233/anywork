@@ -1,5 +1,7 @@
 //! Product timeline projections read core facts and never drive models, tools or persistence reducers.
+mod agent_directory;
 mod item;
+pub(in crate::studio) use agent_directory::{awaiting_scheduling, native_activity};
 pub(crate) use item::{ExecutionItem, ExecutionKind, ExecutionShape};
 mod accounting;
 mod billing;

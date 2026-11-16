@@ -219,6 +219,8 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 跨层载荷复用与 SDK 同次锁定的官方 `agent-client-protocol-schema` 数据类型；产品 wire 只补会话/成员身份、实例与运行资格、观察缺口和操作回执。HTTP 保留官方 ACP 序列化形状，FRB 在桥内转换为可生成的显式联合值，SDK-only Client 消费同一业务事件与结果；保留配置缺失/空列表及 select/boolean 的类型差异。产品层不重新解析 JSON-RPC，也不以不透明 JSON 字符串代替内容和配置类型。
 
+正式 `usage_update` 表达对端报告的当前上下文已用词元 `used`、窗口容量 `size` 及可选会话累计 `cost`；对端可以不发送，客户端不得根据初始化成功推断其可用或推送频率。每条通知是新报告而非上下文增量，缺失费用不沿用旧通知的费用。`size` 不是 Native 自动压缩阈值；本项目使用的稳定 ACP v1 不保证逐轮输出词元或 token/s，不从上下文变化、文本长度、消息分块或包含工具及人工等待的 prompt 总耗时估算模型速度。仅当供应商正式文档明确扩展的版本、单位和统计口径且实际收到完整数据时，才能按该来源显示；未知 `_meta` 不自动获得通用语义。观察缺口及新实例的呈现资格见 [25](./25-frontend-state.md#2521-acp-协议内容与目录消费)。
+
 ### 会话配置与旧模式
 
 模型、思考强度和其他选项只来自当前 session 的正式 `configOptions`，保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。

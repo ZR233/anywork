@@ -34,9 +34,12 @@ pub(crate) struct Entry<E> {
 /// 完成；失败后可在同一个实例上再次调用。构造函数交出资源之前的部分初始化仍由
 /// 构造函数负责回滚。
 pub trait ManagedResource: Send + Sync + 'static {
+    /// 原资源的清理错误；作用域按原类型保留，不要求其实现 Clone。
     type Error: Send + Sync + 'static;
 
+    /// 同步封闭操作准入并唤醒等待，不阻塞、不 panic，也不代替清理完成确认。
     fn request_close(&self);
+    /// 等待原资源实际关闭；允许失败后顺序重试，不应关闭或等待所属祖先作用域。
     fn close(&self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 

@@ -278,8 +278,7 @@ class StudioComposerProjection {
     final row = state.selectedRow;
     final root = state.selectedRootRow;
     if (row == null || root == null) return null;
-    if (row.backend is! NativeAgentBackendView ||
-        root.backend is! NativeAgentBackendView) {
+    if (row.backend is! NativeAgentBackendView) {
       throw StateError(
         'Native composer projection cannot consume an ACP session',
       );

@@ -20,9 +20,10 @@ use crate::studio::records::{
 };
 use crate::studio::store::directory::{DirectoryDelta, ThreadDirectoryCursor};
 use crate::{
-    StudioProductEventEnvelope, StudioProductEventKind, StudioThreadDirectoryData,
-    StudioThreadDirectoryDelta, StudioThreadDirectoryPage, StudioThreadDirectoryPageData,
-    StudioThreadDirectoryState,
+    StudioAgentActivity, StudioAgentDirectoryData, StudioAgentDirectoryEntry,
+    StudioAgentDirectoryState, StudioProductEventEnvelope, StudioProductEventKind,
+    StudioThreadDirectoryData, StudioThreadDirectoryDelta, StudioThreadDirectoryPage,
+    StudioThreadDirectoryPageData, StudioThreadDirectoryState,
 };
 
 use super::ProductEventBus;
@@ -47,6 +48,9 @@ impl SessionDirectoryEntry {
     }
 
     fn insert_agent(&mut self, agent: AgentDirectoryRecord) {
+        if let Some(previous) = self.agents.get(&agent.agent_id) {
+            self.agents_by_thread.remove(&previous.thread_id);
+        }
         self.agents_by_thread
             .insert(agent.thread_id.clone(), agent.agent_id.clone());
         self.agents.insert(agent.agent_id.clone(), agent);
@@ -76,6 +80,42 @@ pub(super) struct ThreadDirectoryIndex {
     deleted: HashSet<String>,
     deleted_sessions: HashSet<String>,
     metadata_signals: HashMap<String, watch::Sender<()>>,
+    /// Only Native runtime facts. Membership and common metadata remain in `sessions`.
+    native_activity: HashMap<String, NativeAgentProjection>,
+    observation_generation: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::studio) struct NativeAgentObservation {
+    session_id: String,
+    agent_id: String,
+    thread_id: String,
+    generation: u64,
+}
+
+struct NativeAgentProjection {
+    observation: NativeAgentObservation,
+    revision: Option<u64>,
+    activity: Option<StudioAgentActivity>,
+    summary: Option<String>,
+}
+
+fn cold_native_activity(agent: &AgentDirectoryRecord) -> StudioAgentActivity {
+    let state = match agent.projected_backend().native_status() {
+        Some(ThreadStatus::Closed) => {
+            pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
+        }
+        Some(ThreadStatus::Closing) => {
+            pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
+        }
+        _ => pl_protocol::AgentState::idle(),
+    };
+    StudioAgentActivity::Native {
+        state,
+        execution: None,
+        can_stop: false,
+        awaiting_scheduling: false,
+    }
 }
 
 /// A demand-scoped wakeup registration, not a metadata/version source.
@@ -122,6 +162,8 @@ impl ThreadDirectoryIndex {
             deleted: HashSet::new(),
             deleted_sessions: HashSet::new(),
             metadata_signals: HashMap::new(),
+            native_activity: HashMap::new(),
+            observation_generation: 0,
         };
         for session in sessions {
             let key = (session.directory_sort_time(), session.session_id.clone());
@@ -144,6 +186,10 @@ impl ThreadDirectoryIndex {
     fn insert_session(&mut self, session: SessionDirectoryRecord) {
         if self.deleted_sessions.contains(&session.session_id) {
             return;
+        }
+        if session.archived {
+            self.native_activity
+                .retain(|_, projection| projection.observation.session_id != session.session_id);
         }
         let key = (session.directory_sort_time(), session.session_id.clone());
         let mut changed_members = Vec::new();
@@ -176,6 +222,23 @@ impl ThreadDirectoryIndex {
         if self.deleted.contains(&agent.thread_id) {
             return None;
         }
+        if agent.explicitly_closed {
+            self.explicitly_closed.insert(agent.agent_id.clone());
+        }
+        if self
+            .native_activity
+            .get(&agent.agent_id)
+            .is_some_and(|projection| {
+                projection.observation.session_id != agent.session_id
+                    || projection.observation.thread_id != agent.thread_id
+                    || !matches!(
+                        agent.backend,
+                        pl_protocol::session::AgentBackend::Native { .. }
+                    )
+            })
+        {
+            self.native_activity.remove(&agent.agent_id);
+        }
         let entry = self.sessions.get_mut(&agent.session_id)?;
         let changed = self.metadata_signals.contains_key(&agent.thread_id)
             && entry
@@ -203,6 +266,7 @@ impl ThreadDirectoryIndex {
             }
         }
         self.explicitly_closed.remove(agent_id);
+        self.native_activity.remove(agent_id);
     }
 
     fn delete_thread(&mut self, thread_id: &str) {
@@ -218,6 +282,7 @@ impl ThreadDirectoryIndex {
                             signal.send_replace(());
                         }
                         self.explicitly_closed.remove(&member.agent_id);
+                        self.native_activity.remove(&member.agent_id);
                         self.deleted.insert(member.thread_id.clone());
                     }
                 }
@@ -231,6 +296,63 @@ impl ThreadDirectoryIndex {
 
     fn get_session(&self, session_id: &str) -> Option<&SessionDirectoryRecord> {
         self.sessions.get(session_id).map(|entry| &entry.session)
+    }
+
+    fn agent_directory_entries(&self) -> Vec<StudioAgentDirectoryEntry> {
+        let mut entries = self
+            .sessions
+            .values()
+            .flat_map(|entry| {
+                entry.agents.values().map(|agent| {
+                    let native = self.native_activity.get(&agent.agent_id);
+                    let mut activity = match agent.backend {
+                        pl_protocol::session::AgentBackend::Native { .. } => native
+                            .and_then(|projection| projection.activity.clone())
+                            .unwrap_or_else(|| cold_native_activity(agent)),
+                        pl_protocol::session::AgentBackend::Acp { .. } => {
+                            StudioAgentActivity::Acp {
+                                explicitly_closed: agent.explicitly_closed,
+                            }
+                        }
+                    };
+                    if agent.explicitly_closed
+                        && let StudioAgentActivity::Native {
+                            state,
+                            can_stop,
+                            awaiting_scheduling,
+                            ..
+                        } = &mut activity
+                    {
+                        *state = if agent.native_status() == Some(ThreadStatus::Closed) {
+                            pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
+                        } else {
+                            pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
+                        };
+                        *can_stop = false;
+                        *awaiting_scheduling = false;
+                    }
+                    StudioAgentDirectoryEntry {
+                        agent_id: agent.agent_id.clone(),
+                        session_id: agent.session_id.clone(),
+                        parent_agent_id: agent.parent_agent_id.clone(),
+                        thread_id: agent.thread_id.clone(),
+                        role: agent.role.clone(),
+                        delegation_mode: entry.session.delegation_mode,
+                        delegation_preference: entry.session.delegation_preference,
+                        frozen_model: agent.frozen_model(),
+                        task: agent
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| entry.session.title.clone()),
+                        summary: native.and_then(|projection| projection.summary.clone()),
+                        activity,
+                        updated_at: agent.updated_at,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.agent_id.cmp(&right.agent_id));
+        entries
     }
 
     fn get_agent(&self, agent_id: &str) -> Option<&AgentDirectoryRecord> {
@@ -255,6 +377,30 @@ impl ThreadDirectoryIndex {
             .find(|entry| entry.agent_by_thread(thread_id).is_some())?;
         let agent = entry.agent_by_thread(thread_id)?;
         Some((&entry.session, agent))
+    }
+
+    fn native_observation_facts(
+        &self,
+        observation: &NativeAgentObservation,
+    ) -> Option<(
+        &SessionDirectoryRecord,
+        &AgentDirectoryRecord,
+        &NativeAgentProjection,
+    )> {
+        let (session, agent) = self.directory_facts(&observation.thread_id)?;
+        let projection = self.native_activity.get(&agent.agent_id)?;
+        if session.archived
+            || agent.session_id != observation.session_id
+            || agent.agent_id != observation.agent_id
+            || !matches!(
+                agent.backend,
+                pl_protocol::session::AgentBackend::Native { .. }
+            )
+            || projection.observation != *observation
+        {
+            return None;
+        }
+        Some((session, agent, projection))
     }
 
     /// 从 owner 的已提交目录切面读取成员身份、绑定及父成员默认 Thread。
@@ -507,6 +653,149 @@ fn rebase_command_agent(
 }
 
 impl ProductEventBus {
+    /// Membership, runtime projection and revision belong to this same published RAM slice.
+    pub async fn read_agent_directory(&self) -> StudioAgentDirectoryState {
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        self.agent_directory_state_locked(index.agent_directory_entries())
+    }
+
+    fn agent_directory_state_locked(
+        &self,
+        agents: Vec<StudioAgentDirectoryEntry>,
+    ) -> StudioAgentDirectoryState {
+        StudioAgentDirectoryState {
+            state: self.resource(&self.revisions.agent, StudioAgentDirectoryData { agents }),
+        }
+    }
+
+    fn publish_agent_directory_locked(
+        &self,
+        index: &ThreadDirectoryIndex,
+        before: Vec<StudioAgentDirectoryEntry>,
+    ) {
+        let agents = index.agent_directory_entries();
+        if agents != before {
+            self.bump(&self.revisions.agent);
+            self.emit(StudioProductEventKind::AgentDirectoryChanged(
+                self.agent_directory_state_locked(agents),
+            ));
+        }
+    }
+
+    pub(in crate::studio) fn begin_native_observation(
+        &self,
+        thread_id: &str,
+    ) -> Option<NativeAgentObservation> {
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let (session, agent) = index.directory_facts(thread_id)?;
+        if session.archived
+            || !matches!(
+                agent.backend,
+                pl_protocol::session::AgentBackend::Native { .. }
+            )
+        {
+            return None;
+        }
+        let before = index.agent_directory_entries();
+        let mut observation = NativeAgentObservation {
+            session_id: agent.session_id.clone(),
+            agent_id: agent.agent_id.clone(),
+            thread_id: agent.thread_id.clone(),
+            generation: 0,
+        };
+        // Replacing an execution observer revokes runtime facts, not the same member's
+        // confirmed summary. Backend changes and removals invalidate this Native projection.
+        let summary = index
+            .native_activity
+            .get(&observation.agent_id)
+            .filter(|projection| {
+                projection.observation.session_id == observation.session_id
+                    && projection.observation.agent_id == observation.agent_id
+                    && projection.observation.thread_id == observation.thread_id
+            })
+            .and_then(|projection| projection.summary.clone());
+        index.observation_generation = index
+            .observation_generation
+            .checked_add(1)
+            .expect("Native observation generation exhausted");
+        observation.generation = index.observation_generation;
+        index.native_activity.insert(
+            observation.agent_id.clone(),
+            NativeAgentProjection {
+                observation: observation.clone(),
+                revision: None,
+                activity: None,
+                summary,
+            },
+        );
+        self.publish_agent_directory_locked(&index, before);
+        Some(observation)
+    }
+
+    /// Cold continuation reconciliation cannot take over a live observation incarnation.
+    pub(in crate::studio) fn publish_cold_agent_scheduling(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        thread_id: &str,
+        snapshot: &pl_core::thread::ThreadSnapshot,
+    ) -> Result<()> {
+        let scheduling = crate::studio::thread_projection::awaiting_scheduling(snapshot)?;
+        let mut index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        let Some((session, agent)) = index.directory_facts(thread_id) else {
+            return Ok(());
+        };
+        if session.session_id != session_id
+            || agent.agent_id != agent_id
+            || session.archived
+            || !matches!(
+                agent.backend,
+                pl_protocol::session::AgentBackend::Native { .. }
+            )
+            || index
+                .native_activity
+                .get(&agent.agent_id)
+                .is_some_and(|projection| projection.observation.generation != 0)
+        {
+            return Ok(());
+        }
+        let before = index.agent_directory_entries();
+        let observation = NativeAgentObservation {
+            session_id: agent.session_id.clone(),
+            agent_id: agent.agent_id.clone(),
+            thread_id: agent.thread_id.clone(),
+            generation: 0,
+        };
+        let mut activity = cold_native_activity(agent);
+        if let StudioAgentActivity::Native {
+            awaiting_scheduling,
+            ..
+        } = &mut activity
+        {
+            *awaiting_scheduling = scheduling;
+        }
+        index.native_activity.insert(
+            observation.agent_id.clone(),
+            NativeAgentProjection {
+                observation,
+                revision: None,
+                activity: Some(activity),
+                summary: None,
+            },
+        );
+        self.publish_agent_directory_locked(&index, before);
+        Ok(())
+    }
+
     pub(crate) fn subscribe_thread_metadata(&self, thread_id: &str) -> ThreadMetadataSignal {
         let mut index = self
             .thread_index
@@ -741,6 +1030,7 @@ impl ProductEventBus {
         removed: Vec<String>,
         archived: Vec<SessionDirectoryRow>,
     ) -> StudioProductEventEnvelope {
+        let before_agents = index.agent_directory_entries();
         upserted.retain(|row| !index.deleted.contains(&row.thread_id));
         for row in &mut upserted {
             Self::apply_explicit_close_row(index, row);
@@ -766,6 +1056,7 @@ impl ProductEventBus {
         }
         self.prepare_child_interaction_directory(&upserted);
         self.remove_child_interaction_directory(&removed);
+        self.publish_agent_directory_locked(index, before_agents);
         // State and tombstones are visible before observers receive removal.
         self.emit_thread_delta_locked(index, upserted, removed)
     }
@@ -826,7 +1117,7 @@ impl ProductEventBus {
             },
             archived: row.archived,
         };
-        let agent = AgentDirectoryRecord {
+        let mut agent = AgentDirectoryRecord {
             agent_id: row.agent_id.clone(),
             session_id: row.session_id.clone(),
             parent_agent_id: row.parent_agent_id.clone(),
@@ -839,6 +1130,7 @@ impl ProductEventBus {
             updated_at: row.updated_at,
         };
         index.insert_session(session);
+        Self::apply_explicit_close_agent(index, &mut agent);
         index.insert_agent(agent);
     }
 
@@ -888,33 +1180,24 @@ impl ProductEventBus {
         catalog
             .project_explicit_close(&agent.agent_id, execution_closed)
             .await?;
-        // A cold row is not resident in the directory index. Re-read exactly this durable row
-        // instead of opening a list observation for it, then commit through the same path.
-        let resident = self
-            .thread_index
-            .lock()
-            .expect("thread index lock poisoned")
-            .agent_by_thread(thread_id)
-            .is_some();
-        if !resident {
-            let catalog = self.store.catalog();
-            let agent = catalog
-                .agent_by_thread(thread_id)
-                .ok_or_else(|| StudioError::not_found("session"))?;
-            let session_record = catalog
-                .get_session(&agent.session_id)
-                .ok_or_else(|| StudioError::not_found("session"))?;
-            let mut index = self
-                .thread_index
-                .lock()
-                .expect("thread index lock poisoned");
-            index.insert_session(session_record.clone());
-            index.insert_agent(agent);
-        }
+        let recovered_session = catalog.get_session(&agent.session_id);
+        let recovered_agent = catalog.agent_by_thread(thread_id);
         let mut index = self
             .thread_index
             .lock()
             .expect("thread index lock poisoned");
+        let before_agents = index.agent_directory_entries();
+        if index.agent_by_thread(thread_id).is_none() {
+            if index.deleted.contains(thread_id)
+                || index.deleted_sessions.contains(&agent.session_id)
+            {
+                return Err(StudioError::not_found("session").into());
+            }
+            let session = recovered_session.ok_or_else(|| StudioError::not_found("session"))?;
+            let current = recovered_agent.ok_or_else(|| StudioError::not_found("session"))?;
+            index.insert_session(session);
+            index.insert_agent(current);
+        }
         let Some((session_record, mut agent)) = index
             .directory_facts(thread_id)
             .map(|(session, agent)| (session.clone(), agent.clone()))
@@ -938,6 +1221,7 @@ impl ProductEventBus {
             agent_upserts: vec![agent],
             ..Default::default()
         });
+        self.publish_agent_directory_locked(&index, before_agents);
         self.emit_thread_delta_locked(&index, vec![row], vec![]);
         Ok(())
     }
@@ -961,67 +1245,100 @@ impl ProductEventBus {
         ))
     }
 
+    /// Distinguishes an older cut already covered by this same valid observation from revocation.
+    /// The membership/identity check is shared with the patch; revisions from other generations,
+    /// removed or archived resources and non-Native backends never establish terminal coverage.
+    pub(in crate::studio) fn native_observation_covers(
+        &self,
+        observation: Option<&NativeAgentObservation>,
+        snapshot: &pl_core::thread::ThreadSnapshot,
+    ) -> bool {
+        let Some(observation) = observation else {
+            return false;
+        };
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        index
+            .native_observation_facts(observation)
+            .is_some_and(|(_, _, projection)| {
+                projection
+                    .revision
+                    .is_some_and(|revision| revision >= snapshot.observation_revision)
+            })
+    }
+
     /// Applies only runtime-owned fields to the current directory summary.
     /// Missing or archived entries are never reinserted by a delayed observation.
     pub(in crate::studio) fn patch_thread_runtime(
         &self,
-        thread_id: &str,
+        observation: Option<&NativeAgentObservation>,
         status: pl_protocol::ThreadStatus,
         committed_at: i64,
         snapshot: &pl_core::thread::ThreadSnapshot,
+        summary: Option<Option<String>>,
     ) -> Result<Option<SessionDirectoryRow>> {
-        let delegation = crate::studio::delegation::saved(snapshot)?;
-        let frozen_profile = crate::studio::model_route::saved_profile(snapshot)?;
-        let explicitly_closed = crate::studio::agent_close::is_explicitly_closed(snapshot)?;
+        let Some(observation) = observation else {
+            return Ok(None);
+        };
+        let activity = crate::studio::thread_projection::native_activity(snapshot)?;
         let mut index = self
             .thread_index
             .lock()
             .expect("thread index lock poisoned");
-        let Some((session_record, mut agent)) = index
-            .directory_facts(thread_id)
-            .map(|(session, agent)| (session.clone(), agent.clone()))
+        let Some((session_record, agent, projection)) = index.native_observation_facts(observation)
         else {
             return Ok(None);
         };
-        if session_record.archived {
+        if projection
+            .revision
+            .is_some_and(|revision| snapshot.observation_revision < revision)
+        {
             return Ok(None);
         }
-        if let Some((profile, _)) = &frozen_profile {
-            anyhow::ensure!(
-                agent.parent_agent_id.is_some() && profile.profile_id == agent.role,
-                "frozen Profile conflicts with directory identity"
-            );
-        }
+        let (session_record, mut agent) = (session_record.clone(), agent.clone());
+        let before_agents = index.agent_directory_entries();
+        let previous_row = row_projection(&session_record, &agent);
         let mut session_next = session_record.clone();
-        if let Some(delegation) = delegation {
-            session_next.delegation_mode = delegation.mode;
-            session_next.delegation_preference = delegation.preference;
-        }
-        if let Some((profile, _)) = frozen_profile
-            && let pl_protocol::session::AgentBackend::Native { config, .. } = &mut agent.backend
-        {
-            config.route = Some(crate::studio::delegation::profile_model(&profile));
-        }
-        if explicitly_closed {
-            index.explicitly_closed.insert(agent.agent_id.clone());
-        }
+        // Runtime observations own no title, ancestry, delegation or frozen model metadata.
         agent.set_native_status(status);
         Self::apply_explicit_close_agent(&index, &mut agent);
         agent.updated_at = agent.updated_at.max(committed_at);
         session_next.updated_at = session_next.updated_at.max(committed_at);
         index.insert_agent(agent.clone());
         index.insert_session(session_next.clone());
+        // Early runtime publication has no new summary. Only the complete product projection
+        // explicitly replaces or clears it; repeated terminal handoffs must not erase it briefly.
+        let summary = summary.unwrap_or_else(|| {
+            index
+                .native_activity
+                .get(&agent.agent_id)
+                .and_then(|projection| projection.summary.clone())
+        });
+        index.native_activity.insert(
+            agent.agent_id.clone(),
+            NativeAgentProjection {
+                observation: observation.clone(),
+                revision: Some(snapshot.observation_revision),
+                activity: Some(activity),
+                summary,
+            },
+        );
         // 状态观察是目录事实：只把有界摘要并入 write-behind 目录队列，不在观察热路径做文件 I/O。
         // 同一成员的连续 delta 由队列合并；write-behind 批次经 `apply_directory_delta` 把摘要
         // 幂等写入 catalog/workspaces TOML。调用方在发布后用固定目标 ticket（`flush_through`）
         // 建立保存屏障；状态错误不回滚已提交的内存目录事实。
-        self.writer.record_directory(DirectoryDelta {
-            session_upserts: vec![session_next.clone()],
-            agent_upserts: vec![agent.clone()],
-            ..Default::default()
-        });
         let row = row_projection(&session_next, &agent);
-        self.emit_thread_delta_locked(&index, vec![row.clone()], Vec::new());
+        if row != previous_row {
+            self.writer.record_directory(DirectoryDelta {
+                session_upserts: vec![session_next],
+                agent_upserts: vec![agent],
+                ..Default::default()
+            });
+            self.emit_thread_delta_locked(&index, vec![row.clone()], Vec::new());
+        }
+        self.publish_agent_directory_locked(&index, before_agents);
         Ok(Some(row))
     }
 
@@ -1204,6 +1521,7 @@ impl ProductEventBus {
                 .thread_index
                 .lock()
                 .expect("thread index lock poisoned");
+            let before_agents = index.agent_directory_entries();
             let removed_agent_ids = index
                 .sessions
                 .values()
@@ -1316,6 +1634,7 @@ impl ProductEventBus {
 
             self.prepare_child_interaction_directory(&published_rows);
             self.remove_child_interaction_directory(&removed_agent_ids);
+            self.publish_agent_directory_locked(&index, before_agents);
             let thread_changed = !published_rows.is_empty() || !removed_agent_ids.is_empty();
             if thread_changed {
                 Some(self.emit_thread_delta_locked(&index, published_rows, removed_agent_ids))
@@ -1687,6 +2006,693 @@ pub(super) mod tests {
         delta
     }
 
+    mod agent_directory {
+        use super::*;
+        use crate::studio::store::agent_close::AgentCloseRecord;
+        use crate::{StudioAgentActivity, StudioProductTopic};
+        use pl_tool::collaboration::control::AgentWorktreeCleanup;
+
+        #[tokio::test]
+        async fn cold_scheduling_checks_identity_and_cannot_overwrite_a_live_observer() -> Result<()>
+        {
+            let root = row("root", "p1", 1);
+            let (_temp, events) = fixture(vec![root.clone()], vec![]).await?;
+            let before = events.read_agent_directory().await;
+            let snapshot = pl_core::thread::ThreadSnapshot {
+                continuation: Some(pl_core::thread::ContinuationPoint {
+                    id: "point-1".into(),
+                    source_turn_id: None,
+                    reason: None,
+                    created_at: 1,
+                    claim: None,
+                }),
+                ..Default::default()
+            };
+            events.publish_cold_agent_scheduling(
+                "other-session",
+                &root.agent_id,
+                &root.thread_id,
+                &snapshot,
+            )?;
+            events.publish_cold_agent_scheduling(
+                &root.session_id,
+                "other-agent",
+                &root.thread_id,
+                &snapshot,
+            )?;
+            assert_eq!(events.read_agent_directory().await, before);
+            events.publish_cold_agent_scheduling(
+                &root.session_id,
+                &root.agent_id,
+                &root.thread_id,
+                &snapshot,
+            )?;
+            let awaiting = events.read_agent_directory().await;
+            assert!(matches!(
+                entries(&awaiting)[0].activity,
+                StudioAgentActivity::Native {
+                    awaiting_scheduling: true,
+                    execution: None,
+                    can_stop: false,
+                    ..
+                }
+            ));
+            assert_eq!(awaiting.state.revision(), before.state.revision() + 1);
+            events.publish_cold_agent_scheduling(
+                &root.session_id,
+                &root.agent_id,
+                &root.thread_id,
+                &snapshot,
+            )?;
+            assert_eq!(events.read_agent_directory().await, awaiting);
+            events.begin_native_observation(&root.thread_id).unwrap();
+            let live = events.read_agent_directory().await;
+            events.publish_cold_agent_scheduling(
+                &root.session_id,
+                &root.agent_id,
+                &root.thread_id,
+                &snapshot,
+            )?;
+            assert_eq!(events.read_agent_directory().await, live);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        fn acp(mut row: SessionDirectoryRow) -> SessionDirectoryRow {
+            row.mode = None;
+            row.backend = pl_protocol::session::AgentBackend::Acp {
+                reference: pl_protocol::session::AcpSessionReference {
+                    account_id: "account".into(),
+                    acp_session_id: format!("external-{}", row.agent_id),
+                    cwd: "/workspace/project".into(),
+                },
+            };
+            row
+        }
+
+        fn entries(state: &StudioAgentDirectoryState) -> &[StudioAgentDirectoryEntry] {
+            &state
+                .state
+                .value()
+                .expect("published agent directory")
+                .agents
+        }
+
+        fn changed(
+            rx: &mut crate::studio::product_event_bus::ProductTopicReceiver,
+            state: &StudioAgentDirectoryState,
+        ) {
+            let StudioProductEventKind::AgentDirectoryChanged(event) =
+                rx.try_recv().expect("agent event").kind
+            else {
+                panic!("agent topic must contain agent snapshots");
+            };
+            assert_eq!(
+                &event, state,
+                "the event and baseline must freeze the same set and revision"
+            );
+            assert!(
+                rx.try_recv().is_err(),
+                "one projection change publishes once"
+            );
+        }
+
+        #[tokio::test]
+        async fn native_observation_replacement_preserves_only_same_member_summary() -> Result<()> {
+            let root = row("root", "p1", 1);
+            let (_temp, events) = fixture(vec![root.clone()], vec![]).await?;
+            let mut changes = events.subscribe_topic(&StudioProductTopic::AgentDirectory);
+            let old = events.begin_native_observation(&root.thread_id).unwrap();
+            let mut old_snapshot = pl_core::thread::ThreadSnapshot {
+                observation_revision: 10,
+                execution: Some(pl_core::thread::ActiveExecution {
+                    id: "old-execution".into(),
+                    phase: pl_core::thread::ExecutionPhase::Preparing,
+                    turn_id: None,
+                }),
+                ..Default::default()
+            };
+            events.patch_thread_runtime(
+                Some(&old),
+                ThreadStatus::Idle,
+                1,
+                &old_snapshot,
+                Some(Some("confirmed summary".into())),
+            )?;
+            let confirmed = events.read_agent_directory().await;
+            assert_eq!(
+                entries(&confirmed)[0].summary.as_deref(),
+                Some("confirmed summary")
+            );
+            changed(&mut changes, &confirmed);
+
+            let current = events.begin_native_observation(&root.thread_id).unwrap();
+            let replaced = events.read_agent_directory().await;
+            assert_ne!(old, current);
+            assert_eq!(
+                entries(&replaced)[0].summary.as_deref(),
+                Some("confirmed summary"),
+                "replacing an observer must retain the same member's confirmed summary"
+            );
+            assert!(
+                matches!(
+                    entries(&replaced)[0].activity,
+                    StudioAgentActivity::Native {
+                        execution: None,
+                        can_stop: false,
+                        ..
+                    }
+                ),
+                "the prior execution must not become a new-generation fact"
+            );
+            assert_eq!(replaced.state.revision(), confirmed.state.revision() + 1);
+            changed(&mut changes, &replaced);
+
+            old_snapshot.observation_revision = u64::MAX;
+            assert!(
+                events
+                    .patch_thread_runtime(
+                        Some(&old),
+                        ThreadStatus::Running,
+                        99,
+                        &old_snapshot,
+                        Some(Some("late old summary".into())),
+                    )?
+                    .is_none(),
+                "a larger revision cannot restore the revoked token"
+            );
+            assert_eq!(events.read_agent_directory().await, replaced);
+            assert!(changes.try_recv().is_err());
+
+            let early = pl_core::thread::ThreadSnapshot {
+                observation_revision: 1,
+                ..Default::default()
+            };
+            assert!(
+                events
+                    .patch_thread_runtime(Some(&current), ThreadStatus::Idle, 1, &early, None)?
+                    .is_some()
+            );
+            assert_eq!(
+                events.read_agent_directory().await,
+                replaced,
+                "an early publication has no new summary and must preserve the confirmed value"
+            );
+            assert!(changes.try_recv().is_err());
+            events.patch_thread_runtime(
+                Some(&current),
+                ThreadStatus::Idle,
+                1,
+                &early,
+                Some(None),
+            )?;
+            let cleared = events.read_agent_directory().await;
+            assert_eq!(entries(&cleared)[0].summary, None);
+            assert_eq!(cleared.state.revision(), replaced.state.revision() + 1);
+            assert_eq!(
+                entries(&cleared)[0].activity,
+                entries(&replaced)[0].activity
+            );
+            changed(&mut changes, &cleared);
+            events.patch_thread_runtime(
+                Some(&current),
+                ThreadStatus::Idle,
+                1,
+                &early,
+                Some(Some("retained idle summary".into())),
+            )?;
+            let idle = events.read_agent_directory().await;
+            changed(&mut changes, &idle);
+            let next = events.begin_native_observation(&root.thread_id).unwrap();
+            assert_ne!(current, next);
+            assert_eq!(
+                events.read_agent_directory().await,
+                idle,
+                "an observer-only change must not clear the idle summary or advance the directory revision"
+            );
+            assert!(changes.try_recv().is_err());
+            events.writer.shutdown().await?;
+
+            for transition in ["identity", "backend", "removal"] {
+                let (_temp, events) = fixture(vec![root.clone()], vec![]).await?;
+                let old = events.begin_native_observation(&root.thread_id).unwrap();
+                events.patch_thread_runtime(
+                    Some(&old),
+                    ThreadStatus::Idle,
+                    1,
+                    &early,
+                    Some(Some("previous member summary".into())),
+                )?;
+                assert_eq!(
+                    entries(&events.read_agent_directory().await)[0]
+                        .summary
+                        .as_deref(),
+                    Some("previous member summary"),
+                    "{transition} starts with a real summary"
+                );
+                let mut next = root.clone();
+                match transition {
+                    "identity" => next.thread_id = "replacement-thread".into(),
+                    "backend" => {
+                        events
+                            .apply_thread_delta(vec![acp(root.clone())], vec![])
+                            .await?;
+                        let external = events.read_agent_directory().await;
+                        assert_eq!(entries(&external)[0].summary, None);
+                        assert!(events.begin_native_observation(&root.thread_id).is_none());
+                    }
+                    "removal" => {
+                        events
+                            .apply_thread_delta(vec![], vec![root.thread_id.clone()])
+                            .await?;
+                        assert!(entries(&events.read_agent_directory().await).is_empty());
+                    }
+                    _ => unreachable!(),
+                }
+                events
+                    .apply_thread_delta(vec![next.clone()], vec![])
+                    .await?;
+                let current = events.begin_native_observation(&next.thread_id).unwrap();
+                assert_ne!(old, current);
+                let fresh = events.read_agent_directory().await;
+                assert_eq!(
+                    entries(&fresh)[0].summary,
+                    None,
+                    "{transition} must not inherit a summary"
+                );
+                assert!(
+                    events
+                        .patch_thread_runtime(
+                            Some(&old),
+                            ThreadStatus::Running,
+                            99,
+                            &old_snapshot,
+                            Some(Some("late old summary".into()))
+                        )?
+                        .is_none()
+                );
+                assert_eq!(events.read_agent_directory().await, fresh);
+                events.writer.shutdown().await?;
+            }
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn cold_roots_and_children_preserve_backend_and_distinct_identities() -> Result<()> {
+            let mut native = row("native-thread", "p1", 1);
+            native.session_id = "native-session".into();
+            native.agent_id = "native-agent".into();
+            let mut external = acp(row("acp-thread", "p1", 2));
+            external.session_id = "acp-session".into();
+            external.agent_id = "acp-agent".into();
+            let mut acp_child = acp(row("acp-child-thread", "p1", 3));
+            acp_child.session_id = native.session_id.clone();
+            acp_child.agent_id = "acp-child-agent".into();
+            acp_child.parent_agent_id = Some(native.agent_id.clone());
+            let mut native_child = row("native-child-thread", "p1", 4);
+            native_child.session_id = external.session_id.clone();
+            native_child.agent_id = "native-child-agent".into();
+            native_child.parent_agent_id = Some(external.agent_id.clone());
+            let rows = vec![native, external, acp_child, native_child];
+            let (_temp, events) = fixture(rows.clone(), vec![]).await?;
+            let baseline = events.read_agent_directory().await;
+            assert_eq!(entries(&baseline).len(), rows.len());
+            for expected in rows {
+                let actual = entries(&baseline)
+                    .iter()
+                    .find(|agent| agent.agent_id == expected.agent_id)
+                    .unwrap();
+                assert_eq!(actual.session_id, expected.session_id);
+                assert_eq!(actual.thread_id, expected.thread_id);
+                assert_eq!(actual.parent_agent_id, expected.parent_agent_id);
+                assert_ne!(actual.agent_id, actual.session_id);
+                assert_ne!(actual.agent_id, actual.thread_id);
+                assert_ne!(actual.session_id, actual.thread_id);
+                let json = serde_json::to_value(actual)?;
+                match expected.backend {
+                    pl_protocol::session::AgentBackend::Native { .. } => {
+                        assert!(matches!(
+                            actual.activity,
+                            StudioAgentActivity::Native {
+                                state: pl_protocol::AgentState::Idle(_),
+                                execution: None,
+                                can_stop: false,
+                                awaiting_scheduling: false,
+                            }
+                        ));
+                        assert_eq!(json["activity"]["kind"], "native");
+                    }
+                    pl_protocol::session::AgentBackend::Acp { .. } => {
+                        assert_eq!(
+                            actual.activity,
+                            StudioAgentActivity::Acp {
+                                explicitly_closed: false
+                            }
+                        );
+                        assert_eq!(
+                            json["activity"],
+                            serde_json::json!({"kind":"acp", "explicitlyClosed":false})
+                        );
+                        assert!(events.begin_native_observation(&actual.thread_id).is_none());
+                    }
+                }
+                assert!(json.get("state").is_none());
+                assert!(json.get("execution").is_none());
+                assert_eq!(
+                    serde_json::from_value::<StudioAgentDirectoryEntry>(json)?,
+                    *actual
+                );
+            }
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn acp_only_directory_add_close_ack_and_delete_publish_actual_changes() -> Result<()>
+        {
+            let root = acp(row("root", "p1", 1));
+            let (_temp, events) = fixture(vec![root.clone()], vec![]).await?;
+            let mut changes = events.subscribe_topic(&StudioProductTopic::AgentDirectory);
+            let before = events.read_agent_directory().await;
+            let mut child = acp(row("child-thread", "p1", 2));
+            child.session_id = root.session_id.clone();
+            child.agent_id = "child-agent".into();
+            child.parent_agent_id = Some(root.agent_id.clone());
+            events
+                .commit_directory(DirectoryDelta {
+                    agent_upserts: vec![agent_from_row(&child)],
+                    ..Default::default()
+                })
+                .await?;
+            let added = events.read_agent_directory().await;
+            assert_eq!(added.state.revision(), before.state.revision() + 1);
+            assert_eq!(entries(&added).len(), 2);
+            changed(&mut changes, &added);
+            events
+                .commit_directory(DirectoryDelta {
+                    agent_upserts: vec![agent_from_row(&child)],
+                    ..Default::default()
+                })
+                .await?;
+            assert_eq!(events.read_agent_directory().await, added);
+            assert!(changes.try_recv().is_err());
+            let mut close = AgentCloseRecord {
+                agent_id: child.thread_id.clone(),
+                parent_id: root.thread_id.clone(),
+                root_id: root.session_id.clone(),
+                workspace_id: "p1".into(),
+                revision: 1,
+                force: false,
+                worktree: None,
+                git: None,
+                execution_closed: false,
+                worktree_cleanup: AgentWorktreeCleanup::Pending,
+                error: None,
+            };
+            events.store.save_agent_close(&close).await?;
+            events.commit_explicit_close(&child.thread_id).await?;
+            let intent = events.read_agent_directory().await;
+            assert_eq!(intent.state.revision(), added.state.revision() + 1);
+            assert_eq!(
+                entries(&intent)
+                    .iter()
+                    .find(|entry| entry.agent_id == child.agent_id)
+                    .unwrap()
+                    .activity,
+                StudioAgentActivity::Acp {
+                    explicitly_closed: true
+                }
+            );
+            changed(&mut changes, &intent);
+            // Completion ACK is a different close-owner fact; it does not change ACP directory intent.
+            close.execution_closed = true;
+            close.changed()?;
+            events.store.save_agent_close(&close).await?;
+            events.commit_explicit_close(&child.thread_id).await?;
+            assert_eq!(events.read_agent_directory().await, intent);
+            assert!(changes.try_recv().is_err());
+            events.writer.flush().await?;
+            events
+                .commit_directory(DirectoryDelta::delete_threads(vec![
+                    child.thread_id.clone(),
+                ]))
+                .await?;
+            let removed = events.read_agent_directory().await;
+            assert_eq!(removed.state.revision(), intent.state.revision() + 1);
+            assert_eq!(entries(&removed).len(), 1);
+            changed(&mut changes, &removed);
+            events.writer.flush().await?;
+            events
+                .commit_directory(DirectoryDelta::delete_threads(vec![root.thread_id]))
+                .await?;
+            let empty = events.read_agent_directory().await;
+            assert_eq!(empty.state.revision(), removed.state.revision() + 1);
+            assert!(entries(&empty).is_empty());
+            changed(&mut changes, &empty);
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn native_hot_facts_keep_current_metadata_dedupe_and_reject_stale_observations()
+        -> Result<()> {
+            let root = row("root", "p1", 1);
+            let (_temp, events) = fixture(vec![root.clone()], vec![]).await?;
+            let mut changes = events.subscribe_topic(&StudioProductTopic::AgentDirectory);
+            let initial = events.read_agent_directory().await;
+            let observation = events.begin_native_observation(&root.thread_id).unwrap();
+            let mut snapshot = pl_core::thread::ThreadSnapshot {
+                observation_revision: 5,
+                execution: Some(pl_core::thread::ActiveExecution {
+                    id: "execution:1".into(),
+                    phase: pl_core::thread::ExecutionPhase::Running,
+                    turn_id: Some("turn-1".into()),
+                }),
+                turns: vec![pl_core::thread::TurnRecord {
+                    input_id: None,
+                    turn_id: "turn-1".into(),
+                    state: pl_core::thread::TurnState::Running,
+                    model_steps: 0,
+                    elapsed_ms: None,
+                }]
+                .into(),
+                ..Default::default()
+            };
+            events.patch_thread_runtime(
+                Some(&observation),
+                ThreadStatus::Idle,
+                10,
+                &snapshot,
+                Some(Some("summary".into())),
+            )?;
+            let active = events.read_agent_directory().await;
+            assert_eq!(active.state.revision(), initial.state.revision() + 1);
+            assert!(
+                matches!(&entries(&active)[0].activity, StudioAgentActivity::Native { state: pl_protocol::AgentState::Running(_), execution: Some(execution), can_stop: true, .. }
+                if execution.id() == "execution:1" && execution.phase() == pl_protocol::AgentExecutionPhase::Running)
+            );
+            changed(&mut changes, &active);
+            let (session, mut agent) = events.directory_facts(&root.thread_id).unwrap();
+            let mut renamed = session.clone();
+            renamed.title = "Renamed by current directory".into();
+            renamed.delegation_preference = pl_protocol::DelegationPreference::Fast;
+            agent.role = "renamed-profile".into();
+            let route = pl_protocol::studio::NewThreadModelRoute {
+                account_id: "new-account".into(),
+                model_id: "new-model".into(),
+                effort: None,
+            };
+            let pl_protocol::session::AgentBackend::Native { config, .. } = &mut agent.backend
+            else {
+                unreachable!()
+            };
+            config.route = Some(route.clone());
+            events
+                .commit_directory(DirectoryDelta {
+                    session_upserts: vec![renamed],
+                    agent_upserts: vec![agent],
+                    ..Default::default()
+                })
+                .await?;
+            let renamed = events.read_agent_directory().await;
+            assert_eq!(entries(&renamed)[0].task, "Renamed by current directory");
+            assert_eq!(entries(&renamed)[0].role, "renamed-profile");
+            assert_eq!(entries(&renamed)[0].frozen_model, Some(route));
+            assert_eq!(
+                entries(&renamed)[0].delegation_preference,
+                pl_protocol::DelegationPreference::Fast
+            );
+            assert_eq!(entries(&renamed)[0].activity, entries(&active)[0].activity);
+            changed(&mut changes, &renamed);
+            events.patch_thread_runtime(
+                Some(&observation),
+                ThreadStatus::Idle,
+                10,
+                &snapshot,
+                Some(Some("summary".into())),
+            )?;
+            events.patch_thread_runtime(
+                Some(&observation),
+                ThreadStatus::Idle,
+                10,
+                &snapshot,
+                None,
+            )?;
+            assert_eq!(events.read_agent_directory().await, renamed);
+            assert!(changes.try_recv().is_err());
+            let old = snapshot.clone();
+            snapshot.observation_revision += 1;
+            snapshot.execution = None;
+            events.patch_thread_runtime(
+                Some(&observation),
+                ThreadStatus::Idle,
+                10,
+                &snapshot,
+                Some(None),
+            )?;
+            let retired = events.read_agent_directory().await;
+            assert_eq!(entries(&retired)[0].summary, None);
+            assert_eq!(retired.state.revision(), renamed.state.revision() + 1);
+            assert!(matches!(
+                entries(&retired)[0].activity,
+                StudioAgentActivity::Native {
+                    execution: None,
+                    can_stop: false,
+                    ..
+                }
+            ));
+            changed(&mut changes, &retired);
+            assert!(
+                events
+                    .patch_thread_runtime(Some(&observation), ThreadStatus::Idle, 10, &old, None)?
+                    .is_none()
+            );
+            assert_eq!(events.read_agent_directory().await, retired);
+            assert!(events.native_observation_covers(Some(&observation), &old));
+            let current = events.begin_native_observation(&root.thread_id).unwrap();
+            let new_generation = events.read_agent_directory().await;
+            changed(&mut changes, &new_generation);
+            assert!(!events.native_observation_covers(Some(&observation), &old));
+            assert!(
+                events
+                    .patch_thread_runtime(
+                        Some(&observation),
+                        ThreadStatus::Running,
+                        99,
+                        &old,
+                        None
+                    )?
+                    .is_none()
+            );
+            let mut wrong_identity = current.clone();
+            wrong_identity.session_id = "another-session".into();
+            assert!(
+                events
+                    .patch_thread_runtime(
+                        Some(&wrong_identity),
+                        ThreadStatus::Running,
+                        99,
+                        &old,
+                        None
+                    )?
+                    .is_none()
+            );
+            assert_eq!(events.read_agent_directory().await, new_generation);
+            events
+                .apply_thread_delta(vec![acp(root.clone())], vec![])
+                .await?;
+            let external = events.read_agent_directory().await;
+            assert_eq!(
+                entries(&external)[0].activity,
+                StudioAgentActivity::Acp {
+                    explicitly_closed: false
+                }
+            );
+            changed(&mut changes, &external);
+            assert!(
+                events
+                    .patch_thread_runtime(Some(&current), ThreadStatus::Running, 99, &old, None)?
+                    .is_none()
+            );
+            assert_eq!(events.read_agent_directory().await, external);
+            assert!(!events.native_observation_covers(Some(&current), &old));
+            events
+                .apply_thread_delta(vec![root.clone()], vec![])
+                .await?;
+            let native_again = events.read_agent_directory().await;
+            changed(&mut changes, &native_again);
+            assert!(
+                events
+                    .patch_thread_runtime(Some(&current), ThreadStatus::Running, 99, &old, None)?
+                    .is_none()
+            );
+            let current = events.begin_native_observation(&root.thread_id).unwrap();
+            events.writer.flush().await?;
+            events
+                .commit_directory(DirectoryDelta::delete_threads(vec![root.thread_id.clone()]))
+                .await?;
+            let deleted = events.read_agent_directory().await;
+            assert!(entries(&deleted).is_empty());
+            assert!(!events.native_observation_covers(Some(&current), &old));
+            changed(&mut changes, &deleted);
+            assert!(
+                events
+                    .patch_thread_runtime(Some(&current), ThreadStatus::Running, 99, &old, None)?
+                    .is_none()
+            );
+            events.publish_thread_delta(vec![root], vec![], vec![]);
+            assert_eq!(events.read_agent_directory().await, deleted);
+            assert!(changes.try_recv().is_err());
+            events.writer.shutdown().await?;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn agent_collection_revision_and_dispatch_share_one_publication_lock() -> Result<()> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        let (_temp, events) = runtime.block_on(fixture(vec![row("root", "p1", 1)], vec![]))?;
+        let observation = events.begin_native_observation("root").unwrap();
+        let before = runtime.block_on(events.read_agent_directory());
+        let mut internal = events.subscribe_internal();
+        let topics = events.topics.lock().unwrap();
+        let published = std::thread::scope(|scope| -> Result<_> {
+            let events = &events;
+            let writer = scope.spawn(move || {
+                events.patch_thread_runtime(
+                    Some(&observation),
+                    ThreadStatus::Idle,
+                    1,
+                    &pl_core::thread::ThreadSnapshot {
+                        observation_revision: 1,
+                        execution: Some(pl_core::thread::ActiveExecution {
+                            id: "execution:1".into(),
+                            phase: pl_core::thread::ExecutionPhase::Preparing,
+                            turn_id: None,
+                        }),
+                        ..Default::default()
+                    },
+                    None,
+                )
+            });
+            let event = runtime.block_on(internal.recv())?;
+            let StudioProductEventKind::AgentDirectoryChanged(state) = event.kind else {
+                panic!("execution-only agent event");
+            };
+            assert_eq!(state.state.revision(), before.state.revision() + 1);
+            assert!(
+                events.thread_index.try_lock().is_err(),
+                "baseline cannot read a new revision with an older collection while dispatch is paused"
+            );
+            drop(topics);
+            writer.join().unwrap()?;
+            Ok(state)
+        })?;
+        assert_eq!(runtime.block_on(events.read_agent_directory()), published);
+        runtime.block_on(events.writer.shutdown())?;
+        Ok(())
+    }
+
     mod commit {
         use super::*;
         use futures::poll;
@@ -1749,6 +2755,9 @@ pub(super) mod tests {
             let (_temp, events) =
                 fixture(vec![original.clone()], vec![original_project.clone()]).await?;
             let before = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
+            let before_agents = events.read_agent_directory().await;
+            let mut agent_changes =
+                events.subscribe_topic(&crate::StudioProductTopic::AgentDirectory);
             let (baseline_session, baseline_agent) =
                 events.directory_facts(&original.thread_id).expect("facts");
             let (before_persist, release_persist) =
@@ -1785,6 +2794,8 @@ pub(super) mod tests {
             tokio::pin!(commit);
             assert!(poll!(commit.as_mut()).is_pending());
             before_persist.await?;
+            assert_eq!(events.read_agent_directory().await, before_agents);
+            assert!(agent_changes.try_recv().is_err());
 
             // No metadata lock is held across persistence: synchronous readers return the old slice.
             assert!(events.thread_index.try_lock().is_ok());
@@ -1813,6 +2824,8 @@ pub(super) mod tests {
                 result = &mut commit => panic!("commit published before persisted checkpoint: {result:?}"),
                 result = persisted => result?,
             }
+            assert_eq!(events.read_agent_directory().await, before_agents);
+            assert!(agent_changes.try_recv().is_err());
             let readable = events.query_threads(&query_filter, None, 10).await?;
             assert_eq!(readable.state.value().unwrap().rows, before.rows);
             // The catalog write has completed, but the only query owner still exposes the previous slice.
@@ -1832,13 +2845,32 @@ pub(super) mod tests {
             // write the command's stale copy back over this newer visible metadata.
             events
                 .patch_thread_runtime(
-                    &original.thread_id,
+                    events
+                        .begin_native_observation(&original.thread_id)
+                        .as_ref(),
                     pl_protocol::ThreadStatus::Running,
                     30,
                     &pl_core::thread::ThreadSnapshot::default(),
+                    None,
                 )?
                 .unwrap();
             let hot = events.read_thread_metadata(&original.thread_id, "owner-test")?;
+            let hot_agents = events.read_agent_directory().await;
+            assert_eq!(
+                hot_agents.state.revision(),
+                before_agents.state.revision() + 1
+            );
+            let StudioProductEventKind::AgentDirectoryChanged(hot_event) =
+                agent_changes.try_recv()?.kind
+            else {
+                panic!("agent snapshot");
+            };
+            assert_eq!(hot_event, hot_agents);
+            assert_eq!(
+                hot_agents.state.value().unwrap().agents.len(),
+                1,
+                "the persisted new member remains unpublished"
+            );
             assert_eq!(
                 hot.row.as_ref().unwrap().native_status().unwrap(),
                 pl_protocol::ThreadStatus::Running
@@ -1852,6 +2884,19 @@ pub(super) mod tests {
 
             release_publish.send(()).unwrap();
             commit.await?;
+            let committed_agents = events.read_agent_directory().await;
+            assert_eq!(
+                committed_agents.state.revision(),
+                hot_agents.state.revision() + 1
+            );
+            assert_eq!(committed_agents.state.value().unwrap().agents.len(), 2);
+            let StudioProductEventKind::AgentDirectoryChanged(committed_event) =
+                agent_changes.try_recv()?.kind
+            else {
+                panic!("agent snapshot");
+            };
+            assert_eq!(committed_event, committed_agents);
+            assert!(agent_changes.try_recv().is_err());
             let after = query(&events, &ThreadDirectoryQuery::default(), None, 10)?;
             let unblocked = events.query_threads(&query_filter, None, 10).await?;
             assert_eq!(unblocked.state.revision(), after.stamp.revision);
@@ -2037,10 +3082,11 @@ pub(super) mod tests {
                 let _runtime = runtime.enter();
                 let value = (|| -> Result<ThreadMetadataFrame> {
                     worker_events.patch_thread_runtime(
-                        "root",
+                        worker_events.begin_native_observation("root").as_ref(),
                         pl_protocol::ThreadStatus::Running,
                         2,
                         &pl_core::thread::ThreadSnapshot::default(),
+                        None,
                     )?;
                     worker_events.read_thread_metadata("root", "contention-test")
                 })();
@@ -2076,10 +3122,11 @@ pub(super) mod tests {
             let mut requested = baseline_session.clone();
             requested.title = "Manual title".into();
             events.patch_thread_runtime(
-                "root",
+                events.begin_native_observation("root").as_ref(),
                 pl_protocol::ThreadStatus::Running,
                 2,
                 &pl_core::thread::ThreadSnapshot::default(),
+                None,
             )?;
             events
                 .commit_session_update(baseline_session, requested)
@@ -2140,10 +3187,11 @@ pub(super) mod tests {
             events.store.save_agent_close(&close).await?;
             events.commit_explicit_close("child").await?;
             events.patch_thread_runtime(
-                "child",
+                events.begin_native_observation("child").as_ref(),
                 pl_protocol::ThreadStatus::Running,
                 3,
                 &pl_core::thread::ThreadSnapshot::default(),
+                None,
             )?;
             let (_, baseline_agent) = events.directory_facts("child").expect("facts");
             assert_eq!(
@@ -2249,10 +3297,11 @@ pub(super) mod tests {
                 "repeated close restoration must not regress the acknowledged stage"
             );
             events.patch_thread_runtime(
-                "child",
+                events.begin_native_observation("child").as_ref(),
                 pl_protocol::ThreadStatus::Idle,
                 6,
                 &pl_core::thread::ThreadSnapshot::default(),
+                None,
             )?;
             assert_eq!(
                 events
@@ -2392,10 +3441,11 @@ pub(super) mod tests {
                         match mutation {
                             HotMutation::Runtime => {
                                 worker_events.patch_thread_runtime(
-                                    "first",
+                                    worker_events.begin_native_observation("first").as_ref(),
                                     pl_protocol::ThreadStatus::Running,
                                     10,
                                     &pl_core::thread::ThreadSnapshot::default(),
+                                    None,
                                 )?;
                             }
                             HotMutation::UserMessage => {
@@ -2434,7 +3484,29 @@ pub(super) mod tests {
                     drop(topics);
                     first_writer.join().unwrap().unwrap();
                     second_writer.join().unwrap();
-                    let second_event = runtime.block_on(internal.recv()).unwrap();
+                    let mut published = vec![first_event];
+                    published.extend(std::iter::from_fn(|| internal.try_recv().ok()));
+                    let expected_agent_events =
+                        usize::from(!matches!(mutation, HotMutation::UserMessage));
+                    assert_eq!(
+                        published
+                            .iter()
+                            .filter(|event| matches!(
+                                event.kind,
+                                StudioProductEventKind::AgentDirectoryChanged(_)
+                            ))
+                            .count(),
+                        expected_agent_events
+                    );
+                    let mut thread_events = published.into_iter().filter(|event| {
+                        matches!(
+                            event.kind,
+                            StudioProductEventKind::ThreadDirectoryChanged(_)
+                        )
+                    });
+                    let first_event = thread_events.next().expect("first thread publication");
+                    let second_event = thread_events.next().expect("second thread publication");
+                    assert!(thread_events.next().is_none());
                     (first_event, second_event, held_index)
                 })
             })

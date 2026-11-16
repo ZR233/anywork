@@ -128,11 +128,7 @@ StudioDriverFacts queryStudioDriverFacts(
     selection.selectedProjectId,
   );
   AgentWorkspaceView? workspace;
-  if (row != null && rootRow != null) {
-    if (row.backend is! NativeAgentBackendView ||
-        rootRow.backend is! NativeAgentBackendView) {
-      throw StateError('Native driver workspace cannot consume an ACP session');
-    }
+  if (row != null && rootRow != null && row.backend is NativeAgentBackendView) {
     workspace = AgentWorkspaceView(
       row: row,
       rootRow: rootRow,

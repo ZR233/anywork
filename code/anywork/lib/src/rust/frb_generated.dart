@@ -11254,6 +11254,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAgentState dco_decode_box_autoadd_bridge_agent_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_bridge_agent_state(raw);
+  }
+
+  @protected
   BridgeAgentTaskCategory dco_decode_box_autoadd_bridge_agent_task_category(
     dynamic raw,
   ) {
@@ -15243,6 +15249,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAgentActivity dco_decode_bridge_agent_activity(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeAgentActivity_Native(
+          state: dco_decode_box_autoadd_bridge_agent_state(raw[1]),
+          execution: dco_decode_opt_box_autoadd_bridge_agent_execution(raw[2]),
+          canStop: dco_decode_bool(raw[3]),
+          awaitingScheduling: dco_decode_bool(raw[4]),
+        );
+      case 1:
+        return BridgeAgentActivity_Acp(
+          explicitlyClosed: dco_decode_bool(raw[1]),
+        );
+      default:
+        throw Exception("unreachable");
+    }
+  }
+
+  @protected
   BridgeAgentBackend dco_decode_bridge_agent_backend(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     switch (raw[0]) {
@@ -15316,8 +15342,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 15)
-      throw Exception('unexpected arr length: expect 15 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return BridgeAgentDirectoryEntryDto(
       agentId: dco_decode_String(arr[0]),
       sessionId: dco_decode_String(arr[1]),
@@ -15331,11 +15357,8 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       ),
       task: dco_decode_String(arr[8]),
       summary: dco_decode_opt_String(arr[9]),
-      state: dco_decode_bridge_agent_state(arr[10]),
-      execution: dco_decode_opt_box_autoadd_bridge_agent_execution(arr[11]),
-      canStop: dco_decode_bool(arr[12]),
-      awaitingScheduling: dco_decode_bool(arr[13]),
-      updatedAt: dco_decode_i_64(arr[14]),
+      activity: dco_decode_bridge_agent_activity(arr[10]),
+      updatedAt: dco_decode_i_64(arr[11]),
     );
   }
 
@@ -26268,6 +26291,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAgentState sse_decode_box_autoadd_bridge_agent_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_bridge_agent_state(deserializer));
+  }
+
+  @protected
   BridgeAgentTaskCategory sse_decode_box_autoadd_bridge_agent_task_category(
     SseDeserializer deserializer,
   ) {
@@ -31286,6 +31317,35 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeAgentActivity sse_decode_bridge_agent_activity(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        var var_state = sse_decode_box_autoadd_bridge_agent_state(deserializer);
+        var var_execution = sse_decode_opt_box_autoadd_bridge_agent_execution(
+          deserializer,
+        );
+        var var_canStop = sse_decode_bool(deserializer);
+        var var_awaitingScheduling = sse_decode_bool(deserializer);
+        return BridgeAgentActivity_Native(
+          state: var_state,
+          execution: var_execution,
+          canStop: var_canStop,
+          awaitingScheduling: var_awaitingScheduling,
+        );
+      case 1:
+        var var_explicitlyClosed = sse_decode_bool(deserializer);
+        return BridgeAgentActivity_Acp(explicitlyClosed: var_explicitlyClosed);
+      default:
+        throw UnimplementedError('');
+    }
+  }
+
+  @protected
   BridgeAgentBackend sse_decode_bridge_agent_backend(
     SseDeserializer deserializer,
   ) {
@@ -31390,12 +31450,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_decode_opt_box_autoadd_bridge_new_thread_model_route(deserializer);
     var var_task = sse_decode_String(deserializer);
     var var_summary = sse_decode_opt_String(deserializer);
-    var var_state = sse_decode_bridge_agent_state(deserializer);
-    var var_execution = sse_decode_opt_box_autoadd_bridge_agent_execution(
-      deserializer,
-    );
-    var var_canStop = sse_decode_bool(deserializer);
-    var var_awaitingScheduling = sse_decode_bool(deserializer);
+    var var_activity = sse_decode_bridge_agent_activity(deserializer);
     var var_updatedAt = sse_decode_i_64(deserializer);
     return BridgeAgentDirectoryEntryDto(
       agentId: var_agentId,
@@ -31408,10 +31463,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       frozenModel: var_frozenModel,
       task: var_task,
       summary: var_summary,
-      state: var_state,
-      execution: var_execution,
-      canStop: var_canStop,
-      awaitingScheduling: var_awaitingScheduling,
+      activity: var_activity,
       updatedAt: var_updatedAt,
     );
   }
@@ -45615,6 +45667,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_box_autoadd_bridge_agent_state(
+    BridgeAgentState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_agent_state(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_bridge_agent_task_category(
     BridgeAgentTaskCategory self,
     SseSerializer serializer,
@@ -50053,6 +50114,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_agent_activity(
+    BridgeAgentActivity self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeAgentActivity_Native(
+        state: final state,
+        execution: final execution,
+        canStop: final canStop,
+        awaitingScheduling: final awaitingScheduling,
+      ):
+        sse_encode_i_32(0, serializer);
+        sse_encode_box_autoadd_bridge_agent_state(state, serializer);
+        sse_encode_opt_box_autoadd_bridge_agent_execution(
+          execution,
+          serializer,
+        );
+        sse_encode_bool(canStop, serializer);
+        sse_encode_bool(awaitingScheduling, serializer);
+      case BridgeAgentActivity_Acp(explicitlyClosed: final explicitlyClosed):
+        sse_encode_i_32(1, serializer);
+        sse_encode_bool(explicitlyClosed, serializer);
+    }
+  }
+
+  @protected
   void sse_encode_bridge_agent_backend(
     BridgeAgentBackend self,
     SseSerializer serializer,
@@ -50144,13 +50232,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     );
     sse_encode_String(self.task, serializer);
     sse_encode_opt_String(self.summary, serializer);
-    sse_encode_bridge_agent_state(self.state, serializer);
-    sse_encode_opt_box_autoadd_bridge_agent_execution(
-      self.execution,
-      serializer,
-    );
-    sse_encode_bool(self.canStop, serializer);
-    sse_encode_bool(self.awaitingScheduling, serializer);
+    sse_encode_bridge_agent_activity(self.activity, serializer);
     sse_encode_i_64(self.updatedAt, serializer);
   }
 

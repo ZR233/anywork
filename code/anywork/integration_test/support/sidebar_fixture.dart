@@ -391,10 +391,26 @@ final class SidebarFixture {
                       if (agent.threadId == threadId)
                         {
                           'agentId': agent.agentId,
-                          'executionId': agent.execution?.id,
-                          'executionPhase': agent.execution?.phase.name,
-                          'canStop': agent.canStop,
-                          'stateType': agent.state.runtimeType.toString(),
+                          'executionId': switch (agent.activity) {
+                            NativeStudioAgentActivity(:final execution) =>
+                              execution?.id,
+                            AcpStudioAgentActivity() => null,
+                          },
+                          'executionPhase': switch (agent.activity) {
+                            NativeStudioAgentActivity(:final execution) =>
+                              execution?.phase.name,
+                            AcpStudioAgentActivity() => null,
+                          },
+                          'canStop': switch (agent.activity) {
+                            NativeStudioAgentActivity(:final canStop) =>
+                              canStop,
+                            AcpStudioAgentActivity() => null,
+                          },
+                          'stateType': switch (agent.activity) {
+                            NativeStudioAgentActivity(:final state) =>
+                              state.runtimeType.toString(),
+                            AcpStudioAgentActivity() => 'ACP (unobserved)',
+                          },
                         },
                   ],
           },
@@ -424,11 +440,17 @@ final class SidebarFixture {
             );
           }
           final agent = matches.single;
-          final execution = agent.execution;
-          if ((execution == null) != !agent.canStop) {
+          final activity = agent.activity;
+          if (activity is! NativeStudioAgentActivity) {
+            throw StateError(
+              'Cannot clean up non-Native fixture thread $threadId',
+            );
+          }
+          final execution = activity.execution;
+          if ((execution == null) != !activity.canStop) {
             throw StateError(
               'Cannot clean up fixture thread $threadId: inconsistent stop '
-              'qualification canStop=${agent.canStop}, execution=${execution?.id}',
+              'qualification canStop=${activity.canStop}, execution=${execution?.id}',
             );
           }
           return _CleanupTarget(
@@ -436,8 +458,8 @@ final class SidebarFixture {
             threadId: threadId,
             executionId: execution?.id,
             executionPhase: execution?.phase.name,
-            canStop: agent.canStop,
-            stateType: agent.state.runtimeType.toString(),
+            canStop: activity.canStop,
+            stateType: activity.state.runtimeType.toString(),
             directoryRevision: directory.revision,
           );
         })
@@ -527,13 +549,17 @@ final class SidebarFixture {
             '${matches.length} for ${target.threadId}',
           );
         }
-        final currentExecutionId = matches.single.execution?.id;
+        final activity = matches.single.activity;
+        if (activity is! NativeStudioAgentActivity) {
+          throw StateError('Cannot confirm a Native stop from an ACP member');
+        }
+        final currentExecutionId = activity.execution?.id;
         record({
           'event': 'notQualified',
           'threadId': target.threadId,
           'frozenExecutionId': target.executionId,
           'currentExecutionId': currentExecutionId,
-          'canStop': matches.single.canStop,
+          'canStop': activity.canStop,
           'directoryRevision': directory.revision,
         });
         if (currentExecutionId == null ||

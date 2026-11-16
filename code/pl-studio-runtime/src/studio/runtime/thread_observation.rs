@@ -351,6 +351,9 @@ impl ThreadLiveFeed {
     /// taken over behind the live stream — so the retained fact only ever moves forward and the newest
     /// terminal Turn is never replaced by an older one.
     fn publish_last_turn(&self, turn: Arc<pl_protocol::Turn>) {
+        if self.is_delivery_closed() {
+            return;
+        }
         let current = self.last_turn.borrow().clone();
         if let Some(current) = current.as_ref() {
             // Only a strictly newer fact moves the slot. A duplicate of the newest fact — the same
@@ -459,6 +462,8 @@ impl Progress {
 }
 
 struct WorkerState {
+    /// Frozen at observer installation, before any asynchronous history preparation can finish late.
+    native_directory: Option<crate::studio::product_event_bus::NativeAgentObservation>,
     deletion: tokio_util::sync::CancellationToken,
     join_failure: std::sync::Mutex<Option<Arc<anyhow::Error>>>,
     terminal_transfer: Arc<
@@ -918,6 +923,7 @@ impl ThreadObservations {
             .thread_persistence()
             .history_channel(&id);
         let state = Arc::new(WorkerState {
+            native_directory: self.0.projector.events.begin_native_observation(&id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),
@@ -1073,7 +1079,13 @@ impl ThreadObservations {
             // A cold child's interruption is a fact the list must publish: a restart otherwise loses
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
             // reads only the saved checkpoint — no activation, no workspace, no model request.
-            directory::publish_cold_scheduling_state(services, &child, &checkpoint.state).await?;
+            directory::publish_cold_scheduling_state(
+                services,
+                &child,
+                &member.agent,
+                &checkpoint.state,
+            )
+            .await?;
             // Match close/retry recovery: keep the owned delivery state out of the parent's
             // subscription future, which also nests checkpoint migration and activation.
             Box::pin(
@@ -1196,6 +1208,7 @@ impl Drop for ProjectionLease {
 }
 
 struct LiveOwner {
+    native_directory: Option<crate::studio::product_event_bus::NativeAgentObservation>,
     terminal_transfer: Arc<
         std::sync::Mutex<Option<Arc<crate::thread_assembler::review_dispatch::TerminalDelivery>>>,
     >,
@@ -1512,6 +1525,7 @@ impl LiveOwner {
         let model_route_published = model_route;
         feed.publish_storage(storage_published.clone());
         let owner = Self {
+            native_directory: state.native_directory.clone(),
             terminal_transfer: state.terminal_transfer.clone(),
             terminal_revocation: state.reconciliation_through.clone(),
             terminal_floor: state.progress.borrow().applied,
@@ -1551,11 +1565,11 @@ impl LiveOwner {
             // The retained terminal may describe an older Turn while this installed snapshot
             // already has newer work. Accept the current runtime cut, not a status inferred from
             // that historical Turn, before any subscriber can observe its terminal fact.
-            projector.events.patch_thread_runtime(
-                &owner.thread.id,
-                crate::studio::thread_projection::status(snapshot),
-                owner.thread.updated_at.max(turn.updated_at),
+            owner.prepare_terminal_runtime(
+                projector,
                 snapshot,
+                turn.revision,
+                owner.thread.updated_at.max(turn.updated_at),
             )?;
             owner.feed.publish_last_turn(Arc::new(turn));
         }
@@ -1608,10 +1622,11 @@ impl LiveOwner {
         services: &ObservationServices,
         thread_id: &str,
         write: &Arc<ThreadWrite>,
+        snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         self.seed_durable_targets(services, thread_id, write)
             .await?;
-        self.project_write(services, write).await
+        self.project_write(services, write, snapshot).await
     }
 
     /// Reads the identities one effect needs but this projection holds no canonical body for.
@@ -1655,6 +1670,7 @@ impl LiveOwner {
         &mut self,
         services: &ObservationServices,
         write: &Arc<ThreadWrite>,
+        snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         let effect = &write.effect;
         anyhow::ensure!(
@@ -1705,7 +1721,7 @@ impl LiveOwner {
             mode: HandoffMode::Live,
         });
         self.publish_retained()?;
-        let result = self.finish_pending(services).await;
+        let result = self.finish_pending(services, snapshot).await;
         tracing::debug!(
             target: "conversation_work",
             thread_id = self.thread.id,
@@ -1718,15 +1734,18 @@ impl LiveOwner {
     }
 
     /// Prepares the retained batch's original parent report, then hands the batch over.
+    /// The snapshot is the current cut of this worker's original ThreadHandle, including on retry;
+    /// the frozen transfer remains the source of the report and content, never of runtime versions.
     async fn finish_pending(
         &mut self,
         services: &ObservationServices,
+        snapshot: &ThreadSnapshot,
     ) -> Result<Option<Arc<pl_core::thread::inbox::ThreadMessage>>> {
         // 原批次先保留，全部可失败准备先完成；发布与可靠交接只推进同一冻结批次。
         self.publish_retained()?;
         self.prepare_parent_report(services).await?;
         self.prepare_terminal_delivery(services)?;
-        self.prepare_handoff(services)?;
+        self.prepare_handoff(services, snapshot)?;
         if let Some(binding) = &self.binding {
             let prepared =
                 binding
@@ -1903,24 +1922,59 @@ impl LiveOwner {
         Ok(())
     }
 
-    fn prepare_handoff(&self, services: &ObservationServices) -> Result<()> {
+    fn prepare_terminal_runtime(
+        &self,
+        services: &ObservationServices,
+        snapshot: &ThreadSnapshot,
+        sequence: u64,
+        committed_at: i64,
+    ) -> Result<()> {
+        // Only this worker's original ThreadHandle supplies the live cut, including on retry.
+        // Same-generation observation revisions are monotonic with its commit sequence, so a newer
+        // accepted cut also covers this terminal; checkpoint revisions cannot establish that fact.
+        anyhow::ensure!(
+            snapshot.commit_sequence >= sequence,
+            "terminal handoff requires its owner's snapshot through commit {} (got {})",
+            sequence,
+            snapshot.commit_sequence,
+        );
+        let accepted = services.events.patch_thread_runtime(
+            self.native_directory.as_ref(),
+            crate::studio::thread_projection::status(snapshot),
+            committed_at,
+            snapshot,
+            None,
+        )?;
+        if accepted.is_none()
+            && !services
+                .events
+                .native_observation_covers(self.native_directory.as_ref(), snapshot)
+        {
+            // A revoked token or resource is not an accepted cut. End only this obsolete feed's
+            // outward delivery; its original reliable content and parent-transfer duties continue.
+            self.feed.delivery_closed.cancel();
+        }
+        Ok(())
+    }
+
+    fn prepare_handoff(
+        &self,
+        services: &ObservationServices,
+        snapshot: &ThreadSnapshot,
+    ) -> Result<()> {
         let Some(pending) = &self.retained.pending else {
             return Ok(());
         };
-        if pending.mode == HandoffMode::Live
-            && crate::studio::thread_projection::prepared_terminal_turn(&pending.prepared).is_some()
-        {
-            // This is the original frozen commit even after a failed report wait. The directory
-            // accepts its runtime state synchronously, through its explicit-close latch, before
-            // either retained or realtime completion becomes visible at handoff. Keep this ahead
-            // of channel.prepare: a failed patch must leave the reliable batch solely pending.
-            // Behind/history transfers never acquire the right to regress the current directory.
-            let snapshot = &pending.write.checkpoint.state;
-            services.events.patch_thread_runtime(
-                &self.thread.id,
-                crate::studio::thread_projection::status(snapshot),
-                pending.write.effect.committed_at,
+        if crate::studio::thread_projection::prepared_terminal_turn(&pending.prepared).is_some() {
+            // Behind also publishes a retained terminal, including a restart commit not saved yet.
+            // Qualify the current live cut before any handoff, never the historical transfer's state.
+            // This preserves newer Turns, version/token guards and explicit close; Behind still
+            // produces no realtime frames. A failed patch leaves the original batch pending.
+            self.prepare_terminal_runtime(
+                services,
                 snapshot,
+                pending.write.effect.sequence,
+                pending.write.effect.committed_at,
             )?;
         }
         if pending.mode == HandoffMode::Live {
@@ -2098,6 +2152,7 @@ impl LiveOwner {
         services: &ObservationServices,
         thread_id: &str,
         write: &Arc<ThreadWrite>,
+        snapshot: &ThreadSnapshot,
     ) -> Result<()> {
         self.seed_durable_targets(services, thread_id, write)
             .await?;
@@ -2134,7 +2189,7 @@ impl LiveOwner {
             mode: HandoffMode::Behind,
         });
         self.publish_retained()?;
-        self.finish_pending(services).await?;
+        self.finish_pending(services, snapshot).await?;
         Ok(())
     }
 
@@ -2963,8 +3018,9 @@ impl ProjectionWorker {
             // snapshot that must already cover this effect. Otherwise admission could race receiver
             // registration and leave a skipped commit out of both baseline and feed. The existing
             // snapshot watch wakes us when this watermark advances; the reliable queue retains work.
-            // A retained batch always satisfies the boundary it was taken over under, so it is
-            // retried along its original mode instead of being parked again.
+            // A retained batch is retried along its original mode instead of being parked again.
+            // finish_pending also checks terminal coverage against this same handle's current cut;
+            // neither its frozen transfer nor another observation generation can supply that cut.
             if retained_mode.is_none() && write.effect.sequence > snapshot.commit_sequence {
                 break;
             }
@@ -2972,7 +3028,7 @@ impl ProjectionWorker {
             if let Some(mode) = retained_mode {
                 // Same batch, same mode: no re-seed, no re-fold, no re-projection and no
                 // re-decided delivery — only the report preparation and the handoff are retried.
-                let _parent_report = live.finish_pending(services).await?;
+                let _parent_report = live.finish_pending(services, snapshot).await?;
                 if mode == HandoffMode::Live {
                     newest_commit_at = newest_commit_at.max(write.effect.committed_at);
                 }
@@ -2982,11 +3038,13 @@ impl ProjectionWorker {
             if sequence <= recovered_through {
                 // A fact the owner committed before this projection existed: it is already part of
                 // the snapshot the projection was seeded from, so it is folded for durability only.
-                live.prepare_behind(services, id.as_str(), &write).await?;
+                live.prepare_behind(services, id.as_str(), &write, snapshot)
+                    .await?;
                 transfer_terminal(services, state).await?;
                 continue;
             }
-            live.advance(services, id.as_str(), &write).await?;
+            live.advance(services, id.as_str(), &write, snapshot)
+                .await?;
             newest_commit_at = newest_commit_at.max(write.effect.committed_at);
             transfer_terminal(services, state).await?;
         }
@@ -3015,7 +3073,14 @@ impl ProjectionWorker {
                 .final_text(),
             None => None,
         };
-        directory::publish(services, product, snapshot, summary).await?;
+        directory::publish(
+            services,
+            product,
+            live.native_directory.as_ref(),
+            snapshot,
+            summary,
+        )
+        .await?;
         Ok(())
     }
 }
@@ -3294,6 +3359,7 @@ pub(in crate::studio) mod storage_fault_tests {
             id: child.id.clone(),
             thread: ThreadHandle::resume_without_model(child.id.clone(), None)?,
             state: Arc::new(WorkerState {
+                native_directory: resources.events.begin_native_observation(&child.id),
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -3370,10 +3436,9 @@ pub(in crate::studio) mod storage_fault_tests {
                 .find(|row| row.thread_id == worker.id)
                 .context("the original agent row")?;
             anyhow::ensure!(
-                row.execution.as_ref().is_some_and(|execution| {
-                    execution.id() == "execution:1"
-                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping
-                }),
+                matches!(&row.activity, crate::StudioAgentActivity::Native { execution: Some(execution), .. }
+                    if execution.id() == "execution:1"
+                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping),
                 "the directory must first publish the exact stopping execution"
             );
 
@@ -3395,7 +3460,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 .find(|row| row.thread_id == worker.id)
                 .context("stopping must not remove the original agent row")?;
             anyhow::ensure!(
-                row.execution.is_none() && !row.can_stop,
+                matches!(row.activity, crate::StudioAgentActivity::Native { execution: None, can_stop: false, .. }),
                 "the same committed revision must publish execution retirement"
             );
             anyhow::ensure!(settled.state.revision() > stopping.state.revision());
@@ -3407,6 +3472,18 @@ pub(in crate::studio) mod storage_fault_tests {
                 .await?;
             let preview = worker.services.events.read_agent_directory().await;
             anyhow::ensure!(preview.state.revision() == settled.state.revision());
+            // History preparation may finish after a newer observer was installed. Reopening this
+            // worker retains its original token instead of acquiring a new right to publish.
+            worker.live = None;
+            worker.services.events.begin_native_observation(&worker.id).context("replacement observer")?;
+            let replacement = worker.services.events.read_agent_directory().await;
+            snapshot.observation_revision += 1;
+            snapshot.execution = Some(pl_core::thread::ActiveExecution {
+                id: "late-execution".into(), phase: pl_core::thread::ExecutionPhase::Preparing, turn_id: None,
+            });
+            worker.project(&snapshot, true, None).await?;
+            anyhow::ensure!(worker.services.events.read_agent_directory().await == replacement,
+                "a late old observer must not replace a newer generation when opening history");
             Ok(())
         }
         .await;
@@ -4161,6 +4238,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                native_directory: None,
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -4201,6 +4279,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 Default::default(),
             )),
             state: Arc::new(WorkerState {
+                native_directory: None,
                 deletion: Default::default(),
                 join_failure: Default::default(),
                 terminal_transfer: Default::default(),
@@ -4436,6 +4515,29 @@ pub(in crate::studio) mod storage_fault_tests {
         }
     }
 
+    #[derive(Debug)]
+    struct HeldFinalTextModel {
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+        release: Arc<Notify>,
+    }
+
+    impl ModelSession for HeldFinalTextModel {
+        async fn prepare(
+            &mut self,
+            request: ModelRequest,
+        ) -> Result<PreparedModelCall, ModelError> {
+            if let Some(entered) = self.entered.take() {
+                let _ = entered.send(());
+            }
+            self.release.notified().await;
+            FinalTextModel.prepare(request).await
+        }
+
+        async fn close(&mut self) -> Result<(), ModelError> {
+            Ok(())
+        }
+    }
+
     /// Runs one real turn whose single model step is the final text; the turn must complete.
     async fn run_final_turn(handle: &ThreadHandle, turn_id: &str) -> Result<()> {
         let outcome = handle
@@ -4661,6 +4763,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let snapshot = snapshot.unwrap_or_else(|| handle.snapshot());
         let (progress, owner_progress) = watch::channel(Progress::default());
         let state = Arc::new(WorkerState {
+            native_directory: fixture.services.events.begin_native_observation(&thread.id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),
@@ -4734,7 +4837,14 @@ pub(in crate::studio) mod storage_fault_tests {
                 Vec::new()
             };
             if receipt_ids.is_empty() {
-                owner.advance(&fixture.services, &thread.id, &write).await?;
+                owner
+                    .advance(
+                        &fixture.services,
+                        &thread.id,
+                        &write,
+                        &write.checkpoint.state,
+                    )
+                    .await?;
                 continue;
             }
 
@@ -4742,7 +4852,12 @@ pub(in crate::studio) mod storage_fault_tests {
             let (mut entered, release) = history.arm_completion_read_gate().await;
             let result = tokio::time::timeout(
                 Duration::from_secs(10),
-                owner.advance(&fixture.services, &thread.id, &write),
+                owner.advance(
+                    &fixture.services,
+                    &thread.id,
+                    &write,
+                    &write.checkpoint.state,
+                ),
             )
             .await;
             if result.is_err() {
@@ -5061,6 +5176,485 @@ pub(in crate::studio) mod storage_fault_tests {
     }
 
     #[tokio::test]
+    async fn recovered_behind_terminal_qualifies_directory_before_retention() -> Result<()> {
+        use pl_protocol::ThreadStatus;
+
+        for (case, newer_running, explicitly_closed) in [
+            ("first-recovery", false, false),
+            ("newer-running", true, false),
+            ("explicit-close", false, true),
+        ] {
+            let fixture = observation_fixture().await?;
+            let parent = bound_thread("child-terminal-report-parent");
+            let mut thread = if explicitly_closed {
+                register_test_thread(&fixture.store, &parent).await?;
+                child_thread("recovered-directory", &parent.id)
+            } else {
+                bound_thread("recovered-directory")
+            };
+            thread.status = ThreadStatus::Running;
+            register_test_thread(&fixture.store, &thread).await?;
+            publish_test_directory(&fixture.store, &fixture.services.events).await?;
+            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+            let channel = fixture
+                .store
+                .thread_persistence()
+                .history_channel(&thread.id);
+            let running = TurnRecord {
+                input_id: None,
+                turn_id: "interrupted-by-restart".into(),
+                state: TurnState::Running,
+                model_steps: 0,
+                elapsed_ms: None,
+            };
+            let checkpoint = ThreadCheckpoint::capture_transfer(
+                thread.id.clone(),
+                1,
+                ThreadSnapshot {
+                    commit_sequence: 1,
+                    turns: Arc::from([running.clone()]),
+                    ..Default::default()
+                },
+            );
+            let initial = ThreadWrite {
+                effect: Arc::new(ThreadEffectBatch {
+                    thread_id: thread.id.clone(),
+                    sequence: 1,
+                    committed_at: 1,
+                    turn: Some(running),
+                    ..Default::default()
+                }),
+                checkpoint: checkpoint.clone(),
+                output_claim: None,
+            };
+            // Only the running checkpoint is durable. No directory runtime patch or terminal has
+            // been published, and no observation driver exists to prepare the restart's write.
+            sink.admit(&thread.id, initial.clone())?;
+            let history = fixture.store.history(&thread.id).await?;
+            let mut projection = LiveProjection::new();
+            projection.bind_execution_history(channel.order_index(), history.clone())?;
+            projection.bind_conversation_identity(
+                history
+                    .conversation_database_id()
+                    .await?
+                    .context("running checkpoint database")?,
+            )?;
+            let mut prepared = projection
+                .prepare_committed(&thread, &initial.effect, &initial.checkpoint.state)
+                .await?;
+            projection
+                .publish_prepared(
+                    &fixture.store.chat_session(&thread.id).await?,
+                    &mut prepared,
+                )
+                .await?;
+            channel.prepare_with(None, prepared, || Ok(()))?;
+            sink.flush(&thread.id, 1).await?;
+            let (entered_model, model_entered) = tokio::sync::oneshot::channel();
+            let release = Arc::new(Notify::new());
+            let handle = if newer_running {
+                ThreadHandle::resume(
+                    thread.id.clone(),
+                    DynModelSession::new(HeldFinalTextModel {
+                        entered: Some(entered_model),
+                        release: release.clone(),
+                    }),
+                    Some(checkpoint),
+                )?
+            } else {
+                ThreadHandle::resume_without_model(thread.id.clone(), Some(checkpoint))?
+            };
+            handle
+                .attach_storage(ColdStoreHandle::new(sink.clone()))
+                .await?;
+            let recovery = channel.next_unprojected().context("Core recovery write")?;
+            let recovered_sequence = recovery.effect.sequence;
+            assert_eq!(
+                recovery.effect.turn.as_ref().unwrap().state,
+                TurnState::Interrupted
+            );
+            assert_eq!(recovery.checkpoint.state.observation_revision, 0);
+            assert!(handle.snapshot().observation_revision > 0);
+            let turn = if newer_running {
+                let running_handle = handle.clone();
+                let turn = tokio::spawn(async move {
+                    run_final_turn(&running_handle, "newer-than-recovery").await
+                });
+                tokio::time::timeout(Duration::from_secs(3), model_entered).await??;
+                Some(turn)
+            } else {
+                None
+            };
+            let current = handle.snapshot();
+            assert!(current.commit_sequence >= recovered_sequence);
+            let (progress, owner_progress) = watch::channel(Progress::default());
+            let (hook, mut entered, _) = PendingPhaseHook::new();
+            let state = Arc::new(WorkerState {
+                native_directory: fixture.services.events.begin_native_observation(&thread.id),
+                deletion: Default::default(),
+                join_failure: Default::default(),
+                terminal_transfer: Default::default(),
+                progress,
+                retry: Notify::new(),
+                channel: channel.clone(),
+                reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(
+                    current.commit_sequence,
+                )),
+                observed_before_execution: false,
+                pending_hook: Some(hook),
+            });
+            let feed = Arc::new(ThreadLiveFeed::new(
+                None,
+                owner_progress,
+                Default::default(),
+            ));
+            let mut worker = ProjectionWorker {
+                services: fixture.services.clone(),
+                id: thread.id.clone(),
+                thread: handle.clone(),
+                state,
+                recovered_through: current.commit_sequence,
+                feed: feed.clone(),
+                live: None,
+                live_floor: current.commit_sequence,
+                continuous: false,
+            };
+            let result: Result<()> = async {
+                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, ThreadStatus::Running);
+                assert!(fixture.store.history(&thread.id).await?.newest_terminal_turn().await?.is_none());
+                if explicitly_closed {
+                    fixture.store.save_agent_close(&crate::studio::store::agent_close::AgentCloseRecord {
+                        agent_id: thread.id.clone(), parent_id: parent.id.clone(),
+                        root_id: thread.root_thread_id.clone(), workspace_id: thread.workspace_id.clone(),
+                        revision: 1, force: false, worktree: None, git: None, execution_closed: true,
+                        worktree_cleanup: pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
+                        error: None,
+                    }).await?;
+                    fixture.services.events.commit_explicit_close(&thread.id).await?;
+                }
+                let expected = if explicitly_closed { ThreadStatus::Closed }
+                    else if newer_running { ThreadStatus::Running } else { ThreadStatus::Idle };
+                let mut projecting = Box::pin(worker.project(&current, false, None));
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    tokio::select! {
+                        sequence = entered.recv() => {
+                            assert_eq!(sequence.context("behind handover gate")?, recovered_sequence);
+                            Ok(())
+                        }
+                        outcome = projecting.as_mut() => {
+                            outcome?;
+                            anyhow::bail!("recovery escaped its handover gate");
+                        }
+                    }
+                }).await??;
+                assert!(feed.last_turn().borrow().is_none());
+                assert!(fixture.store.history(&thread.id).await?.newest_terminal_turn().await?.is_none());
+                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, expected,
+                    "directory before first retained recovery terminal: {case}");
+                drop(projecting);
+                let live = worker.live.as_mut().unwrap();
+                let pending = live.retained.pending.as_ref().unwrap();
+                assert_eq!(pending.mode, HandoffMode::Behind);
+                assert!(Arc::ptr_eq(&pending.write, &recovery));
+                live.pending_hook = None;
+                worker.project(&current, false, None).await?;
+                assert_eq!(feed.last_turn().borrow().as_ref().unwrap().id, "interrupted-by-restart");
+                assert_eq!(feed.last_turn().borrow().as_ref().unwrap().revision, recovered_sequence);
+                assert_eq!(fixture.services.events.thread_snapshot(&thread.id)?.unwrap().status, expected);
+                // Even a qualified old transfer cannot take over the real live observation version.
+                assert!(fixture.services.events.patch_thread_runtime(
+                    worker.state.native_directory.as_ref(), ThreadStatus::Idle, 1,
+                    &recovery.checkpoint.state, None,
+                )?.is_none());
+                println!("RECOVERED_TERMINAL_CASE {case}: sequence={recovered_sequence} live_revision={} status={expected:?}", current.observation_revision);
+                Ok(())
+            }.await;
+            release.notify_one();
+            if let Some(turn) = turn {
+                turn.await??;
+            }
+            if let Some(live) = worker.live.as_mut() {
+                live.pending_hook = None;
+            }
+            worker.project(&handle.snapshot(), false, None).await?;
+            // Closing the real recovered Core can commit another continuation/checkpoint. Keep its
+            // original projection worker driving those snapshots until close's own flush completes.
+            let mut updates = handle.subscribe();
+            let mut closing = Box::pin(handle.close());
+            tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    tokio::select! { biased;
+                        result = closing.as_mut() => break result.context("recovered Core close"),
+                        snapshot = updates.next() => {
+                            let snapshot = snapshot.context("closing Core snapshot")?;
+                            worker.project(&snapshot, false, None).await?;
+                        }
+                    }
+                }
+            })
+            .await??;
+            worker.project(&handle.snapshot(), false, None).await?;
+            sink.flush(&thread.id, channel.handoff_ticket()).await?;
+            drop(worker);
+            drop(sink);
+            channel.stop_and_join().await?;
+            fixture.writer.shutdown().await?;
+            result?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_handoff_accepts_live_runtime_before_completion() -> Result<()> {
+        use crate::studio::thread_projection::TurnEvent;
+        use pl_protocol::ThreadStatus;
+
+        for (case, newer_running, replaced_owner, explicitly_closed, retry) in [
+            ("idle", false, false, false, false),
+            ("newer-running", true, false, false, false),
+            ("same-generation-covered", false, false, false, false),
+            ("replaced-owner", false, true, false, false),
+            ("explicit-close", false, false, true, false),
+            ("retry-newer-running", true, false, false, true),
+        ] {
+            let already_covered = case == "same-generation-covered";
+            let fixture = observation_fixture().await?;
+            let mut thread = if explicitly_closed {
+                let parent = bound_thread("terminal-handoff-parent");
+                register_test_thread(&fixture.store, &parent).await?;
+                child_thread("terminal-handoff-directory", &parent.id)
+            } else {
+                bound_thread("terminal-handoff-directory")
+            };
+            thread.status = ThreadStatus::Running;
+            register_test_thread(&fixture.store, &thread).await?;
+            publish_test_directory(&fixture.store, &fixture.services.events).await?;
+            let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
+            let channel = fixture
+                .store
+                .thread_persistence()
+                .history_channel(&thread.id);
+            let (hook, mut entered, control) = PendingPhaseHook::new();
+            let (handle, feed, mut live) =
+                state_observation_owner(&fixture, &thread, &channel, None).await?;
+            live.pending_hook = Some(hook);
+            let mut receiver = feed.subscribe();
+            let result: Result<()> = async {
+                let directory_status = || -> Result<ThreadStatus> {
+                    Ok(fixture.services.events.thread_snapshot(&thread.id)?
+                        .context("registered member")?.status)
+                };
+                let (mut turn, mut write) = terminal_turn_write(&thread, "terminal-handoff-turn")?;
+                turn.state = TurnState::Finished(TurnOutcome::Completed);
+                Arc::make_mut(&mut write.effect).turn = Some(turn.clone());
+                // Original-owner fixture cuts: the directory has already accepted a real-time
+                // Running observation. A transfer must clear its volatile revision, just as Core's
+                // production capture does; assigning a revision to the checkpoint would hide the bug.
+                let running = ThreadSnapshot {
+                    observation_revision: 1,
+                    turns: Arc::from([TurnRecord {
+                        state: TurnState::Running,
+                        ..turn.clone()
+                    }]),
+                    ..Default::default()
+                };
+                let terminal = ThreadSnapshot {
+                    observation_revision: 2,
+                    commit_sequence: write.effect.sequence,
+                    turns: Arc::from([turn]),
+                    ..Default::default()
+                };
+                write.checkpoint = ThreadCheckpoint::capture_transfer(
+                    thread.id.clone(),
+                    write.effect.sequence,
+                    terminal.clone(),
+                );
+                assert_eq!(write.checkpoint.state.observation_revision, 0);
+                let write = Arc::new(write);
+                sink.admit(&thread.id, write.as_ref().clone())?;
+                assert!(fixture.services.events.patch_thread_runtime(
+                    live.native_directory.as_ref(),
+                    ThreadStatus::Running,
+                    0,
+                    &running,
+                    None,
+                )?.is_some());
+
+                let current_observation = if replaced_owner {
+                    let current = fixture.services.events.begin_native_observation(&thread.id);
+                    assert!(fixture.services.events.patch_thread_runtime(
+                        current.as_ref(), ThreadStatus::Running, 0, &running, None,
+                    )?.is_some());
+                    current
+                } else {
+                    live.native_directory.clone()
+                };
+                if already_covered {
+                    let newer = ThreadSnapshot {
+                        observation_revision: terminal.observation_revision + 1,
+                        commit_sequence: terminal.commit_sequence + 1,
+                        ..running.clone()
+                    };
+                    assert!(fixture.services.events.patch_thread_runtime(
+                        current_observation.as_ref(), ThreadStatus::Running, 2, &newer, None,
+                    )?.is_some());
+                }
+                if explicitly_closed {
+                    let close = crate::studio::store::agent_close::AgentCloseRecord {
+                        agent_id: thread.id.clone(),
+                        parent_id: thread.parent_thread_id.clone().context("close parent")?,
+                        root_id: thread.root_thread_id.clone(),
+                        workspace_id: thread.workspace_id.clone(),
+                        revision: 1,
+                        force: false,
+                        worktree: None,
+                        git: None,
+                        execution_closed: true,
+                        worktree_cleanup:
+                            pl_tool::collaboration::control::AgentWorktreeCleanup::Pending,
+                        error: None,
+                    };
+                    fixture.store.save_agent_close(&close).await?;
+                    fixture.services.events.commit_explicit_close(&thread.id).await?;
+                }
+                if retry {
+                    control.send_replace(Some(Err("terminal directory retry fault".into())));
+                    let error = live
+                        .advance(&fixture.services, &thread.id, &write, &terminal)
+                        .await.unwrap_err();
+                    assert!(error.to_string().contains("terminal directory retry fault"));
+                    assert_eq!(entered.try_recv()?, write.effect.sequence);
+                    let pending = live.retained.pending.as_ref().unwrap();
+                    assert!(Arc::ptr_eq(&pending.write, &write));
+                    assert_eq!(pending.mode, HandoffMode::Live);
+                    assert_eq!(channel.handoff_ticket(), 0);
+                    assert!(feed.last_turn().borrow().is_none());
+                    // Retention is not permission to use a cut from before this terminal. Refuse
+                    // publication without losing the original batch, then retry with the newer cut.
+                    let error = live.finish_pending(&fixture.services, &running)
+                        .await.unwrap_err();
+                    assert!(error.to_string().contains(
+                        "terminal handoff requires its owner's snapshot",
+                    ));
+                    assert!(Arc::ptr_eq(
+                        &live.retained.pending.as_ref().unwrap().write,
+                        &write,
+                    ));
+                    assert_eq!(channel.handoff_ticket(), 0);
+                    assert!(feed.last_turn().borrow().is_none());
+                }
+                let mut current = terminal;
+                if newer_running {
+                    let mut turns = current.turns.to_vec();
+                    turns.push(TurnRecord {
+                        input_id: None,
+                        turn_id: "newer-running-turn".into(),
+                        state: TurnState::Running,
+                        model_steps: 0,
+                        elapsed_ms: None,
+                    });
+                    current.turns = turns.into();
+                    current.commit_sequence += 1;
+                    current.observation_revision += 1;
+                }
+                // No end-of-pass directory refresh: the retained terminal and State completion must
+                // already have their causal directory cut at the gate before outward handover.
+                let expected = if explicitly_closed {
+                    ThreadStatus::Closed
+                } else if newer_running || replaced_owner || already_covered {
+                    ThreadStatus::Running
+                } else {
+                    ThreadStatus::Idle
+                };
+                let mut projection = Box::pin(async {
+                    if retry {
+                        live.finish_pending(&fixture.services, &current).await
+                    } else {
+                        live.advance(&fixture.services, &thread.id, &write, &current).await
+                    }
+                });
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    tokio::select! {
+                        sequence = entered.recv() => {
+                            assert_eq!(sequence.context("handover gate entered")?, write.effect.sequence);
+                            Ok(())
+                        }
+                        outcome = projection.as_mut() => {
+                            outcome?;
+                            anyhow::bail!("completion escaped the handover gate");
+                        }
+                    }
+                })
+                .await??;
+                assert!(feed.last_turn().borrow().is_none());
+                assert_eq!(directory_status()?, expected, "directory before completion: {case}");
+                control.send_replace(Some(Ok(())));
+                projection.await?;
+                assert!(live.retained.pending.is_none());
+                if replaced_owner {
+                    assert!(feed.is_delivery_closed());
+                    assert!(feed.last_turn().borrow().is_none());
+                } else {
+                    assert!(!feed.is_delivery_closed());
+                    assert_eq!(
+                        feed.last_turn().borrow().as_ref().context("retained completion")?.id,
+                        "terminal-handoff-turn",
+                    );
+                }
+                let mut completions = 0;
+                while let Ok(event) = receiver.try_recv() {
+                    if let ThreadLiveEvent::Committed { sequence, changes } = event {
+                        assert_eq!(sequence, write.effect.sequence);
+                        completions += changes.iter().filter(|change| matches!(change,
+                            LiveEvent::Turn { event: TurnEvent::Completed, .. }
+                        )).count();
+                    }
+                }
+                assert_eq!(completions, usize::from(!replaced_owner));
+                assert_eq!(
+                    fixture.services.events.native_observation_covers(
+                        live.native_directory.as_ref(), &current,
+                    ),
+                    !replaced_owner,
+                );
+                assert_eq!(directory_status()?, expected, "{case}");
+                // An unchanged Running status alone cannot prove acceptance of the newer cut. Its
+                // earlier observation must now be rejected; a revoked owner must not poison the new
+                // generation's lower revision either.
+                let earlier = ThreadSnapshot {
+                    observation_revision: current.observation_revision - 1,
+                    ..current.clone()
+                };
+                let patch = fixture.services.events.patch_thread_runtime(
+                    current_observation.as_ref(),
+                    ThreadStatus::Running,
+                    1,
+                    if replaced_owner { &running } else { &earlier },
+                    None,
+                )?;
+                assert_eq!(
+                    patch.is_some(), replaced_owner, "accepted observation watermark: {case}",
+                );
+                println!(
+                    "TERMINAL_DIRECTORY_CASE {case}: transfer=0 live={} completed={completions} status={expected:?}",
+                    current.observation_revision,
+                );
+                Ok(())
+            }
+            .await;
+            // All publication assertions precede this fixture-only durability cleanup.
+            sink.flush(&thread.id, channel.handoff_ticket()).await?;
+            drop(live);
+            handle.close().await?;
+            drop(sink);
+            channel.stop_and_join().await?;
+            fixture.writer.shutdown().await?;
+            result?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn terminal_seed_uses_current_runtime_and_preserves_close_through_handoffs() -> Result<()>
     {
         use pl_protocol::ThreadStatus;
@@ -5088,7 +5682,13 @@ pub(in crate::studio) mod storage_fault_tests {
                 let (_, write) = terminal_turn_write(&thread, "seeded-terminal")?;
                 let write = Arc::new(write);
                 sink.admit(&thread.id, write.as_ref().clone())?;
-                live.advance(&fixture.services, &thread.id, &write).await?;
+                live.advance(
+                    &fixture.services,
+                    &thread.id,
+                    &write,
+                    &write.checkpoint.state,
+                )
+                .await?;
                 sink.flush(&thread.id, 1).await?;
                 drop(live);
                 let mut installed = write.checkpoint.state.clone();
@@ -5106,7 +5706,11 @@ pub(in crate::studio) mod storage_fault_tests {
                 // Deliberately leave the opposite directory state to prove installation accepts
                 // its snapshot before exposing the durable terminal, without a worker's end pass.
                 fixture.services.events.patch_thread_runtime(
-                    &thread.id,
+                    fixture
+                        .services
+                        .events
+                        .begin_native_observation(&thread.id)
+                        .as_ref(),
                     if newer_running {
                         ThreadStatus::Idle
                     } else {
@@ -5114,6 +5718,7 @@ pub(in crate::studio) mod storage_fault_tests {
                     },
                     1,
                     &installed,
+                    None,
                 )?;
                 if explicitly_closed {
                     fixture
@@ -5139,13 +5744,18 @@ pub(in crate::studio) mod storage_fault_tests {
                         .commit_explicit_close(&thread.id)
                         .await?;
                     fixture.services.events.patch_thread_runtime(
-                        &thread.id,
+                        fixture
+                            .services
+                            .events
+                            .begin_native_observation(&thread.id)
+                            .as_ref(),
                         ThreadStatus::Closed,
                         1,
                         &ThreadSnapshot {
                             lifecycle: ThreadLifecycle::Closed,
                             ..installed.clone()
                         },
+                        None,
                     )?;
                 }
                 let expected = if explicitly_closed {
@@ -5178,7 +5788,9 @@ pub(in crate::studio) mod storage_fault_tests {
                         ThreadCheckpoint::capture_transfer(thread.id.clone(), 2, snapshot);
                     let next = Arc::new(next);
                     sink.admit(&thread.id, next.as_ref().clone())?;
-                    owner.advance(&fixture.services, &thread.id, &next).await?;
+                    owner
+                        .advance(&fixture.services, &thread.id, &next, &next.checkpoint.state)
+                        .await?;
                     assert_eq!(
                         feed.last_turn().borrow().as_ref().unwrap().id,
                         "late-live-terminal"
@@ -5214,6 +5826,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let fixture = observation_fixture().await?;
         let thread = bound_thread("state-observation-lag");
         register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
         let channel = fixture
             .store
@@ -5221,6 +5834,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .history_channel(&thread.id);
         let (handle, feed, mut live) =
             state_observation_owner(&fixture, &thread, &channel, None).await?;
+        assert!(live.native_directory.is_some());
         let result = async {
             let database_id = fixture
                 .store
@@ -5285,7 +5899,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 // Only a deadlock referee: no read advances the slow cursor, and no timer or
                 // artificial send advances the production chain.
                 tokio::time::timeout(Duration::from_secs(3), async {
-                    live.advance(&fixture.services, &thread.id, &admitted)
+                    live.advance(&fixture.services, &thread.id, &admitted, &snapshot)
                         .await?;
                     live.stream(&snapshot).await
                 })
@@ -5414,7 +6028,15 @@ pub(in crate::studio) mod storage_fault_tests {
             // already exists while the older transfer still owes reliable saving.
             let newer = ThreadSnapshot {
                 commit_sequence: 2,
+                observation_revision: 2,
                 interaction_collection_revision: 2,
+                turns: Arc::from([TurnRecord {
+                    input_id: None,
+                    turn_id: "newer-running-turn".into(),
+                    state: TurnState::Running,
+                    model_steps: 0,
+                    elapsed_ms: None,
+                }]),
                 ..Default::default()
             };
             let current = crate::studio::thread_projection::CurrentState::cold(
@@ -5424,6 +6046,19 @@ pub(in crate::studio) mod storage_fault_tests {
                 &newer,
             )?;
             feed.publish_test_conversation(&live.chat, current)?;
+            assert!(
+                fixture
+                    .services
+                    .events
+                    .patch_thread_runtime(
+                        live.native_directory.as_ref(),
+                        pl_protocol::ThreadStatus::Running,
+                        2,
+                        &newer,
+                        None,
+                    )?
+                    .is_some()
+            );
             let published = feed.current_conversation().context("newer public cut")?;
             let references = published.current.business_refs();
             let mut receiver = feed.subscribe();
@@ -5431,7 +6066,7 @@ pub(in crate::studio) mod storage_fault_tests {
             let (_, write) = terminal_turn_write(&thread, "old-behind-terminal")?;
             let write = Arc::new(write);
             sink.admit(&thread.id, write.as_ref().clone())?;
-            live.prepare_behind(&fixture.services, &thread.id, &write)
+            live.prepare_behind(&fixture.services, &thread.id, &write, &newer)
                 .await?;
             assert_eq!(
                 fixture
@@ -5492,6 +6127,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let fixture = observation_fixture().await?;
         let thread = bound_thread("state-pending-registration");
         register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
         let channel = fixture
             .store
@@ -5499,6 +6135,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .history_channel(&thread.id);
         let (handle, feed, mut live) =
             state_observation_owner(&fixture, &thread, &channel, None).await?;
+        assert!(live.native_directory.is_some());
         let result = async {
             let call_id = "state-pending-question";
             // The tool's existing body is fixture input; the question itself is introduced only by
@@ -5541,7 +6178,12 @@ pub(in crate::studio) mod storage_fault_tests {
             sink.admit(&thread.id, write)?;
             let admitted = channel.next_unprojected().context("admitted question")?;
             assert!(!feed.has_subscribers());
-            let mut advance = Box::pin(live.advance(&fixture.services, &thread.id, &admitted));
+            let mut advance = Box::pin(live.advance(
+                &fixture.services,
+                &thread.id,
+                &admitted,
+                &admitted.checkpoint.state,
+            ));
             tokio::time::timeout(Duration::from_secs(3), async {
                 tokio::select! {
                     sequence = entered.recv() => {
@@ -6033,6 +6675,7 @@ pub(in crate::studio) mod storage_fault_tests {
             ..Progress::default()
         });
         let state = Arc::new(WorkerState {
+            native_directory: fixture.services.events.begin_native_observation(&child.id),
             deletion: Default::default(),
             join_failure: Default::default(),
             terminal_transfer: Default::default(),
@@ -6066,7 +6709,8 @@ pub(in crate::studio) mod storage_fault_tests {
                 break;
             }
             control.send_replace(Some(Ok(())));
-            live.advance(&fixture.services, child_id, &write).await?;
+            live.advance(&fixture.services, child_id, &write, &snapshot)
+                .await?;
             assert_eq!(entered_rx.try_recv()?, write.effect.sequence);
         }
         let write = channel
@@ -6075,7 +6719,7 @@ pub(in crate::studio) mod storage_fault_tests {
         assert_eq!(write.effect.sequence, terminal);
 
         // Park the real advance on the pending boundary, then cancel the calling future.
-        let mut parked = Box::pin(live.advance(&fixture.services, child_id, &write));
+        let mut parked = Box::pin(live.advance(&fixture.services, child_id, &write, &snapshot));
         assert!(futures::poll!(parked.as_mut()).is_pending());
         let entered = tokio::time::timeout(Duration::from_secs(10), async {
             tokio::select! {
@@ -6131,7 +6775,7 @@ pub(in crate::studio) mod storage_fault_tests {
         // The same owner finishes the handoff; the hook consumes one pre-armed release.
         control.send_replace(Some(Ok(())));
         let report = live
-            .finish_pending(&fixture.services)
+            .finish_pending(&fixture.services, &snapshot)
             .await?
             .context("original report handed over")?;
         assert!(live.retained.pending.is_none());

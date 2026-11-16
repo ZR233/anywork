@@ -462,15 +462,9 @@ enum AcpStopReasonKind {
   other,
 }
 
-@freezed
-abstract class AcpUsagePresentation with _$AcpUsagePresentation {
-  const factory AcpUsagePresentation({
-    required String usedFormatted,
-    required String sizeFormatted,
-    required double ratio,
-    String? costLabel,
-  }) = _AcpUsagePresentation;
-}
+typedef AcpContextUsageViewState = ({BigInt used, BigInt size});
+
+typedef AcpCostViewState = ({double amount, String currency});
 
 @freezed
 abstract class AcpStatusBarViewState with _$AcpStatusBarViewState {
@@ -479,7 +473,6 @@ abstract class AcpStatusBarViewState with _$AcpStatusBarViewState {
     AcpStopReasonKind? stopReason,
     String? stopReasonRaw,
     AcpHistoryOriginKind? provenance,
-    AcpUsagePresentation? usage,
   }) = _AcpStatusBarViewState;
 }
 
