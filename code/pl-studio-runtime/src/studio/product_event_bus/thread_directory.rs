@@ -379,6 +379,30 @@ impl ThreadDirectoryIndex {
         Some((&entry.session, agent))
     }
 
+    fn native_observation_facts(
+        &self,
+        observation: &NativeAgentObservation,
+    ) -> Option<(
+        &SessionDirectoryRecord,
+        &AgentDirectoryRecord,
+        &NativeAgentProjection,
+    )> {
+        let (session, agent) = self.directory_facts(&observation.thread_id)?;
+        let projection = self.native_activity.get(&agent.agent_id)?;
+        if session.archived
+            || agent.session_id != observation.session_id
+            || agent.agent_id != observation.agent_id
+            || !matches!(
+                agent.backend,
+                pl_protocol::session::AgentBackend::Native { .. }
+            )
+            || projection.observation != *observation
+        {
+            return None;
+        }
+        Some((session, agent, projection))
+    }
+
     /// 从 owner 的已提交目录切面读取成员身份、绑定及父成员默认 Thread。
     fn execution_identity(
         &self,
@@ -1221,6 +1245,30 @@ impl ProductEventBus {
         ))
     }
 
+    /// Distinguishes an older cut already covered by this same valid observation from revocation.
+    /// The membership/identity check is shared with the patch; revisions from other generations,
+    /// removed or archived resources and non-Native backends never establish terminal coverage.
+    pub(in crate::studio) fn native_observation_covers(
+        &self,
+        observation: Option<&NativeAgentObservation>,
+        snapshot: &pl_core::thread::ThreadSnapshot,
+    ) -> bool {
+        let Some(observation) = observation else {
+            return false;
+        };
+        let index = self
+            .thread_index
+            .lock()
+            .expect("thread index lock poisoned");
+        index
+            .native_observation_facts(observation)
+            .is_some_and(|(_, _, projection)| {
+                projection
+                    .revision
+                    .is_some_and(|revision| revision >= snapshot.observation_revision)
+            })
+    }
+
     /// Applies only runtime-owned fields to the current directory summary.
     /// Missing or archived entries are never reinserted by a delayed observation.
     pub(in crate::studio) fn patch_thread_runtime(
@@ -1239,31 +1287,17 @@ impl ProductEventBus {
             .thread_index
             .lock()
             .expect("thread index lock poisoned");
-        let Some((session_record, mut agent)) = index
-            .directory_facts(&observation.thread_id)
-            .map(|(session, agent)| (session.clone(), agent.clone()))
+        let Some((session_record, agent, projection)) = index.native_observation_facts(observation)
         else {
             return Ok(None);
         };
-        if session_record.archived
-            || agent.session_id != observation.session_id
-            || agent.agent_id != observation.agent_id
-            || !matches!(
-                agent.backend,
-                pl_protocol::session::AgentBackend::Native { .. }
-            )
-            || !index
-                .native_activity
-                .get(&agent.agent_id)
-                .is_some_and(|projection| {
-                    projection.observation == *observation
-                        && projection
-                            .revision
-                            .is_none_or(|revision| snapshot.observation_revision >= revision)
-                })
+        if projection
+            .revision
+            .is_some_and(|revision| snapshot.observation_revision < revision)
         {
             return Ok(None);
         }
+        let (session_record, mut agent) = (session_record.clone(), agent.clone());
         let before_agents = index.agent_directory_entries();
         let previous_row = row_projection(&session_record, &agent);
         let mut session_next = session_record.clone();
@@ -2534,9 +2568,11 @@ pub(super) mod tests {
                     .is_none()
             );
             assert_eq!(events.read_agent_directory().await, retired);
+            assert!(events.native_observation_covers(Some(&observation), &old));
             let current = events.begin_native_observation(&root.thread_id).unwrap();
             let new_generation = events.read_agent_directory().await;
             changed(&mut changes, &new_generation);
+            assert!(!events.native_observation_covers(Some(&observation), &old));
             assert!(
                 events
                     .patch_thread_runtime(
@@ -2579,6 +2615,7 @@ pub(super) mod tests {
                     .is_none()
             );
             assert_eq!(events.read_agent_directory().await, external);
+            assert!(!events.native_observation_covers(Some(&current), &old));
             events
                 .apply_thread_delta(vec![root.clone()], vec![])
                 .await?;
@@ -2596,6 +2633,7 @@ pub(super) mod tests {
                 .await?;
             let deleted = events.read_agent_directory().await;
             assert!(entries(&deleted).is_empty());
+            assert!(!events.native_observation_covers(Some(&current), &old));
             changed(&mut changes, &deleted);
             assert!(
                 events
