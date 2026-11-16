@@ -29,6 +29,7 @@ pub mod config;
 mod config_editor;
 mod error_mapping;
 mod first_run;
+pub mod history;
 mod instruction;
 mod protocol;
 pub mod resource_store;

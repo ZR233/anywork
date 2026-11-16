@@ -424,7 +424,7 @@ pub(in crate::studio) fn lightweight(mut atom: ChatAtom, database: &str) -> Chat
     atom
 }
 
-pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
+pub(crate) fn work(atom: &ChatAtom) -> bool {
     // Background provenance is independent delivery, not an independent output contract.
     // Its original producer identity survives that delivery override. Do not inspect labels.
     let background_tool = atom.kind == ChatAtomKind::ToolCall
@@ -443,7 +443,7 @@ pub(in crate::studio) fn work(atom: &ChatAtom) -> bool {
         ) && atom.delivery != ChatDeliveryKind::Independent)
 }
 
-fn hidden(atom: &ChatAtom) -> bool {
+pub(crate) fn hidden(atom: &ChatAtom) -> bool {
     // 展示隐藏只在展示所有者决定；原件读取永远保留这些完成事实。
     !matches!(atom.source, ChatSourceId::InboxMessage { .. })
         && (atom.kind == ChatAtomKind::Inference

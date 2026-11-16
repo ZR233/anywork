@@ -37,6 +37,7 @@ pub(in crate::studio) use live::{
     LiveEvent, LiveProjection, PreparedEffect, TurnEvent, TurnResult, seed_interaction_targets,
     seed_repaired_targets,
 };
+pub(crate) use presentation::{hidden, work};
 // The free item estimate is only read outside its own module by the storage
 // fault test that asserts the budget covers real bodies, so it stays test-only.
 #[cfg(test)]

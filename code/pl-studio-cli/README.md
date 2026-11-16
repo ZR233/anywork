@@ -35,8 +35,10 @@ anywk exec --studio-home /runs/profile --cwd /workspace/task \
   --no-default-user-skills --skill-dir /opt/evaluation/skills
 ```
 
-评测配置使用显式模型目录，并通过已有配置关闭不参与评测的 MCP、自学习及动态目录探测；隔离 home 不包含启用的机器人配置。本阶段没有完整追踪、用量和 JSON 文件导出，Harbor 完整适配后续接入。
+评测配置使用显式模型目录，并通过已有配置关闭不参与评测的 MCP、自学习及动态目录探测；隔离 home 不包含启用的机器人配置。`--output-dir` 导出版本 2 的结果、追踪及用量归档，目录必须尚不存在；格式与完整性边界见下方命令行设计文档。
 
 标准输出仅为最终助手文本，诊断写标准错误。退出码：正常 0，输入/配置/路由 2，等待输入或审批 3，预算耗尽 4，任务失败 10，启动环境/内部错误 11，关闭失败 13，其他取消 14，SIGINT 130，SIGTERM 143。关闭失败优先；清理预算为 30 秒。Windows 原生监听 Ctrl+C，Unix 原生监听 SIGINT/SIGTERM。
 
 完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见 `anywk exec --help`。
+
+真实账户的历史转换验证需要显式启用 `live-tests`，并指定 `ANYWK_HISTORY_LIVE_ACCOUNT`、`ANYWK_HISTORY_LIVE_MODEL`、`ANYWK_HISTORY_LIVE_PROJECT`、`ANYWK_HISTORY_LIVE_PROMPT` 和尚不存在的绝对输出目录 `ANYWK_HISTORY_LIVE_OUTPUT`；模型要求推理强度时另设 `ANYWK_HISTORY_LIVE_EFFORT`。随后运行 `cargo test --locked -p pl-studio-cli --features live-tests --test history_live -- --ignored --nocapture`。此入口通过产品配置接口读取现有账户的受保护凭据，仅在子进程环境中传递；独立配置与会话写入指定输出目录，并核对原配置未变。它验证真实执行、现役历史原件的分块复制及目标摘要，不启用 schema 25 生产写入，也不代替完整迁移验收。普通离线测试不调用该入口。

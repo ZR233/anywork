@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+live-tests = []
+
 [[bin]]
 name = "anywk"
 path = "src/main.rs"
@@ -26,6 +29,7 @@ pl-model.workspace = true
 pl-provider-fixture.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true
+sea-orm.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
 libc.workspace = true
