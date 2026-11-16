@@ -715,6 +715,9 @@ pub struct ScopeOwner<E: Send + Sync + 'static> {
 }
 
 impl<E: Send + Sync + 'static> ScopeOwner<E> {
+    /// 建立独立根作用域，并显式注入监督创建与清理工作的运行时。
+    ///
+    /// 构造本身不启动任务。正常退出须在该运行时结束前等待关闭并检查报告。
     pub fn new(label: &'static str, runtime: Handle) -> Self {
         let (changed, _) = watch::channel(0);
         let tree = Arc::new(Tree {
@@ -725,6 +728,7 @@ impl<E: Send + Sync + 'static> ScopeOwner<E> {
             scope: Scope::create(ScopeId(0), label, runtime, Weak::new(), tree, None),
         }
     }
+    /// 借出只能登记资源的弱能力，不转移所有权或关闭祖先的权限。
     pub fn handle(&self) -> ScopeHandle<E> {
         ScopeHandle {
             scope: Arc::downgrade(&self.scope),

@@ -66,7 +66,7 @@ struct ObserverStart(OnceLock<ObserverOpening>);
 impl ObserverStart {
     fn get_or_init<F, Fut>(
         &self,
-        factory: ScopedObserverFactory,
+        scope: ScopeHandle<ObservationCleanupError>,
         label: &'static str,
         create: F,
     ) -> ObserverOpening
@@ -78,8 +78,7 @@ impl ObserverStart {
             .get_or_init(move || {
                 // 构造不 poll，不订阅、不 spawn。未来只持弱 scope 和明确的窄依赖。
                 async move {
-                    factory
-                        .scope
+                    scope
                         .open(label, create)
                         .await
                         .map(Arc::new)
@@ -90,11 +89,6 @@ impl ObserverStart {
             })
             .clone()
     }
-}
-
-#[derive(Clone)]
-struct ScopedObserverFactory {
-    scope: ScopeHandle<ObservationCleanupError>,
 }
 
 #[derive(Clone, Copy)]
@@ -163,19 +157,10 @@ impl RuntimeObservationOwner {
             RuntimeObserver::Persistence => &self.persistence_start,
             RuntimeObserver::Lsp => &self.lsp_start,
         };
-        start.get_or_init(
-            ScopedObserverFactory {
-                scope: self.child(observer).handle(),
-            },
-            observer.label(),
-            create,
-        )
+        start.get_or_init(self.child(observer).handle(), observer.label(), create)
     }
 
     pub(super) fn request_close(&self) {
-        self.profiles.request_close();
-        self.persistence_projection.request_close();
-        self.lsp_projection.request_close();
         self.root.request_close();
     }
 
