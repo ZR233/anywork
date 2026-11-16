@@ -417,6 +417,9 @@ impl InputDriver {
 
 impl Owner {
     pub(super) fn resume_inputs(&mut self, options: InputDriverOptions) -> Result<(), ThreadError> {
+        if self.current_saved_lifecycle.is_some() {
+            return Err(ThreadError::CurrentPaused);
+        }
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
         }

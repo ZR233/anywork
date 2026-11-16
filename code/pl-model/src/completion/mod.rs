@@ -32,6 +32,7 @@ pub use pl_protocol::{
 pub use replay::{AssistantReplay, Value};
 pub use request::*;
 pub use response::*;
+pub use stream::current::*;
 pub use tool_call::*;
 pub use usage::*;
 

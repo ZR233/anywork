@@ -1734,6 +1734,7 @@ async fn a_provider_failure_withdraws_the_live_pair_before_the_attempt_returns()
         tools: Default::default(),
         tool_call_mode: ToolCallMode::Sequential,
         solo_tool_ids: Default::default(),
+        recovery_parameters: None,
         committed_private_context: None,
         resources: None,
         cancellation: Default::default(),

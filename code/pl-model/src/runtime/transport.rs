@@ -676,6 +676,8 @@ mod chatgpt_tests {
                     generation: 0,
                 },
                 None,
+                None,
+                None,
             )
             .await
         })

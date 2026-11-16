@@ -65,19 +65,46 @@ impl Owner {
             return Err(ThreadError::InvalidContext);
         }
         let plan = plan.clone();
-        let input = StepInput {
+        let mut input = StepInput {
             turn_id: previous.turn_id.clone(),
             attempt_id: attempt,
             content: Vec::new(),
             cancellation,
         };
-        self.step_with_plan(input, plan, Some(source), &mut false)
-            .await
+        let resumed = self.admit_current_step(&input)?;
+        let caller = input.cancellation.clone();
+        if let Some(resumed) = &resumed {
+            input.cancellation = resumed.token.clone();
+        }
+        cancellation::run_with_resume_cancellation(
+            resumed.as_ref(),
+            caller,
+            self.step_with_plan(input, plan, Some(source), &mut false, resumed.is_some()),
+        )
+        .await
     }
 
-    pub(super) async fn step(&mut self, input: StepInput) -> Result<ModelStepOutput, ThreadError> {
+    pub(super) async fn step(
+        &mut self,
+        mut input: StepInput,
+    ) -> Result<ModelStepOutput, ThreadError> {
+        let resumed = self.admit_current_step(&input)?;
+        let caller = input.cancellation.clone();
+        if let Some(resumed) = &resumed {
+            input.cancellation = resumed.token.clone();
+        }
         let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, None, &mut false).await
+        let turn_id = input.turn_id.clone();
+        let result = cancellation::run_with_resume_cancellation(
+            resumed.as_ref(),
+            caller,
+            self.step_with_plan(input, plan, None, &mut false, resumed.is_some()),
+        )
+        .await;
+        if result.is_err() {
+            self.pause_current_recovery(&turn_id);
+        }
+        result
     }
 
     pub(super) async fn step_in_turn(
@@ -85,9 +112,10 @@ impl Owner {
         input: StepInput,
         source: Option<String>,
         recovery_used: &mut bool,
+        pre_admitted: bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         let plan = self.tools.freeze();
-        self.step_with_plan(input, plan, source, recovery_used)
+        self.step_with_plan(input, plan, source, recovery_used, pre_admitted)
             .await
     }
 
@@ -206,18 +234,54 @@ impl Owner {
         Ok(())
     }
 
+    pub(super) fn validate_step_identity(
+        &self,
+        input: &StepInput,
+        pre_admitted: bool,
+    ) -> Result<(), ThreadError> {
+        if self.current_saved_lifecycle.is_some() {
+            return Err(ThreadError::CurrentPaused);
+        }
+        if input.turn_id.is_empty()
+            || input.attempt_id.is_empty()
+            || (self.current_task_start_ordinal.is_some()
+                && !current::is_uuid_v4(&input.attempt_id))
+            || self.state.context.records.iter().any(|record| {
+                (!pre_admitted && record.id == format!("{}:input", input.attempt_id))
+                    || record.id == format!("{}:output", input.attempt_id)
+            })
+            || self.state.attempt_ids.contains_key(&input.attempt_id)
+            || (self.current_task_start_ordinal.is_some()
+                && self
+                    .state
+                    .attempts
+                    .iter()
+                    .any(|attempt| attempt.attempt_id == input.attempt_id))
+        {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        Ok(())
+    }
+
     async fn step_with_plan(
         &mut self,
         input: StepInput,
         plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
         recovery_used: &mut bool,
+        pre_admitted: bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         // The explicit execution phase describes live execution only: clear it on every exit path
         // (success, failure, cancellation and error) so a projection never reads a phase left over
         // from a finished step.
+        self.validate_step_identity(&input, pre_admitted)?;
         let attempt_id = input.attempt_id.clone();
-        let result = self.run_step(input, plan, retry_of, recovery_used).await;
+        let turn_id = input.turn_id.clone();
+        self.begin_current_step(&input, &plan);
+        let result = self
+            .run_step(input, plan, retry_of, recovery_used, pre_admitted)
+            .await;
+        self.finish_current_recovery_step(&turn_id, &attempt_id, &result);
         // The call is over on every exit path — success, failure, cancellation or an early error —
         // so the live quota is handed back here once: a call that never reserved (or already
         // released) is a no-op, and a refusal latched during the call becomes the typed fault that
@@ -235,6 +299,20 @@ impl Owner {
         if self.state.model_execution.is_some() {
             self.state.model_execution = None;
             self.publish_snapshot();
+        }
+        if self.current_task_start_ordinal.is_some() {
+            self.state.live_calls.clear();
+            self.state.attempt_ids.clear();
+            if self.state.turns.is_empty() {
+                self.finish_execution(&turn_id);
+            }
+        }
+        if result.is_ok() {
+            self.finish_current_work_if_idle();
+        }
+        if !self.current_model_running {
+            self.current_capture = None;
+            self.current_updates = None;
         }
         result
     }
@@ -290,6 +368,9 @@ impl Owner {
         input: &StepInput,
         source_attempt_id: Option<&str>,
     ) -> Result<bool, ThreadError> {
+        if let Some(source) = source_attempt_id {
+            self.advance_current_recovery(source, input);
+        }
         let result = async {
             self.enter_model_execution(ModelExecutionPhase::Admitting);
             self.ensure_model_admission(&input.cancellation).await?;
@@ -309,21 +390,12 @@ impl Owner {
         mut plan: crate::tool::opaque::ToolPlan,
         retry_of: Option<String>,
         recovery_used: &mut bool,
+        pre_admitted: bool,
     ) -> Result<ModelStepOutput, ThreadError> {
         // The first boundary is admission, not a provider call: the driver may wait for storage
         // admission before it even knows whether the context hook runs.
         self.enter_model_execution(ModelExecutionPhase::Admitting);
         self.ensure_model_admission(&input.cancellation).await?;
-        if input.turn_id.is_empty()
-            || input.attempt_id.is_empty()
-            || self.state.context.records.iter().any(|record| {
-                record.id == format!("{}:input", input.attempt_id)
-                    || record.id == format!("{}:output", input.attempt_id)
-            })
-            || self.state.attempt_ids.contains_key(&input.attempt_id)
-        {
-            return Err(ThreadError::InvalidIdentity);
-        }
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
         }
@@ -338,12 +410,12 @@ impl Owner {
         });
         // Freeze consumption before any awaited preparation. Mailbox input arriving while the
         // hook runs belongs to the next step and must not change this preview or its watermark.
-        let (messages, consumed_messages) = if retry_of.is_none() || correcting {
+        let (messages, consumed_messages) = if !pre_admitted && (retry_of.is_none() || correcting) {
             self.message_context(&input.turn_id)
         } else {
             (Vec::new(), self.state.consumed_messages)
         };
-        let (steering, steering_ids) = if retry_of.is_none() || correcting {
+        let (steering, steering_ids) = if !pre_admitted && (retry_of.is_none() || correcting) {
             self.steering_context(&input.turn_id)
         } else {
             (Vec::new(), Vec::new())
@@ -438,9 +510,15 @@ impl Owner {
             context: context.clone(),
             tools: tools.clone(),
             committed_private_context: self.state.private_context.clone(),
+            recovery_parameters: self.current_recovery_parameters(&input),
             resources: self.resources.clone(),
             cancellation: input.cancellation.clone(),
         };
+        if let Some(call) = &mut self.current_call {
+            call.tools = request.tools.clone();
+            call.tool_call_mode = request.tool_call_mode;
+            call.solo_tool_ids = request.solo_tool_ids.clone();
+        }
         // Preparing the request runs inside the model implementation (freezing, encoding, estimating)
         // before any provider call exists, so this is still preparation, not a wait for output.
         self.enter_model_execution(ModelExecutionPhase::PreparingRequest);
@@ -494,6 +572,11 @@ impl Owner {
                     request.solo_tool_ids = plan.solo_tool_ids();
                     request.context = context.clone();
                     request.committed_private_context = self.state.private_context.clone();
+                    if let Some(call) = &mut self.current_call {
+                        call.tools = request.tools.clone();
+                        call.tool_call_mode = request.tool_call_mode;
+                        call.solo_tool_ids = request.solo_tool_ids.clone();
+                    }
                     self.enter_model_execution(ModelExecutionPhase::PreparingRequest);
                 }
                 other => break other.map_err(|error| ThreadError::Model(Arc::new(error)))?,
@@ -510,6 +593,20 @@ impl Owner {
         let request_metadata = prepared.request_metadata().cloned();
         let usage_binding = prepared.usage_binding().cloned();
         let tool_projection = prepared.tool_projection().cloned();
+        if let Some(call) = &mut self.current_call {
+            call.tools = plan.declarations();
+            call.tool_call_mode = plan.call_mode();
+            call.solo_tool_ids = plan.solo_tool_ids();
+            call.prepared_parameters = match &request.recovery_parameters {
+                Some(parameters) => Some(parameters.clone()),
+                None => request_metadata.clone(),
+            };
+        }
+        self.current_capture = prepared.current_capture().cloned();
+        self.current_updates = self
+            .current_capture
+            .as_ref()
+            .map(crate::model::CurrentCaptureHandle::subscribe_changes);
         // Capacity and storage admission happen before dispatch; they are waits on the host, not on
         // the model implementation.
         self.enter_model_execution(ModelExecutionPhase::Admitting);
@@ -544,6 +641,7 @@ impl Owner {
         // Keep the entire synchronous admission atomic, including the owner fields outside state:
         // no snapshot may expose it until publish has reserved both resource cuts.
         let previous = self.state.clone();
+        let previous_current = self.current_call.clone();
         let previous_retry_plan = self.retry_plan.clone();
         let previous_claim = self.pending_output_claim.clone();
         let admission = (|| {
@@ -551,6 +649,14 @@ impl Owner {
             self.consume_steering(&steering_ids, &input.turn_id, &input.attempt_id)?;
             self.retry_plan = Some((input.attempt_id.clone(), plan.clone()));
             self.state.context = context;
+            // Direct input enters confirmed context and loses its temporary ownership in this
+            // same synchronous transition. Streaming cannot be published before this point.
+            if let Some(call) = &mut self.current_call {
+                call.phase = current::SavedModelPhase::Preparing {
+                    pending_step_input: None,
+                };
+            }
+            self.current_model_running = true;
             // Whether this admission really executes queued work — a Message input of this batch or of the
             // steering set, or the messages it delivers. That is what serves a point nothing claims any
             // more, and it is measured before the watermark and the inputs move.
@@ -583,8 +689,10 @@ impl Owner {
         })();
         if let Err(error) = admission {
             self.state = previous;
+            self.current_call = previous_current;
             self.retry_plan = previous_retry_plan;
             self.pending_output_claim = previous_claim;
+            self.current_model_running = false;
             return Err(error);
         }
         drop((previous, previous_retry_plan, previous_claim));
@@ -593,10 +701,20 @@ impl Owner {
             &input,
             member_registry,
         ));
-        let result = self
-            .await_with_mailbox(prepared.execute())
-            .await
-            .map_err(Arc::new);
+        self.note_current_recovery_dispatch(&input);
+        let exit = self
+            .await_with_mailbox(prepared.execute_with_current())
+            .await;
+        self.current_model_running = false;
+        self.current_capture = None;
+        self.current_updates = None;
+        self.current_snapshot_missing = exit.current.is_none();
+        if let Some(stream) = exit.current
+            && let Some(call) = &mut self.current_call
+        {
+            call.phase = current::SavedModelPhase::Streaming { stream };
+        }
+        let result = exit.result.map_err(Arc::new);
         let member_error = self.finish_model_members();
         if input.cancellation.is_cancelled()
             && self.interrupted_turn.as_deref() == Some(&input.turn_id)
@@ -629,6 +747,11 @@ impl Owner {
                     Err(reason.into()),
                 ),
                 (Ok(output), None) => {
+                    if let Some(call) = &mut self.current_call {
+                        call.phase = current::SavedModelPhase::ReadyToApply {
+                            output: output.clone(),
+                        };
+                    }
                     let admitted_call_ids = output
                         .tool_calls
                         .iter()
@@ -667,6 +790,12 @@ impl Owner {
                         records: records.into(),
                     };
                     self.state.private_context = output.private_context.clone();
+                    // No await or observer cut separates the complete output, context, private
+                    // context and usage terminal reducer below. The pending outcome is discarded.
+                    if let Some(call) = &mut self.current_call {
+                        call.phase = current::SavedModelPhase::Applied;
+                    }
+                    self.current_snapshot_missing = false;
                     for call_id in admitted_call_ids {
                         self.state
                             .live_calls

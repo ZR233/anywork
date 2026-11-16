@@ -42,9 +42,14 @@ pub struct ModelInvocationContext {
     prompt_cache_scope: Option<super::PromptCacheScope>,
     progress: Option<pl_core::model::ModelProgressSender>,
     members: Option<pl_core::model::ModelMemberSender>,
+    current: Option<super::current::CurrentInvocation>,
 }
 
 impl ModelInvocationContext {
+    pub(super) fn with_current(mut self, current: super::current::CurrentInvocation) -> Self {
+        self.current = Some(current);
+        self
+    }
     pub(super) fn with_members(
         mut self,
         members: Option<pl_core::model::ModelMemberSender>,
@@ -92,6 +97,7 @@ impl ModelInvocationContext {
             prompt_cache_scope: None,
             progress: None,
             members: None,
+            current: None,
         }
     }
 
@@ -390,18 +396,48 @@ impl InvocationRunner {
         // Session close may cancel this child without cancelling the caller's parent token.
         let cancellation = caller_cancellation.child_token();
         context.cancellation = Some(cancellation.clone());
-        let invocation = self.complete_inner(request, context);
-        tokio::pin!(invocation);
-        // Cancellation is cooperative: await the same invocation so its partial
-        // accounting and transport guards finish before releasing admission.
-        let mut result = tokio::select! {
-            biased;
-            _ = closing.cancelled() => {
-                cancellation.cancel();
-                invocation.await
+        let current_link = context.current.clone();
+        let mut current = current_link.as_ref().and_then(|link| link.take_producer());
+        if current_link.is_some() && current.is_none() {
+            return Err(CompletionFailure::new(
+                PureError::Protocol("current invocation endpoint was already consumed".into()),
+                Box::default(),
+            ));
+        }
+        let mut result = {
+            let invocation = self.complete_inner(request, context, current.as_mut());
+            tokio::pin!(invocation);
+            // Cancellation is cooperative: await the same invocation so its partial
+            // accounting and transport guards finish before releasing admission.
+            tokio::select! {
+                biased;
+                _ = closing.cancelled() => {
+                    cancellation.cancel();
+                    invocation.await
+                }
+                result = &mut invocation => result,
             }
-            result = &mut invocation => result,
         };
+        if let Some(current) = current.as_mut() {
+            match current.finish(result.as_ref().err().map(ToString::to_string)) {
+                Ok(payload) => current_link
+                    .as_ref()
+                    .expect("current invocation")
+                    .handoff(payload),
+                Err(error) if result.is_ok() => {
+                    let accounting = result
+                        .as_ref()
+                        .expect("successful result")
+                        .accounting
+                        .clone();
+                    result = Err(CompletionFailure::new(
+                        PureError::Protocol(error.to_string()),
+                        Box::new(accounting),
+                    ));
+                }
+                Err(_) => {} // Core rejects an exit without a complete final current payload.
+            }
+        }
         match &mut result {
             Ok(response) => {
                 progress.finish_recovery(pl_core::model::ModelRecoveryPhase::Recovered);
@@ -434,19 +470,31 @@ impl InvocationRunner {
         &self,
         request: CompletionRequest,
         context: ModelInvocationContext,
+        mut current: Option<&mut super::current::CurrentProducer>,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
         super::context::validate(self.model.binding.transport.protocol, &request.input)?;
-        let _session_lease = if let Some(cancellation) = &context.cancellation {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(CompletionFailure::cancelled(
-                    PureError::LlmError("model invocation cancelled before admission".into()),
-                    Box::default(),
-                )),
-                lease = context.session.admit() => lease?,
+        let admission = async {
+            if let Some(cancellation) = &context.cancellation {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(CompletionFailure::cancelled(
+                        PureError::LlmError("model invocation cancelled before admission".into()),
+                        Box::default(),
+                    )),
+                    lease = context.session.admit() => lease.map_err(CompletionFailure::from),
+                }
+            } else {
+                context
+                    .session
+                    .admit()
+                    .await
+                    .map_err(CompletionFailure::from)
             }
+        };
+        let _session_lease = if let Some(current) = current.as_deref_mut() {
+            current.wait(admission, None).await?
         } else {
-            context.session.admit().await?
+            admission.await?
         };
         let mut request = super::context::project_request(
             &self.endpoint,
@@ -495,7 +543,12 @@ impl InvocationRunner {
             let preparation = if attachments_prepared {
                 Ok(())
             } else {
-                self.prepare_attachments(&mut request, &context).await
+                let preparation = self.prepare_attachments(&mut request, &context);
+                if let Some(current) = current.as_deref_mut() {
+                    current.wait(preparation, None).await
+                } else {
+                    preparation.await
+                }
             };
             let attempted_stream = preparation.is_ok();
             let mut attempt_request = request.clone();
@@ -529,7 +582,14 @@ impl InvocationRunner {
                     transport_attempts += 1;
                     let inference_timer = InferenceTimer::start();
                     let (result, retry_allowed) = self
-                        .run_stream_attempt(attempt_request, &context, trace, &inference_timer)
+                        .run_stream_attempt(
+                            attempt_request,
+                            &context,
+                            trace,
+                            &inference_timer,
+                            current.as_deref_mut(),
+                            (transport_attempts - 1) as u32,
+                        )
                         .await;
                     (result, retry_allowed, Some(inference_timer))
                 }
@@ -589,10 +649,14 @@ impl InvocationRunner {
                     && self.supports_http_fallback()
                 {
                     let connection_key = self.connection_fingerprint();
-                    let activated = context
+                    let activation = context
                         .session
-                        .activate_responses_http_fallback(connection_key)
-                        .await;
+                        .activate_responses_http_fallback(connection_key);
+                    let activated = if let Some(current) = current.as_deref_mut() {
+                        current.wait(activation, None).await
+                    } else {
+                        activation.await
+                    };
                     let (provider_code, http_status) =
                         error.transient_model_metadata().unwrap_or((None, None));
                     tracing::warn!(
@@ -620,11 +684,15 @@ impl InvocationRunner {
                 && self.supports_http_fallback()
                 && attempt_number < max_retries
             {
-                if context
+                let activation = context
                     .session
-                    .activate_responses_http_fallback(self.connection_fingerprint())
-                    .await
-                {
+                    .activate_responses_http_fallback(self.connection_fingerprint());
+                let activated = if let Some(current) = current.as_deref_mut() {
+                    current.wait(activation, None).await
+                } else {
+                    activation.await
+                };
+                if activated {
                     http_fallbacks += 1;
                 }
                 attempt_number += 1;
@@ -650,12 +718,14 @@ impl InvocationRunner {
                 if let Err(cause) = context.begin_retry(&mut error) {
                     return Err(error.with_source(cause));
                 }
-                context
-                    .session
-                    .uploaded_files
-                    .lock()
-                    .await
-                    .retain(|(fingerprint, _), _| *fingerprint != self.connection_fingerprint());
+                let locking = context.session.uploaded_files.lock();
+                let mut files = if let Some(current) = current.as_deref_mut() {
+                    current.wait(locking, None).await
+                } else {
+                    locking.await
+                };
+                files.retain(|(fingerprint, _), _| *fingerprint != self.connection_fingerprint());
+                drop(files);
                 attachments_prepared = false;
                 refreshed_attachments = true;
                 retry_failure = Some(error);
@@ -677,10 +747,14 @@ impl InvocationRunner {
                 && attempt_number >= RESPONSES_WEBSOCKET_MAX_RETRIES
                 && self.supports_http_fallback()
             {
-                let activated = context
+                let activation = context
                     .session
-                    .activate_responses_http_fallback(self.connection_fingerprint())
-                    .await;
+                    .activate_responses_http_fallback(self.connection_fingerprint());
+                let activated = if let Some(current) = current.as_deref_mut() {
+                    current.wait(activation, None).await
+                } else {
+                    activation.await
+                };
                 if activated {
                     http_fallbacks = http_fallbacks.saturating_add(1);
                 }
@@ -707,13 +781,20 @@ impl InvocationRunner {
                 error_bytes = error.to_string().len(),
                 "模型连接中断，将在统一预算内重试当前请求"
             );
-            if let Some(token) = &context.cancellation {
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = token.cancelled() => {},
+            let backoff = async {
+                if let Some(token) = &context.cancellation {
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {},
+                        _ = token.cancelled() => {},
+                    }
+                } else {
+                    tokio::time::sleep(delay).await;
                 }
+            };
+            if let Some(current) = current.as_deref_mut() {
+                current.wait(backoff, None).await;
             } else {
-                tokio::time::sleep(delay).await;
+                backoff.await;
             }
             retry_failure = Some(error);
         }
@@ -759,10 +840,15 @@ impl InvocationRunner {
         context: &ModelInvocationContext,
         trace: Option<CompletionTraceContext>,
         inference_timer: &InferenceTimer,
+        mut current: Option<&mut super::current::CurrentProducer>,
+        generation: u32,
     ) -> (
         std::result::Result<CompletionResponse, CompletionFailure>,
         bool,
     ) {
+        if let Some(current) = current.as_deref_mut() {
+            current.begin_generation(generation);
+        }
         let has_hosted_tools = request.tools.iter().any(|tool| match tool {
             pl_protocol::ToolSpec::Function { .. } | pl_protocol::ToolSpec::Custom { .. } => false,
             pl_protocol::ToolSpec::ProgrammaticToolCalling
@@ -778,22 +864,33 @@ impl InvocationRunner {
         };
         let opening = self.stream_events(body, context.session.clone(), trace.clone());
         tokio::pin!(opening);
-        let opened = match context.cancellation.as_ref() {
-            Some(token) => tokio::select! {
-                result = &mut opening => result,
-                _ = token.cancelled() => {
-                    inference_timer.mark_terminal();
-                    return (Err(CompletionFailure::cancelled(
-                        PureError::LlmError("model invocation cancelled".into()),
-                        Box::default(),
-                    ).with_model_observation(model_observation.clone())), false);
+        let mut accumulator =
+            crate::completion::stream::StreamCompletionAccumulator::with_model_observation(
+                trace.clone(),
+                context.trace_sink.clone(),
+                Some(model_observation.clone()),
+            );
+        let open = async {
+            match context.cancellation.as_ref() {
+                Some(token) => tokio::select! {
+                    result = &mut opening => (result, false),
+                    _ = token.cancelled() => {
+                        inference_timer.mark_terminal();
+                        (Err(PureError::LlmError("model invocation cancelled".into())), true)
+                    },
                 },
-            },
-            None => opening.await,
+                None => (opening.await, false),
+            }
+        };
+        let (opened, opening_cancelled) = if let Some(current) = current.as_deref_mut() {
+            current.wait(open, Some(&accumulator)).await
+        } else {
+            open.await
         };
         match opened {
             Ok(opened) => {
                 model_observation.sent_model = opened.sent_model;
+                accumulator.set_model_observation(model_observation.clone());
                 let replay_unsafe = Arc::new(AtomicBool::new(false));
                 let tracked_stream: CompletionEventStream = opened
                     .events
@@ -845,6 +942,8 @@ impl InvocationRunner {
                                 .map_or(0, |p| p.latest().observation().generation),
                         },
                         opened.idle_timeout,
+                        Some(accumulator),
+                        current.as_deref_mut(),
                     )
                     .await;
                 let retry_allowed = !replay_unsafe.load(Ordering::Acquire);
@@ -852,6 +951,17 @@ impl InvocationRunner {
             }
             Err(error) => {
                 inference_timer.mark_terminal();
+                accumulator.fail_attempt(&error, &context.event_tx);
+                if let Some(current) = current {
+                    current.freeze(&accumulator);
+                }
+                if opening_cancelled {
+                    return (
+                        Err(CompletionFailure::cancelled(error, Box::default())
+                            .with_model_observation(model_observation)),
+                        false,
+                    );
+                }
                 (
                     Err(CompletionFailure::from(error).with_model_observation(model_observation)),
                     true,
@@ -872,9 +982,56 @@ impl InvocationRunner {
             .map(Option::flatten)
     }
 
+    pub(super) fn project_request_options(
+        &self,
+        options: &CompletionRequest,
+        thread_id: &str,
+    ) -> Result<String> {
+        let key = super::PromptCacheScope::thread(thread_id).resolve(
+            &self.account_id,
+            &self.endpoint,
+            &self.model,
+        )?;
+        // Both wire APIs select model only from config and the chosen parameter wire, never
+        // input. Use the real encoder through its final native overlay, without content copies.
+        self.prepare_request_body(options.options_only(), key.as_deref())
+            .map(|(_, observation)| observation.sent_model)
+    }
+
     fn prepare_request_body(
         &self,
         request: CompletionRequest,
+        prompt_cache_key: Option<&str>,
+    ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
+        let request = super::context::project_request(
+            &self.endpoint,
+            &self.model,
+            &self.account_id,
+            request,
+        )?;
+        self.prepare_projected_request_body(&request, prompt_cache_key)
+    }
+
+    pub(super) fn validate_recovery_input(
+        &self,
+        request: &CompletionRequest,
+        thread_id: &str,
+    ) -> Result<()> {
+        if !super::openai::recovery_touches_input(request, &self.model, &self.native_body) {
+            return Ok(());
+        }
+        let key = super::PromptCacheScope::thread(thread_id).resolve(
+            &self.account_id,
+            &self.endpoint,
+            &self.model,
+        )?;
+        self.prepare_projected_request_body(request, key.as_deref())
+            .map(|_| ())
+    }
+
+    fn prepare_projected_request_body(
+        &self,
+        request: &CompletionRequest,
         prompt_cache_key: Option<&str>,
     ) -> Result<(OpenAiRequestBody, InferenceModelObservation)> {
         let prompt_cache_key = prompt_cache_key.filter(|_| {
@@ -882,26 +1039,16 @@ impl InvocationRunner {
                 .effective_prompt_cache_policy(&self.model)
                 .uses_prompt_cache_key()
         });
-        let request = super::context::project_request(
-            &self.endpoint,
-            &self.model,
-            &self.account_id,
-            request,
-        )?;
         let mut body = self.protocol().build_request(
             self.model.binding.transport.protocol,
-            &request,
+            request,
             &self.model,
             prompt_cache_key,
             self.endpoint.chatgpt_session.is_some(),
+            &self.native_body,
         )?;
-        let original = self.endpoint.chatgpt_session.as_ref().map(|_| body.clone());
-        body.apply_native_options(&self.native_body);
         body.reject_reserved_instruction_channel()?;
         body.validate_prompt_cache_key(prompt_cache_key)?;
-        if let Some(original) = &original {
-            body.validate_chatgpt(original)?;
-        }
         if self.purpose == InvocationPurpose::RemoteCompaction {
             body.prepare_compaction();
         }
@@ -1324,6 +1471,240 @@ mod chatgpt_tests {
     }
 
     #[test]
+    fn recovery_native_overlays_cannot_replace_applied_options_or_confirmed_input() {
+        let mut info = crate::model::ModelInfo::compatible("recovery-model");
+        info.binding
+            .set_transport(crate::model::ModelTransportProfile::responses_http());
+        let runner = InvocationRunner::new_with_account_id(
+            "recovery-wire",
+            ProtocolEndpoint::compatible("wire", "http://127.0.0.1:1"),
+            info,
+        )
+        .unwrap();
+        let mut selected = request();
+        selected.temperature = Some(0.25);
+        selected.frozen_options = true;
+        for overlay in [
+            json!({"temperature":0.9}),
+            json!({"tools":[{"type":"function","name":"unregistered"}]}),
+            json!({"input":[{"role":"user","content":"unconfirmed"}]}),
+            json!({"previous_response_id":"old-response"}),
+            json!({"reasoning":{"effort":"low"}}),
+        ] {
+            let changed = runner.with_native_body(serde_json::from_value(overlay).unwrap());
+            assert!(
+                changed
+                    .prepare_request_body(selected.clone(), None)
+                    .is_err()
+            );
+        }
+        let unchanged = runner.with_native_body(
+            serde_json::from_value(json!({
+                "temperature":0.25,"vendor_metadata":{"opaque":"unchanged"}
+            }))
+            .unwrap(),
+        );
+        let encoded = body(&unchanged, selected.clone());
+        assert_eq!(encoded["temperature"], 0.25);
+        assert_eq!(encoded["vendor_metadata"], json!({"opaque":"unchanged"}));
+        selected.frozen_options = false;
+        let fresh =
+            runner.with_native_body(serde_json::from_value(json!({"temperature":0.9})).unwrap());
+        assert_eq!(body(&fresh, selected)["temperature"], 0.9);
+    }
+
+    #[test]
+    fn recovery_public_parallel_default_is_not_assumed_for_chatgpt_sessions() {
+        let (_temp, mut runner) = fixture();
+        let parameter = runner.model.parameters.iter_mut().find(|parameter| parameter.name == "effort").unwrap();
+        parameter.wire.get_mut("high").unwrap().remove.push("parallel_tool_calls".into());
+        runner.model.validate().unwrap();
+        let mut selected = request(); selected.frozen_options = true; selected.parallel_tool_calls = true;
+        selected.reasoning = Some(crate::completion::ReasoningConfig { effort: Some("high".into()), summary: None });
+        selected.tools = vec![ToolSpec::Function { name: "lookup".into(), description: "lookup".into(),
+            input_schema: json!({"type":"object"}), allowed_callers: Vec::new(), output_schema: None }];
+        let error = runner.prepare_request_body(selected.clone(), None).unwrap_err();
+        assert!(error.to_string().contains("parallel"), "{error}");
+        // The same explicit OpenAI protocol without the SIWC boundary has the documented
+        // public Responses default true; no URL/model-name heuristic is involved.
+        runner.endpoint.chatgpt_session = None;
+        let encoded = body(&runner, selected);
+        assert!(encoded.get("parallel_tool_calls").is_none());
+    }
+
+    #[test]
+    fn recovery_native_can_explicitly_encode_chat_false_when_normal_field_is_disabled() {
+        let mut info = crate::model::ModelInfo::compatible("serial-model");
+        info.binding
+            .request
+            .body
+            .insert("store".into(), json!(false));
+        let runner = InvocationRunner::new_with_account_id(
+            "serial",
+            ProtocolEndpoint::compatible("wire", "http://127.0.0.1:1"),
+            info,
+        )
+        .unwrap();
+        let mut selected = request();
+        selected.frozen_options = true;
+        selected.tools = vec![ToolSpec::Function {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            input_schema: json!({"type":"object"}),
+            allowed_callers: Vec::new(),
+            output_schema: None,
+        }];
+        assert!(
+            runner.prepare_request_body(selected.clone(), None).is_err(),
+            "omitted Chat field defaults to true"
+        );
+        let native = runner.with_native_body(
+            serde_json::from_value(json!({"parallel_tool_calls":false})).unwrap(),
+        );
+        assert_eq!(
+            body(&native, selected.clone())["parallel_tool_calls"],
+            false
+        );
+        selected.tools.clear();
+        assert!(
+            runner.prepare_request_body(selected, None).is_ok(),
+            "without tools the omission cannot enable concurrent execution"
+        );
+    }
+
+    #[test]
+    fn recovery_checks_full_input_and_final_native_effects_without_rejecting_equal_writes() {
+        for transport in [
+            crate::model::ModelTransportProfile::responses_http(),
+            crate::model::ModelTransportProfile::chat_completions_http(),
+        ] {
+            let mut info = crate::model::ModelInfo::compatible("effect-model");
+            info.binding.set_transport(transport);
+            info.binding
+                .request
+                .body
+                .insert("store".into(), json!(false));
+            info.capabilities.reasoning = true;
+            let mut runner = InvocationRunner::new_with_account_id(
+                "effects",
+                ProtocolEndpoint::compatible("wire", "http://127.0.0.1:1"),
+                info,
+            )
+            .unwrap();
+            let mut selected = request();
+            selected.temperature = Some(0.25);
+            selected.frozen_options = true;
+            let field = if runner.model.binding.transport.protocol == WireApi::Responses {
+                "input"
+            } else {
+                "messages"
+            };
+            let original = body(&runner, selected.clone());
+            runner.model.parameters = vec![serde_json::from_value(json!({"name":"effort","candidates":["high"],
+                "wire":{"high":{"set":[{"path":"stream","value":true},{"path":"temperature","value":0.9},{"path":field,"value":original[field]}]}}})).unwrap()];
+            runner.model.validate().unwrap();
+            selected.reasoning = Some(crate::completion::ReasoningConfig {
+                effort: Some("high".into()),
+                summary: None,
+            });
+            runner
+                .model
+                .binding
+                .request
+                .body
+                .insert("store".into(), json!(true));
+            runner = runner.with_native_body(
+                serde_json::from_value(json!({"temperature":0.25,"store":false})).unwrap(),
+            );
+            assert!(runner.project_request_options(&selected, "thread").is_ok());
+            runner.validate_recovery_input(&selected, "thread").unwrap();
+            let actual = body(&runner, selected.clone());
+            assert_eq!(actual[field], original[field]);
+            assert_eq!(actual["temperature"], 0.25);
+            // The options-only model preflight does not pretend its empty input is the real input.
+            let changed = runner.with_native_body(serde_json::Map::from_iter([
+                (
+                    field.into(),
+                    json!([{"role":"user","content":"unconfirmed"}]),
+                ),
+                ("temperature".into(), json!(0.25)),
+                ("store".into(), json!(false)),
+            ]));
+            assert!(changed.project_request_options(&selected, "thread").is_ok());
+            assert!(
+                changed
+                    .validate_recovery_input(&selected, "thread")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn options_preflight_observes_the_final_model_of_both_wire_encoders() {
+        for transport in [
+            crate::model::ModelTransportProfile::responses_http(),
+            crate::model::ModelTransportProfile::chat_completions_http(),
+        ] {
+            let mut info = crate::model::ModelInfo::compatible("catalog-model");
+            info.binding.set_transport(transport);
+            info.binding
+                .request
+                .body
+                .insert("store".into(), json!(false));
+            info.binding.request.api_model = Some("api-model".into());
+            info.capabilities.reasoning = true;
+            info.parameters = vec![
+                serde_json::from_value(json!({
+                    "name":"effort", "candidates":["high"],
+                    "wire":{"high":{"set":[{"path":"model","value":"parameter-model"}]}}
+                }))
+                .unwrap(),
+            ];
+            let runner = InvocationRunner::new_with_account_id(
+                "wire",
+                ProtocolEndpoint::compatible("wire", "http://127.0.0.1:1"),
+                info,
+            )
+            .unwrap();
+            for frozen in [false, true] {
+                let mut runner = runner.clone();
+                let mut selected = request();
+                selected.frozen_options = frozen;
+                let check =
+                    |runner: &InvocationRunner, selected: &CompletionRequest, expected: &str| {
+                        let projected = runner.project_request_options(selected, "thread").unwrap();
+                        let (wire, actual) =
+                            runner.prepare_request_body(selected.clone(), None).unwrap();
+                        assert_eq!(projected, expected);
+                        assert_eq!(actual.sent_model, projected);
+                        assert_eq!(serde_json::to_value(wire).unwrap()["model"], expected);
+                    };
+                check(&runner, &selected, "api-model");
+                runner
+                    .model
+                    .binding
+                    .request
+                    .body
+                    .insert("model".into(), json!("body-model"));
+                check(&runner, &selected, "body-model");
+                selected.reasoning = Some(crate::completion::ReasoningConfig {
+                    effort: Some("high".into()),
+                    summary: None,
+                });
+                check(&runner, &selected, "parameter-model");
+                runner = runner.with_native_body(
+                    serde_json::from_value(json!({"model":"native-model"})).unwrap(),
+                );
+                check(&runner, &selected, "native-model");
+                runner =
+                    runner.with_native_body(serde_json::from_value(json!({"model":null})).unwrap());
+                assert!(runner.project_request_options(&selected, "thread").is_err());
+                assert!(runner.prepare_request_body(selected, None).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn siwc_additional_tools_preserve_declarations_history_and_call_pairing() {
         let (_temp, runner) = fixture();
         let mut request = request();
@@ -1681,6 +2062,10 @@ mod chatgpt_tests {
         )
         .unwrap();
         assert_eq!(runtime.model().max_output_tokens, Some(4096));
+        assert_eq!(
+            runner.project_request_options(&request(), "t").unwrap(),
+            "gpt-5.5"
+        );
         let model = crate::runtime::ThreadModel::new(runtime, None);
         let mut session = model.open_session().await.unwrap();
         let prepared = session
@@ -1704,6 +2089,7 @@ mod chatgpt_tests {
                 tools: vec![].into(),
                 tool_call_mode: ToolCallMode::Parallel,
                 solo_tool_ids: Default::default(),
+                recovery_parameters: None,
                 committed_private_context: None,
                 resources: None,
                 cancellation: Default::default(),
@@ -1715,6 +2101,10 @@ mod chatgpt_tests {
         let metadata: serde_json::Value =
             serde_json::from_str(prepared.request_metadata().unwrap().content()).unwrap();
         assert_eq!(metadata["maxTokens"], serde_json::Value::Null);
+        assert!(
+            metadata.get("sentModel").is_none(),
+            "the legacy production receipt stays unchanged"
+        );
         // Preparing must not poll the operation or access the protected storage.
         drop(prepared);
         session.close().await.unwrap();
@@ -1886,6 +2276,8 @@ mod timing_tests {
                     generation: 0,
                 },
                 Some(Duration::from_millis(1)),
+                None,
+                None,
             )
             .await
             .expect_err("the stream has no terminal event");
@@ -1967,6 +2359,7 @@ mod timing_tests {
             ModelInvocationContext::new(session.clone())
                 .with_progress(Some(progress.clone()))
                 .with_cancellation(Some(cancellation.clone())),
+            None,
         );
         tokio::pin!(invocation);
         tokio::time::timeout(

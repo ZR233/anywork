@@ -7,6 +7,7 @@
 //! （`trace_projection`）是独立子状态机。
 
 mod accumulator;
+pub(crate) mod current;
 
 pub(super) mod chat_presentation;
 pub(crate) mod decode;
@@ -67,6 +68,8 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
     mut stream: CompletionEventStream,
     context: StreamCollectContext<'_>,
     idle_timeout: Option<Duration>,
+    accumulator: Option<StreamCompletionAccumulator>,
+    mut current: Option<&mut crate::runtime::current::CurrentProducer>,
 ) -> std::result::Result<crate::completion::CompletionResponse, crate::completion::CompletionFailure>
 {
     let StreamCollectContext {
@@ -79,8 +82,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         members,
         generation,
     } = context;
-    let mut accumulator =
-        StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation);
+    let mut accumulator = accumulator.unwrap_or_else(|| {
+        StreamCompletionAccumulator::with_model_observation(trace, trace_sink, model_observation)
+    });
 
     loop {
         let next_event = async {
@@ -94,23 +98,38 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             stage = "provider_read",
             stage_started_at = ?std::time::Instant::now(),
         ));
-        let next_event = match cancellation.as_ref() {
-            Some(token) => {
-                tokio::select! {
-                    event = next_event => event,
-                    _ = token.cancelled() => {
-                        on_stream_end();
-                        accumulator.cancel_attempt("model invocation cancelled", event_tx);
-                        let mut failure = crate::completion::CompletionFailure::cancelled(
-                            PureError::LlmError("model invocation cancelled".to_string()),
-                            Box::new(accumulator.accounting()),
-                        ).with_optional_model_observation(accumulator.model_observation());
-                        failure.presentation_items = accumulator.take_presentation_items();
-                        return Err(failure);
+        let waiting = async {
+            match cancellation.as_ref() {
+                Some(token) => {
+                    tokio::select! {
+                        event = next_event => Ok(event),
+                        _ = token.cancelled() => Err(()),
                     }
                 }
+                None => Ok(next_event.await),
             }
-            None => next_event.await,
+        };
+        let next_event = if let Some(current) = current.as_deref_mut() {
+            current.wait(waiting, Some(&accumulator)).await
+        } else {
+            waiting.await
+        };
+        let next_event = match next_event {
+            Err(()) => {
+                on_stream_end();
+                accumulator.cancel_attempt("model invocation cancelled", event_tx);
+                if let Some(current) = current.as_deref_mut() {
+                    current.freeze(&accumulator);
+                }
+                let mut failure = crate::completion::CompletionFailure::cancelled(
+                    PureError::LlmError("model invocation cancelled".to_string()),
+                    Box::new(accumulator.accounting()),
+                )
+                .with_optional_model_observation(accumulator.model_observation());
+                failure.presentation_items = accumulator.take_presentation_items();
+                return Err(failure);
+            }
+            Ok(event) => event,
         };
         let event = match next_event {
             Ok(Some(event)) => event,
@@ -124,6 +143,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                     "stream error: idle timeout waiting for provider event",
                 );
                 accumulator.fail_attempt(&error, event_tx);
+                if let Some(current) = current.as_deref_mut() {
+                    current.freeze(&accumulator);
+                }
                 return Err(crate::completion::CompletionFailure {
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
@@ -140,6 +162,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             Err(error) => {
                 on_stream_end();
                 accumulator.fail_attempt(&error, event_tx);
+                if let Some(current) = current.as_deref_mut() {
+                    current.freeze(&accumulator);
+                }
                 return Err(crate::completion::CompletionFailure {
                     source: Box::new(error),
                     accounting: Box::new(accumulator.accounting()),
@@ -154,20 +179,30 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
         let admission = async {
             for event in accumulator.normalize(event)? {
                 accumulator.apply_normalized(event, event_tx)?;
+                if let Some(current) = current.as_deref_mut() {
+                    current.mark_dirty();
+                }
                 for identity in accumulator.take_started_members() {
                     if let Some(sender) = members.as_ref() {
-                        sender
-                            .start(generation, identity, cancellation.as_ref())
-                            .await?;
+                        let admission = sender.start(generation, identity, cancellation.as_ref());
+                        if let Some(current) = current.as_deref_mut() {
+                            current.wait(admission, Some(&accumulator)).await?;
+                        } else {
+                            admission.await?;
+                        }
                     }
                 }
                 for identity in accumulator.take_content_available_members() {
                     if let Some(sender) = members.as_ref() {
                         // Preserve the reliable first-content position before the next normalized
                         // event, even if progress coalesces or cancellation arrives while awaiting.
-                        sender
-                            .content_available(generation, identity, cancellation.as_ref())
-                            .await?;
+                        let admission =
+                            sender.content_available(generation, identity, cancellation.as_ref());
+                        if let Some(current) = current.as_deref_mut() {
+                            current.wait(admission, Some(&accumulator)).await?;
+                        } else {
+                            admission.await?;
+                        }
                     }
                 }
                 if let Some((item, state)) = accumulator.take_completed_member()
@@ -175,16 +210,16 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 {
                     let payload = crate::runtime::ModelMemberReceipt::encode(item, state)
                         .map_err(|error| PureError::LlmError(error.to_string()))?;
+                    let provider_item_id = item.provider_item_id.clone();
                     // No cancellation select here: a fact already sent belongs to this original call
                     // until the owner's explicit admission reply. Do not poll another provider event.
-                    sender
-                        .submit(
-                            generation,
-                            item.provider_item_id.clone(),
-                            payload,
-                            cancellation.as_ref(),
-                        )
-                        .await?;
+                    let admission =
+                        sender.submit(generation, provider_item_id, payload, cancellation.as_ref());
+                    if let Some(current) = current.as_deref_mut() {
+                        current.wait(admission, Some(&accumulator)).await?;
+                    } else {
+                        admission.await?;
+                    }
                 }
             }
             Ok::<(), StreamAdmissionError>(())
@@ -197,6 +232,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 StreamAdmissionError::Member(pl_core::model::ModelMemberError::Cancelled)
             ) {
                 accumulator.cancel_attempt("model invocation cancelled", event_tx);
+                if let Some(current) = current.as_deref_mut() {
+                    current.freeze(&accumulator);
+                }
                 let mut failure = crate::completion::CompletionFailure::cancelled(
                     PureError::LlmError("model invocation cancelled".to_string()),
                     Box::new(accumulator.accounting()),
@@ -212,6 +250,9 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
                 StreamAdmissionError::Member(error) => PureError::LlmError(error.to_string()),
             };
             accumulator.fail_attempt(&error, event_tx);
+            if let Some(current) = current.as_deref_mut() {
+                current.freeze(&accumulator);
+            }
             return Err(crate::completion::CompletionFailure {
                 source: Box::new(error),
                 accounting: Box::new(accumulator.accounting()),
@@ -226,9 +267,14 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
 
     let accounting = accumulator.accounting();
     let model_observation = accumulator.model_observation();
-    accumulator
-        .finish(event_tx)
-        .map_err(|source| crate::completion::CompletionFailure {
+    if let Some(current) = current.as_deref_mut() {
+        current.freeze(&accumulator);
+    }
+    accumulator.finish(event_tx).map_err(|source| {
+        if let Some(current) = current.as_deref_mut() {
+            current.fail_snapshot(source.to_string());
+        }
+        crate::completion::CompletionFailure {
             source: Box::new(source),
             accounting: Box::new(accounting),
             timing: None,
@@ -236,7 +282,8 @@ pub(crate) async fn collect_completion_event_stream_with_idle_timeout(
             presentation_items: accumulator.take_presentation_items(),
             partial_progress: None,
             cancelled: false,
-        })
+        }
+    })
 }
 
 #[cfg(test)]
@@ -353,6 +400,8 @@ mod admission_tests {
                         members: request.members,
                         generation: 0,
                     },
+                    None,
+                    None,
                     None,
                 )
                 .await;

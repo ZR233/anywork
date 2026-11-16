@@ -15,7 +15,23 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
-pub const FRAME_VERSION: u32 = 5;
+pub const FRAME_VERSION: u32 = 6;
+pub(super) const LEGACY_FRAME_VERSION: u32 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FrameContract {
+    Legacy,
+    Current,
+}
+
+impl FrameContract {
+    fn version(self) -> u32 {
+        match self {
+            Self::Legacy => LEGACY_FRAME_VERSION,
+            Self::Current => FRAME_VERSION,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum ArgumentKind {
@@ -81,25 +97,134 @@ pub(super) struct AssistantFrame {
     pub(super) bindings: Vec<ModelToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) compatibility_family: Option<String>,
+    #[serde(skip)]
+    pub(super) source: Option<FrameSource>,
 }
 
-fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
-    if payload.version() != FRAME_VERSION {
-        return Err(invalid("unsupported model response receipt"));
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct FrameSource {
+    pub(super) source_attempt_id: String,
+    pub(super) call_bindings: Vec<crate::completion::ModelCallIdentity>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentAssistantFrame {
+    #[serde(flatten)]
+    frame: AssistantFrame,
+    #[serde(flatten)]
+    source: FrameSource,
+}
+
+pub(super) fn decode_frame(payload: &OpaquePayload) -> Result<AssistantFrame, ModelError> {
+    let frame = match payload.version() {
+        LEGACY_FRAME_VERSION => serde_json::from_str(payload.content()),
+        FRAME_VERSION => {
+            serde_json::from_str::<CurrentAssistantFrame>(payload.content()).map(|current| {
+                let mut frame = current.frame;
+                frame.source = Some(current.source);
+                frame
+            })
+        }
+        _ => return Err(invalid("unsupported model response receipt")),
     }
-    serde_json::from_str(payload.content())
-        .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))
+    .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
+    validate_call_bindings(&frame)?;
+    Ok(frame)
+}
+
+fn validate_call_bindings(frame: &AssistantFrame) -> Result<BTreeMap<&str, &ToolCall>, ModelError> {
+    let mut raw = BTreeMap::new();
+    for call in &frame.receipt.response.tool_calls {
+        if call.call_id.is_empty()
+            || call.id.is_empty()
+            || raw.insert(call.call_id.as_str(), call).is_some()
+        {
+            return Err(invalid("conflicting provider call identity"));
+        }
+    }
+    let mut mapped = BTreeMap::new();
+    if let Some(source) = &frame.source {
+        if source.source_attempt_id.is_empty() || source.call_bindings.len() != raw.len() {
+            return Err(invalid("missing assistant source attempt or call mapping"));
+        }
+        let mut providers = BTreeSet::new();
+        for identity in &source.call_bindings {
+            let call = raw
+                .get(identity.provider_call_id.as_str())
+                .ok_or_else(|| invalid("unknown provider call mapping"))?;
+            if identity.attempt_id != source.source_attempt_id
+                || identity.call_id
+                    != crate::completion::stream::current::scoped_call_id(
+                        &source.source_attempt_id,
+                        &call.call_id,
+                    )
+                || identity.provider_item_id != call.id
+                || !providers.insert(identity.provider_call_id.as_str())
+                || mapped.insert(identity.call_id.as_str(), *call).is_some()
+            {
+                return Err(invalid(
+                    "assistant attempt/provider/Core call identity mismatch",
+                ));
+            }
+        }
+    } else {
+        // Only the separately versioned legacy contract uses raw provider IDs as Core IDs.
+        mapped.extend(raw);
+    }
+    if mapped.len() != frame.bindings.len() {
+        return Err(invalid("assistant call mapping is incomplete"));
+    }
+    let mut core = BTreeSet::new();
+    for binding in &frame.bindings {
+        let call = mapped
+            .get(binding.call_id.as_str())
+            .ok_or_else(|| invalid("unknown Core call mapping"))?;
+        let kind = match binding.arguments.format() {
+            "application/json" => ArgumentKind::Json,
+            "text/plain" => ArgumentKind::Text,
+            _ => return Err(invalid("unknown tool argument format in assistant frame")),
+        };
+        if !core.insert(binding.call_id.as_str()) || arguments(call, kind)? != binding.arguments {
+            return Err(invalid("assistant call arguments or identity mismatch"));
+        }
+    }
+    if let Some(replay) = &frame.receipt.response.replay {
+        replay
+            .semantic_input(&frame.receipt.response)
+            .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
+    }
+    Ok(mapped)
 }
 
 pub(super) fn receipt(
     output: &ModelStepOutput,
 ) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
+    for content in &output.content {
+        if let ContextContent::Opaque { payload } = content
+            && payload.format() == FRAME_FORMAT
+            && let Some(source) = decode_frame(payload)?.source
+            && source.source_attempt_id != output.attempt_id
+        {
+            return Err(invalid("model output differs from its source attempt"));
+        }
+    }
     receipt_parts(&output.content, &output.tool_calls)
 }
 
 pub(super) fn record_receipt(
     record: &pl_core::context::ContextRecord,
 ) -> Result<Option<super::receipt::ModelResponseReceipt>, ModelError> {
+    for content in &record.content {
+        if let ContextContent::Opaque { payload } = content
+            && payload.format() == FRAME_FORMAT
+            && let Some(source) = decode_frame(payload)?.source
+            && record.id != format!("{}:output", source.source_attempt_id)
+        {
+            return Err(invalid("assistant record differs from its source attempt"));
+        }
+    }
     receipt_parts(&record.content, &record.tool_calls)
 }
 
@@ -127,6 +252,11 @@ fn receipt_parts(
             ContextContent::Opaque { .. } | ContextContent::Resource { .. } => None,
         })
         .collect::<Vec<_>>();
+    if frame.source.is_some() && content.len() != text.len() + 1 {
+        return Err(invalid(
+            "current assistant differs from its full content envelope",
+        ));
+    }
     if text
         != frame
             .receipt
@@ -209,6 +339,7 @@ fn tool_scheduling_rules(request: &ModelRequest) -> Result<Vec<String>, ModelErr
 pub(super) fn request(
     request: &ModelRequest,
     runtime: &super::ModelRuntime,
+    contract: FrameContract,
 ) -> Result<CompletionRequest, ModelError> {
     request
         .context
@@ -334,6 +465,11 @@ pub(super) fn request(
                 })
                 .collect::<Vec<_>>();
             if let [payload] = frames.as_slice() {
+                if payload.version() != contract.version() {
+                    return Err(invalid(
+                        "assistant contract requires explicit migration with actual source-attempt context",
+                    ));
+                }
                 let mut frame = decode_frame(payload)
                     .map_err(|_| invalid("unknown assistant frame version"))?;
                 let text = record
@@ -358,30 +494,24 @@ pub(super) fn request(
                 {
                     return Err(invalid("assistant frame differs from its context envelope"));
                 }
-                for (call, binding) in frame
-                    .receipt
-                    .response
-                    .tool_calls
-                    .iter()
-                    .zip(&frame.bindings)
+                if let Some(source) = &frame.source
+                    && record.id != format!("{}:output", source.source_attempt_id)
                 {
-                    let kind = match binding.arguments.format() {
-                        "application/json" => ArgumentKind::Json,
-                        "text/plain" => ArgumentKind::Text,
-                        _ => {
-                            return Err(invalid("unknown tool argument format in assistant frame"));
-                        }
-                    };
-                    if call.call_id != binding.call_id
-                        || arguments(call, kind)? != binding.arguments
-                        || calls
-                            .insert(call.call_id.clone(), call.history_record())
-                            .is_some()
+                    return Err(invalid("assistant record differs from its source attempt"));
+                }
+                let mapped = validate_call_bindings(&frame)?;
+                for binding in &frame.bindings {
+                    let call = mapped
+                        .get(binding.call_id.as_str())
+                        .ok_or_else(|| invalid("missing Core call mapping"))?;
+                    if calls
+                        .insert(binding.call_id.clone(), call.history_record())
+                        .is_some()
                     {
                         return Err(invalid("assistant call identity mismatch"));
                     }
-                    pending_calls.insert(call.call_id.clone());
-                    call_order.push(call.call_id.clone());
+                    pending_calls.insert(binding.call_id.clone());
+                    call_order.push(binding.call_id.clone());
                 }
                 let mut encoded = CompletionRequest::builder().input(input).build();
                 encoded.replay_spans = replay_spans;
@@ -395,6 +525,14 @@ pub(super) fn request(
                         .native_context_family
                         .as_deref(),
                 ) {
+                    if request.recovery_parameters.is_some() {
+                        return Err(super::failure(
+                            pl_core::model::ModelFailureKind::IncompatibleContext,
+                            super::AdapterError::Content(
+                                "recovery cannot rewrite native context from an incompatible source binding",
+                            ),
+                        ));
+                    }
                     // 只投影当前请求；持久化回执、可见文本和工具身份仍保留原始事实。
                     if let Some(crate::completion::AssistantReplay::Responses { output }) =
                         &mut frame.receipt.response.replay
@@ -527,6 +665,13 @@ pub(super) fn request(
                     .map(|(index, id)| (id.as_str(), index))
                     .collect::<BTreeMap<_, _>>();
                 tool_media.sort_by_key(|media| positions.get(media.call_id.as_str()).copied());
+                for media in &mut tool_media {
+                    media.call_id = calls
+                        .get(&media.call_id)
+                        .ok_or_else(|| invalid("missing original media tool call frame"))?
+                        .call_id
+                        .clone();
+                }
                 if !tool_media.is_empty() {
                     input.push(ModelContextItem::ToolMedia {
                         items: std::mem::take(&mut tool_media),
@@ -558,6 +703,7 @@ pub(super) struct ResponseContext<'a> {
     pub marker: OpaquePayload,
     pub binding: super::receipt::ModelCallBinding,
     pub compatibility_family: Option<String>,
+    pub contract: FrameContract,
 }
 
 pub(super) fn response(
@@ -595,6 +741,7 @@ fn response_inner(
         marker,
         binding,
         compatibility_family,
+        contract,
     } = context;
     let replay = response
         .replay
@@ -628,6 +775,21 @@ fn response_inner(
                 .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))
             };
             let (tool_id, arguments, rejection) = match names.get(&call.name) {
+                Some(binding)
+                    if call.invalid_arguments.is_some()
+                        && matches!(binding.arguments, ArgumentKind::Json) =>
+                {
+                    (
+                        binding.id.clone(),
+                        raw_arguments()?,
+                        Some(ModelToolCallRejection::InvalidArguments {
+                            name: call.name.clone(),
+                            reason: call
+                                .invalid_arguments_message()
+                                .expect("checked invalid arguments"),
+                        }),
+                    )
+                }
                 Some(binding) => match arguments(call, binding.arguments) {
                     Ok(arguments) => (binding.id.clone(), arguments, None),
                     Err(error) => (
@@ -648,7 +810,14 @@ fn response_inner(
                 ),
             };
             Ok(ModelToolCall {
-                call_id: call.call_id.clone(),
+                call_id: if contract == FrameContract::Current {
+                    crate::completion::stream::current::scoped_call_id(
+                        &request.attempt_id,
+                        &call.call_id,
+                    )
+                } else {
+                    call.call_id.clone()
+                },
                 tool_id,
                 arguments,
                 rejection,
@@ -670,15 +839,38 @@ fn response_inner(
         receipt: super::receipt::ModelResponseReceipt { binding, response },
         bindings: bindings.clone(),
         compatibility_family,
+        source: None,
     };
-    let encoded = serde_json::to_string(&frame).map_err(|error| ModelError {
+    let encoded = if contract == FrameContract::Current {
+        let source = FrameSource {
+            source_attempt_id: request.attempt_id.clone(),
+            call_bindings: frame
+                .receipt
+                .response
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    crate::completion::ModelCallIdentity::new(
+                        &request.attempt_id,
+                        &call.call_id,
+                        &call.id,
+                    )
+                })
+                .collect(),
+        };
+        serde_json::to_string(&CurrentAssistantFrame { frame, source })
+    } else {
+        serde_json::to_string(&frame)
+    }
+    .map_err(|error| ModelError {
         details: None,
         kind: ModelFailureKind::InvalidResponse,
         usage: Box::new(observed_usage.clone()),
         source: Some(Box::new(error)),
     })?;
-    let payload = OpaquePayload::new(FRAME_FORMAT, FRAME_VERSION, encoded)
+    let payload = OpaquePayload::new(FRAME_FORMAT, contract.version(), encoded)
         .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
+    decode_frame(&payload)?;
     content.push(ContextContent::Opaque { payload });
     Ok(ModelStepOutput {
         turn_action,

@@ -6,9 +6,66 @@ pub(super) struct ToolExecutionCompletion {
     pub(super) call: PendingCall,
     pub(super) output: Result<crate::tool::ToolOutput, Arc<crate::tool::opaque::ToolError>>,
     pub(super) cancellation: CancellationToken,
+    /// Last fully staged local projection, retained if only its reliable publication failed.
+    /// The producer result above remains available to the existing commit retry path.
+    pub(super) pending_delivery: Option<Box<ToolDelivery>>,
 }
 
 pub(super) type ToolExecutionFuture = futures::future::BoxFuture<'static, ToolExecutionCompletion>;
+
+/// Pure materialization shared by ordinary commit and current capture of a retained completion.
+pub(super) fn observed_completion(
+    completion: &ToolExecutionCompletion,
+) -> (crate::tool::ToolOutput, ToolOutcome) {
+    match &completion.output {
+        Ok(output) => {
+            let outcome = match completion.call.executor.validate_control(output) {
+                Ok(()) => ToolOutcome::Succeeded,
+                Err(error) => ToolOutcome::Failed(Arc::new(error)),
+            };
+            (output.clone(), outcome)
+        }
+        Err(error) => {
+            let output = error.observed_output().cloned().unwrap_or_else(|| {
+                let text = error.to_string();
+                crate::tool::ToolOutput::new(
+                    OpaquePayload::text(text.clone()),
+                    vec![ContextContent::Text {
+                        text: Arc::from(text),
+                    }],
+                )
+            });
+            (output, ToolOutcome::Failed(error.clone()))
+        }
+    }
+}
+
+pub(super) fn annotate_failure_context(
+    output: &mut crate::tool::ToolOutput,
+    outcome: &ToolOutcome,
+) {
+    if let ToolOutcome::Failed(error) = outcome {
+        let diagnostic = error.to_string();
+        if !output.context().iter().any(|content| matches!(content, ContextContent::Text { text } if text.as_ref() == diagnostic)) {
+            output.append_framework_context(ContextContent::Text { text: Arc::from(format!("Framework recorded tool failure: {diagnostic}")) });
+        }
+    }
+}
+
+pub(super) fn model_delivery_context(
+    output: &crate::tool::ToolOutput,
+    outcome: &ToolOutcome,
+) -> Vec<ContextContent> {
+    if matches!(outcome, ToolOutcome::Cancelled) {
+        vec![ContextContent::Text {
+            text: Arc::from(
+                "Tool execution was cancelled. Any observed result is retained for inspection; its state changes and Turn control were not applied.",
+            ),
+        }]
+    } else {
+        output.context().to_vec()
+    }
+}
 
 /// Reliable output reservation identity of one tool call.
 ///
@@ -152,6 +209,7 @@ impl Owner {
                     call,
                     output,
                     cancellation,
+                    pending_delivery: None,
                 }
             })
             .map_err(|_| ThreadError::Closed)?;
@@ -162,6 +220,7 @@ impl Owner {
                     call: failed_call,
                     output: Err(Arc::new(crate::tool::opaque::ToolError::new(error))),
                     cancellation: failed_cancellation,
+                    pending_delivery: None,
                 },
             }
         }))
@@ -179,12 +238,19 @@ impl Owner {
         }
         completion.cancellation = cancellation;
         let id = completion.call.call.call_id.clone();
+        if let Some(progress) = self.state.tool_progress.get(&format!("task:{id}")) {
+            self.current_retired_previews.insert(
+                id.clone(),
+                current::SavedToolProgress::capture(self.runtime_epoch, progress),
+            );
+        }
         let operation = tool_output_operation(&id);
         let previous = self.state.clone();
         let result = self.stage_tool_execution(completion.clone());
         let terminal =
             result.is_ok() || matches!(result, Err(ThreadError::Tool(_) | ThreadError::Cancelled));
         if terminal && self.state.deliveries.len() > previous.deliveries.len() {
+            completion.pending_delivery = self.state.deliveries.last().cloned().map(Box::new);
             // The result being committed is exactly the output this call reserved budget for, so the
             // store transfers that reservation onto the fact instead of charging it a second time.
             self.uncommitted_tools.remove(&id);
@@ -378,33 +444,11 @@ impl Owner {
         &mut self,
         completion: ToolExecutionCompletion,
     ) -> Result<crate::tool::ToolOutput, ThreadError> {
+        let (mut output, mut outcome) = observed_completion(&completion);
         let ToolExecutionCompletion {
-            call,
-            output,
-            cancellation,
+            call, cancellation, ..
         } = completion;
         let id = call.call.call_id.clone();
-        let (mut output, mut outcome) = match output {
-            Ok(output) => {
-                let outcome = match call.executor.validate_control(&output) {
-                    Ok(()) => ToolOutcome::Succeeded,
-                    Err(error) => ToolOutcome::Failed(Arc::new(error)),
-                };
-                (output, outcome)
-            }
-            Err(error) => {
-                let output = error.observed_output().cloned().unwrap_or_else(|| {
-                    let text = error.to_string();
-                    crate::tool::ToolOutput::new(
-                        OpaquePayload::text(text.clone()),
-                        vec![ContextContent::Text {
-                            text: Arc::from(text),
-                        }],
-                    )
-                });
-                (output, ToolOutcome::Failed(error))
-            }
-        };
         // A producer that could not store the output it was streaming reports its own typed storage
         // failure through the tool boundary. Latch the exact category it named before the failure is
         // delivered, so the Thread pauses further admission instead of continuing as if the capture
@@ -478,23 +522,8 @@ impl Owner {
             changes.push(record);
             self.state.interaction_changes = changes.into();
         }
-        if let ToolOutcome::Failed(error) = &outcome {
-            let diagnostic = error.to_string();
-            if !output.context().iter().any(|content| matches!(content, ContextContent::Text { text } if text.as_ref() == diagnostic)) {
-                output.append_framework_context(ContextContent::Text {
-                    text: Arc::from(format!("Framework recorded tool failure: {diagnostic}")),
-                });
-            }
-        }
-        let delivered_context = if matches!(outcome, ToolOutcome::Cancelled) {
-            vec![ContextContent::Text {
-                text: Arc::from(
-                    "Tool execution was cancelled. Any observed result is retained for inspection; its state changes and Turn control were not applied.",
-                ),
-            }]
-        } else {
-            output.context().to_vec()
-        };
+        annotate_failure_context(&mut output, &outcome);
+        let delivered_context = model_delivery_context(&output, &outcome);
         let task = self
             .state
             .tasks

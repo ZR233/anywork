@@ -13,7 +13,12 @@ pub use tokio_util::sync::CancellationToken;
 use crate::chat::PresentationPart;
 use crate::context::{ContextContent, ContextSnapshot, OpaquePayload};
 
+mod current;
 mod member;
+pub use current::{
+    CurrentCaptureError, CurrentCaptureHandle, CurrentCaptureReceiver, ModelCallExit,
+    ModelCurrentCaptureRequest,
+};
 pub(crate) use member::{
     AdmittedPart, MemberFact, MemberRegistry, ModelMemberAdmission, StartedKey,
     encoded_member_bytes, same_started_identity,
@@ -109,7 +114,8 @@ pub struct ModelToolDeclaration {
 }
 
 /// Maximum tool-call concurrency admitted by the frozen executor catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ToolCallMode {
     Sequential,
     Parallel,
@@ -131,6 +137,9 @@ pub struct ModelRequest {
     /// Frozen tool IDs that must be the only tool call in a response.
     pub solo_tool_ids: Arc<[String]>,
     pub committed_private_context: Option<OpaquePayload>,
+    /// Frozen producer-owned request options from a paused current, if this is its first new
+    /// attempt. The model must apply these options or reject preparation; they are not input context.
+    pub recovery_parameters: Option<OpaquePayload>,
     pub resources: Option<crate::context::ResourceAccess>,
     pub cancellation: CancellationToken,
 }
@@ -1396,6 +1405,15 @@ pub struct ToolProgressPart {
 }
 
 impl ToolProgressPart {
+    /// Restores one complete observation as a new baseline, without a prefix lineage.
+    pub fn from_current(id: String, version: u64, text: String) -> Self {
+        Self {
+            id: Arc::from(id),
+            version,
+            content: ContentBlock::from_text(&text),
+        }
+    }
+
     /// First observation of `id`; content starts empty and the version starts at zero.
     pub fn new(id: impl Into<Arc<str>>) -> Self {
         Self {
@@ -2315,6 +2333,8 @@ pub enum ModelToolCallRejection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelToolCall {
+    /// Unambiguous attempt-scoped internal identity. The model adapter retains the original
+    /// provider ID and replay mapping in its opaque data; core does not decode this namespace.
     pub call_id: String,
     pub tool_id: String,
     pub arguments: OpaquePayload,
@@ -2512,7 +2532,9 @@ pub struct PreparedModelCall {
     tool_projection: Option<OpaquePayload>,
     session_health: Option<Arc<SessionHealth>>,
     input_estimate: Option<TokenEstimate>,
-    future: BoxFuture<'static, Result<ModelStepOutput, ModelError>>,
+    current_capture: Option<CurrentCaptureHandle>,
+    applied_recovery_parameters: Option<OpaquePayload>,
+    future: BoxFuture<'static, ModelCallExit>,
 }
 
 impl PreparedModelCall {
@@ -2520,6 +2542,17 @@ impl PreparedModelCall {
     pub fn new(
         future: impl Future<Output = Result<ModelStepOutput, ModelError>> + Send + 'static,
     ) -> Self {
+        Self::new_with_current(async move {
+            ModelCallExit {
+                result: future.await,
+                current: None,
+            }
+        })
+    }
+
+    /// Wraps the existing execution exit with its final producer-owned current snapshot.
+    /// The producer must construct this before dropping its accumulator, on every exit path.
+    pub fn new_with_current(future: impl Future<Output = ModelCallExit> + Send + 'static) -> Self {
         Self {
             future: Box::pin(future),
             usage_binding: None,
@@ -2527,7 +2560,26 @@ impl PreparedModelCall {
             session_health: None,
             tool_projection: None,
             request_metadata: None,
+            current_capture: None,
+            applied_recovery_parameters: None,
         }
+    }
+
+    /// Confirms that this exact saved options payload was checked and applied to the new request.
+    /// The producer must reject incompatible bindings rather than attaching an unverified payload.
+    pub fn with_applied_recovery_parameters(mut self, parameters: OpaquePayload) -> Self {
+        self.applied_recovery_parameters = Some(parameters);
+        self
+    }
+
+    /// Installs the single revocable capture endpoint serviced by this invocation's producer.
+    pub fn with_current_capture(mut self, capture: CurrentCaptureHandle) -> Self {
+        self.current_capture = Some(capture);
+        self
+    }
+
+    pub fn current_capture(&self) -> Option<&CurrentCaptureHandle> {
+        self.current_capture.as_ref()
     }
 
     /// Freezes adapter-owned request provenance without exposing provider types to core.
@@ -2579,8 +2631,18 @@ impl PreparedModelCall {
     /// # Errors
     /// Returns the implementation failure with any observed usage.
     pub async fn execute(self) -> Result<ModelStepOutput, ModelError> {
-        if let Some(health) = &self.session_health {
-            health.ensure_available()?;
+        self.execute_with_current().await.result
+    }
+
+    /// Executes once, handing final observations to the owner through the ordinary exit path.
+    pub async fn execute_with_current(self) -> ModelCallExit {
+        if let Some(health) = &self.session_health
+            && let Err(error) = health.ensure_available()
+        {
+            return ModelCallExit {
+                result: Err(error),
+                current: None,
+            };
         }
         match crate::error_record::catch_boundary("model execution", self.future).await {
             Ok(result) => result,
@@ -2588,7 +2650,10 @@ impl PreparedModelCall {
                 if let Some(health) = self.session_health {
                     health.poisoned.store(true, Ordering::Release);
                 }
-                Err(ModelError::from_panic(source))
+                ModelCallExit {
+                    result: Err(ModelError::from_panic(source)),
+                    current: None,
+                }
             }
         }
     }
@@ -2651,15 +2716,29 @@ impl DynModelSession {
         request: ModelRequest,
     ) -> Result<PreparedModelCall, ModelError> {
         self.health.ensure_available()?;
+        let expected_recovery = request.recovery_parameters.clone();
         match crate::error_record::catch_boundary("model preparation", async {
             self.inner.prepare(request).await
         })
         .await
         {
-            Ok(result) => result.map(|mut call| {
+            Ok(result) => {
+                let mut call = result?;
+                if expected_recovery.is_some()
+                    && call.applied_recovery_parameters.as_ref() != expected_recovery.as_ref()
+                {
+                    return Err(ModelError {
+                        details: None,
+                        kind: ModelFailureKind::IncompatibleContext,
+                        usage: Box::default(),
+                        source: Some(Box::new(std::io::Error::other(
+                            "model did not apply the saved recovery parameters",
+                        ))),
+                    });
+                }
                 call.session_health = Some(self.health.clone());
-                call
-            }),
+                Ok(call)
+            }
             Err(source) => {
                 self.health.poisoned.store(true, Ordering::Release);
                 Err(ModelError::from_panic(source))

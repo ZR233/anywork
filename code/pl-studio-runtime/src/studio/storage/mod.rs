@@ -1,5 +1,21 @@
 pub(crate) mod calls;
 pub(crate) mod coordinator;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "current-only API is intentionally not wired to production before #470"
+    )
+)]
+mod current_file;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "current-only API is intentionally not wired to production before #470"
+    )
+)]
+pub(crate) mod current_writer;
 pub(crate) mod history;
 pub(crate) mod state;
 pub(crate) mod thread_writer;

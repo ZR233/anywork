@@ -1,10 +1,63 @@
 //! Handle operations submit bounded commands; only the owner mutates Thread state.
 use super::*;
 
+enum InitialState {
+    Checkpoint(Option<Box<ThreadCheckpoint>>),
+    FreshCurrent(Box<current::ThreadCurrent>),
+    RestoredCurrent(Box<current::ThreadCurrent>),
+}
+
 impl ThreadHandle {
     /// Returns whether both handles address the same physical owner incarnation.
     pub fn same_instance(&self, other: &Self) -> bool {
         self.commands.same_channel(&other.commands)
+    }
+
+    /// Releases immutable exports only after the independent history consumer accepted them.
+    /// No current save, dirty notification, execution permission or legacy cold fence is advanced.
+    /// The retained window can also be released after the physical owner has closed.
+    pub fn release_history_through(&self, through: u64) -> Result<(), current::CurrentError> {
+        if through > self.snapshot().commit_sequence {
+            return Err(current::CurrentError::InvalidIdentity);
+        }
+        self.effect_window.release_through(through);
+        Ok(())
+    }
+
+    /// Executes the selected current continuation through the existing Turn driver. The owner
+    /// rechecks epoch, execution and the one live pre-admission claim before starting any work.
+    /// Context and frozen options in the returned proposal never overwrite RAM on this path;
+    /// bind compatible services before preparing the continuation.
+    pub async fn execute_current_resume(
+        &self,
+        resume: current::CurrentResumeRequest,
+        max_model_steps: ModelStepLimit,
+    ) -> Result<TurnCompletion, ThreadError> {
+        if resume.runtime_epoch != self.runtime_epoch || resume.request.thread_id != self.thread_id
+        {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        let attempt_id = resume.request.attempt_id;
+        let input = TurnInput {
+            turn_id: resume.request.turn_id,
+            attempt_prefix: attempt_id.clone(),
+            content: Vec::new(),
+            max_model_steps,
+            cancellation: resume.request.cancellation,
+        };
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::CurrentResume {
+                epoch: resume.runtime_epoch,
+                execution_id: resume.execution_id,
+                attempt_id,
+                authorized_stops: resume.authorized_stops,
+                input,
+                reply,
+            })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
     }
 
     /// Queues the latest configuration for the next Turn without waiting for current execution.
@@ -96,6 +149,71 @@ impl ThreadHandle {
         Self::resume(id, model, None)
     }
 
+    /// Starts the directly callable current owner without selecting it for old production callers.
+    pub fn start_current(
+        id: String,
+        model: DynModelSession,
+    ) -> Result<Self, current::CurrentError> {
+        let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
+        Self::spawn_owner(
+            id,
+            Some(model),
+            InitialState::FreshCurrent(Box::new(current)),
+            None,
+        )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+    }
+
+    /// Installs only logical current data under a fresh paused owner. No history is read, no old
+    /// terminal facts are synthesized, and no model/tool work starts. Pass `None` to open no session.
+    pub fn restore_current(
+        current: current::ThreadCurrent,
+        model: Option<DynModelSession>,
+    ) -> Result<Self, current::CurrentError> {
+        let id = current.thread_id.clone();
+        let current = current.activate_paused(&id)?;
+        Self::spawn_owner(
+            id,
+            model,
+            InitialState::RestoredCurrent(Box::new(current)),
+            None,
+        )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+    }
+
+    /// Starts a fresh current owner with its admission gate installed before any direct input.
+    pub fn start_current_with_turn_admission_gate(
+        id: String,
+        model: DynModelSession,
+        gate: admission::TurnAdmissionGate,
+    ) -> Result<Self, current::CurrentError> {
+        let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
+        Self::spawn_owner(
+            id,
+            Some(model),
+            InitialState::FreshCurrent(Box::new(current)),
+            Some(gate),
+        )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+    }
+
+    /// Restores paused logical data with a gate installed before user-authorized continuation.
+    pub fn restore_current_with_turn_admission_gate(
+        current: current::ThreadCurrent,
+        model: Option<DynModelSession>,
+        gate: admission::TurnAdmissionGate,
+    ) -> Result<Self, current::CurrentError> {
+        let id = current.thread_id.clone();
+        let current = current.activate_paused(&id)?;
+        Self::spawn_owner(
+            id,
+            model,
+            InitialState::RestoredCurrent(Box::new(current)),
+            Some(gate),
+        )
+        .map_err(|error| current::CurrentError::Owner(Arc::new(error)))
+    }
+
     /// Starts or resumes one owner from a direct current-state checkpoint.
     pub fn resume(
         id: String,
@@ -140,17 +258,44 @@ impl ThreadHandle {
         checkpoint: Option<ThreadCheckpoint>,
         turn_admission: Option<admission::TurnAdmissionGate>,
     ) -> Result<Self, ThreadError> {
+        Self::spawn_owner(
+            id,
+            model,
+            InitialState::Checkpoint(checkpoint.map(Box::new)),
+            turn_admission,
+        )
+    }
+
+    fn spawn_owner(
+        id: String,
+        model: Option<DynModelSession>,
+        initial: InitialState,
+        turn_admission: Option<admission::TurnAdmissionGate>,
+    ) -> Result<Self, ThreadError> {
         if id.is_empty() {
             return Err(ThreadError::InvalidIdentity);
         }
-        let resumed = checkpoint.is_some();
-        let (published, state, restored_history_fence) = match checkpoint {
-            Some(checkpoint) => {
+        let resumed = matches!(
+            &initial,
+            InitialState::Checkpoint(Some(_)) | InitialState::RestoredCurrent(_)
+        );
+        let current_paused = matches!(&initial, InitialState::RestoredCurrent(_));
+        let (published, state, restored_history_fence, restored_current) = match initial {
+            InitialState::Checkpoint(Some(checkpoint)) => {
                 let history_fence = checkpoint.history_fence;
                 let (published, state) = checkpoint.into_states(&id)?;
-                (published, state, history_fence)
+                (published, state, history_fence, None)
             }
-            None => (ThreadSnapshot::default(), ThreadSnapshot::default(), 0),
+            InitialState::Checkpoint(None) => (
+                ThreadSnapshot::default(),
+                ThreadSnapshot::default(),
+                0,
+                None,
+            ),
+            InitialState::FreshCurrent(current) | InitialState::RestoredCurrent(current) => {
+                let state = current.state.to_paused_snapshot();
+                (state.clone(), state, 0, Some(current))
+            }
         };
         let (commands, receiver) = mpsc::channel(64);
         let (mailbox, mailbox_receiver) = mpsc::channel(64);
@@ -161,7 +306,36 @@ impl ThreadHandle {
         let tools = crate::tool::opaque::ToolManager::with_discovery(&state.discovered_tools);
         let effect_window = Arc::new(EffectWindow::new());
         let thread_id = id.clone();
+        let runtime_epoch = restored_current
+            .as_ref()
+            .map_or_else(current::RuntimeEpoch::new, |current| {
+                current.saved_runtime_epoch
+            });
+        let (final_current, final_current_rx) = watch::channel(None);
         let mut owner = Owner {
+            runtime_epoch,
+            current_call: None,
+            current_capture: None,
+            current_updates: None,
+            current_model_running: false,
+            current_resume_claim: None,
+            current_snapshot_missing: false,
+            current_saved_execution: restored_current
+                .as_ref()
+                .filter(|_| current_paused)
+                .and_then(|current| current.state.execution.clone()),
+            current_saved_lifecycle: restored_current
+                .as_ref()
+                .filter(|_| current_paused)
+                .map(|current| current.state.lifecycle),
+            current_task_start_ordinal: restored_current
+                .as_ref()
+                .map(|current| current.state.task_start_ordinal),
+            current_retired_previews: restored_current
+                .as_ref()
+                .map(|current| current.state.tool_previews.clone())
+                .unwrap_or_default(),
+            final_current,
             model_identity: None,
             pending_model_update: None,
             pending_runtime_facts: Default::default(),
@@ -230,10 +404,13 @@ impl ThreadHandle {
             retry_plan: None,
             published,
         };
+        owner.current_call = restored_current.and_then(|current| current.model_call);
         owner.publish()?;
         owner.publish_snapshot();
         tokio::spawn(owner.run(receiver));
         Ok(Self {
+            runtime_epoch,
+            final_current: final_current_rx,
             thread_id,
             _lifetime: Arc::new(HandleLifetime(interrupt.clone())),
             commands,

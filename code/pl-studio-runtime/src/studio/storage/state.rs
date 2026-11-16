@@ -1,6 +1,15 @@
 //! Current SQLite checkpoint loading and the isolated v2 TOML migration boundary.
 //! Legacy files are removed only after the imported transaction can be read and verified.
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "current-only API is intentionally not wired to production before #470"
+    )
+)]
+mod current;
+
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -109,6 +118,14 @@ pub(crate) struct StateStore {
     directory: PathBuf,
     thread_id: String,
     legacy_calls: Option<super::calls::CallsStore>,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "current-only API is intentionally not wired to production before #470"
+        )
+    )]
+    current: Option<current::CurrentRegistration>,
 }
 
 impl StateStore {
@@ -117,6 +134,7 @@ impl StateStore {
             directory,
             thread_id: thread_id.to_owned(),
             legacy_calls: None,
+            current: None,
         }
     }
 

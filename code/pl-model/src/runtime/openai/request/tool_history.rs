@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use pl_protocol::{Message, MessageRole, Result, ToolCallCaller, ToolCallKind};
 
@@ -67,22 +67,36 @@ pub(super) fn validate_tool_history(messages: &[Message]) -> Result<()> {
     Ok(())
 }
 
-/// 按 `call_id` 收集 assistant 工具调用声明的 Programmatic caller。
+/// 按已经校验的调用/结果顺序保留 caller，不把不同响应的同名 provider ID 合并。
 ///
 /// tool result 侧的 typed 记录不重复保存 caller；回放 `function_call_output` 时
-/// 以 call_id 关联 assistant 侧调用。
-pub(super) fn tool_callers_by_call_id(messages: &[Message]) -> HashMap<String, ToolCallCaller> {
-    messages
-        .iter()
-        .filter_map(|message| message.tool_calls.as_ref())
-        .flatten()
-        .filter_map(|tool_call| {
-            tool_call
-                .caller
-                .clone()
-                .map(|caller| (tool_call.call_id.clone(), caller))
-        })
-        .collect()
+/// 每个结果消费其前序调用的位置；空 caller 也必须占一个位置。
+pub(super) fn tool_callers_by_result_position(
+    items: &[pl_protocol::ModelContextItem],
+) -> BTreeMap<usize, ToolCallCaller> {
+    let mut calls = VecDeque::new();
+    let mut results = BTreeMap::new();
+    for (position, item) in items.iter().enumerate() {
+        let Some(message) = item.as_message() else {
+            continue;
+        };
+        match message.role {
+            MessageRole::Assistant => calls.extend(
+                message
+                    .tool_calls
+                    .iter()
+                    .flatten()
+                    .map(|call| call.caller.clone()),
+            ),
+            MessageRole::Tool => {
+                if let Some(Some(caller)) = calls.pop_front() {
+                    results.insert(position, caller);
+                }
+            }
+            MessageRole::System | MessageRole::User => {}
+        }
+    }
+    results
 }
 
 /// 把 typed 记录中的参数投影为 provider wire 文本。

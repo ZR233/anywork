@@ -272,6 +272,10 @@ fn failure_details(receipt: &ModelFailureReceipt) -> pl_core::context::OpaquePay
 #[serde(rename_all = "camelCase")]
 pub struct ModelRequestReceipt {
     pub binding: ModelCallBinding,
+    /// The actual model selected for the provider request, when captured at admission.
+    /// An older receipt without this fact cannot prove that a remapped alias is compatible.
+    #[serde(default)]
+    pub sent_model: Option<String>,
     pub tools: Vec<crate::completion::ToolSpec>,
     pub tool_choice: String,
     pub parallel_tool_calls: bool,
@@ -322,11 +326,14 @@ pub(super) fn request_metadata(
     binding: &ModelCallBinding,
     request: &crate::completion::CompletionRequest,
     prompt: Option<&crate::runtime::ThreadPromptSnapshot>,
+    sent_model: Option<&str>,
 ) -> Result<pl_core::context::OpaquePayload, ModelError> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct RequestMetadata<'a> {
         binding: &'a ModelCallBinding,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sent_model: Option<&'a str>,
         tools: &'a [crate::completion::ToolSpec],
         tool_choice: &'a str,
         parallel_tool_calls: bool,
@@ -337,6 +344,7 @@ pub(super) fn request_metadata(
     }
     let content = serde_json::to_string(&RequestMetadata {
         binding,
+        sent_model,
         tools: &request.tools,
         tool_choice: &request.tool_choice,
         parallel_tool_calls: request.parallel_tool_calls,

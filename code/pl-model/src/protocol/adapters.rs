@@ -29,11 +29,6 @@ pub(crate) trait ProtocolAdaptation {
     /// 本适配对应的封闭厂商协议。
     fn kind(&self) -> ProtocolKind;
 
-    /// 本厂商协议发送受信指令正文时使用的 wire role。
-    fn instruction_wire_role(&self, api: WireApi) -> super::InstructionWireRole {
-        self.kind().instruction_wire_role(api)
-    }
-
     /// 准备本次 wire 请求体（base body 与 parameter wire 由共享请求组装完成）。
     fn build_request(
         &self,
@@ -42,14 +37,16 @@ pub(crate) trait ProtocolAdaptation {
         model: &ModelInfo,
         prompt_cache_key: Option<&str>,
         chatgpt: bool,
+        native_options: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<OpenAiRequestBody> {
-        self.base().build_request(
+        OpenAiBase::build_request(
             api,
-            self.instruction_wire_role(api),
+            self.kind(),
             request,
             model,
             prompt_cache_key,
             chatgpt,
+            native_options,
         )
     }
 

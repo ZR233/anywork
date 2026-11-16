@@ -112,17 +112,15 @@ fn build_compaction_body(
     let projection = ToolProjection::for_endpoint(provider.endpoint(), &effective_capabilities);
     let completion = request.prefix.clone().provider_compatible(projection);
     completion.validate_against(&model_info.model_id, &effective_capabilities)?;
-    let instruction_role = provider
-        .endpoint()
-        .protocol
-        .instruction_wire_role(WireApi::Responses);
-    let OpenAiRequestBody::Responses(mut body) = OpenAiBase.build_request(
+    let protocol = provider.endpoint().protocol;
+    let OpenAiRequestBody::Responses(mut body) = OpenAiBase::build_request(
         WireApi::Responses,
-        instruction_role,
+        protocol,
         &completion,
         &model_info,
         prompt_cache_key,
         false,
+        &Map::new(),
     )?
     else {
         return Err(PureError::ConfigError(

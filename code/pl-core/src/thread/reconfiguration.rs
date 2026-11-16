@@ -15,6 +15,14 @@ pub struct IdleReconfiguration {
 
 impl Owner {
     pub(super) fn ensure_idle(&self, allow_admission_boundary: bool) -> Result<(), ThreadError> {
+        if self.current_task_start_ordinal.is_some() && self.current_model_running {
+            return Err(ThreadError::InputRequiresIdle);
+        }
+        // A newly loaded current has pending logical work but owns no executing resources. The
+        // host can bind its fresh services while user-authorized resume remains separately gated.
+        if self.current_saved_lifecycle.is_some() && !self.interrupt.is_closing() {
+            return Ok(());
+        }
         // A closed admission boundary has no executing Turn. Its queued input identities
         // remain owned by this Thread while the host replaces generation-bound services.
         let admission_boundary = allow_admission_boundary

@@ -1361,6 +1361,7 @@ mod tests {
             tool_call_mode: ToolCallMode::Parallel,
             solo_tool_ids: Default::default(),
             committed_private_context: None,
+            recovery_parameters: None,
             resources: None,
             cancellation: Default::default(),
             progress: None,

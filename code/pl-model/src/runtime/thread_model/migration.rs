@@ -29,10 +29,18 @@ const PRESENTATION_PREVIEW_FORMAT: &str = "pl.model.presentation-item";
 /// Returns `None` for unrelated formats and already-current, validated payloads. This function
 /// has no storage or configuration access. Unknown fields and numeric representations survive
 /// outer-object upgrades; embedded provider and tool strings are never parsed or rewritten.
+/// Assistant identity conversion is deliberately separate: this entry retains the existing
+/// legacy upgrade through version 5. Version 6 requires [`upgrade_assistant_frame`] with actual
+/// source context, and current request reconstruction refuses a legacy frame until then.
 ///
 /// # Errors
 /// Rejects recognized payloads with unsupported versions, conflicting fields or invalid content.
 pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>, ModelError> {
+    if payload.format() == "pl.model.assistant" && payload.version() == super::codec::FRAME_VERSION
+    {
+        super::codec::decode_frame(payload)?;
+        return Ok(None);
+    }
     let current = match payload.format() {
         "pl.model.compaction" => {
             match payload.version() {
@@ -155,6 +163,92 @@ pub fn migrate_payload(payload: &OpaquePayload) -> Result<Option<OpaquePayload>,
     // The new bytes must pass the current decoder before the storage owner can commit them.
     migrate_payload(&migrated)?;
     Ok(Some(migrated))
+}
+
+/// A contextual assistant upgrade, not a database migration or a new source of execution rights.
+/// Callers must replace all external call references atomically with installing `payload`.
+#[derive(Debug)]
+pub struct AssistantFrameUpgrade {
+    pub payload: OpaquePayload,
+    pub call_ids: std::collections::BTreeMap<String, String>,
+}
+
+/// Upgrades a legacy assistant using its actual source attempt and exact external Core envelope.
+/// The ordinary payload-only migration above intentionally retains its legacy version-5 duty; it
+/// never claims to have performed this contextual version-6 identity conversion.
+pub fn upgrade_assistant_frame(
+    payload: &OpaquePayload,
+    source_attempt_id: &str,
+    external_calls: &[ModelToolCall],
+) -> Result<AssistantFrameUpgrade, ModelError> {
+    if payload.format() != "pl.model.assistant" || payload.version() >= super::codec::FRAME_VERSION
+    {
+        return Err(invalid(
+            "assistant upgrade requires a legacy assistant frame",
+        ));
+    }
+    if source_attempt_id.is_empty() {
+        return Err(invalid(
+            "assistant upgrade requires actual source attempt context",
+        ));
+    }
+    let migrated = migrate_payload(payload)?.unwrap_or_else(|| payload.clone());
+    let frame = super::codec::decode_frame(&migrated)?;
+    if frame.bindings != external_calls {
+        return Err(invalid(
+            "legacy assistant differs from external call envelope",
+        ));
+    }
+    let mut call_ids = std::collections::BTreeMap::new();
+    let mut identities = Vec::new();
+    for call in &frame.receipt.response.tool_calls {
+        let identity =
+            crate::completion::ModelCallIdentity::new(source_attempt_id, &call.call_id, &call.id);
+        if call_ids
+            .insert(call.call_id.clone(), identity.call_id.clone())
+            .is_some()
+        {
+            return Err(invalid("conflicting legacy assistant identity mapping"));
+        }
+        identities.push(identity);
+    }
+    let mut value: RawObject = parse(migrated.content())?;
+    let bindings: Vec<Box<serde_json::value::RawValue>> = parse(field(&value, "bindings")?.get())?;
+    let mut upgraded = Vec::new();
+    for binding in bindings {
+        let mut binding: RawObject = parse(binding.get())?;
+        let old: String = parse(field(&binding, "callId")?.get())?;
+        let new = call_ids
+            .get(&old)
+            .ok_or_else(|| invalid("missing legacy call mapping"))?;
+        binding.insert(
+            "callId".into(),
+            serde_json::value::to_raw_value(new).map_err(json_error)?,
+        );
+        upgraded.push(binding);
+    }
+    value.insert(
+        "bindings".into(),
+        serde_json::value::to_raw_value(&upgraded).map_err(json_error)?,
+    );
+    put(
+        &mut value,
+        "sourceAttemptId",
+        serde_json::value::to_raw_value(source_attempt_id).map_err(json_error)?,
+    )?;
+    put(
+        &mut value,
+        "callBindings",
+        serde_json::value::to_raw_value(&identities).map_err(json_error)?,
+    )?;
+    let payload = OpaquePayload::new(
+        "pl.model.assistant",
+        super::codec::FRAME_VERSION,
+        serde_json::to_string(&value).map_err(json_error)?,
+    )
+    .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
+    super::codec::decode_frame(&payload)?;
+    Ok(AssistantFrameUpgrade { payload, call_ids })
 }
 
 fn parse<T: serde::de::DeserializeOwned>(content: &str) -> Result<T, ModelError> {
@@ -517,6 +611,7 @@ impl LegacyModelRequestReceipt {
             .map(|prompt| prompt.migrate(binding.account_id.as_str()));
         ModelRequestReceipt {
             binding,
+            sent_model: None,
             tools: self.tools,
             tool_choice: self.tool_choice,
             parallel_tool_calls: self.parallel_tool_calls,
@@ -677,7 +772,7 @@ fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelE
 }
 
 use super::{
-    codec::{AssistantFrame, FRAME_VERSION},
+    codec::{AssistantFrame, LEGACY_FRAME_VERSION as FRAME_VERSION},
     failure,
 };
 use pl_core::model::ModelToolCall;
@@ -723,6 +818,7 @@ fn decode_frame_legacy(payload: &OpaquePayload) -> Result<AssistantFrame, ModelE
                 receipt: legacy.receipt.migrate(),
                 bindings: legacy.bindings,
                 compatibility_family: legacy.compatibility_family,
+                source: None,
             })
         }
         _ => Err(unsupported()),

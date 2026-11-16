@@ -93,7 +93,7 @@ pub(super) fn project_request(
         ));
     }
     let isolation = crate::runtime::binding_cache_namespace(account_id, endpoint);
-    if endpoint.chatgpt_session.is_some() {
+    if endpoint.chatgpt_session.is_some() || request.frozen_options {
         if request.replay_spans.iter().any(|span| {
             span.source_isolation
                 .as_deref()
@@ -103,7 +103,8 @@ pub(super) fn project_request(
                 })
         }) {
             return Err(PureError::ConfigError(
-                "ChatGPT cannot replay input[*].reasoning from a different credential owner".into(),
+                "this request cannot replay input[*].reasoning from a different credential owner"
+                    .into(),
             ));
         }
     } else {

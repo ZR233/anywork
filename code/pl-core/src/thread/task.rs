@@ -64,6 +64,14 @@ pub struct TaskRecord {
 
 impl Owner {
     pub(super) fn start_task(&mut self, call: &PendingCall) -> Result<(), ThreadError> {
+        let started_order = match self.current_task_start_ordinal {
+            Some(ordinal) => Some(
+                ordinal
+                    .checked_add(1)
+                    .ok_or(ThreadError::RevisionExhausted)?,
+            ),
+            None => None,
+        };
         let record = TaskRecord {
             id: format!("task:{}", call.call.call_id),
             parent_call_id: call.parent_call_id.clone(),
@@ -77,10 +85,15 @@ impl Owner {
             acknowledgement: None,
             // `publish` commits this record in the batch numbered one past the current watermark,
             // so the value is the task's real position in this Thread's start order.
-            started_sequence: Some(self.state.commit_sequence.saturating_add(1)),
+            started_sequence: Some(
+                started_order.unwrap_or_else(|| self.state.commit_sequence.saturating_add(1)),
+            ),
         };
         if self.state.tasks.contains_key(&record.id) {
             return Err(ThreadError::InvalidIdentity);
+        }
+        if let Some(order) = started_order {
+            self.current_task_start_ordinal = Some(order);
         }
         let id = record.id.clone();
         record_change(&mut self.state, record);

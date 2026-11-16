@@ -4,12 +4,12 @@ use super::*;
 /// Upper bound on how many terminal input identities stay resident for same-incarnation
 /// idempotency. History keeps the authoritative identity; the host answers older repeats from its
 /// durable identity index, so this ledger is a fixed window and never grows with history.
-const TERMINAL_INPUT_LEDGER_CAPACITY: usize = 64;
+pub(super) const TERMINAL_INPUT_LEDGER_CAPACITY: usize = 64;
 
 /// Upper bound on how many consumed message identities stay resident for same-incarnation
 /// idempotency. History keeps the accepted message; this ledger only answers a repeated delivery
 /// of a stable message identity, so it is a fixed window and never grows with history.
-const CONSUMED_MESSAGE_LEDGER_CAPACITY: usize = 64;
+pub(super) const CONSUMED_MESSAGE_LEDGER_CAPACITY: usize = 64;
 
 /// Upper bound on how many terminal task identities stay resident. History keeps the authoritative
 /// task lifecycle; this ledger only answers an already-finished cancellation and read-only
@@ -1375,6 +1375,10 @@ impl ContextCapacity {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadError {
+    #[error("current owner is paused; prepare a user-authorized current resume first")]
+    CurrentPaused,
+    #[error("current owners do not attach the legacy checkpoint store")]
+    CurrentCheckpointStore,
     #[error("tool registration was rejected and cleanup remains pending: {0}")]
     RejectedTools(#[source] Box<crate::tool::opaque::RejectedTools>),
     #[error("input requires an idle Thread with no pending input")]
