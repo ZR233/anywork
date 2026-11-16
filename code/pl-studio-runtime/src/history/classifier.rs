@@ -121,6 +121,18 @@ impl HistoryClassifier {
                 "entity belongs to another runtime epoch".into(),
             ));
         }
+        let single_exists = change.placement == HistoryPlacement::Single
+            && store
+                .anchor_exists(&format!("single:{}", change.entity.entity_id))
+                .await?;
+        let visible_boundary = change.placement == HistoryPlacement::Single
+            && !single_exists
+            && change.entity.content_present != Some(false);
+        if !visible_boundary && !change.boundary_observations.is_empty() {
+            return Err(HistoryError::InvalidEvent(
+                "boundary observations require a newly visible Single".into(),
+            ));
+        }
         fit_wait(&mut change.event, &mut change.entity, store.database_id())?;
         for observation in &mut change.boundary_observations {
             fit_wait(
@@ -140,7 +152,7 @@ impl HistoryClassifier {
             }
             HistoryPlacement::Single => {
                 let row = format!("single:{}", change.entity.entity_id);
-                let exists = store.anchor_exists(&row).await?;
+                let exists = single_exists;
                 if !exists && change.entity.content_present == Some(false) {
                     canonical_metadata(&mut event, &change.entity)?;
                     events.push(event);

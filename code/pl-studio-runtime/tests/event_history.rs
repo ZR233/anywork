@@ -573,18 +573,35 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
     let old_group = classifier.open_group().unwrap().to_owned();
     let mut empty = entity("text", run, true);
     empty.content_present = Some(false);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
-                entity: empty.clone(),
-                placement: HistoryPlacement::Single,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
+    let before_empty = reader.capture().await?;
+    let mut unexpected = HistoryEvent::new(
+        "unexpected-boundary",
+        HistoryEventKind::BoundaryObserved,
+        11,
+    );
+    unexpected.bodies.push(HistoryBody::new(
+        "observed",
+        HistoryBodyRole::ToolOutput,
+        b"must not silently disappear".to_vec(),
+    ));
+    let mut empty_change = HistoryEntityChange {
+        event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
+        entity: empty.clone(),
+        placement: HistoryPlacement::Single,
+        boundary_observations: vec![HistoryBoundaryObservation {
+            event: unexpected,
+            entity: tool.clone(),
+        }],
+        public_summary: None,
+    };
+    assert!(matches!(
+        classifier.record(&store, &empty_change).await,
+        Err(HistoryError::InvalidEvent(_))
+    ));
+    assert_eq!(reader.capture().await?, before_empty);
+    assert_eq!(classifier.open_group(), Some(old_group.as_str()));
+    empty_change.boundary_observations.clear();
+    classifier.record(&store, &empty_change).await?;
     assert_eq!(classifier.open_group(), Some(old_group.as_str()));
     let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
     boundary.bodies.push(HistoryBody::new(
