@@ -154,6 +154,7 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
     );
     let mut originals = 0usize;
     let mut bytes = 0u64;
+    let mut metadata_bytes = 0u64;
     // This stage exercises conversion primitives and canonical byte integrity. Rewriting product
     // refs, Timeline imports and enabling schema 25 in production remain issue #470.
     for (index, history) in histories.iter().enumerate() {
@@ -211,6 +212,24 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
                         &payload,
                     )
                     .await?;
+                let metadata = source
+                    .body(V24Body::Metadata {
+                        item_id: original.item_id.clone(),
+                    })
+                    .await?;
+                importer
+                    .copy_body(
+                        HistoryImportBody {
+                            body_id: uuid::Uuid::new_v4().to_string(),
+                            owner_event_id: original.item_id.clone(),
+                            ordinal: 1,
+                            body_key: "canonical_metadata".into(),
+                            role: HistoryBodyRole::CanonicalMetadata,
+                            media_type: Some("application/json".into()),
+                        },
+                        &metadata,
+                    )
+                    .await?;
                 let recorded_at = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)?
                     .as_millis()
@@ -223,6 +242,7 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
                 event.payload_body_id = Some(reference.body_id);
                 importer.insert_event(event).await?;
                 bytes += payload.byte_length();
+                metadata_bytes += metadata.byte_length();
                 originals += 1;
                 local += 1;
             }
@@ -245,9 +265,21 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
                 )
                 .await?;
             for event in &page.entries {
-                reader
-                    .verify_body(event.payload_ref.clone().context("imported payload")?)
+                ensure!(event.payload_ref.is_some(), "imported payload");
+                let bodies = reader
+                    .list_bodies(
+                        event.header.event_id.clone(),
+                        None,
+                        HistoryDemand::default(),
+                    )
                     .await?;
+                ensure!(
+                    bodies.entries.len() == 2 && bodies.next.is_none(),
+                    "real canonical body list differs"
+                );
+                for body in bodies.entries {
+                    reader.verify_body(body.reference).await?;
+                }
             }
             loaded += page.entries.len();
             cursor = page.next;
@@ -264,7 +296,7 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
         output.join("verification.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
             "model":model_id,"effort":effort,"account":account_id,"rootThread":thread,"sourceConfigSha256":export_sha256_hex(&before),"sourceConfigUnchanged":true,
-            "historyDatabases":histories.len(),"convertedOriginals":originals,"verifiedPayloadBytes":bytes,"productionSchema":24,"independentTargetSchema":25
+            "historyDatabases":histories.len(),"convertedOriginals":originals,"verifiedPayloadBytes":bytes,"verifiedMetadataBytes":metadata_bytes,"productionSchema":24,"independentTargetSchema":25
         }))?,
     )?;
     println!("real project acceptance: {}", output.display());
