@@ -315,13 +315,9 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
   Future<void> Function(R, ClientOperation)? _consume;
   void Function(Object, StackTrace)? _onFailure;
   Completer<R>? _ready = Completer<R>();
-  Future<R>? _opening;
-  Future<void>? _consumer;
-  Future<void>? _cleanup;
   final Completer<void> _created = Completer<void>();
-  final Completer<void> _consumerDone = Completer<void>();
+  Completer<void>? _consumerDone;
   R? _resource;
-  bool _consumerStarted = false;
   bool _readyHasResource = false;
   bool _workStarted = false;
   bool _notified = false;
@@ -341,17 +337,13 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
 
   void create(Future<R> Function(ClientOperation) factory) {
     final created = Future<R>.sync(() => factory(this));
-    _opening = created;
     _observe(
       created.then<void>(
         (resource) {
-          _opening = null;
           _accept(resource);
         },
         onError: (Object error, StackTrace stack) {
-          _opening = null;
           _created.complete();
-          _consumerDone.complete();
           if (!(_ready?.isCompleted ?? true)) {
             _ready!.completeError(error, stack);
           }
@@ -371,7 +363,6 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
         throw StateError('The factory returned a different resource identity');
       }
     } catch (error, stack) {
-      _consumerDone.complete();
       if (!(_ready?.isCompleted ?? true)) {
         _ready!.completeError(error, stack);
       }
@@ -380,7 +371,6 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
       return;
     }
     if (closeRequested) {
-      _consumerDone.complete();
       notifyClose();
       startClose();
       return;
@@ -390,22 +380,17 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
     _ready!.complete(resource);
     final consume = _consume;
     _consume = null;
-    if (consume == null) {
-      _consumerDone.complete();
-      return;
-    }
-    _consumerStarted = true;
+    if (consume == null) return;
+    // Install completion before invoking a consumer that can reenter close.
+    final completion = _consumerDone = Completer<void>();
     final consumer = Future<void>.sync(() => consume(resource, this));
-    _consumer = consumer;
     _observe(
       consumer.then<void>(
         (_) {
-          _consumer = null;
-          _consumerDone.complete();
+          completion.complete();
         },
         onError: (Object error, StackTrace stack) {
-          _consumer = null;
-          _consumerDone.complete();
+          completion.complete();
           _businessFailure(error, stack);
           requestClose();
         },
@@ -465,25 +450,19 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
   Future<void> _runClose({bool retry = false, _CleanupPass? pass}) async {
     try {
       await _created.future;
-      await _consumerDone.future;
+      await _consumerDone?.future;
       final resource = _resource;
       if (resource != null) {
         if (retry && ownership == ClientOwnership.proxy) {
           await pass!.forOwner(resourceId);
         }
-        final cleanup = retry ? resource.retryClose() : resource.close();
-        _cleanup = cleanup;
-        await cleanup;
-        _cleanup = null;
+        await (retry ? resource.retryClose() : resource.close());
       } else if (ownership == ClientOwnership.proxy) {
         // A failed SDK factory may have no PortProxy while its adapter still
         // owns a partially created resource under this identity.
         final owner = scope._root._identities[resourceId]?.owned;
         if (owner != null) {
-          final cleanup = retry ? pass!.forOwner(resourceId) : owner.close();
-          _cleanup = cleanup;
-          await cleanup;
-          _cleanup = null;
+          await (retry ? pass!.forOwner(resourceId) : owner.close());
         }
       }
       _resource = null;
@@ -496,7 +475,6 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
       scope._root.closed(this);
       succeed();
     } catch (error, stack) {
-      _cleanup = null;
       fail(error, stack);
     }
   }
@@ -521,7 +499,7 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
   }
 
   List<ClientResourceStage> stages() => [
-    if (_opening != null || !_created.isCompleted)
+    if (!_created.isCompleted)
       ClientResourceStage(
         owner: owner,
         phase: ClientClosePhase.opening,
@@ -529,7 +507,7 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
         scopePath: scope._path,
         pending: true,
       ),
-    if (_consumer != null || (_consumerStarted && !_consumerDone.isCompleted))
+    if (_consumerDone case final consumer? when !consumer.isCompleted)
       ClientResourceStage(
         owner: owner,
         phase: ClientClosePhase.consumer,
@@ -551,7 +529,7 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
       phase: ClientClosePhase.close,
       ownership: ownership,
       scopePath: scope._path,
-      pending: _cleanup != null || state != _ResourceState.failedClose,
+      pending: state != _ResourceState.failedClose,
       error: failure,
       stackTrace: failureStack,
     ),
@@ -571,7 +549,6 @@ final class _LeaseEntry<T extends ClientLease> extends _Entry {
   _LeaseEntry(super.scope, super.owner, super.resourceId);
 
   T? _lease;
-  Future<void>? _releaseTask;
   bool _acquired = false;
   bool _releasing = false;
   bool _captured = false;
@@ -621,7 +598,6 @@ final class _LeaseEntry<T extends ClientLease> extends _Entry {
       released = Future<void>.error(error, stack);
     }
     _observe(released);
-    _releaseTask = released;
     if (!_captured) {
       _captured = true;
       try {
@@ -635,7 +611,6 @@ final class _LeaseEntry<T extends ClientLease> extends _Entry {
     _observe(
       released.then<void>(
         (_) {
-          _releaseTask = null;
           if (_metadataFailure case final error?) {
             fail(error, _metadataStack!);
             return;
@@ -645,7 +620,6 @@ final class _LeaseEntry<T extends ClientLease> extends _Entry {
           succeed();
         },
         onError: (Object error, StackTrace stack) {
-          _releaseTask = null;
           fail(error, stack);
         },
       ),
@@ -675,7 +649,7 @@ final class _LeaseEntry<T extends ClientLease> extends _Entry {
       phase: ClientClosePhase.leaseRelease,
       ownership: ClientOwnership.proxy,
       scopePath: scope._path,
-      pending: _releaseTask != null || state != _ResourceState.failedClose,
+      pending: state != _ResourceState.failedClose,
       error: failure,
       stackTrace: failureStack,
     );

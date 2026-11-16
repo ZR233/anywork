@@ -468,6 +468,38 @@ void main() {
       },
     );
 
+    test('synchronous consumer shutdown reports and joins the consumer before cleanup', () async {
+      final scope = ClientScope(owner: 'root');
+      final finishConsumer = Completer<void>();
+      final consumerStarted = Completer<void>();
+      late Future<CloseReport> reentered;
+      final acquisition = scope.open<_Raw>(
+        'reentrant-consumer',
+        (op) async => _Raw(op.resourceId),
+        consume: (raw, operation) {
+          reentered = scope.close(budget: _expired());
+          expect(operation.closeRequested, isTrue);
+          expect(raw.requests, 1);
+          consumerStarted.complete();
+          return finishConsumer.future;
+        },
+      );
+      final raw = await acquisition.ready;
+      await consumerStarted.future;
+      final pending = await reentered;
+      expect(pending.complete, isFalse);
+      expect(
+        pending.unresolved.single.stages
+            .where((stage) => stage.pending)
+            .map((stage) => stage.phase),
+        contains(ClientClosePhase.consumer),
+      );
+      expect(raw.closes, 0);
+      finishConsumer.complete();
+      expect((await scope.close(budget: _budget())).complete, isTrue);
+      expect(raw.closes, 1);
+    });
+
     test(
       'synchronous consumer failure triggers cleanup and reports true error',
       () async {

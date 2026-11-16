@@ -1,0 +1,192 @@
+{
+  "unit": "physical_lines_including_blank_lines_and_comments",
+  "limitation": "按文件路径分类；手写源码文件仍含 Rust 内联测试，不等于纯生产逻辑。",
+  "snapshots": {
+    "6e67dc232e48275197adced253f17ce7902c9d4a": {
+      "generated_source": {
+        "files": 158,
+        "physical_lines": 292850
+      },
+      "handwritten_source_files_including_inline_tests": {
+        "files": 2114,
+        "physical_lines": 719283
+      },
+      "test_source_files": {
+        "files": 356,
+        "physical_lines": 197651
+      }
+    },
+    "e5e5fd208b7b053ee4d7cc0c611f6f7900a40f32": {
+      "generated_source": {
+        "files": 158,
+        "physical_lines": 293026
+      },
+      "handwritten_source_files_including_inline_tests": {
+        "files": 2142,
+        "physical_lines": 736720
+      },
+      "test_source_files": {
+        "files": 377,
+        "physical_lines": 205493
+      }
+    },
+    "c8548e0a6ce027770ad4858ecb6c14f9f2e32098": {
+      "generated_source": {
+        "files": 158,
+        "physical_lines": 293021
+      },
+      "handwritten_source_files_including_inline_tests": {
+        "files": 2155,
+        "physical_lines": 742333
+      },
+      "test_source_files": {
+        "files": 389,
+        "physical_lines": 214324
+      }
+    },
+    "9c69048a43fcd7fed5d36e87e0d5177fed4ad6fb": {
+      "generated_source": {
+        "files": 158,
+        "physical_lines": 293021
+      },
+      "handwritten_source_files_including_inline_tests": {
+        "files": 2155,
+        "physical_lines": 742377
+      },
+      "test_source_files": {
+        "files": 389,
+        "physical_lines": 214356
+      }
+    }
+  },
+  "plan_stages": [
+    {
+      "commit": "7db73029c7d11888a1114067f8686fe64e84660c",
+      "groups": {
+        "handwritten_source_files_including_inline_tests": {
+          "added": 1555,
+          "deleted": 43,
+          "net": 1512
+        },
+        "other": {
+          "added": 42,
+          "deleted": 0,
+          "net": 42
+        },
+        "test_source_files": {
+          "added": 1258,
+          "deleted": 90,
+          "net": 1168
+        }
+      }
+    },
+    {
+      "commit": "29c1caadb8c9e7bd14b2d195899ec05edc10d695",
+      "groups": {
+        "generated_source": {
+          "added": 27,
+          "deleted": 32,
+          "net": -5
+        },
+        "handwritten_source_files_including_inline_tests": {
+          "added": 1573,
+          "deleted": 1801,
+          "net": -228
+        },
+        "other": {
+          "added": 8,
+          "deleted": 1,
+          "net": 7
+        },
+        "test_source_files": {
+          "added": 240,
+          "deleted": 0,
+          "net": 240
+        }
+      }
+    },
+    {
+      "commit": "219c40f644a54c4e535d605d047f2a7efbc2007a",
+      "groups": {
+        "handwritten_source_files_including_inline_tests": {
+          "added": 5066,
+          "deleted": 3074,
+          "net": 1992
+        },
+        "other": {
+          "added": 15,
+          "deleted": 3,
+          "net": 12
+        },
+        "test_source_files": {
+          "added": 7857,
+          "deleted": 1020,
+          "net": 6837
+        }
+      }
+    },
+    {
+      "commit": "c8548e0a6ce027770ad4858ecb6c14f9f2e32098",
+      "groups": {
+        "handwritten_source_files_including_inline_tests": {
+          "added": 2477,
+          "deleted": 294,
+          "net": 2183
+        },
+        "other": {
+          "added": 11,
+          "deleted": 3,
+          "net": 8
+        },
+        "test_source_files": {
+          "added": 343,
+          "deleted": 185,
+          "net": 158
+        }
+      }
+    }
+  ],
+  "plan_only_total": {
+    "generated_source": {
+      "added": 27,
+      "deleted": 32,
+      "net": -5
+    },
+    "handwritten_source_files_including_inline_tests": {
+      "added": 10671,
+      "deleted": 5212,
+      "net": 5459
+    },
+    "other": {
+      "added": 76,
+      "deleted": 7,
+      "net": 69
+    },
+    "test_source_files": {
+      "added": 9698,
+      "deleted": 1295,
+      "net": 8403
+    }
+  },
+  "audit_cleanup": {
+    "base": "c8548e0a6ce027770ad4858ecb6c14f9f2e32098",
+    "head": "9c69048a43fcd7fed5d36e87e0d5177fed4ad6fb",
+    "groups": {
+      "handwritten_source_files_including_inline_tests": {
+        "added": 114,
+        "deleted": 70,
+        "net": 44
+      },
+      "other": {
+        "added": 418,
+        "deleted": 0,
+        "net": 418
+      },
+      "test_source_files": {
+        "added": 32,
+        "deleted": 0,
+        "net": 32
+      }
+    }
+  }
+}
