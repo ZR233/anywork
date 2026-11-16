@@ -31,6 +31,7 @@ pl-tool = { workspace = true }
 pl-protocol = { workspace = true }
 pl-trace = { workspace = true }
 pl-lsp = { workspace = true }
+pl-lifecycle = { workspace = true }
 anyhow = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }

@@ -14,92 +14,100 @@ import 'package:flutter_test/flutter_test.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('query A-B-A isolates stale next, open error, and close finally', (
-    tester,
-  ) async {
-    final feed = _DirectoryFeed();
-    final store = ThreadDirectoryStore(
-      feed: feed,
-      scope: feed.lifecycleRoot.child('client'),
-    );
-    var changes = 0;
-    final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
-    owner.addListener(() => changes++);
-    addTearDown(() async {
-      owner.dispose();
-      await store.close(budget: testCloseBudget());
-      await feed.lifecycleRoot.close(budget: testCloseBudget());
-    });
-
-    void configure(String search) {
-      owner.configure(
-        const [_project],
-        SidebarQuerySelection(
-          search: search,
-          expandedProjectIds: const {_projectId},
-        ),
+  testWidgets(
+    'query A-B-A isolates stale next, open error, and close finally',
+    (tester) async {
+      final feed = _DirectoryFeed();
+      final store = ThreadDirectoryStore(
+        feed: feed,
+        scope: feed.lifecycleRoot.child('client'),
       );
-    }
+      var changes = 0;
+      final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
+      owner.addListener(() => changes++);
+      addTearDown(() async {
+        owner.dispose();
+        await store.close(budget: testCloseBudget());
+        await feed.lifecycleRoot.close(budget: testCloseBudget());
+      });
 
-    configure('A');
-    await _pumpUntil(tester, () => feed.requests.length == 1, 'query A open');
-    final firstARequest = feed.requests[0];
-    final firstA = firstARequest.complete(completeNextOnClose: false);
-    await _pumpUntil(tester, () => firstA.nextCalls == 1, 'query A next');
+      void configure(String search) {
+        owner.configure(
+          const [_project],
+          SidebarQuerySelection(
+            search: search,
+            expandedProjectIds: const {_projectId},
+          ),
+        );
+      }
 
-    configure('B');
-    await _pumpUntil(
-      tester,
-      () => feed.requests.length == 2 && firstA.closeRequested,
-      'query B replaces A while A next is in flight',
-    );
-    final requestB = feed.requests[1];
+      configure('A');
+      await _pumpUntil(tester, () => feed.requests.length == 1, 'query A open');
+      final firstARequest = feed.requests[0];
+      final firstA = firstARequest.complete(completeNextOnClose: false);
+      await _pumpUntil(tester, () => firstA.nextCalls == 1, 'query A next');
 
-    configure('A');
-    await _pumpUntil(
-      tester,
-      () => feed.requests.length == 3,
-      'second query A replaces B while B open is in flight',
-    );
-    final secondARequest = feed.requests[2];
-    final secondA = secondARequest.complete();
-    await _pumpUntil(
-      tester,
-      () => secondA.nextCalls == 1,
-      'second query A next',
-    );
-    secondA.emit(
-      _frame(secondARequest, [
-        _thread('current-a', 'current-a', 2026),
-      ], revision: 3),
-    );
-    await _pumpUntil(
-      tester,
-      () => owner.windows[_projectId]?.threadIds.singleOrNull == 'current-a',
-      'second query A frame reaches production owner',
-    );
+      configure('B');
+      await _pumpUntil(
+        tester,
+        () => feed.requests.length == 2 && firstA.closeRequested,
+        'query B replaces A while A next is in flight',
+      );
+      final requestB = feed.requests[1];
 
-    // The retired first A completes next, and the retired B fails open. Neither
-    // completion may publish into the current A entry or its finally path.
-    firstA.emit(
-      _frame(firstARequest, [_thread('stale-a', 'Stale A', 2024)], revision: 1),
-    );
-    requestB.fail(StateError('retired B open failed'));
-    await _pumpUntil(
-      tester,
-      () => firstA.closeCalled,
-      'retired A close converges after its in-flight next',
-    );
-    expect(owner.windows[_projectId]!.threadIds.single, 'current-a');
-    expect(owner.windows[_projectId]!.error, isNull);
-    expect(changes, greaterThan(0));
+      configure('A');
+      await tester.pump();
+      expect(
+        feed.requests.length,
+        2,
+        reason: 'the same demand must wait for the first A close ACK',
+      );
 
-    owner.dispose();
-    final report = await store.close(budget: testCloseBudget());
-    expect(report.complete, isTrue);
-    expect(firstA.closeCalled, isTrue);
-    expect(secondA.closeCalled, isTrue);
-  });
+      // The retired A may still finish its in-flight read. Its frame must not
+      // reach the replacement, and the same demand may reopen only after close.
+      firstA.emit(
+        _frame(firstARequest, [
+          _thread('stale-a', 'Stale A', 2024),
+        ], revision: 1),
+      );
+      await _pumpUntil(
+        tester,
+        () => firstA.closeCalled && feed.requests.length == 3,
+        'second query A opens after the first A close ACK',
+      );
+      final secondARequest = feed.requests[2];
+      final secondA = secondARequest.complete();
+      await _pumpUntil(
+        tester,
+        () => secondA.nextCalls == 1,
+        'second query A next',
+      );
+      secondA.emit(
+        _frame(secondARequest, [
+          _thread('current-a', 'current-a', 2026),
+        ], revision: 3),
+      );
+      await _pumpUntil(
+        tester,
+        () => owner.windows[_projectId]?.threadIds.singleOrNull == 'current-a',
+        'second query A frame reaches production owner',
+      );
+
+      // A late B open failure must not publish into the current A entry or its
+      // finally path.
+      requestB.fail(StateError('retired B open failed'));
+      await tester.pump();
+      expect(owner.windows[_projectId]!.threadIds.single, 'current-a');
+      expect(owner.windows[_projectId]!.error, isNull);
+      expect(changes, greaterThan(0));
+
+      owner.dispose();
+      final report = await store.close(budget: testCloseBudget());
+      expect(report.complete, isTrue);
+      expect(firstA.closeCalled, isTrue);
+      expect(secondA.closeCalled, isTrue);
+    },
+  );
 
   testWidgets('refresh preserves an expanded window beyond the first page', (
     tester,

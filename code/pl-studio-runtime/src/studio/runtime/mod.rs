@@ -45,6 +45,7 @@ mod mode_definitions;
 mod model_catalog;
 mod model_performance;
 mod model_refresh;
+mod observation_lifecycle;
 pub(super) mod presentation_reader;
 mod product_subscription;
 mod prompt_runner;
@@ -214,7 +215,7 @@ pub(in crate::studio::runtime) const ARCHIVE_TREE_SETTLE_TIMEOUT: std::time::Dur
 pub struct StudioRuntime {
     owner_epoch: String,
     startup_recovery: Option<crate::StudioStartupRecovery>,
-    persistence_observer: background_task::BackgroundTaskSlot,
+    observations: std::sync::Arc<observation_lifecycle::RuntimeObservationOwner>,
     thread_observations: thread_observation::ThreadObservations,
     settings_updates: tokio::sync::watch::Sender<crate::config::ConfigRuntimeSnapshot>,
     settings_refresh: background_task::BackgroundTaskSlot,
@@ -266,10 +267,6 @@ pub struct StudioRuntime {
     /// 播种为成功前置条件，不吞、不伪成功。std `Mutex`，只在无 await 的短临界区内持有。
     early_exit_issues: std::sync::Arc<std::sync::Mutex<Vec<crate::StudioShutdownIssue>>>,
     title_tasks: ThreadTitleTasks,
-    /// Agent Profiles 配置 watch → product bus 转发任务；runtime 持有，shutdown 先广播取消
-    /// 再在独立资源组以同一首次期限有界 join——失败 / 超时经 collector 令 `Clean` 不可达并
-    /// 保留 owner（常驻槽位超时不丢句柄）。
-    profiles_forwarder: background_task::BackgroundTaskSlot,
     /// 仅用于把 Weak 宿主租约交给 bots；bots 不持有 StudioRuntime 强引用。
     bot_host: Option<std::sync::Arc<StudioRuntime>>,
 }
@@ -278,7 +275,6 @@ pub struct StudioRuntime {
 struct StudioExternalRuntimes {
     lsp: pl_lsp::runtime::LspRuntimeRegistry,
     lsp_state: lsp_state::LspStateRuntime,
-    lsp_state_watcher: background_task::BackgroundTaskSlot,
 }
 
 #[derive(Clone)]

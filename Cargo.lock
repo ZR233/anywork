@@ -4265,6 +4265,7 @@ dependencies = [
  "pl-acp",
  "pl-agent-tool",
  "pl-core",
+ "pl-lifecycle",
  "pl-lsp",
  "pl-model",
  "pl-protocol",

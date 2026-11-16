@@ -709,6 +709,39 @@ void main() {
     expect(failures, hasLength(1));
   });
 
+  test(
+    'release after a failed open has closed omits its retired identity',
+    () async {
+      final feed = _Feed();
+      final sourceScope = feed.lifecycleScope.child('directory-store');
+      final consumerScope = feed.lifecycleScope.child('directory-consumer');
+      final store = ThreadDirectoryStore(feed: feed, scope: sourceScope);
+      final observation = consumerScope.acquireLease(
+        'directory-lease',
+        () => store.observeThreads(const DirectoryQuery(), DirectoryWindow()),
+      );
+
+      feed.threads.single.result.completeError(StateError('open failed'));
+      await observation.state.waitFor((state) => state.error != null);
+      final sourceReport = await sourceScope.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      expect(sourceReport.complete, isTrue);
+
+      final report = await consumerScope.close(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      expect(observation.retirementResourceIds, isEmpty);
+      expect(report.complete, isTrue);
+      expect(
+        (await feed.lifecycleScope.close(
+          budget: ClientCloseBudget(const Duration(seconds: 1)),
+        )).complete,
+        isTrue,
+      );
+    },
+  );
+
   test('scope rejection before source identity allocation creates no cleanup report', () async {
     final feed = _Feed();
     final sourceScope = feed.lifecycleScope.child('directory-store');

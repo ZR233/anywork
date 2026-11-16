@@ -1399,7 +1399,11 @@ void main() {
           'demo title publication',
         );
       } finally {
-        await metadataDemand.release();
+        await pumpClientFuture(
+          tester,
+          metadataDemand.release(),
+          'release submitted thread metadata',
+        );
       }
       await closeStartPageFixture(tester);
     },
@@ -1413,7 +1417,8 @@ void main() {
     late ProviderContainer workflowContainer;
     late ProviderSubscription<Object?> composerHold;
 
-    Future<void> openScenario({
+    Future<void> openScenario(
+      WidgetTester tester, {
       ThreadStatusView status = ThreadStatusView.idle,
     }) async {
       transport = _WorkflowScenarioTransport(threadStatus: status);
@@ -1425,24 +1430,33 @@ void main() {
       workflowContainer = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
-      await graph.client.bootstrap();
-      await (graph
-            ..timeline.updateReadDemand(chatDemand)
-            ..setConversationPageVisible(true))
-          .client
-          .directoryCommands
-          .selectThread(threadId);
+      await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      graph.timeline.updateReadDemand(chatDemand);
+      graph.setConversationPageVisible(true);
+      await pumpClientFuture(
+        tester,
+        graph.client.directoryCommands.selectThread(threadId),
+        'select workflow thread',
+      );
       // Composer 只在 Client 已持有该会话草稿时渲染输入区。
       graph.client.drafts.composer(threadId);
       composerHold = workflowContainer.listen(
         _threadProjectionProvider(threadId),
         (_, _) {},
       );
-      await graph.client.conversations
-          .session(threadId)
-          .source
-          .waitFor((state) => state.hasSnapshot);
-      await _waitForModelDirectory(graph);
+      await pumpClientFuture(
+        tester,
+        graph.client.conversations
+            .session(threadId)
+            .source
+            .waitFor((state) => state.hasSnapshot),
+        'workflow conversation snapshot',
+      );
+      await pumpClientFuture(
+        tester,
+        _waitForModelDirectory(graph),
+        'workflow model directory',
+      );
     }
 
     /// testWidgets 在测试体结束前检查未完成定时器：成功路径在这里关闭 owner。
@@ -1498,7 +1512,7 @@ void main() {
         -1;
 
     testWidgets('运行中的根会话点击模型或强度选择器不打开菜单、不发命令', (tester) async {
-      await openScenario(status: ThreadStatusView.running);
+      await openScenario(tester, status: ThreadStatusView.running);
       await pumpDock(tester);
 
       final view = workflowContainer
@@ -1529,7 +1543,7 @@ void main() {
     testWidgets('Turn 空闲且 workflow active：模型与强度可切换并经 canonical 收敛', (
       tester,
     ) async {
-      await openScenario();
+      await openScenario(tester);
       await pumpDock(tester);
 
       final initial = workflowContainer
@@ -1633,7 +1647,7 @@ void main() {
     });
 
     testWidgets('提交后停止：Turn 终态收敛后仍可在 active workflow 上切换路由', (tester) async {
-      await openScenario();
+      await openScenario(tester);
       await pumpDock(tester);
 
       final input = find.byKey(StudioDriverKeys.composerInput);

@@ -319,6 +319,7 @@ void main() {
           );
           await expectLater(failed.ready, throwsA(same(failure)));
           await failed.close();
+          expect(failed.isClosed, isTrue);
           for (final replacement in ClientOwnership.values) {
             expect(
               () => scope.open<_Raw>(
@@ -351,6 +352,7 @@ void main() {
           operation = op;
           return created.future;
         }, consume: (_, _) async => consumed = true);
+        expect(acquisition.isClosed, isFalse);
         final ready = acquisition.ready;
         final timedOut = await scope.close(budget: _expired());
         expect(operation.closeRequested, isTrue);
@@ -363,11 +365,13 @@ void main() {
         final raw = _Raw(operation.resourceId)..closeGate = Completer<void>();
         created.complete(raw);
         await raw.closeStarted.future;
+        expect(acquisition.isClosed, isFalse);
         expect(raw.requests, 1);
         expect(consumed, isFalse);
         expect((await scope.close(budget: _expired())).complete, isFalse);
         raw.closeGate!.complete();
         expect((await scope.close(budget: _budget())).complete, isTrue);
+        expect(acquisition.isClosed, isTrue);
         expect(raw.closes, 1);
       },
     );
@@ -651,6 +655,7 @@ void main() {
         final closing = acquisition.close();
         expect(identical(closing, acquisition.close()), isTrue);
         await expectLater(closing, throwsA(same(original)));
+        expect(acquisition.isClosed, isFalse);
         await expectLater(acquisition.close(), throwsA(same(original)));
         final report = await scope.close(budget: _budget());
         expect(report.unresolved.single.reason, same(original));
@@ -661,10 +666,12 @@ void main() {
         expect(identical(retrying, acquisition.retryClose()), isTrue);
         expect(identical(retrying, acquisition.close()), isTrue);
         await raw.retryStarted.future;
+        expect(acquisition.isClosed, isFalse);
         expect(raw.retries, 1);
         expect((await scope.close(budget: _expired())).complete, isFalse);
         raw.retryGate!.complete();
         await retrying;
+        expect(acquisition.isClosed, isTrue);
         await acquisition.close();
         await acquisition.retryClose();
         expect(raw.closes, 1);

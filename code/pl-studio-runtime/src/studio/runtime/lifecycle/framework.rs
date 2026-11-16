@@ -1,13 +1,24 @@
 use anyhow::{Context, Result};
 
 use super::super::StudioRuntime;
-use super::super::background_task::{self, BackgroundTask};
+use super::super::background_task;
 use super::super::lsp_state::health;
+use super::super::observation_lifecycle::{ObservationStartError, ObserverTask, RuntimeObserver};
 
-impl StudioRuntime {
-    pub(in crate::studio::runtime) async fn refresh_thread_lsp_states(&self) -> Result<()> {
-        let _refresh = self.external_runtimes.lsp_state.thread_refresh().await;
-        let bindings = self.thread_factory.binding_snapshots();
+#[derive(Clone)]
+struct LspObservationServices {
+    registry: pl_lsp::runtime::LspRuntimeRegistry,
+    state: super::super::lsp_state::LspStateRuntime,
+    threads: crate::studio::thread_factory::StudioThreadFactory,
+}
+
+impl LspObservationServices {
+    async fn refresh_thread_states(
+        &self,
+        #[cfg(test)] probe: &super::super::observation_lifecycle::LspProjectionProbe,
+    ) -> Result<()> {
+        let _refresh = self.state.thread_refresh().await;
+        let bindings = self.threads.binding_snapshots();
         let known_ids = bindings
             .keys()
             .cloned()
@@ -23,7 +34,7 @@ impl StudioRuntime {
                 && !binding.lifetime.cancellation.is_cancelled()
                 && lease.is_some_and(|lease| !lease.is_closed());
             let servers = if should_read {
-                let registry = self.external_runtimes.lsp.execution_scope(&endpoint);
+                let registry = self.registry.execution_scope(&endpoint);
                 let snapshots = registry
                     .snapshots_for_workspace(root.as_ref().expect("lease root").as_path())
                     .await;
@@ -44,11 +55,10 @@ impl StudioRuntime {
                 Vec::new()
             };
             #[cfg(test)]
-            self.external_runtimes
-                .lsp_state
+            self.state
                 .pause_after_thread_snapshot_for_test(&servers)
                 .await;
-            let _commit = self.external_runtimes.lsp_state.thread_commit().await;
+            let _commit = self.state.thread_commit().await;
             let expected = crate::studio::thread_factory::LspProjectionBinding {
                 incarnation: &binding.incarnation,
                 binding_id: captured_binding_id.as_deref(),
@@ -57,32 +67,123 @@ impl StudioRuntime {
             };
             let published_thread_id = thread_id.clone();
             let published_binding_id = captured_binding_id.clone();
-            self.thread_factory
+            let _result = self
+                .threads
                 .commit_lsp_projection(&thread_id, Some(expected), |valid| {
-                    self.external_runtimes.lsp_state.commit_thread(
+                    self.state.commit_thread(
                         published_thread_id,
                         valid.then(|| published_binding_id.expect("valid binding has ID")),
                         if valid { servers } else { Vec::new() },
                     )
                 });
+            #[cfg(test)]
+            probe.projection_completed(
+                &thread_id,
+                &binding.incarnation,
+                captured_binding_id,
+                _result,
+            );
         }
-        for thread_id in self.external_runtimes.lsp_state.thread_ids() {
+        for thread_id in self.state.thread_ids() {
             if !known_ids.contains(&thread_id) {
-                let _commit = self.external_runtimes.lsp_state.thread_commit().await;
+                let _commit = self.state.thread_commit().await;
                 let published_thread_id = thread_id.clone();
-                self.thread_factory
+                self.threads
                     .commit_lsp_projection(&thread_id, None, |valid| {
                         if !valid {
-                            self.external_runtimes.lsp_state.commit_thread(
-                                published_thread_id,
-                                None,
-                                Vec::new(),
-                            );
+                            self.state
+                                .commit_thread(published_thread_id, None, Vec::new());
                         }
                     });
             }
         }
         Ok(())
+    }
+
+    async fn create_observer(
+        self,
+        cancellation: pl_lifecycle::CancellationToken,
+        #[cfg(test)] probe: super::super::observation_lifecycle::LspProjectionProbe,
+    ) -> Result<ObserverTask, super::super::observation_lifecycle::ObservationCleanupError> {
+        let mut updates = self.registry.subscribe();
+        let binding_source = self.threads.lsp_binding_updates();
+        // 先建立通知，再做初始读取；初始化期间的变化留给第一轮循环。
+        let mut binding_updates = Box::pin(binding_source.clone().notified_owned());
+        binding_updates.as_mut().enable();
+        {
+            let _command = self.state.command().await;
+            let initial = health(&self.registry).await;
+            if let Err(error) = self
+                .state
+                .begin(pl_protocol::StateOperation::Activate)
+                .await
+            {
+                tracing::warn!(%error, "failed to begin LSP observed state");
+            } else if let Err(error) = self.state.ready(initial, false).await {
+                tracing::warn!(%error, "failed to publish initial LSP observed state");
+            }
+        }
+        if let Err(error) = self
+            .refresh_thread_states(
+                #[cfg(test)]
+                &probe,
+            )
+            .await
+        {
+            tracing::warn!(%error, "failed to publish initial Thread LSP states");
+        }
+        let task_cancel = cancellation.clone();
+        // Opening worker 已拥有全部初始化；数据任务创建后立即交给 adapter，不跨 await 留裸句柄。
+        let task = tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = task_cancel.cancelled() => break,
+                    event = updates.recv() => match event {
+                        Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                    _ = &mut binding_updates => {
+                        binding_updates.set(binding_source.clone().notified_owned());
+                        binding_updates.as_mut().enable();
+                    }
+                }
+                let health = health(&self.registry).await;
+                if let Err(error) = self.state.refresh(health).await {
+                    tracing::warn!(%error, "failed to refresh LSP observed state");
+                }
+                // 取消仅在下一次通知等待生效，不丢弃这一轮的绑定检查与提交。
+                if let Err(error) = self
+                    .refresh_thread_states(
+                        #[cfg(test)]
+                        &probe,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "failed to refresh Thread LSP states");
+                }
+            }
+        });
+        Ok(ObserverTask::new(cancellation, task))
+    }
+}
+
+impl StudioRuntime {
+    fn lsp_observation_services(&self) -> LspObservationServices {
+        LspObservationServices {
+            registry: self.external_runtimes.lsp.clone(),
+            state: self.external_runtimes.lsp_state.clone(),
+            threads: self.thread_factory.clone(),
+        }
+    }
+
+    pub(in crate::studio::runtime) async fn refresh_thread_lsp_states(&self) -> Result<()> {
+        self.lsp_observation_services()
+            .refresh_thread_states(
+                #[cfg(test)]
+                &self.observations.lsp_projection_probe(),
+            )
+            .await
     }
 
     pub(in crate::studio::runtime) fn check_thread_read_access(
@@ -154,62 +255,21 @@ impl StudioRuntime {
         Ok(pl_protocol::Thread::from(record))
     }
 
-    pub(super) async fn start_lsp_state_watcher(&self) {
-        let mut watcher = self.external_runtimes.lsp_state_watcher.lock().await;
-        if watcher.as_ref().is_some_and(|handle| !handle.is_finished()) {
-            return;
-        }
-        let runtime = self.clone();
-        let mut updates = self.external_runtimes.lsp.subscribe();
-        let binding_updates = self.thread_factory.lsp_binding_updates();
-        // Threads can prepare services without navigating through project activation.
-        // Establish the initial published cut before forwarding background lifecycle changes.
-        {
-            let _command = self.external_runtimes.lsp_state.command().await;
-            let initial = health(&self.external_runtimes.lsp).await;
-            if let Err(error) = self
-                .external_runtimes
-                .lsp_state
-                .begin(pl_protocol::StateOperation::Activate)
-                .await
-            {
-                tracing::warn!(%error, "failed to begin LSP observed state");
-            } else if let Err(error) = self.external_runtimes.lsp_state.ready(initial, false).await
-            {
-                tracing::warn!(%error, "failed to publish initial LSP observed state");
-            }
-        }
-        if let Err(error) = self.refresh_thread_lsp_states().await {
-            tracing::warn!(%error, "failed to publish initial Thread LSP states");
-        }
-        *watcher = Some(BackgroundTask::new(tokio::spawn(async move {
-            let binding_updates = binding_updates.notified_owned();
-            tokio::pin!(binding_updates);
-            loop {
-                tokio::select! {
-                    event = updates.recv() => match event {
-                        Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    },
-                    _ = &mut binding_updates => {
-                        binding_updates.set(runtime.thread_factory.lsp_binding_updates().notified_owned());
-                    }
-                }
-                let health = health(&runtime.external_runtimes.lsp).await;
-                if let Err(error) = runtime.external_runtimes.lsp_state.refresh(health).await {
-                    tracing::warn!(%error, "failed to refresh LSP observed state");
-                }
-                if let Err(error) = runtime.refresh_thread_lsp_states().await {
-                    tracing::warn!(%error, "failed to refresh Thread LSP states");
-                }
-            }
-        })));
-    }
-
-    pub(super) async fn stop_lsp_state_watcher(&self) -> Result<()> {
-        background_task::stop(&self.external_runtimes.lsp_state_watcher)
+    pub(super) async fn start_lsp_state_watcher(&self) -> Result<()> {
+        let services = self.lsp_observation_services();
+        #[cfg(test)]
+        let probe = self.observations.lsp_projection_probe();
+        self.observations
+            .start(RuntimeObserver::Lsp, move |cancellation| {
+                services.create_observer(
+                    cancellation,
+                    #[cfg(test)]
+                    probe,
+                )
+            })
             .await
-            .context("failed to join LSP state watcher")
+            .map(|_| ())
+            .map_err(|error| ObservationStartError(error).into())
     }
 
     /// 淘汰超出 LRU 容量且已保存的空闲驻留 actor；未保存时保留内存。

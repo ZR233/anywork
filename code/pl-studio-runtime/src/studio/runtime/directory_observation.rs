@@ -12,19 +12,28 @@ use tokio_util::sync::CancellationToken;
 
 use super::StudioRuntime;
 use crate::StudioProductTopic;
-use crate::studio::product_event_bus::{ProductEventBus, ThreadMetadataSignal};
+use crate::studio::product_event_bus::{ProductEventBus, ProductTopicSignal, ThreadMetadataSignal};
 use crate::studio::store::directory::ThreadDirectoryCursor;
 
 enum DirectorySignal {
-    Structure(watch::Receiver<()>),
+    Structure(ProductTopicSignal),
     Metadata(ThreadMetadataSignal),
 }
 
 impl DirectorySignal {
-    fn receiver(&mut self) -> &mut watch::Receiver<()> {
+    async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         match self {
-            Self::Structure(receiver) => receiver,
-            Self::Metadata(signal) => signal.receiver(),
+            Self::Structure(signal) => signal.changed().await,
+            Self::Metadata(signal) => signal.receiver().changed().await,
+        }
+    }
+
+    fn mark_current(&mut self) {
+        match self {
+            Self::Structure(signal) => signal.mark_current(),
+            Self::Metadata(signal) => {
+                signal.receiver().borrow_and_update();
+            }
         }
     }
 }
@@ -55,13 +64,13 @@ impl<T> ReadState<T> {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return false,
-                changed = signal.receiver().changed() => if changed.is_err() { return false; },
+                changed = signal.changed() => if changed.is_err() { return false; },
             }
         }
         self.initial = false;
         if let Some(signal) = self.signal.as_mut() {
             // Consume before reading, so a mutation during the read remains pending.
-            signal.receiver().borrow_and_update();
+            signal.mark_current();
         }
         true
     }
@@ -303,6 +312,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mark_before_read_keeps_changes_pending_and_next_cancellation_keeps_demand()
+    -> Result<()> {
+        use futures::FutureExt;
+
+        let (_temp, events) = fixture().await?;
+        let observation = observe(&events, 2)?;
+        let baseline_counts = events.topic_registration_counts();
+        {
+            let mut state = observation.inner.next.lock().await;
+            assert!(state.ready(&observation.inner.cancellation).await);
+            // Explicitly interleave a completed owner read, a publication, and its delivery.
+            // Consuming the signal after this read would erase the next notification.
+            let sampled = events.read_threads_window(
+                &observation.inner.query,
+                &observation.inner.window,
+                &observation.inner.epoch,
+            )?;
+            assert!(sampled.thread_ids.is_empty());
+            events
+                .apply_thread_delta(vec![row("during-read", 1)], vec![])
+                .await?;
+            assert!(matches!(
+                state.ready(&observation.inner.cancellation).now_or_never(),
+                Some(true)
+            ));
+        }
+        let mut waiting = Box::pin(observation.next());
+        assert!(futures::poll!(waiting.as_mut()).is_pending());
+        drop(waiting);
+        assert_eq!(events.topic_registration_counts(), baseline_counts);
+        events
+            .apply_thread_delta(vec![row("after-cancel", 2)], vec![])
+            .await?;
+        let frame = observation
+            .next()
+            .await?
+            .expect("retained demand after cancelled next");
+        assert_eq!(frame.thread_ids, ["after-cancel", "during-read"]);
+        observation.close().await?;
+        let after_close = events.topic_registration_counts();
+        assert_eq!(after_close, (baseline_counts.0, baseline_counts.1 - 1));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn registration_and_consumer_in_flight_changes_are_retained() -> Result<()> {
         let (_temp, events) = fixture().await?;
         let observation = observe(&events, 2)?;
@@ -413,17 +467,11 @@ mod tests {
     }
 
     async fn metadata_has_pending(observation: &ThreadMetadataObservation) -> bool {
-        observation
-            .inner
-            .next
-            .lock()
-            .await
-            .signal
-            .as_mut()
-            .unwrap()
-            .receiver()
-            .has_changed()
-            .unwrap()
+        let mut state = observation.inner.next.lock().await;
+        let Some(DirectorySignal::Metadata(signal)) = state.signal.as_mut() else {
+            panic!("expected an open metadata observation");
+        };
+        signal.receiver().has_changed().unwrap()
     }
 
     #[tokio::test]

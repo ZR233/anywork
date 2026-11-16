@@ -28,7 +28,9 @@ use super::StudioStore;
 use super::agent_host::ThreadWriteBehindWriter;
 use super::ids::unix_seconds;
 pub(crate) use thread_directory::ThreadMetadataSignal;
+pub(crate) use topics::ProductTopicSignal;
 use topics::TopicChannels;
+pub use topics::{ProductTopicReceiver, ProductTopicRecvError, ProductTopicTryRecvError};
 
 /// Studio 低频产品状态 owner 与事件通道。
 ///
@@ -111,14 +113,8 @@ impl ProductEventBus {
         Ok(())
     }
     /// Registers before the caller reads a baseline. Only source changes are retained, not frames.
-    pub(crate) fn subscribe_topic_signal(
-        &self,
-        topic: &StudioProductTopic,
-    ) -> tokio::sync::watch::Receiver<()> {
-        self.topics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .subscribe_signal(topic)
+    pub(crate) fn subscribe_topic_signal(&self, topic: &StudioProductTopic) -> ProductTopicSignal {
+        TopicChannels::subscribe_signal(&self.topics, topic)
     }
     pub(in crate::studio) fn new(store: StudioStore, writer: ThreadWriteBehindWriter) -> Self {
         let (internal, _) = broadcast::channel(256);
@@ -184,15 +180,12 @@ impl ProductEventBus {
         events
     }
 
-    /// 订阅一个 typed 产品 topic；通道在登记时创建，之后只接收该领域事件。
-    pub fn subscribe_topic(
-        &self,
-        topic: &StudioProductTopic,
-    ) -> broadcast::Receiver<StudioProductEventEnvelope> {
-        self.topics
-            .lock()
-            .expect("product topic channels lock poisoned")
-            .subscribe(topic)
+    /// 订阅一个 typed 产品 topic；最后接收凭证离开时回收对应通知通道。
+    ///
+    /// 登记后只接收该领域的新事件，不重放无订阅者期间的事件。调用方应在登记后读取
+    /// 当前领域基线；回收通道不删除快照、领域修订或全局序列。
+    pub fn subscribe_topic(&self, topic: &StudioProductTopic) -> ProductTopicReceiver {
+        TopicChannels::subscribe(&self.topics, topic)
     }
 
     /// runtime 内部消费者的显式订阅：接收全部产品事件。
