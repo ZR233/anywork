@@ -6,6 +6,8 @@ import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_ports.dart';
 import 'package:anywork_client/model_directory.dart';
+import 'package:anywork_client/lifecycle.dart';
+import 'package:anywork_client/src/accounts/data/account_observations.dart';
 import 'package:anywork_client/studio_client.dart'
     show
         MutationBoard,
@@ -96,12 +98,15 @@ AccountModelsFrame _models(
 );
 
 final class _Handle implements AccountDomainObservation {
+  @override
+  late final ClientResourceId resourceId;
   Completer<AccountDomainFrame?>? _next;
   AccountDomainFrame? baseline;
   bool _baselineConsumed = false;
   bool closed = false;
   int closeCalls = 0;
   int closeFailures = 0;
+  Completer<void>? closeGate;
   final requested = Completer<void>();
   final reading = Completer<void>();
   void Function()? onRequestClose;
@@ -134,7 +139,27 @@ final class _Handle implements AccountDomainObservation {
     closeCalls++;
     requestClose();
     if (closeFailures-- > 0) throw StateError('Scripted native close failure');
+    await closeGate?.future;
   }
+
+  @override
+  Future<void> retryClose() => close();
+}
+
+final class _HandleProxy implements AccountDomainObservation {
+  _HandleProxy(this.acquisition);
+  final ClientAcquisition<_Handle> acquisition;
+
+  @override
+  ClientResourceId get resourceId => acquisition.resourceId;
+  @override
+  Future<AccountDomainFrame?> next() async => (await acquisition.ready).next();
+  @override
+  void requestClose() => acquisition.requestClose();
+  @override
+  Future<void> close() => acquisition.close();
+  @override
+  Future<void> retryClose() => acquisition.retryClose();
 }
 
 final class _Port
@@ -145,13 +170,15 @@ final class _Port
         AccountModelsPort,
         AccountUsagePort,
         AcpPort {
+  final lifecycleScope = ClientScope(owner: 'account-domains-test');
   Future<ModelSyncAdmission> Function(NativeAccountIdentity, OperationId)?
   syncModels;
   final Map<AccountObservationTarget, _Handle> handles = {};
+  final Map<AccountObservationTarget, Completer<_Handle>> _activeHandles = {};
   final Map<AccountObservationTarget, AccountDomainFrame> reads = {};
   final List<AccountObservationTarget> opens = [];
   final List<AccountObservationTarget> readCalls = [];
-  Completer<AccountDomainObservation>? lateOpen;
+  Completer<_Handle>? lateOpen;
   Future<SettingsCommandReply> Function(int, PatchAccountCommand, OperationId)?
   patch;
   Future<SettingsCommandReply> Function(int, AutoCompactIntent, OperationId)?
@@ -179,25 +206,43 @@ final class _Port
   )?
   installCancel;
   void Function()? onOpen;
-  Future<AccountDomainObservation> Function(AccountObservationTarget)?
-  openAccount;
+  Future<_Handle> Function(AccountObservationTarget)? openAccount;
   Future<DelegationModelDetail> Function(DelegationModelKey)? modelDetail;
+
+  Future<_Handle> activeHandle(AccountObservationTarget target) {
+    final current = handles[target];
+    return current != null && !current.closed
+        ? Future.value(current)
+        : (_activeHandles[target] ??= Completer<_Handle>()).future;
+  }
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
-    opens.add(target);
-    final customOpen = openAccount;
-    if (customOpen != null) return customOpen(target);
-    if (lateOpen case final pending?) return pending.future;
-    // Each open owns a distinct native handle, including overlapping late opens
-    // from retired generations. The map only exposes the latest test handle.
-    final handle = handles[target] = _Handle();
-    final callback = onOpen;
-    onOpen = null;
-    callback?.call();
-    return handle;
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) async {
+    final acquisition = lifecycleScope.open<_Handle>('test-account-owner', (
+      operation,
+    ) async {
+      opens.add(target);
+      final customOpen = openAccount;
+      final _Handle handle;
+      if (customOpen != null) {
+        handle = await customOpen(target);
+      } else if (lateOpen case final pending?) {
+        handle = await pending.future;
+      } else {
+        final callback = onOpen;
+        onOpen = null;
+        callback?.call();
+        handle = handles[target] = _Handle();
+      }
+      handle.resourceId = operation.resourceId;
+      _activeHandles.remove(target)?.complete(handle);
+      return handle;
+    }, identity: resourceId);
+    await acquisition.ready;
+    return _HandleProxy(acquisition);
   }
 
   @override
@@ -290,6 +335,7 @@ final class _Fixture {
     board = MutationBoard(clientId: owner);
     resources = AccountDomainResources(
       feed: port,
+      scope: port.lifecycleScope.child('account-domains'),
       configuration: port,
       modelPort: port,
       usagePort: port,
@@ -310,7 +356,7 @@ final class _Fixture {
   Future<void> close() async {
     await coordinator.close();
     final report = await resources.close(
-      deadline: DateTime.now().add(const Duration(seconds: 1)),
+      budget: ClientCloseBudget(const Duration(seconds: 1)),
     );
     expect(
       report.complete,
@@ -338,6 +384,131 @@ StudioCommandReceipt _receipt(
 );
 
 void main() {
+  test(
+    'account leases capture only their retired source and retry its identity',
+    () async {
+      final port = _Port();
+      final pool = AccountObservations(
+        feed: port,
+        owner: 'test',
+        scope: port.lifecycleScope.child('account-pool'),
+        consume: (_) {},
+        failed: (_, _) => fail('Unexpected domain failure'),
+      );
+      const target = AccountDetailTarget(_native);
+      final first = pool.acquire(target);
+      final last = pool.acquire(target);
+      final old = port.handles[target]!;
+      await old.reading.future;
+      expect(port.opens, [target]);
+      await first.release();
+      expect(first.retirementResourceIds, isEmpty);
+      expect(old.closed, isFalse);
+
+      old.closeFailures = 1;
+      final releasing = last.release();
+      expect(last.release(), same(releasing));
+      expect(last.retirementResourceIds, [old.resourceId]);
+      await expectLater(releasing, throwsStateError);
+      expect(old.closeCalls, 1);
+
+      final replacement = pool.acquire(target);
+      expect(port.opens, [
+        target,
+      ], reason: 'failed cleanup forbids replacement');
+      final opened = Completer<void>();
+      port.onOpen = opened.complete;
+      final retried = await pool.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      expect(retried.complete, isTrue);
+      await opened.future;
+      final current = port.handles[target]!;
+      await current.reading.future;
+      expect(current.resourceId, isNot(old.resourceId));
+      expect(old.closeCalls, 2, reason: 'owner and SDK proxy join one retry');
+
+      await last.release();
+      await first.release();
+      expect(last.retirementResourceIds, [old.resourceId]);
+      expect(first.retirementResourceIds, isEmpty);
+      expect(
+        current.closed,
+        isFalse,
+        reason: 'old release cannot touch new demand',
+      );
+      await replacement.release();
+      expect(current.closeCalls, 1);
+      expect(
+        (await pool.close(
+          budget: ClientCloseBudget(const Duration(seconds: 1)),
+        )).complete,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'account release consumes an already completed next before ACK',
+    () async {
+      final port = _Port();
+      final accepted = <AccountDomainFrame>[];
+      final pool = AccountObservations(
+        feed: port,
+        owner: 'test',
+        scope: port.lifecycleScope.child('account-pool'),
+        consume: accepted.add,
+        failed: (_, _) => fail('Unexpected domain failure'),
+      );
+      const target = AccountSummariesTarget();
+      final demand = pool.acquire(target);
+      final handle = port.handles[target]!;
+      await handle.reading.future;
+      final frame = AccountSummariesFrame(_stamp('settings', 2), [_summary()]);
+      handle._next!.complete(frame);
+      handle._next = null;
+      await demand.release();
+      expect(accepted, [frame]);
+      expect(handle.closeCalls, 1);
+    },
+  );
+
+  test(
+    'account reacquire can release synchronously inside its new source factory',
+    () async {
+      final port = _Port();
+      final pool = AccountObservations(
+        feed: port,
+        owner: 'test',
+        scope: port.lifecycleScope.child('account-pool'),
+        consume: (_) {},
+        failed: (_, _) => fail('Unexpected domain failure'),
+      );
+      const target = AccountDetailTarget(_native);
+      final first = pool.acquire(target);
+      final old = port.handles[target]!;
+      await old.reading.future;
+      old.closeGate = Completer<void>();
+      final retiring = first.release();
+      final next = pool.acquire(target);
+      final opened = Completer<void>();
+      late Future<void> releasing;
+      port.onOpen = () {
+        releasing = next.release();
+        opened.complete();
+      };
+      old.closeGate!.complete();
+      await retiring;
+      await opened.future;
+      await releasing;
+      final current = port.handles[target]!;
+      expect(next.retirementResourceIds, [current.resourceId]);
+      expect(current.resourceId, isNot(old.resourceId));
+      expect((old.closeCalls, current.closeCalls), (1, 1));
+      expect(current.closed, isTrue);
+    },
+  );
+
   for (final compact in [false, true]) {
     for (final receiptAccepted in [false, true]) {
       test(
@@ -500,12 +671,17 @@ void main() {
           addTearDown(fixture.close);
           final client = AnyworkClient(
             transport: fixture.port,
+            scope: fixture.port.lifecycleScope.child('client'),
             clientId: fixture.board.clientId,
             settingsWrites: fixture.coordinator,
             mutationBoard: fixture.board,
             accountDomains: fixture.resources,
           );
-          addTearDown(client.close);
+          addTearDown(
+            () => client.close(
+              budget: ClientCloseBudget(const Duration(seconds: 1)),
+            ),
+          );
           final isAuth = action.startsWith('auth');
           final isCancel = action.endsWith('cancel');
           void detail(int connection) => fixture.resources.acceptFrame(
@@ -711,11 +887,11 @@ void main() {
             );
           }
           final domainsClosed = await fixture.resources.close(
-            deadline: DateTime.now().add(const Duration(seconds: 1)),
+            budget: ClientCloseBudget(const Duration(seconds: 1)),
           );
           expect(domainsClosed.complete, isTrue);
           final closed = await client.close(
-            deadline: DateTime.now().add(const Duration(seconds: 1)),
+            budget: ClientCloseBudget(const Duration(seconds: 1)),
           );
           expect(closed.complete, boundary == 'healthy');
           expect(
@@ -809,7 +985,16 @@ void main() {
       'same-next owner preparation preserves new model and ACP responsibilities from $boundary while joining old work',
       () async {
         final fixture = _Fixture();
-        addTearDown(fixture.close);
+        addTearDown(() async {
+          await fixture.coordinator.close();
+          await fixture.resources.close(
+            budget: ClientCloseBudget(const Duration(seconds: 1)),
+          );
+          final cleanup = await fixture.resources.retryCleanup(
+            budget: ClientCloseBudget(const Duration(seconds: 1)),
+          );
+          expect(cleanup.complete, isTrue);
+        });
         fixture.resources.acceptFrame(_models(_native, 99));
         const untouched = NativeAccountIdentity('untouched');
         fixture.resources.acceptFrame(_models(untouched, 99));
@@ -990,7 +1175,10 @@ void main() {
         );
         final retainedAfterIdle = !installHandle.closed;
         final closing = await fixture.resources.close(
-          deadline: DateTime.now().add(const Duration(milliseconds: 100)),
+          budget: ClientCloseBudget(const Duration(milliseconds: 100)),
+        );
+        final stillPending = await fixture.resources.retryCleanup(
+          budget: ClientCloseBudget(Duration.zero),
         );
         if (!performanceCalls.first.isCompleted) {
           performanceCalls.first.completeError(
@@ -1021,12 +1209,25 @@ void main() {
         );
         expect(retained, (true, true));
         expect(retainedAfterIdle, isTrue);
+        final pendingCommand = closing.unresolved.singleWhere(
+          (issue) => issue.owner == 'account-model-commands',
+        );
         expect(
-          closing.unresolved.any(
-            (issue) => issue.owner == 'account-domain-command:0',
-          ),
-          isTrue,
+          pendingCommand.reason,
+          isA<TimeoutException>(),
           reason: 'The old performance Future must remain joined until its actual completion',
+        );
+        expect(
+          pendingCommand.resourceId,
+          isNot(modelHandle.resourceId),
+          reason: 'The pending old command cannot reuse the replacement observation identity',
+        );
+        expect(
+          stillPending.unresolved
+              .where((issue) => issue.owner == 'account-model-commands')
+              .map((issue) => issue.resourceId),
+          [pendingCommand.resourceId],
+          reason: 'Cleanup must retain the original command owner and resource identity',
         );
       },
     );
@@ -1360,7 +1561,8 @@ void main() {
       2,
       reason: 'The replacement reservation must reject duplicates before allocating another operation',
     );
-    final handle = fixture.port.handles[const AcpInstallTarget()]!;
+    final handle = await fixture.port.activeHandle(const AcpInstallTarget());
+    await handle.reading.future;
     expect(handle.closed, isFalse);
     fixture.resources.acceptFrame(
       AcpInstallFrame(
@@ -2258,18 +2460,29 @@ void main() {
     'late open and failed native close keep the exact owner for retry',
     () async {
       final fixture = _Fixture();
-      fixture.port.lateOpen = Completer<AccountDomainObservation>();
+      fixture.port.lateOpen = Completer<_Handle>();
       final demand = fixture.resources.accounts.observeDetails(_native);
       final releasing = demand.release();
       final releaseFailure = expectLater(releasing, throwsStateError);
-      final early = await fixture.resources.close(deadline: DateTime.now());
+      final early = await fixture.resources.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
       expect(early.complete, isFalse);
       final handle = _Handle()..closeFailures = 1;
       fixture.port.lateOpen!.complete(handle);
       await releaseFailure;
       expect(handle.requested.isCompleted, isTrue);
-      final retried = await fixture.resources.close(
-        deadline: DateTime.now().add(const Duration(seconds: 1)),
+      final repeated = await fixture.resources.close(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
+      );
+      expect(repeated.complete, isFalse);
+      expect(handle.closeCalls, 1, reason: 'ordinary close never retries');
+      expect(
+        early.unresolved.map((entry) => entry.resourceId),
+        contains(handle.resourceId),
+      );
+      final retried = await fixture.resources.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 1)),
       );
       expect(retried.complete, isTrue);
       expect(handle.closeCalls, 2);

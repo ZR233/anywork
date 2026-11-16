@@ -4,19 +4,22 @@ import 'package:flutter/foundation.dart';
 import '../infrastructure/frb/studio_api.dart';
 import 'studio_startup_host.dart';
 
-/// Production startup host. Reads the FRB statics that own native progress.
+/// Production startup host. Borrows the injected runtime's startup state.
 final class FrbStudioStartupHost implements StudioStartupHost {
+  FrbStudioStartupHost(this.runtime);
+
+  final FrbRuntimeOwner runtime;
+
   @override
-  ValueListenable<StudioStartupPhase> get progress =>
-      FrbStudioTransport.startupProgress;
+  ValueListenable<StudioStartupPhase> get progress => runtime.startupProgress;
 
   @override
   ValueListenable<StartupRecoveryReport?> get recovery =>
-      FrbStudioTransport.startupRecovery;
+      runtime.startupRecovery;
 
   @override
-  void dismissRecovery() => FrbStudioTransport.startupRecovery.value = null;
+  void dismissRecovery() => runtime.startupRecovery.value = null;
 
   @override
-  void prepareRetry() => FrbStudioTransport.retryInitialization();
+  void prepareRetry() => runtime.retryInitialization();
 }

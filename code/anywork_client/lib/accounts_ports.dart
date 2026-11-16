@@ -2,6 +2,7 @@
 library;
 
 import 'accounts.dart';
+import 'lifecycle.dart';
 import 'model_directory.dart';
 import 'models.dart' show SettingsCommandReply, OperationId;
 import 'src/accounts/account_frames.dart';
@@ -10,16 +11,15 @@ export 'src/accounts/account_frames.dart';
 export 'src/settings/data/settings_write_coordinator.dart';
 export 'src/accounts/data/account_domain_resources.dart';
 
-abstract interface class AccountDomainObservation {
+abstract interface class AccountDomainObservation implements ClientResource {
   Future<AccountDomainFrame?> next();
-  void requestClose();
-  Future<void> close();
 }
 
 abstract interface class AccountFeedPort {
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  );
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  });
   Future<AccountDomainFrame> readAccountDomain(AccountObservationTarget target);
 }
 

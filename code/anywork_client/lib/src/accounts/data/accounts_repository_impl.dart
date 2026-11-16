@@ -3,6 +3,7 @@ import 'dart:async';
 import '../../../accounts_ports.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
+import '../../lifecycle/client_resource.dart';
 import '../../models/delegation_models.dart';
 import '../../models/failure_models.dart';
 import '../../observation/latest_value.dart';
@@ -420,9 +421,17 @@ final class _LoginIntentDemand implements AccountDemand {
   Future<void>? _release;
 
   @override
-  Future<void> release() => _release ??= _releaseOnce();
+  List<ClientResourceId> get retirementResourceIds => const [];
 
-  Future<void> _releaseOnce() async {
-    _onRelease();
+  @override
+  Future<void> release() {
+    final existing = _release;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    final result = _release = completion.future;
+    // Seal the local intent before callbacks can reenter release. This demand
+    // owns no asynchronous source and must never repeat its synchronous cleanup.
+    completion.complete(Future<void>.sync(_onRelease));
+    return result;
   }
 }

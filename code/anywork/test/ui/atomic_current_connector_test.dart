@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -25,8 +27,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
-import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
@@ -80,13 +80,17 @@ final class _Content extends Fake implements ConversationContent {
   AttemptId get currentAttemptId => const AttemptId(1);
   @override
   ConversationQueryScope openScope({required int generation}) {
-    final scope = _Scope()..onRead = onRead;
+    final scope = _Scope(
+      ClientResourceId('atomic-current-fixture', scopes.length + 1),
+    )..onRead = onRead;
     scopes.add(scope);
     return scope;
   }
 }
 
 final class _Scope extends Fake implements ConversationQueryScope {
+  _Scope(this.resourceId);
+  final ClientResourceId resourceId;
   int completedReads = 0;
   @override
   Future<CompletedEntry> readCompleted({
@@ -139,12 +143,13 @@ final class _Scope extends Fake implements ConversationQueryScope {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     await cancelGate?.future;
     if (closeFailure case final failure?) {
       return CloseReport(
         unresolved: [
           UnresolvedResource(
+            resourceId: resourceId,
             owner: 'scope',
             attemptId: const AttemptId(1),
             reason: failure,

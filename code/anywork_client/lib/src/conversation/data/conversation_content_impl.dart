@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'dart:math';
+
+import '../../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
+
 import 'dart:developer' as developer;
 
 import '../../../models.dart';
@@ -33,6 +37,7 @@ final class ConversationContentImpl implements ConversationContent {
   @override
   ValueObservation<ActivitySnapshot?> get activity => _activity;
   final Map<AttemptId, _Attempt> _attempts = {};
+  final String _resourceScopeId = _newResourceScopeId();
   final Set<ConversationReadScope> _scopes = {};
   _Attempt? _current;
   _ConsumerLease? _consumer;
@@ -169,7 +174,12 @@ final class ConversationContentImpl implements ConversationContent {
   void _open() {
     if (_closed || !_demand || _current != null || _consumer == null) return;
     final id = AttemptId(++_nextAttempt);
-    final a = _Attempt(id, _demandVersion, _consumer!);
+    final a = _Attempt(
+      id,
+      _demandVersion,
+      _consumer!,
+      ClientResourceId(_resourceScopeId, id.value),
+    );
     _attempts[id] = a;
     _current = a;
     final done = Completer<void>();
@@ -558,7 +568,7 @@ final class ConversationContentImpl implements ConversationContent {
   }
 
   Future<CloseReport> _join({
-    DateTime? deadline,
+    ClientCloseBudget? budget,
     bool retiredOnly = false,
   }) async {
     final selected = [
@@ -570,10 +580,10 @@ final class ConversationContentImpl implements ConversationContent {
         if (a.task != null) a.task!,
     ];
     if (pending.isNotEmpty) {
-      if (deadline == null) {
+      if (budget == null) {
         await Future.wait(pending);
       } else {
-        final remaining = deadline.difference(DateTime.now());
+        final remaining = budget.remaining;
         if (remaining > Duration.zero) {
           try {
             await Future.wait(pending).timeout(remaining);
@@ -588,6 +598,7 @@ final class ConversationContentImpl implements ConversationContent {
         for (final a in selected)
           if (_attempts.containsKey(a.id))
             UnresolvedResource(
+              resourceId: a.resourceId,
               owner: 'conversation:$threadId',
               attemptId: a.id,
               reason: a.error ?? StateError('feed still retiring'),
@@ -597,11 +608,11 @@ final class ConversationContentImpl implements ConversationContent {
   }
 
   @override
-  Future<CloseReport> joinRetired({DateTime? deadline}) =>
-      _join(deadline: deadline, retiredOnly: true);
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> joinRetired({ClientCloseBudget? budget}) =>
+      _join(budget: budget, retiredOnly: true);
+  Future<CloseReport> close({ClientCloseBudget? budget}) =>
+      _closing ??= _close(budget);
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _demand = false;
     _demandVersion++;
@@ -615,15 +626,15 @@ final class ConversationContentImpl implements ConversationContent {
     }
     _state.publish(ChatClosed<bool>(threadId));
     final reports = await Future.wait([
-      _join(deadline: deadline),
-      for (final scope in _scopes) scope.close(deadline: deadline),
+      _join(budget: budget),
+      for (final scope in _scopes) scope.close(budget: budget),
     ]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
     );
   }
 
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async {
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) async {
     for (final a in List.of(_attempts.values)) {
       if (a.cleanupFinished && a.error != null && a.feed != null) {
         a.error = null;
@@ -631,9 +642,9 @@ final class ConversationContentImpl implements ConversationContent {
       }
     }
     final reports = await Future.wait([
-      _join(deadline: deadline, retiredOnly: !_closed),
+      _join(budget: budget, retiredOnly: !_closed),
       for (final scope in _scopes)
-        if (!scope.isActive) scope.close(deadline: deadline),
+        if (!scope.isActive) scope.close(budget: budget),
     ]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
@@ -642,8 +653,9 @@ final class ConversationContentImpl implements ConversationContent {
 }
 
 final class _Attempt {
-  _Attempt(this.id, this.demandVersion, this.consumer);
+  _Attempt(this.id, this.demandVersion, this.consumer, this.resourceId);
   final AttemptId id;
+  final ClientResourceId resourceId;
   final int demandVersion;
   final _ConsumerLease consumer;
   final Set<ConversationReadScope> scopes = {};
@@ -671,6 +683,15 @@ final class _Attempt {
   Object? error;
   Object? failure;
   bool cleanupFinished = false;
+}
+
+String _newResourceScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'conversation-content-$nonce';
 }
 
 final class _ConsumerLease implements Observation {

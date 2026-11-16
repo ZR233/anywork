@@ -1,3 +1,5 @@
+import '../../support/frb_test_lifecycle.dart';
+
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/types/command.dart' as c;
 import 'package:anywork/src/rust/api/studio/types/delegation.dart' as d;
@@ -178,11 +180,10 @@ void main() {
   setUp(() {
     api = _DirectoryApi();
     RustLib.initMock(api: api);
-    FrbStudioTransport.debugOverrideInitialization(() async {});
-    transport = FrbStudioTransport();
+
+    transport = TestFrbStudioTransport();
   });
   tearDown(() {
-    FrbStudioTransport.debugOverrideInitialization(null);
     RustLib.dispose();
   });
 

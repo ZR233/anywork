@@ -1,11 +1,11 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
 import 'package:anywork/src/features/conversation/timeline/view_models/conversation_current_owner.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/src/contracts/stamps.dart';
-import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -249,9 +249,10 @@ final class _Content implements ConversationContent {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async => CloseReport();
+  Future<CloseReport> close({ClientCloseBudget? budget}) async => CloseReport();
   @override
-  Future<CloseReport> joinRetired({DateTime? deadline}) async => CloseReport();
+  Future<CloseReport> joinRetired({ClientCloseBudget? budget}) async =>
+      CloseReport();
   @override
   void refresh() {}
 }
@@ -265,7 +266,9 @@ final class _Scope implements ConversationQueryScope {
     required String recordId,
     required ReadDemand demand,
   }) => throw UnimplementedError('This fixture only reads content windows');
-  _Scope(this.generation, {this.onPage, this.onRead});
+  _Scope(this.generation, {this.onPage, this.onRead})
+    : resourceId = ClientResourceId('conversation-current-fixture', generation);
+  final ClientResourceId resourceId;
   final Future<CurrentCollectionPage> Function(
     CurrentCollectionRef,
     String?,
@@ -313,7 +316,7 @@ final class _Scope implements ConversationQueryScope {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     closeCalls++;
     await cancelGate?.future;
     final failure = closeFailure;
@@ -321,6 +324,7 @@ final class _Scope implements ConversationQueryScope {
       return CloseReport(
         unresolved: [
           UnresolvedResource(
+            resourceId: resourceId,
             owner: 'scope',
             attemptId: AttemptId(generation),
             reason: failure,

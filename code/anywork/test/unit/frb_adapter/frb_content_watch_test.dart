@@ -1,7 +1,8 @@
+import '../../support/frb_test_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/handlers/chat.dart' as wire;
 import 'package:anywork/src/rust/api/studio/types/chat.dart' as types;
 import 'package:anywork_client/models.dart';
@@ -16,7 +17,7 @@ const _range = ContentRange(offset: 0, maxBytes: 32);
 void main() {
   test('transport cancellation only wakes; original watch join retries after cancellation and pause claims no successor', () async {
     final native = _Native();
-    final feed = FrbConversationFeed(native);
+    final feed = await testFrbConversationFeed(native);
     final watch = feed.reader.watchContent(reference: _ref, range: _range);
     final received = Completer<void>();
     late StreamSubscription<ContentWindow> subscription;
@@ -60,7 +61,7 @@ void main() {
     'late open cannot grant delivery and close joins that original ID',
     () async {
       final native = _Native()..openGate = Completer<String>();
-      final feed = FrbConversationFeed(native);
+      final feed = await testFrbConversationFeed(native);
       final watch = feed.reader.watchContent(reference: _ref, range: _range);
       final deliveries = <ContentWindow>[];
       final subscription = watch.windows.listen(deliveries.add);
@@ -79,7 +80,7 @@ void main() {
 
   test('EOF keeps facade cleanup responsibility; one failed side cannot skip other sides or dispose', () async {
     final native = _Native();
-    final feed = FrbConversationFeed(native);
+    final feed = await testFrbConversationFeed(native);
     final watch = feed.reader.watchContent(reference: _ref, range: _range);
     final done = Completer<void>();
     watch.windows.listen((_) {}, onDone: done.complete);
@@ -95,7 +96,7 @@ void main() {
     expect(native.disposes, 0);
     native.watchFailure = null;
     native.feedFailure = null;
-    await feed.close();
+    await feed.retryClose();
     expect(native.feedCloses, 2);
     expect(native.closeWatchIds, ['original', 'original']);
     expect(native.disposes, 1);

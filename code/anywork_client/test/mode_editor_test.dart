@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 final class _ModeTransport implements StudioTransport {
+  final lifecycleScope = ClientScope(owner: 'test-runtime');
   ModeDefinitionSnapshot? snapshot;
   ModeValidationResult validation = const ModeValidationResult();
   WorkflowPreviewSnapshot preview = const WorkflowPreviewSnapshot(
@@ -165,11 +167,15 @@ void main() {
 
   setUp(() {
     transport = _ModeTransport();
-    client = AnyworkClient(transport: transport, clientId: 'mode-editor');
+    client = AnyworkClient(
+      transport: transport,
+      scope: transport.lifecycleScope.child('client'),
+      clientId: 'mode-editor',
+    );
   });
 
   tearDown(() async {
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   });
 
   for (final operation in [
@@ -222,7 +228,9 @@ void main() {
         }
         final frozen = client.modeEditor.state;
         var ownerClosed = false;
-        final closing = client.close();
+        final closing = client.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        );
         final ownerClosing = client.modeEditor.close().then(
           (_) => ownerClosed = true,
         );

@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import '../support/test_app_lifecycle.dart';
+import '../support/test_resource_owners.dart';
+
 import 'package:anywork/src/features/shell/sidebar/sidebar_directory_owner.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_models.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -15,13 +18,17 @@ void main() {
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final store = ThreadDirectoryStore(feed: feed);
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: feed.lifecycleRoot.child('client'),
+    );
     var changes = 0;
     final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
     owner.addListener(() => changes++);
     addTearDown(() async {
       owner.dispose();
-      await store.close();
+      await store.close(budget: testCloseBudget());
+      await feed.lifecycleRoot.close(budget: testCloseBudget());
     });
 
     void configure(String search) {
@@ -88,7 +95,7 @@ void main() {
     expect(changes, greaterThan(0));
 
     owner.dispose();
-    final report = await store.close();
+    final report = await store.close(budget: testCloseBudget());
     expect(report.complete, isTrue);
     expect(firstA.closeCalled, isTrue);
     expect(secondA.closeCalled, isTrue);
@@ -98,11 +105,15 @@ void main() {
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final store = ThreadDirectoryStore(feed: feed);
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: feed.lifecycleRoot.child('client'),
+    );
     final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
     addTearDown(() async {
       owner.dispose();
-      await store.close();
+      await store.close(budget: testCloseBudget());
+      await feed.lifecycleRoot.close(budget: testCloseBudget());
     });
 
     owner.configure(const [
@@ -184,7 +195,7 @@ void main() {
     expect(owner.windows[_projectId]!.threadIds, hasLength(40));
 
     owner.dispose();
-    final report = await store.close();
+    final report = await store.close(budget: testCloseBudget());
     expect(report.complete, isTrue);
     expect(initial.closeCalled, isTrue);
     expect(expanded.closeCalled, isTrue);
@@ -195,11 +206,15 @@ void main() {
     tester,
   ) async {
     final feed = _DirectoryFeed();
-    final store = ThreadDirectoryStore(feed: feed);
+    final store = ThreadDirectoryStore(
+      feed: feed,
+      scope: feed.lifecycleRoot.child('client'),
+    );
     final owner = SidebarDirectoryOwner(observeThreads: store.observeThreads);
     addTearDown(() async {
       owner.dispose();
-      await store.close();
+      await store.close(budget: testCloseBudget());
+      await feed.lifecycleRoot.close(budget: testCloseBudget());
     });
 
     owner.configure(
@@ -332,7 +347,7 @@ void main() {
     );
 
     owner.dispose();
-    final report = await store.close();
+    final report = await store.close(budget: testCloseBudget());
     expect(report.complete, isTrue);
     for (final handle in [
       ordinary,
@@ -408,34 +423,47 @@ SessionDirectoryRow _thread(String id, String title, int year) =>
     );
 
 final class _DirectoryFeed implements DirectoryFeedPort {
+  final lifecycleRoot = ClientScope(owner: 'sidebar-query-test');
+  late final contentScope = lifecycleRoot.child('transport');
   final List<_ThreadsOpen> requests = [];
 
   @override
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  ) {
-    final request = _ThreadsOpen(query, window);
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  }) {
+    final request = _ThreadsOpen(query, window, resourceId);
     requests.add(request);
-    return request.open.future;
+    return ownTestThreadsObservation(
+      contentScope,
+      resourceId,
+      (_) => request.open.future,
+    );
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) =>
-      Future.error(
-        StateError('No selected-thread observation expected for $threadId'),
-      );
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) => Future.error(
+    StateError('No selected-thread observation expected for $threadId'),
+  );
 }
 
 final class _ThreadsOpen {
-  _ThreadsOpen(this.query, this.window);
+  _ThreadsOpen(this.query, this.window, this.resourceId);
+  final ClientResourceId resourceId;
 
   final DirectoryQuery query;
   final DirectoryWindow window;
   final Completer<ThreadsObservationHandle> open = Completer();
 
   _ThreadsHandle complete({bool completeNextOnClose = true}) {
-    final handle = _ThreadsHandle(completeNextOnClose: completeNextOnClose);
+    final handle = _ThreadsHandle(
+      resourceId,
+      completeNextOnClose: completeNextOnClose,
+    );
     open.complete(handle);
     return handle;
   }
@@ -444,7 +472,11 @@ final class _ThreadsOpen {
 }
 
 final class _ThreadsHandle implements ThreadsObservationHandle {
-  _ThreadsHandle({required this.completeNextOnClose});
+  _ThreadsHandle(this.resourceId, {required this.completeNextOnClose});
+  @override
+  final ClientResourceId resourceId;
+  @override
+  Future<void> retryClose() => close();
 
   final bool completeNextOnClose;
   Completer<ThreadDirectoryFrame?>? _pending;

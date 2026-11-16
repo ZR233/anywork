@@ -1,3 +1,5 @@
+import 'package:anywork_client/lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/features/settings/accounts/connectors/account_strings.dart';
@@ -191,6 +193,8 @@ NativeAccountDetails vmNative({
 /// They do not implement draft, validation, navigation, retry or ownership rules.
 /// Kept here because this task owns exactly six contract-test files, not support/.
 class VmDemand implements AccountDemand {
+  @override
+  List<ClientResourceId> get retirementResourceIds => const [];
   int releases = 0;
   @override
   Future<void> release() async {

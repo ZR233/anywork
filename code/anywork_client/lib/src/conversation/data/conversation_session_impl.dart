@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import '../../../lifecycle.dart'
+    show ClientCloseBudget, ClientResourceId, ClientScope, ClientLease;
 import '../../../models.dart';
 import '../../../conversation_ports.dart';
 import '../../../directory_ports.dart';
@@ -25,7 +27,9 @@ final class ConversationSessionImpl implements ConversationSession {
     required ConversationTransport transport,
     required this.directory,
     required InputFactRegistry inputFacts,
-  }) : _inputFacts = inputFacts,
+    required ClientScope scope,
+  }) : _scope = scope,
+       _inputFacts = inputFacts,
        _source = LatestValue(ThreadSessionState(threadId: threadId)) {
     _state = ConversationStateOwner(
       threadId: threadId,
@@ -38,7 +42,11 @@ final class ConversationSessionImpl implements ConversationSession {
       threadId: threadId,
       transport: transport,
     );
-    _directoryDemand = directory.observeThread(threadId);
+    _directoryLease = _scope.acquireLease(
+      'conversation-directory',
+      () => _SessionDirectoryLease(directory.observeThread(threadId)),
+    );
+    _directoryDemand = _directoryLease.observation;
     _directoryObservation = _directoryDemand.state.watch(
       (_) => _rebindDirectory(),
       fireImmediately: true,
@@ -47,11 +55,13 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   final String threadId;
   final ThreadDirectoryStore directory;
+  final ClientScope _scope;
   final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
   late final ConversationStateOwner _state;
   late final ConversationContentImpl _content;
   late final DirectoryObservation<ThreadMetadataFrame> _directoryDemand;
+  late final _SessionDirectoryLease _directoryLease;
   late final Observation _directoryObservation;
   _RuntimeResync? _resync;
   bool _closed = false;
@@ -247,11 +257,11 @@ final class ConversationSessionImpl implements ConversationSession {
     }
   }
 
-  Future<CloseReport> retire({DateTime? deadline}) {
+  Future<CloseReport> retire({ClientCloseBudget? budget}) {
     setVisible(false);
     return Future.wait([
-      _state.joinRetired(deadline: deadline),
-      _content.joinRetired(deadline: deadline),
+      _state.joinRetired(budget: budget),
+      _content.joinRetired(budget: budget),
     ]).then(
       (reports) => CloseReport(
         unresolved: [for (final report in reports) ...report.unresolved],
@@ -259,30 +269,28 @@ final class ConversationSessionImpl implements ConversationSession {
     );
   }
 
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    _closing = completion.future;
+    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
+    return completion.future;
+  }
+
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _cancelResync();
     _directoryObservation.cancel();
-    final unresolved = <UnresolvedResource>[];
-    final directoryWork = _directoryDemand.release().then<void>(
-      (_) {},
-      onError: (Object error, StackTrace _) {
-        unresolved.add(
-          UnresolvedResource(
-            owner: 'conversation-directory:$threadId',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      },
-    );
+    _scope.requestClose();
+    final directoryClosing = budget == null
+        ? _joinDirectoryRelease()
+        : _scope.close(budget: budget);
     // Seal both owners synchronously before joining either: a blocked state
-    // join must not leave content admitting or ACKing until the deadline.
+    // join must not leave content admitting or ACKing until the budget expires.
     // Either side failing never skips the other side's close.
-    final stateClosing = _state.close(deadline: deadline);
-    final contentClosing = _content.close(deadline: deadline);
+    final stateClosing = _state.close(budget: budget);
+    final contentClosing = _content.close(budget: budget);
     Object? closeError;
     StackTrace? closeStack;
     CloseReport? stateFeed;
@@ -299,7 +307,7 @@ final class ConversationSessionImpl implements ConversationSession {
       closeError ??= error;
       closeStack ??= stack;
     }
-    await directoryWork;
+    final directory = await directoryClosing;
     if (closeError != null) {
       Error.throwWithStackTrace(closeError, closeStack!);
     }
@@ -307,20 +315,36 @@ final class ConversationSessionImpl implements ConversationSession {
       unresolved: [
         ...?stateFeed?.unresolved,
         ...?content?.unresolved,
-        ...unresolved,
+        ...directory.unresolved,
       ],
     );
   }
 
-  Future<CloseReport> retryCleanup({DateTime? deadline}) =>
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) =>
       Future.wait([
-        _state.retryCleanup(deadline: deadline),
-        _content.retryCleanup(deadline: deadline),
+        _scope.retryCleanup(budget: budget),
+        _state.retryCleanup(budget: budget),
+        _content.retryCleanup(budget: budget),
       ]).then(
         (reports) => CloseReport(
           unresolved: [for (final report in reports) ...report.unresolved],
         ),
       );
+
+  Future<CloseReport> _joinDirectoryRelease() async {
+    try {
+      await _directoryLease.latestRelease;
+    } catch (_) {
+      // The scope retains the original failure and its resource identity.
+    }
+    // A release may synchronously reenter this join before the scope installs
+    // its result listener. Let that listener settle the entry before reading
+    // the report; this is bookkeeping, not a timer or a new cleanup wait.
+    await Future<void>.value();
+    // Cleanup has reached a real terminal result. This zero-budget call only
+    // reads the scope report; it never grants cleanup another waiting period.
+    return _scope.close(budget: ClientCloseBudget(Duration.zero));
+  }
 
   void seedInputFacts(String inputId, void Function(InputTurnFact) onFact) {
     final seen = <String>{};
@@ -351,6 +375,31 @@ final class ConversationSessionImpl implements ConversationSession {
     status: turn.state.status,
     saved: null,
   );
+}
+
+final class _SessionDirectoryLease implements ClientLease {
+  _SessionDirectoryLease(this.observation);
+
+  final DirectoryObservation<ThreadMetadataFrame> observation;
+  Completer<void> _release = Completer<void>();
+
+  Future<void> get latestRelease => _release.future;
+
+  @override
+  List<ClientResourceId> get retirementResourceIds =>
+      observation.retirementResourceIds;
+
+  // Only the scope calls this method, including management-side retries. The
+  // session passively joins latestRelease and never calls the raw lease again.
+  @override
+  Future<void> release() {
+    final completion = _release.isCompleted ? Completer<void>() : _release;
+    _release = completion;
+    // Publish the exact join Future before invoking reentrant external code.
+    // Future.sync preserves synchronous failures for the scope's normal path.
+    completion.complete(Future<void>.sync(observation.release));
+    return completion.future;
+  }
 }
 
 final class _RuntimeResync {

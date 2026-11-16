@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/statistics/connectors/statistics_connector.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
@@ -942,10 +944,11 @@ final class _FixtureStatisticsRepository implements StatisticsRepository {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async => CloseReport();
+  Future<CloseReport> close({ClientCloseBudget? budget}) async => CloseReport();
 
   @override
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async => CloseReport();
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) async =>
+      CloseReport();
 
   @override
   void retry() => retryCalls++;

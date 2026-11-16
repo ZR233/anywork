@@ -371,6 +371,45 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
       applicationPath.startsWith('code/anywork/lib/src/features/');
   bool get isProvider =>
       path.startsWith('code/anywork/lib/src/presentation/providers/');
+
+  // This checker is intentionally syntactic. The sole asynchronous lease
+  // binding may request closure only of the UI child it creates locally; the
+  // scope itself retains and joins cleanup. Other callbacks cannot borrow this
+  // exception to close an application owner or run arbitrary side effects.
+  bool _isOwnedUiScopeDisposal(MethodInvocation call, AstNode argument) {
+    if (path !=
+            'code/anywork/lib/src/presentation/providers/use_client_resource.dart' ||
+        call.methodName.name != 'onDispose' ||
+        argument.toSource() != 'scope.requestClose') {
+      return false;
+    }
+    final function = call.thisOrAncestorOfType<FunctionDeclaration>();
+    if (function == null || function.name.lexeme != 'useClientResource') {
+      return false;
+    }
+    final body = function.functionExpression.body;
+    if (body is! BlockFunctionBody ||
+        call.parent is! ExpressionStatement ||
+        !identical(call.parent?.parent, body.block)) {
+      return false;
+    }
+    for (final statement in body.block.statements) {
+      if (statement is! VariableDeclarationStatement ||
+          statement.offset >= call.offset ||
+          statement.variables.keyword?.lexeme != 'final') {
+        continue;
+      }
+      for (final variable in statement.variables.variables) {
+        if (variable.name.lexeme == 'scope' &&
+            variable.initializer?.toSource() ==
+                'ref.read(appGraphProvider).uiResources.child(owner)') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
   bool get isCommand =>
       path.contains('/commands/') || path.endsWith('_commands.dart');
   bool get isAccountFeature => applicationPath.startsWith(_accountsRoot);
@@ -744,6 +783,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
     if (const {'onCancel', 'onResume', 'onDispose'}.contains(name) &&
         node.target?.toSource() == 'ref') {
       for (final argument in node.argumentList.arguments) {
+        if (_isOwnedUiScopeDisposal(node, argument)) continue;
         final calls = _LifecycleCalls();
         argument.accept(calls);
         final unsafeCalls = calls.names
@@ -757,7 +797,7 @@ final class _BoundaryVisitor extends RecursiveAstVisitor<void> {
           report(
             argument.offset,
             'LIFE-02',
-            'Provider lifecycle may only detach its own read-only observation',
+            'Provider lifecycle may only detach its observation or close its owned UI scope via the lifecycle helper',
           );
         }
       }

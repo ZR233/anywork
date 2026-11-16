@@ -4,10 +4,9 @@ import 'dart:async';
 
 import 'dart:developer' show log;
 
+import '../../../lifecycle.dart';
 import '../../../models.dart';
 import '../../../studio_ports.dart';
-import '../../contracts/stamps.dart';
-import '../../lifecycle/close_report.dart';
 
 /// Shell 常驻产品 topics：导航目录、公共配置与诊断 summary。
 ///
@@ -56,22 +55,46 @@ List<ProductTopic> bridgeSettingsScopeTopics(
 }
 
 /// A Client-owned topic demand. Releasing a lease never discards failed cleanup.
-abstract interface class BridgeTopicLease {
+abstract interface class BridgeTopicLease implements ClientLease {
   ProductTopic get topic;
-  Future<void> release();
 }
 
-class BridgeTopicLeaseBundle {
+class BridgeTopicLeaseBundle implements ClientLease {
   BridgeTopicLeaseBundle._(this._leases);
-  final List<BridgeTopicLease> _leases;
+  final List<_Lease> _leases;
   Future<void>? _releasing;
+  List<ClientResourceId>? _retirementResourceIds;
 
   List<ProductTopic> get topics =>
       List.unmodifiable([for (final lease in _leases) lease.topic]);
 
-  Future<void> release() =>
-      _releasing ??= Future.wait([for (final lease in _leases) lease.release()])
-          .then<void>((_) {});
+  @override
+  List<ClientResourceId> get retirementResourceIds =>
+      _retirementResourceIds ?? const [];
+
+  @override
+  Future<void> release() {
+    if (_releasing case final pending?) return pending;
+    final completion = Completer<void>();
+    final result = _releasing = completion.future;
+    // Withdraw every demand and freeze the whole bundle before any stop
+    // callback can synchronously reenter a scope's lease adapter.
+    final releases = [for (final lease in _leases) lease._prepareRelease()];
+    _retirementResourceIds ??= List.unmodifiable({
+      for (final lease in _leases) ...lease.retirementResourceIds,
+    });
+    for (final release in releases) release.start?.call();
+    completion.complete(
+      Future.wait(releases.map((release) => release.future)).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          if (identical(_releasing, result)) _releasing = null;
+          Error.throwWithStackTrace(error, stack);
+        },
+      ),
+    );
+    return result;
+  }
 }
 
 final class BridgeTopicClosedError implements Exception {
@@ -89,28 +112,28 @@ final class BridgeTopicCleanupBlocked implements Exception {
       'Product topic cleanup blocked: ${describeBridgeProductTopic(topic)} ($cause)';
 }
 
+typedef _TopicSource = ({
+  ClientAcquisition<ProductTopicObservation> acquisition,
+  int epoch,
+});
+
 final class _TopicSubscription {
-  _TopicSubscription(this.topic, this.registry, this.id);
+  _TopicSubscription(this.topic, this.registry);
 
   final ProductTopic topic;
   final BridgeTopicRegistry registry;
-  final int id;
   int refs = 0;
-  bool _settled = false;
-  // This owner serializes and joins cancel; failures keep this exact handle.
-  // ignore: cancel_subscriptions
-  StreamSubscription<ProductTopicFrame>? _underlying;
+  // Only the business source identity lives here. The scope owns creation,
+  // consumer completion and the cached close result, including failed ACKs.
+  _TopicSource? _source;
   Future<void> _ops = Future.value();
-  Future<void>? _closeTask;
   int _sourceEpoch = 0;
   int _reconnectAttempts = 0;
   bool _exhausted = false;
-  bool _retiring = false;
   bool _rebuildInFlight = false;
   bool _rebuildRequested = false;
   Timer? _retryTimer;
   Timer? _stabilityTimer;
-  Object? cleanupFailure;
   Object? _lastError;
   ProductTopicConnectionStateView? _connection;
 
@@ -121,11 +144,10 @@ final class _TopicSubscription {
 
   bool get isActive =>
       !registry._disposed &&
-      !_retiring &&
       refs > 0 &&
       identical(registry._entries[topic], this);
 
-  Future<void> _enqueue(Future<void> Function() operation) {
+  Future<void> _enqueue(FutureOr<void> Function() operation) {
     final chained = _ops.then((_) => operation());
     _ops = chained.then<void>(
       (_) {},
@@ -142,43 +164,37 @@ final class _TopicSubscription {
 
   Future<void> start() => _enqueue(_establish);
 
-  Future<void> _establish() async {
+  void _establish() {
     if (!isActive) return;
-    if (_underlying != null) {
+    if (_source != null) {
       throw StateError('The prior topic subscription has not joined');
     }
     final epoch = ++_sourceEpoch;
+    final acquisition = registry._scope.open<ProductTopicObservation>(
+      'topic:${describeBridgeProductTopic(topic)}',
+      (operation) => registry._api.openProductTopic(
+        topic,
+        resourceId: operation.resourceId,
+      ),
+      ownership: ClientOwnership.proxy,
+      consume: (port, operation) async {
+        if (isActive && epoch == _sourceEpoch) _armStabilityWindow(epoch);
+        await for (final frame in port.frames) {
+          if (operation.closeRequested) break;
+          _onFrame(frame, epoch);
+        }
+        if (!operation.closeRequested) {
+          _onTerminated(epoch, const BridgeTopicClosedError());
+        }
+      },
+      onFailure: (error, stack) => _onTerminated(epoch, error),
+    );
+    _source = (acquisition: acquisition, epoch: epoch);
     _setConnection(
       const ProductTopicConnectionStateView(
         phase: ProductTopicConnectionPhase.connecting,
       ),
     );
-    try {
-      // listen is installed synchronously in this serialized operation. Even a
-      // synchronous callback can only enqueue cleanup after adoption completes.
-      _underlying = registry._api
-          .subscribeProductTopic(topic)
-          .listen(
-            (frame) => _onFrame(frame, epoch),
-            onError: (Object error, StackTrace stack) =>
-                _onTerminated(epoch, error),
-            onDone: () => _onTerminated(epoch, const BridgeTopicClosedError()),
-            cancelOnError: false,
-          );
-      if (!isActive || epoch != _sourceEpoch) return;
-      _armStabilityWindow(epoch);
-    } catch (error) {
-      if (!isActive || epoch != _sourceEpoch) return;
-      _lastError = error;
-      _setConnection(
-        ProductTopicConnectionStateView(
-          phase: ProductTopicConnectionPhase.reconnecting,
-          errorMessage: error.toString(),
-        ),
-      );
-      registry.onFrame(ProductTopicFailureFrame(topic: topic, error: error));
-      _scheduleRetry();
-    }
   }
 
   void _onFrame(ProductTopicFrame frame, int epoch) {
@@ -280,19 +296,16 @@ final class _TopicSubscription {
   }
 
   Future<void> retryNow() async {
-    if (registry._disposed || refs == 0 || _settled) return;
+    if (!isActive) return;
     _reconnectAttempts = 0;
     _exhausted = false;
     _retryTimer?.cancel();
     _retryTimer = null;
     _stabilityTimer?.cancel();
     _stabilityTimer = null;
-    if (_retiring) {
-      // A failed cancel is retried on the same strong owner.
-      await close();
-    } else {
-      await _recreate();
-    }
+    // This is a business reconnect, never a cleanup retry. A failed close
+    // continues to return its cached failure until management retries it.
+    await _recreate();
   }
 
   Future<void> _recreate() async {
@@ -302,10 +315,12 @@ final class _TopicSubscription {
       return;
     }
     _rebuildInFlight = true;
+    final source = _source;
+    _invalidate(source);
     try {
       await _enqueue(() async {
-        await _cancelSource();
-        if (isActive) await _establish();
+        await _closeSource(source);
+        _finishRetirement(source);
       });
     } finally {
       _rebuildInFlight = false;
@@ -316,72 +331,64 @@ final class _TopicSubscription {
     }
   }
 
-  Future<void> _cancelSource() async {
-    ++_sourceEpoch;
+  void _invalidate(_TopicSource? source) {
+    if (source != _source) return;
+    if (source?.epoch == _sourceEpoch) ++_sourceEpoch;
+    stopTimers();
+    source?.acquisition.requestClose();
+  }
+
+  void stopTimers() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
     _stabilityTimer?.cancel();
     _stabilityTimer = null;
-    final old = _underlying;
+  }
+
+  Future<void> _closeSource(_TopicSource? source, {bool retry = false}) async {
     try {
-      await old?.cancel();
-      // Retain the old subscription until the actual cancel ACK succeeds.
-      if (identical(_underlying, old)) _underlying = null;
-      cleanupFailure = null;
+      if (retry) {
+        await source?.acquisition.retryClose();
+      } else {
+        await source?.acquisition.close();
+      }
     } catch (error) {
-      cleanupFailure = error;
-      _retiring = true;
-      _retryTimer?.cancel();
-      _retryTimer = null;
       final blocked = BridgeTopicCleanupBlocked(topic, error);
-      _setConnection(
-        ProductTopicConnectionStateView(
-          phase: ProductTopicConnectionPhase.failed,
-          errorMessage: blocked.toString(),
-        ),
-      );
+      if (source == _source) {
+        stopTimers();
+        _setConnection(
+          ProductTopicConnectionStateView(
+            phase: ProductTopicConnectionPhase.failed,
+            errorMessage: blocked.toString(),
+          ),
+        );
+      }
       throw blocked;
     }
+  }
+
+  void _finishRetirement(_TopicSource? source) {
+    if (_source != source) return;
+    _source = null;
+    if (isActive) {
+      _establish();
+    } else if (refs == 0) {
+      registry._forget(this);
+    }
+  }
+
+  Future<void> retire(_TopicSource? source, {bool retry = false}) {
+    _invalidate(source);
+    return _enqueue(() async {
+      await _closeSource(source, retry: retry);
+      _finishRetirement(source);
+    });
   }
 
   void _setConnection(ProductTopicConnectionStateView view) {
     if (_connection == view) return;
     _connection = view;
     registry.onTopicConnection(topic, view);
-  }
-
-  Future<void> close() {
-    if (_settled) return Future.value();
-    _retiring = true;
-    ++_sourceEpoch;
-    _retryTimer?.cancel();
-    _retryTimer = null;
-    _stabilityTimer?.cancel();
-    _stabilityTimer = null;
-    if (_closeTask case final pending?) {
-      return pending.then((_) {
-        // The running close may already have adopted a replacement source for
-        // reacquired demand. A release at that await boundary retires the new
-        // epoch too; joining only the previous cancellation would leak it.
-        if (!_settled && _retiring) return close();
-      });
-    }
-    late final Future<void> task;
-    task =
-        _enqueue(() async {
-          await _cancelSource();
-          if (!registry._disposed && refs > 0) {
-            // Reacquiring during close adds demand to this owner. Only the real
-            // cancel ACK permits opening its next source identity.
-            _retiring = false;
-            await _establish();
-          } else {
-            _settled = true;
-            registry._forget(this);
-          }
-        }).whenComplete(() {
-          if (identical(_closeTask, task)) _closeTask = null;
-        });
-    _closeTask = task;
-    return task;
   }
 }
 
@@ -390,41 +397,32 @@ final class _TopicSubscription {
 class BridgeTopicRegistry {
   BridgeTopicRegistry(
     this._api, {
+    required ClientScope scope,
     required this.onFrame,
     required this.onTopicConnection,
-  });
+  }) : _scope = scope;
 
   final StudioTransport _api;
+  final ClientScope _scope;
   final void Function(ProductTopicFrame) onFrame;
   final void Function(ProductTopic, ProductTopicConnectionStateView?)
   onTopicConnection;
   final Map<ProductTopic, _TopicSubscription> _entries = {};
   Future<CloseReport>? _closing;
   bool _disposed = false;
-  int _sequence = 0;
 
   Map<String, int> activeTopicRefCountViews() => Map.unmodifiable({
     for (final entry in _entries.entries)
       describeBridgeProductTopic(entry.key): entry.value.refs,
   });
 
-  List<UnresolvedResource> get unresolvedResources => [
-    for (final entry in _entries.values)
-      if (entry._retiring || entry.cleanupFailure != null)
-        UnresolvedResource(
-          owner: 'topic:${describeBridgeProductTopic(entry.topic)}',
-          attemptId: AttemptId(entry.id),
-          reason:
-              entry.cleanupFailure ??
-              StateError('Topic cancellation is pending'),
-        ),
-  ];
+  BridgeTopicLease acquire(ProductTopic topic) => _acquire(topic);
 
-  BridgeTopicLease acquire(ProductTopic topic) {
+  _Lease _acquire(ProductTopic topic) {
     if (_disposed) throw StateError('BridgeTopicRegistry is disposed');
     var entry = _entries[topic];
     if (entry == null) {
-      entry = _TopicSubscription(topic, this, ++_sequence);
+      entry = _TopicSubscription(topic, this);
       _entries[topic] = entry;
       entry.refs = 1;
       _observeBackground(entry.start());
@@ -435,9 +433,9 @@ class BridgeTopicRegistry {
   }
 
   BridgeTopicLeaseBundle acquireBundle(Iterable<ProductTopic> topics) {
-    final leases = <BridgeTopicLease>[];
+    final leases = <_Lease>[];
     try {
-      for (final topic in topics) leases.add(acquire(topic));
+      for (final topic in topics) leases.add(_acquire(topic));
     } catch (_) {
       for (final lease in leases) _observeBackground(lease.release());
       rethrow;
@@ -456,8 +454,8 @@ class BridgeTopicRegistry {
       operation.then<void>(
         (_) {},
         onError: (Object error, StackTrace stack) {
-          // Entry ownership, the exact subscription already retain any
-          // cleanup failure. The detached caller only records its diagnostic.
+          // The scope retains cleanup responsibility. This caller only records
+          // the domain rebuild diagnostic.
           log(
             'product_topic_background_failed error=$error',
             stackTrace: stack,
@@ -473,66 +471,107 @@ class BridgeTopicRegistry {
     onTopicConnection(entry.topic, null);
   }
 
-  Future<CloseReport> releaseAll({DateTime? deadline}) =>
-      _closing ??= _releaseAll(deadline);
-
-  Future<CloseReport> _releaseAll(DateTime? deadline) async {
+  Future<CloseReport> releaseAll({required ClientCloseBudget budget}) {
+    if (_closing case final pending?) return pending;
+    final completion = Completer<CloseReport>();
+    final closing = _closing = completion.future;
     _disposed = true;
     final entries = List.of(_entries.values);
-    for (final entry in entries) entry.refs = 0;
-    return _join(entries, deadline);
-  }
-
-  Future<CloseReport> retryCleanup({DateTime? deadline}) => _join([
-    for (final entry in _entries.values)
-      if (_disposed || entry._retiring || entry.cleanupFailure != null) entry,
-  ], deadline);
-
-  Future<CloseReport> _join(
-    List<_TopicSubscription> entries,
-    DateTime? deadline,
-  ) async {
-    final pending = Future.wait([
-      for (final entry in entries) _joinEntry(entry),
-    ]);
-    final remaining = deadline?.difference(DateTime.now());
-    if (remaining == null) {
-      await pending;
-    } else if (remaining > Duration.zero) {
-      try {
-        await pending.timeout(remaining);
-      } on TimeoutException {
-        // The same entry/task remains strongly owned beyond the deadline.
-      }
+    for (final entry in entries) {
+      entry.refs = 0;
+      entry._invalidate(entry._source);
     }
-    return CloseReport(unresolved: unresolvedResources);
+    completion.complete(_scope.close(budget: budget));
+    _observeBackground(closing.then(_reconcileRetirements));
+    return closing;
   }
 
-  Future<void> _joinEntry(_TopicSubscription entry) async {
-    try {
-      await entry.close();
-    } catch (error, stack) {
-      log(
-        'product_topic_cleanup_unresolved topic=${entry.topic} error=$error',
-        stackTrace: stack,
-      );
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
+    final report = await _scope.retryCleanup(budget: budget);
+    if (_disposed) _closing = Future.value(report);
+    _reconcileRetirements(report);
+    return report;
+  }
+
+  void _reconcileRetirements(CloseReport report) {
+    final unresolved = {for (final item in report.unresolved) item.resourceId};
+    for (final entry in List.of(_entries.values)) {
+      final source = entry._source;
+      if (source == null) {
+        if (entry.refs == 0) _forget(entry);
+      } else if (source.epoch != entry._sourceEpoch &&
+          !unresolved.contains(source.acquisition.resourceId)) {
+        // Management already performed the retry. Only join its ACK here;
+        // never dispatch a second retry through a proxy or lease.
+        _observeBackground(entry.retire(source));
+      }
     }
   }
 }
+
+typedef _LeaseRelease = ({Future<void> future, void Function()? start});
 
 final class _Lease implements BridgeTopicLease {
   _Lease(this.entry);
   final _TopicSubscription entry;
   Future<void>? _releasing;
+  bool _released = false;
+  _TopicSource? _retirement;
+  List<ClientResourceId> _retirementResourceIds = const [];
 
   @override
   ProductTopic get topic => entry.topic;
-  @override
-  Future<void> release() => _releasing ??= _release();
 
-  Future<void> _release() async {
-    if (entry.refs > 0) entry.refs--;
-    if (entry.refs == 0) await entry.close();
+  @override
+  List<ClientResourceId> get retirementResourceIds => _retirementResourceIds;
+
+  @override
+  Future<void> release() {
+    final release = _prepareRelease();
+    release.start?.call();
+    return release.future;
+  }
+
+  _LeaseRelease _prepareRelease() {
+    if (_releasing case final pending?) return (future: pending, start: null);
+    final completion = Completer<void>();
+    final result = _releasing = completion.future;
+    final retry = _released;
+    if (!_released) {
+      _released = true;
+      if (entry.refs == 0) {
+        // The owner already revoked all demand during shutdown. This lease
+        // has no authority to capture a source that shutdown is closing.
+        completion.complete();
+        return (future: result, start: null);
+      }
+      entry.refs--;
+      if (entry.refs == 0) {
+        _retirement = entry._source;
+        if (_retirement case final source?) {
+          _retirementResourceIds = List.unmodifiable([
+            source.acquisition.resourceId,
+          ]);
+        }
+      } else {
+        completion.complete();
+        return (future: result, start: null);
+      }
+    }
+    return (
+      future: result,
+      start: () => completion.complete(
+        entry
+            .retire(_retirement, retry: retry)
+            .then<void>(
+              (_) {},
+              onError: (Object error, StackTrace stack) {
+                if (identical(_releasing, result)) _releasing = null;
+                Error.throwWithStackTrace(error, stack);
+              },
+            ),
+      ),
+    );
   }
 }
 

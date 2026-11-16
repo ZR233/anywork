@@ -1,10 +1,12 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 
 import '../../accounts_ports.dart';
 import '../../accounts.dart' show AcpAccountIdentity, AccountDemand;
 import '../../acp_sessions.dart';
 import '../../model_directory.dart';
+import '../../lifecycle.dart';
 
 import '../../anywork_client.dart';
 import '../../models.dart';
@@ -46,6 +48,7 @@ class AnyworkClient {
   AnyworkClient({
     required this.transport,
     required this.clientId,
+    required ClientScope scope,
     SettingsWriteCoordinator? settingsWrites,
     MutationBoard? mutationBoard,
     AccountDomainResources? accountDomains,
@@ -55,7 +58,8 @@ class AnyworkClient {
     StudioUpdateApi? updateApi,
     bool updatesEnabled = false,
     int Function()? threadCommandsClock,
-  }) : settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
+  }) : _scope = scope,
+       settingsWrites = settingsWrites ?? SettingsWriteCoordinator(),
        _acpSessions = acpBusinessPort == null
            ? null
            : AcpSessionClient(port: acpBusinessPort),
@@ -63,11 +67,16 @@ class AnyworkClient {
     mutations = mutationBoard ?? MutationBoard(clientId: clientId);
     threadDirectory = ThreadDirectoryStore(
       feed: transport,
+      scope: scope.child('thread-directory'),
       onStamp: (stamp) => mutations.observe(stamp),
       onCleanupFailure: resourceFailure.publish,
     );
     modeEditor = ModeEditorOwner(this);
-    channels = StudioChannels(this, transport);
+    channels = StudioChannels(
+      this,
+      transport,
+      scope: scope.child('product-topics'),
+    );
     directoryCommands = DirectoryCommands(this);
     settingsCommands = SettingsCommands(this);
     botsCommands = BotsCommands(this);
@@ -78,11 +87,12 @@ class AnyworkClient {
     final conversationOwner = ConversationRepositoryImpl(
       transport: transport,
       directory: threadDirectory,
+      scope: scope.child('conversation'),
       onRevision: observeResource,
     );
     conversations = conversationOwner;
-    _childInteractionVisibleWatch = conversationOwner.visibleThreadId.watch(
-      _onVisibleThreadMirror,
+    _scope.observe(
+      conversationOwner.visibleThreadId.watch(_onVisibleThreadMirror),
     );
     drafts = DraftsRepositoryImpl(
       DraftsDependencies(
@@ -113,16 +123,20 @@ class AnyworkClient {
       updater: updater,
       enabled: updatesEnabled,
     );
-    _selectionObservation = selection.source.watch(_selectionChanged);
-    _canonicalObservations.addAll([
+    _scope.observe(selection.source.watch(_selectionChanged));
+    _scope.observe(
       settings.source.watch((value) {
         if (value.configLoaded)
           observeResource('settings', value.settingsRevision);
       }),
+    );
+    _scope.observe(
       modeCatalog.source.watch((value) {
         if (value.loaded)
           observeResource('thread-mode-catalog', value.revision);
       }),
+    );
+    _scope.observe(
       bots.source.watch((value) {
         if (!value.loaded) return;
         observeResource('bots', value.revision);
@@ -130,11 +144,12 @@ class AnyworkClient {
           observeResource('bot:${bot.id}', bot.configRevision);
         }
       }),
-    ]);
+    );
   }
 
   final StudioTransport transport;
   final String clientId;
+  final ClientScope _scope;
   final SettingsWriteCoordinator settingsWrites;
   final AccountDomainResources? _accountDomains;
   final AcpSessionClient? _acpSessions;
@@ -327,9 +342,11 @@ class AnyworkClient {
   ) async {
     _ensureOpen();
     final completion = Completer<T>();
-    final observation = source.watch((value) {
-      if (ready(value) && !completion.isCompleted) completion.complete(value);
-    });
+    final observation = _scope.observe(
+      source.watch((value) {
+        if (ready(value) && !completion.isCompleted) completion.complete(value);
+      }),
+    );
     try {
       if (ready(source.value)) completion.complete(source.value);
       return await Future.any<T>([
@@ -448,15 +465,17 @@ class AnyworkClient {
   final Map<String, CloseReport> _closeReports = {};
   final Map<String, int> _reportGenerations = {};
   final Map<String, Future<void>> _pendingJoins = {};
+  final String _reportScopeId = _newReportScopeId();
+  final Map<Object, ClientResourceId> _reportResourceIds = {};
+  int _reportResourceSequence = 0;
   final resourceFailure = LatestValue<UnresolvedResource?>(null);
 
   final CommandLane _queries = CommandLane();
   final Completer<void> _acpReadClosed = Completer<void>();
-  final List<Observation> _canonicalObservations = [];
   String? _runtimeOwnerEpoch;
-  late final Observation _selectionObservation;
   BridgeTopicLeaseBundle? _applicationTopics;
   BridgeTopicLeaseBundle? _selectionTopics;
+  ClientScope? _selectionTopicResources;
   String? _selectionTopicKey;
   Future<void>? _bootstrapping;
   Future<void>? _bootstrapJoin;
@@ -464,20 +483,22 @@ class AnyworkClient {
   bool _closed = false;
 
   bool get isClosed => _closed;
-  List<UnresolvedResource> get unresolvedResources => List.unmodifiable([
-    ..._unresolved.values,
-    for (final report in _closeReports.values) ...report.unresolved,
-    ...channels.unresolvedResources,
-    ...updates.unresolvedResources,
-    for (final operation in mutations.operations.where(
-      (value) => value.isPending,
-    ))
-      UnresolvedResource(
-        owner: 'operation:${operation.id.value}',
-        attemptId: const AttemptId(0),
-        reason: operation.error ?? operation.phase,
-      ),
-  ]);
+  List<UnresolvedResource> get unresolvedResources => CloseReport(
+    unresolved: [
+      ..._unresolved.values,
+      for (final report in _closeReports.values) ...report.unresolved,
+      ...updates.unresolvedResources,
+      for (final operation in mutations.operations.where(
+        (value) => value.isPending,
+      ))
+        _unresolvedResource(
+          'operation:${operation.id.value}',
+          operation.error ?? operation.phase,
+          resourceId: _reportResourceId(operation.id),
+          pending: true,
+        ),
+    ],
+  ).unresolved;
 
   McpStore? existingMcpCatalog(McpScope scope) =>
       scope is HostMcpScope ? mcp : _mcpCatalogs[scope];
@@ -537,10 +558,11 @@ class AnyworkClient {
   // 导航离开只释放页面份额，不撤销在途决议的事实观察。
   String? _childInteractionPageHost;
   BridgeTopicLease? _childInteractionPageLease;
+  ClientScope? _childInteractionPageResources;
   Observation? _childInteractionPageWatch;
   String? _threadMcpPageThread;
   BridgeTopicLease? _threadMcpPageLease;
-  late final Observation _childInteractionVisibleWatch;
+  ClientScope? _threadMcpPageResources;
 
   void _onVisibleThreadMirror(String? threadId) {
     _onThreadMcpVisibleMirror(threadId);
@@ -562,41 +584,41 @@ class AnyworkClient {
         _threadMcpPageLease != null) {
       return;
     }
+    final resourceId = _allocateReportResourceId();
+    ClientScope? resources;
     try {
-      _threadMcpPageLease = channels.acquireThreadMcp(threadId);
+      resources = _scope.child('thread-mcp-page');
+      _threadMcpPageResources = resources;
+      final lease = resources.acquireLease(
+        'thread-mcp-page',
+        () => channels.acquireThreadMcp(threadId),
+      );
+      if (!identical(_threadMcpPageResources, resources)) return;
+      _threadMcpPageLease = lease;
       final failure = resourceFailure.value;
-      if (failure?.owner == 'thread-mcp-page:$threadId') {
+      if (failure?.owner == 'thread-mcp-page') {
         resourceFailure.publish(null);
       }
     } catch (error) {
+      resources?.requestClose();
+      if (identical(_threadMcpPageResources, resources)) {
+        _threadMcpPageResources = null;
+      }
       resourceFailure.publish(
-        UnresolvedResource(
-          owner: 'thread-mcp-page:$threadId',
-          attemptId: const AttemptId(0),
-          reason: error,
-        ),
+        _unresolvedResource('thread-mcp-page', error, resourceId: resourceId),
       );
     }
   }
 
   void _releaseThreadMcpPageDemand() {
-    final threadId = _threadMcpPageThread;
     _threadMcpPageThread = null;
     final lease = _threadMcpPageLease;
     _threadMcpPageLease = null;
+    final resources = _threadMcpPageResources;
+    _threadMcpPageResources = null;
+    resources?.requestClose();
     if (lease == null) return;
-    // The registry retains the exact handle if cancel fails.
-    unawaited(
-      lease.release().catchError((Object error) {
-        resourceFailure.publish(
-          UnresolvedResource(
-            owner: 'thread-mcp-page:${threadId!}',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      }),
-    );
+    _releaseLease('thread-mcp-page', lease);
   }
 
   void _retryThreadMcpPageDemand(String threadId) {
@@ -645,22 +667,34 @@ class AnyworkClient {
     }
 
     final watched = source.watchLatest(evaluate);
-    _childInteractionPageWatch = watched.observation;
+    _childInteractionPageWatch = _scope.observe(watched.observation);
     evaluate(watched.value);
   }
 
   void _acquireChildInteractionPageLease(String hostThreadId) {
     if (_closed || _childInteractionPageLease != null) return;
+    final resourceId = _allocateReportResourceId();
+    ClientScope? resources;
     try {
-      _childInteractionPageLease = channels.acquireChildInteractions(
-        hostThreadId,
+      resources = _scope.child('child-interactions-page');
+      _childInteractionPageResources = resources;
+      final lease = resources.acquireLease(
+        'child-interactions-page',
+        () => channels.acquireChildInteractions(hostThreadId),
       );
+      if (identical(_childInteractionPageResources, resources)) {
+        _childInteractionPageLease = lease;
+      }
     } catch (error) {
+      resources?.requestClose();
+      if (identical(_childInteractionPageResources, resources)) {
+        _childInteractionPageResources = null;
+      }
       resourceFailure.publish(
-        UnresolvedResource(
-          owner: 'child-interactions-page:$hostThreadId',
-          attemptId: const AttemptId(0),
-          reason: error,
+        _unresolvedResource(
+          'child-interactions-page',
+          error,
+          resourceId: resourceId,
         ),
       );
     }
@@ -672,19 +706,11 @@ class AnyworkClient {
     _childInteractionPageHost = null;
     final lease = _childInteractionPageLease;
     _childInteractionPageLease = null;
+    final resources = _childInteractionPageResources;
+    _childInteractionPageResources = null;
+    resources?.requestClose();
     if (lease == null) return;
-    // The registry retains the exact handle if cancel fails.
-    unawaited(
-      lease.release().catchError((Object error) {
-        resourceFailure.publish(
-          UnresolvedResource(
-            owner: 'child-interactions-page',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      }),
-    );
+    _releaseLease('child-interactions-page', lease);
   }
 
   void _retryChildInteractionPageDemand(String hostThreadId) {
@@ -793,14 +819,17 @@ class AnyworkClient {
     final snapshot = await transport.readBootstrap();
     if (_closed) return;
     applyBootstrap(snapshot);
-    _applicationTopics = channels.acquireTopics([
-      ...bridgeShellTopics,
-      const AgentProfilesTopic(),
-      const McpCatalogTopic(),
-      const LspTopic(),
-      const PersistenceQueueTopic(),
-      const BotsTopic(),
-    ]);
+    _applicationTopics = _scope.acquireLease(
+      'application-topics',
+      () => channels.acquireTopics([
+        ...bridgeShellTopics,
+        const AgentProfilesTopic(),
+        const McpCatalogTopic(),
+        const LspTopic(),
+        const PersistenceQueueTopic(),
+        const BotsTopic(),
+      ]),
+    );
   }
 
   void applyBootstrap(StudioBootstrap snapshot) {
@@ -877,33 +906,38 @@ class AnyworkClient {
       final previous = _selectionTopics;
       _selectionTopics = null;
       _selectionTopicKey = null;
+      final previousResources = _selectionTopicResources;
+      _selectionTopicResources = null;
+      previousResources?.requestClose();
       if (previous != null) {
-        // The registry retains the exact handle if cancel fails.
-        unawaited(
-          previous.release().catchError((Object error) {
-            resourceFailure.publish(
-              UnresolvedResource(
-                owner: 'selection-topics:$topicKey',
-                attemptId: const AttemptId(0),
-                reason: error,
-              ),
-            );
-          }),
-        );
+        _releaseLease('selection-topics', previous);
       }
+      final resourceId = _allocateReportResourceId();
+      ClientScope? resources;
       try {
-        _selectionTopics = channels.acquireTopics([
-          if (workspaceId != null) SkillsTopic(workspaceId: workspaceId),
-          if (sessionId != null) SessionCostsTopic(rootThreadId: sessionId),
-        ]);
+        resources = _scope.child('selection-topics');
+        _selectionTopicResources = resources;
+        final lease = resources.acquireLease(
+          'selection-topics',
+          () => channels.acquireTopics([
+            if (workspaceId != null) SkillsTopic(workspaceId: workspaceId),
+            if (sessionId != null) SessionCostsTopic(rootThreadId: sessionId),
+          ]),
+        );
+        if (!identical(_selectionTopicResources, resources)) return;
+        _selectionTopics = lease;
         _selectionTopicKey = topicKey;
         resourceFailure.publish(null);
       } catch (error) {
+        resources?.requestClose();
+        if (identical(_selectionTopicResources, resources)) {
+          _selectionTopicResources = null;
+        }
         resourceFailure.publish(
-          UnresolvedResource(
-            owner: 'selection-topics:$topicKey',
-            attemptId: const AttemptId(0),
-            reason: error,
+          _unresolvedResource(
+            'selection-topics',
+            error,
+            resourceId: resourceId,
           ),
         );
       }
@@ -923,52 +957,90 @@ class AnyworkClient {
     );
   }
 
-  Future<CloseReport> close({DateTime? deadline}) {
+  Future<CloseReport> close({required ClientCloseBudget budget}) {
     final existing = _closing;
     if (existing != null) return existing;
     final completion = Completer<CloseReport>();
     _closing = completion.future;
-    completion.complete(Future<CloseReport>.sync(() => _close(deadline)));
+    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
     return completion.future;
   }
 
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget budget) async {
     _closed = true;
     if (!_acpReadClosed.isCompleted) _acpReadClosed.complete();
-    _selectionObservation.cancel();
-    _childInteractionVisibleWatch.cancel();
+    _scope.requestClose();
     _releaseThreadMcpPageDemand();
     _releaseChildInteractionPageDemand();
     _queries.seal();
     // Both domains seal synchronously before independent close joins await.
-    final draftWork = drafts.close();
-    final conversationWork = conversations.close(deadline: deadline);
+    final draftWork = Future<void>.sync(drafts.close);
+    final conversationWork = Future<CloseReport>.sync(
+      () => conversations.close(budget: budget),
+    );
     final work = <Future<void>>[
       if (_acpSessions case final acp?)
-        _joinOwner('acp-observations', acp.dispose(), deadline),
-      _joinOwner('drafts', draftWork, deadline),
-      _joinOwner('settings-commands', settingsCommands.close(), deadline),
-      _joinOwner('directory-commands', directoryCommands.close(), deadline),
-      _joinReport('thread-directory', threadDirectory.close(), deadline),
-      _joinOwner('bots-commands', botsCommands.close(), deadline),
-      _joinOwner('bots-queries', botsQueries.close(), deadline),
-      _joinOwner('thread-commands', threadCommands.close(), deadline),
-      _joinOwner('mode-editor', modeEditor.close(), deadline),
-      _joinOwner('remote-commands', remote.close(), deadline),
-      _joinOwner('queries', _queries.join(), deadline),
-      _joinReport('conversations', conversationWork, deadline),
-      _joinReport('topics', channels.dispose(deadline: deadline), deadline),
-      _joinReport('updates', updates.close(deadline: deadline), deadline),
+        _joinOwner('acp-observations', Future<void>.sync(acp.dispose), budget),
+      _joinOwner('drafts', draftWork, budget),
+      _joinOwner(
+        'settings-commands',
+        Future<void>.sync(settingsCommands.close),
+        budget,
+      ),
+      _joinOwner(
+        'directory-commands',
+        Future<void>.sync(directoryCommands.close),
+        budget,
+      ),
+      _joinReport(
+        'thread-directory',
+        Future<CloseReport>.sync(() => threadDirectory.close(budget: budget)),
+        budget,
+      ),
+      _joinOwner(
+        'bots-commands',
+        Future<void>.sync(botsCommands.close),
+        budget,
+      ),
+      _joinOwner('bots-queries', Future<void>.sync(botsQueries.close), budget),
+      _joinOwner(
+        'thread-commands',
+        Future<void>.sync(threadCommands.close),
+        budget,
+      ),
+      _joinOwner('mode-editor', Future<void>.sync(modeEditor.close), budget),
+      _joinOwner('remote-commands', Future<void>.sync(remote.close), budget),
+      _joinOwner('queries', Future<void>.sync(_queries.join), budget),
+      _joinReport('conversations', conversationWork, budget),
+      _joinReport(
+        'topics',
+        Future<CloseReport>.sync(() => channels.dispose(budget: budget)),
+        budget,
+      ),
+      _joinReport(
+        'client-scope',
+        Future<CloseReport>.sync(() => _scope.close(budget: budget)),
+        budget,
+      ),
+      _joinReport(
+        'updates',
+        Future<CloseReport>.sync(() => updates.close(budget: budget)),
+        budget,
+      ),
+      _joinOwner(
+        'settings-command-observations',
+        Future<void>.sync(settingsCommands.closeObservations),
+        budget,
+      ),
+      _joinOwner(
+        'bots-command-observations',
+        Future<void>.sync(botsCommands.closeObservations),
+        budget,
+      ),
       if (_bootstrapJoin case final boot?)
-        _joinOwner('bootstrap', boot, deadline),
+        _joinOwner('bootstrap', boot, budget),
     ];
     await Future.wait(work);
-    for (final observation in _canonicalObservations) {
-      observation.cancel();
-    }
-    _canonicalObservations.clear();
-    settingsCommands.closeObservations();
-    botsCommands.closeObservations();
     _applicationTopics = null;
     _selectionTopics = null;
     _releaseMirrorsIfResolved();
@@ -978,7 +1050,7 @@ class AnyworkClient {
   Future<void> _joinReport(
     String owner,
     Future<CloseReport> task,
-    DateTime? deadline,
+    ClientCloseBudget budget,
   ) {
     final generation = (_reportGenerations[owner] ?? 0) + 1;
     _reportGenerations[owner] = generation;
@@ -988,14 +1060,14 @@ class AnyworkClient {
         if (_reportGenerations[owner] == generation)
           _closeReports[owner] = report;
       }),
-      deadline,
+      budget,
     );
   }
 
   Future<void> _joinOwner(
     String owner,
     Future<void> task,
-    DateTime? deadline,
+    ClientCloseBudget budget,
   ) async {
     final previous = _pendingJoins[owner];
     // Cleanup retry cannot replace an earlier still-running native owner.
@@ -1013,61 +1085,135 @@ class AnyworkClient {
       onError: (Object error, StackTrace stack) {
         if (identical(_pendingJoins[owner], joined)) {
           unawaited(_pendingJoins.remove(owner));
-          _unresolved[owner] = UnresolvedResource(
-            owner: owner,
-            attemptId: const AttemptId(0),
-            reason: error,
+          _unresolved[owner] = _unresolvedResource(
+            owner,
+            error,
+            stackTrace: stack,
           );
         }
       },
     );
     try {
-      final remaining = deadline?.difference(DateTime.now());
-      await (remaining == null
-          ? settled
-          : settled.timeout(remaining.isNegative ? Duration.zero : remaining));
+      await settled.timeout(budget.remaining);
     } on TimeoutException catch (error) {
       // The original task and its owner remain held; a late real completion
       // clears this entry through the handler installed above.
-      _unresolved[owner] = UnresolvedResource(
-        owner: owner,
-        attemptId: const AttemptId(0),
-        reason: error,
-      );
+      _unresolved[owner] = _unresolvedResource(owner, error, pending: true);
     }
   }
 
   /// Explicit resource cleanup only. Unknown business writes are never replayed.
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async {
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
     final pending = Map.of(_pendingJoins);
+    // Start the root pass and every independent owner in this synchronous
+    // stack, before awaiting any report. Future.sync preserves that eager start
+    // while containing a sibling's synchronous throw so the others still run.
     final work = <Future<void>>[
+      _joinReport(
+        'client-scope',
+        Future<CloseReport>.sync(() => _scope.retryCleanup(budget: budget)),
+        budget,
+      ),
       if (_closed && _acpSessions != null)
-        _joinOwner('acp-observations', _acpSessions.dispose(), deadline),
+        _joinOwner(
+          'acp-observations',
+          Future<void>.sync(_acpSessions.dispose),
+          budget,
+        ),
       _joinReport(
         'conversations',
-        conversations.retryCleanup(deadline: deadline),
-        deadline,
+        Future<CloseReport>.sync(
+          () => conversations.retryCleanup(budget: budget),
+        ),
+        budget,
       ),
       _joinReport(
         'topics',
-        channels.retryCleanup(deadline: deadline),
-        deadline,
+        Future<CloseReport>.sync(() => channels.retryCleanup(budget: budget)),
+        budget,
       ),
-      _joinReport('thread-directory', threadDirectory.retryCleanup(), deadline),
+      _joinReport(
+        'thread-directory',
+        Future<CloseReport>.sync(
+          () => threadDirectory.retryCleanup(budget: budget),
+        ),
+        budget,
+      ),
       if (_closed)
         _joinReport(
           'updates',
-          updates.retryCleanup(deadline: deadline),
-          deadline,
+          Future<CloseReport>.sync(() => updates.retryCleanup(budget: budget)),
+          budget,
         ),
-      _joinOwner('drafts', drafts.retryCleanup(), deadline),
+      _joinOwner('drafts', Future<void>.sync(drafts.retryCleanup), budget),
       for (final entry in pending.entries)
         if (identical(_pendingJoins[entry.key], entry.value))
-          _joinOwner(entry.key, entry.value, deadline),
+          _joinOwner(entry.key, entry.value, budget),
     ];
     await Future.wait(work);
     _releaseMirrorsIfResolved();
     return CloseReport(unresolved: unresolvedResources);
+  }
+
+  ClientResourceId _allocateReportResourceId() =>
+      ClientResourceId(_reportScopeId, ++_reportResourceSequence);
+
+  ClientResourceId _reportResourceId(Object key) =>
+      _reportResourceIds.putIfAbsent(key, _allocateReportResourceId);
+
+  UnresolvedResource _unresolvedResource(
+    String owner,
+    Object reason, {
+    ClientResourceId? resourceId,
+    ClientClosePhase phase = ClientClosePhase.close,
+    bool pending = false,
+    StackTrace? stackTrace,
+  }) {
+    final identity = resourceId ?? _reportResourceId(owner);
+    return UnresolvedResource(
+      resourceId: identity,
+      owner: owner,
+      attemptId: AttemptId(identity.sequence),
+      reason: reason,
+      stages: [
+        ClientResourceStage(
+          owner: owner,
+          phase: phase,
+          pending: pending,
+          error: pending ? null : reason,
+          stackTrace: stackTrace,
+        ),
+      ],
+    );
+  }
+
+  void _releaseLease(String owner, ClientLease lease) {
+    final release = Future<void>.sync(lease.release);
+    // Freeze metadata before awaiting: an A -> B -> A navigation must report
+    // this old retirement, not whichever source now occupies the same key.
+    final identities = List<ClientResourceId>.unmodifiable(
+      lease.retirementResourceIds,
+    );
+    final fallback = identities.isEmpty ? _allocateReportResourceId() : null;
+    unawaited(
+      release.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          for (final identity
+              in identities.isEmpty ? [fallback!] : identities) {
+            resourceFailure.publish(
+              _unresolvedResource(
+                owner,
+                error,
+                resourceId: identity,
+                phase: ClientClosePhase.leaseRelease,
+                stackTrace: stack,
+              ),
+            );
+          }
+        },
+      ),
+    );
   }
 
   void _releaseMirrorsIfResolved() {
@@ -1077,6 +1223,15 @@ class AnyworkClient {
   void _ensureOpen() {
     if (_closed) throw StateError('The application client is closed');
   }
+}
+
+String _newReportScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'client-operations-$nonce';
 }
 
 final class _DisabledUpdateApi implements StudioUpdateApi {

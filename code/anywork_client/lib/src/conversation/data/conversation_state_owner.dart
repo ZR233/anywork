@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:math';
 
+import '../../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
 import '../../../conversation_ports.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart';
@@ -25,6 +27,7 @@ final class ConversationStateOwner {
   final void Function(AttemptId, Object, bool) onFailure;
   final void Function(AttemptId) onAttempt;
   final Map<AttemptId, _StateAttempt> _attempts = {};
+  final String _resourceScopeId = _newResourceScopeId();
   _StateAttempt? _current;
   int _nextAttempt = 0;
   bool _demand = false;
@@ -73,7 +76,11 @@ final class ConversationStateOwner {
   void _open() {
     if (_closed || !_demand || _current != null) return;
     final id = AttemptId(++_nextAttempt);
-    final a = _StateAttempt(id, _demandVersion);
+    final a = _StateAttempt(
+      id,
+      _demandVersion,
+      ClientResourceId(_resourceScopeId, id.value),
+    );
     _attempts[id] = a;
     _current = a;
     final done = Completer<void>();
@@ -331,7 +338,7 @@ final class ConversationStateOwner {
   }
 
   Future<CloseReport> _join({
-    DateTime? deadline,
+    ClientCloseBudget? budget,
     bool retiredOnly = false,
   }) async {
     final selected = [
@@ -343,10 +350,10 @@ final class ConversationStateOwner {
         if (a.task != null) a.task!,
     ];
     if (pending.isNotEmpty) {
-      if (deadline == null) {
+      if (budget == null) {
         await Future.wait(pending);
       } else {
-        final remaining = deadline.difference(DateTime.now());
+        final remaining = budget.remaining;
         if (remaining > Duration.zero) {
           try {
             await Future.wait(pending).timeout(remaining);
@@ -361,6 +368,7 @@ final class ConversationStateOwner {
         for (final a in selected)
           if (_attempts.containsKey(a.id))
             UnresolvedResource(
+              resourceId: a.resourceId,
               owner: 'conversation-state:$threadId',
               attemptId: a.id,
               reason: a.error ?? StateError('state feed still retiring'),
@@ -369,13 +377,14 @@ final class ConversationStateOwner {
     );
   }
 
-  Future<CloseReport> joinRetired({DateTime? deadline}) =>
-      _join(deadline: deadline, retiredOnly: true);
+  // Background retirement owns cleanup independently of any bounded caller.
+  Future<CloseReport> joinRetired({ClientCloseBudget? budget}) =>
+      _join(budget: budget, retiredOnly: true);
 
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
+  Future<CloseReport> close({ClientCloseBudget? budget}) =>
+      _closing ??= _close(budget);
 
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _demand = false;
     _demandVersion++;
@@ -383,23 +392,24 @@ final class ConversationStateOwner {
     for (final a in List.of(_attempts.values)) {
       _retire(a);
     }
-    return _join(deadline: deadline);
+    return _join(budget: budget);
   }
 
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async {
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) async {
     for (final a in List.of(_attempts.values)) {
       if (a.cleanupFinished && a.error != null && a.feed != null) {
         a.error = null;
         a.task = _cleanup(a);
       }
     }
-    return _join(deadline: deadline, retiredOnly: !_closed);
+    return _join(budget: budget, retiredOnly: !_closed);
   }
 }
 
 final class _StateAttempt {
-  _StateAttempt(this.id, this.demandVersion);
+  _StateAttempt(this.id, this.demandVersion, this.resourceId);
   final AttemptId id;
+  final ClientResourceId resourceId;
   final int demandVersion;
   ConversationStateFeed? feed;
   // The attempt owns this subscription until _cleanup joins cancel.
@@ -423,4 +433,13 @@ final class _StateAttempt {
   Object? error;
   Object? failure;
   bool cleanupFinished = false;
+}
+
+String _newResourceScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'conversation-state-$nonce';
 }

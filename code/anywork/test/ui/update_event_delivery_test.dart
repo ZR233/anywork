@@ -1,7 +1,8 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/update/connectors/sidebar_footer_connector.dart';
 import 'package:anywork/src/features/update/connectors/studio_update_settings_connector.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -39,9 +40,9 @@ void main() {
     'one canonical update reaches sidebar and late settings, even after settings unmounts',
     (tester) async {
       final api = _UpdateApi();
-      final client = AnyworkClient(
+      final client = testAnyworkClient(
         clientId: 'update-event-delivery',
-        transport: DemoStudioTransport(),
+        transport: TestDemoStudioTransport(),
         updateApi: api,
         updatesEnabled: true,
       );
@@ -126,7 +127,7 @@ void main() {
       expect(api.stops, 0);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());
-      final report = await client.close();
+      final report = await client.close(budget: testCloseBudget());
       expect(report.complete, isTrue);
       expect(api.stops, 1);
     },

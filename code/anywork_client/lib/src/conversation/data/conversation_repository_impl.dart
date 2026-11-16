@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../../../lifecycle.dart' show ClientCloseBudget, ClientScope;
 import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
@@ -17,7 +18,9 @@ final class ConversationRepositoryImpl
     required this.transport,
     required this.directory,
     required this.onRevision,
-  });
+    required ClientScope scope,
+  }) : _scope = scope;
+  final ClientScope _scope;
   final ConversationTransport transport;
   final ThreadDirectoryStore directory;
   final void Function(String key, int revision) onRevision;
@@ -116,6 +119,7 @@ final class ConversationRepositoryImpl
       transport: transport,
       directory: directory,
       inputFacts: _inputFacts,
+      scope: _scope.child('conversation-session'),
     );
     _sessions[threadId] = owner;
     _observations[threadId] = owner.source.watch((value) {
@@ -261,27 +265,27 @@ final class ConversationRepositoryImpl
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) {
+  Future<CloseReport> close({ClientCloseBudget? budget}) {
     final existing = _closing;
     if (existing != null) return existing;
     final completion = Completer<CloseReport>();
     _closing = completion.future;
-    completion.complete(Future<CloseReport>.sync(() => _close(deadline)));
+    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
     return completion.future;
   }
 
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _requestedVisibleThread = null;
     _visibleThread = null;
     if (_visibleThreadId.value != null) _visibleThreadId.publish(null);
     final tasks = {
       for (final entry in _sessions.entries)
-        entry.key: entry.value.close(deadline: deadline),
+        entry.key: entry.value.close(budget: budget),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
     final children = await Future.wait([
-      for (final owner in _children) owner.close(deadline: deadline),
+      for (final owner in _children) owner.close(budget: budget),
     ]);
     _releaseResolved();
     return CloseReport(
@@ -293,20 +297,24 @@ final class ConversationRepositoryImpl
   }
 
   @override
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async {
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
+    // Start the shared root pass before joining any session's lease result.
+    final scopeCleanup = _scope.retryCleanup(budget: budget);
     final tasks = {
       for (final entry in _sessions.entries)
-        entry.key: entry.value.retryCleanup(deadline: deadline),
+        entry.key: entry.value.retryCleanup(budget: budget),
     };
     for (final entry in tasks.entries) _reports[entry.key] = await entry.value;
     final children = await Future.wait([
-      for (final owner in _children) owner.retryCleanup(deadline: deadline),
+      for (final owner in _children) owner.retryCleanup(budget: budget),
     ]);
+    final scopeReport = await scopeCleanup;
     _releaseResolved();
     return CloseReport(
       unresolved: [
         for (final r in _reports.values) ...r.unresolved,
         for (final r in children) ...r.unresolved,
+        ...scopeReport.unresolved,
       ],
     );
   }

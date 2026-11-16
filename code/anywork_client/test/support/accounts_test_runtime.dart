@@ -5,6 +5,7 @@ import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp_ports.dart';
 import 'package:anywork_client/model_directory.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 
 /// Scripted environment only. All production ordering, reduction, identity
@@ -18,6 +19,9 @@ abstract class AccountsTestTransport
         AccountUsagePort,
         AcpPort {
   String epoch = 'owner';
+  ClientScope? _lifecycleScope;
+  ClientScope get lifecycleScope =>
+      _lifecycleScope ??= ClientScope(owner: 'accounts-test-runtime');
   final Map<AccountObservationTarget, Set<TestAccountObservation>>
   observations = {};
   final Map<AccountObservationTarget, AccountDomainFrame> baselines = {};
@@ -46,18 +50,29 @@ abstract class AccountsTestTransport
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
-    late final TestAccountObservation observation;
-    observation = TestAccountObservation(() {
-      observations[target]?.remove(observation);
-    });
-    observations.putIfAbsent(target, () => {}).add(observation);
-    final opening = _opening.remove(target);
-    if (opening != null && !opening.isCompleted) opening.complete(observation);
-    final baseline = baselines[target];
-    if (baseline != null) observation.emit(baseline);
-    return observation;
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) async {
+    final acquisition = lifecycleScope.open<TestAccountObservation>(
+      'test-account-owner',
+      (operation) async {
+        late final TestAccountObservation observation;
+        observation = TestAccountObservation(() {
+          observations[target]?.remove(observation);
+        }, resourceId: operation.resourceId);
+        observations.putIfAbsent(target, () => {}).add(observation);
+        final opening = _opening.remove(target);
+        if (opening != null && !opening.isCompleted) {
+          opening.complete(observation);
+        }
+        final baseline = baselines[target];
+        if (baseline != null) observation.emit(baseline);
+        return observation;
+      },
+      identity: resourceId,
+    );
+    await acquisition.ready;
+    return _AccountObservationProxy(acquisition);
   }
 
   Future<TestAccountObservation> attachedAccount(
@@ -112,7 +127,9 @@ abstract class AccountsTestTransport
 }
 
 final class TestAccountObservation implements AccountDomainObservation {
-  TestAccountObservation(this.onClosed);
+  TestAccountObservation(this.onClosed, {required this.resourceId});
+  @override
+  final ClientResourceId resourceId;
   final void Function() onClosed;
   AccountDomainFrame? _latest;
   Object? _error;
@@ -174,6 +191,25 @@ final class TestAccountObservation implements AccountDomainObservation {
     onClosed();
     if (!stopped.isCompleted) stopped.complete();
   }
+
+  @override
+  Future<void> retryClose() => close();
+}
+
+final class _AccountObservationProxy implements AccountDomainObservation {
+  _AccountObservationProxy(this.acquisition);
+  final ClientAcquisition<TestAccountObservation> acquisition;
+
+  @override
+  ClientResourceId get resourceId => acquisition.resourceId;
+  @override
+  Future<AccountDomainFrame?> next() async => (await acquisition.ready).next();
+  @override
+  void requestClose() => acquisition.requestClose();
+  @override
+  Future<void> close() => acquisition.close();
+  @override
+  Future<void> retryClose() => acquisition.retryClose();
 }
 
 final class AccountsTestRuntime {
@@ -181,6 +217,7 @@ final class AccountsTestRuntime {
     board = MutationBoard(clientId: clientId);
     domains = AccountDomainResources(
       feed: transport,
+      scope: transport.lifecycleScope.child('account-domains'),
       configuration: transport,
       modelPort: transport,
       usagePort: transport,
@@ -191,6 +228,7 @@ final class AccountsTestRuntime {
     );
     client = AnyworkClient(
       transport: transport,
+      scope: transport.lifecycleScope.child('client'),
       clientId: clientId,
       settingsWrites: coordinator,
       mutationBoard: board,
@@ -219,10 +257,10 @@ final class AccountsTestRuntime {
     );
   }
 
-  Future<CloseReport> close({DateTime? deadline}) async {
-    final bound = deadline ?? DateTime.now().add(const Duration(seconds: 1));
-    final clientClose = client.close(deadline: bound);
-    final domainClose = domains.close(deadline: bound);
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
+    final bound = budget ?? ClientCloseBudget(const Duration(seconds: 1));
+    final clientClose = client.close(budget: bound);
+    final domainClose = domains.close(budget: bound);
     return CloseReport(
       unresolved: [
         ...(await clientClose).unresolved,
@@ -235,6 +273,9 @@ final class AccountsTestRuntime {
 final class _TopicDemand implements AccountDemand {
   _TopicDemand(this.lease);
   final BridgeTopicLease lease;
+  @override
+  List<ClientResourceId> get retirementResourceIds =>
+      lease.retirementResourceIds;
   @override
   Future<void> release() => lease.release();
 }

@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -34,7 +35,7 @@ void main() {
     'Settings retains drafts and observes a Turn completed while hidden',
     (tester) async {
       final transport = _RouteTurnTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'route-draft-owner',
@@ -76,7 +77,7 @@ void main() {
         await pumpClientFuture(tester, exiting, 'teardown exit');
         await pumpClientFuture(
           tester,
-          graph.close(deadline: _deadline()),
+          graph.close(budget: testBudgetUntil(_deadline())),
           'teardown graph close',
         );
         messenger.setMockMethodCallHandler(StudioHostLifecycle.channel, null);
@@ -620,7 +621,7 @@ void main() {
       expect(
         (await pumpClientFuture(
           tester,
-          graph.close(deadline: _deadline()),
+          graph.close(budget: testBudgetUntil(_deadline())),
           'repeat graph close',
         )).complete,
         isTrue,

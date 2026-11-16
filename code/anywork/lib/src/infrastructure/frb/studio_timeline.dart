@@ -1,97 +1,29 @@
 part of 'studio_api.dart';
 
-final class FrbTimelineReader implements TimelineReader, _FrbContentOwner {
-  FrbTimelineReader(this._timeline)
-    : _native = _FrbNativeReader.timeline(_timeline),
-      metadata = _openTimelineFromFrb(_timeline.metadata());
-  final frb_timeline.BridgeTimelineReader _timeline;
+final class FrbTimelineReader extends _FrbPortProxy<_FrbRawTimelineReader>
+    implements TimelineReader, _FrbContentOwner {
+  FrbTimelineReader._(super.entry, super.raw);
   @override
-  final _FrbNativeReader _native;
+  OpenTimeline get metadata => _raw.metadata;
   @override
-  final OpenTimeline metadata;
+  String get threadId => _raw.threadId;
   @override
   late final ConversationReader reader = _FrbConversationReader(this);
   @override
-  String get threadId => _native.threadId();
+  _FrbNativeReader get _native => _raw.native;
   @override
-  final Set<_FrbContentWatch> _contentWatches = {};
-  final Set<_FrbDisplayMembers> _memberWatches = {};
-  _DartSubscription? _registration;
-  bool _closed = false;
-  bool _disposed = false;
-  Future<void>? _closing;
-  Future<void>? _nativeClosing;
+  Set<_FrbContentWatch> get _contentWatches => _raw.contentWatches;
   @override
-  bool get _admissionsClosed =>
-      _closed || (_registration?.cancelRequested ?? false);
+  bool get _admissionsClosed => _raw.stopping;
 
   @override
   Future<ViewUpdate> next({required ViewCursor after}) =>
       FrbStudioTransport._bridgeCall(() async {
         if (_admissionsClosed) throw _conversationClosedFailure;
-        final value = await _timeline.next(after: after.value);
+        final value = await _raw.timeline.next(after: after.value);
         if (_admissionsClosed) throw _conversationClosedFailure;
         return _viewUpdateFromFrb(value);
       });
-
-  @override
-  void requestClose() {
-    _closed = true;
-    _timeline.requestClose();
-    for (final watch in List.of(_contentWatches)) {
-      watch.requestClose();
-    }
-    for (final watch in List.of(_memberWatches)) {
-      watch.requestClose();
-    }
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    final existing = _closing;
-    if (existing != null) return existing;
-    final work = _registration?.beginCancel() ?? _releaseNative();
-    _closing = work;
-    unawaited(
-      work.then<void>(
-        (_) {},
-        onError: (Object _, StackTrace _) {
-          if (identical(_closing, work)) _closing = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  Future<void> _releaseNative() {
-    requestClose();
-    final existing = _nativeClosing;
-    if (existing != null) return existing;
-    final work = _joinNative();
-    _nativeClosing = work;
-    unawaited(
-      work.then<void>(
-        (_) {},
-        onError: (Object _, StackTrace _) {
-          if (identical(_nativeClosing, work)) _nativeClosing = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  Future<void> _joinNative() async {
-    await Future.wait<void>([
-      FrbStudioTransport._bridgeCall(_timeline.close),
-      for (final watch in List.of(_contentWatches)) watch.close(),
-      for (final watch in List.of(_memberWatches)) watch.close(),
-    ]);
-    if (!_disposed) {
-      _timeline.dispose();
-      _disposed = true;
-    }
-  }
 
   @override
   Future<TimelinePage> loadTimelineOlder({
@@ -100,7 +32,7 @@ final class FrbTimelineReader implements TimelineReader, _FrbContentOwner {
   }) {
     if (_admissionsClosed) throw _conversationClosedFailure;
     return FrbStudioTransport._bridgeCall(() async {
-      final batch = await _timeline.loadOlder(
+      final batch = await _raw.timeline.loadOlder(
         before: before,
         demand: _readDemandToFrb(demand),
       );
@@ -116,7 +48,7 @@ final class FrbTimelineReader implements TimelineReader, _FrbContentOwner {
   }) {
     if (_admissionsClosed) throw _conversationClosedFailure;
     return FrbStudioTransport._bridgeCall(() async {
-      final window = await _timeline.loadLiveOlder(
+      final window = await _raw.timeline.loadLiveOlder(
         before: before,
         demand: _readDemandToFrb(demand),
       );
@@ -130,132 +62,88 @@ final class FrbTimelineReader implements TimelineReader, _FrbContentOwner {
     required DisplayBlockRef reference,
     required DisplayMemberWindow window,
     required ReadDemand demand,
-  }) async {
+  }) {
     if (_admissionsClosed) throw _conversationClosedFailure;
-    // Register before the first await so close also joins a late native open.
-    final watch = _FrbDisplayMembers(this);
-    _memberWatches.add(watch);
-    watch._opening = FrbStudioTransport._bridgeCall(
-      () => _timeline.openDisplayMembers(
-        reference: _displayBlockRefToFrb(reference),
-        window: _displayMemberWindowToFrb(window),
-        demand: _readDemandToFrb(demand),
-      ),
-    );
-    try {
-      watch._handle = await watch._opening;
-      if (_admissionsClosed || watch._closed) {
-        watch.requestClose();
-        await watch.close();
-        throw _conversationClosedFailure;
-      }
-      return watch;
-    } catch (error, stack) {
-      try {
-        await watch.close();
-      } catch (_) {
-        /* retained for parent close */
-      }
-      Error.throwWithStackTrace(_studioFailure(error), stack);
-    }
+    final entry = _raw.membersScope
+        .open<
+          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberPage>
+        >('display-members', (operation) async {
+          final handle = await FrbStudioTransport._bridgeCall(
+            () => _raw.timeline.openDisplayMembers(
+              reference: _displayBlockRefToFrb(reference),
+              window: _displayMemberWindowToFrb(window),
+              demand: _readDemandToFrb(demand),
+            ),
+          );
+          return _FrbRawPull(
+            operation.resourceId,
+            handle,
+            (handle) async {
+              final page = await handle.next();
+              if (_admissionsClosed) throw _conversationClosedFailure;
+              return page == null ? null : _displayMemberPageFromFrb(page);
+            },
+            (handle) => handle.requestClose(),
+            (handle) => handle.close(),
+            (handle) => handle.dispose(),
+          );
+        });
+    return _publishRaw(entry, (raw) => _FrbDisplayMembers(entry, raw));
   }
 }
 
-final class _FrbDisplayMembers implements DisplayMembers {
-  _FrbDisplayMembers(this._feed);
-  final FrbTimelineReader _feed;
-  late final Future<frb_timeline.BridgeDisplayMembers> _opening;
-  frb_timeline.BridgeDisplayMembers? _handle;
-  Future<void>? _closing;
-  Future<DisplayMemberPage?>? _reading;
-  bool _closed = false;
-  bool _disposed = false;
-
+final class _FrbRawTimelineReader extends _FrbRawResource {
+  _FrbRawTimelineReader(
+    super.resourceId,
+    frb_timeline.BridgeTimelineReader handle,
+    this.membersScope,
+  ) : _handle = handle;
+  frb_timeline.BridgeTimelineReader? _handle;
+  frb_timeline.BridgeTimelineReader get timeline => _handle!;
+  final ClientScope membersScope;
+  _FrbNativeReader? _reader;
+  _FrbNativeReader get native =>
+      _reader ??= _FrbNativeReader.timeline(timeline);
+  late final String threadId = timeline.threadId();
+  late final OpenTimeline metadata = _openTimelineFromFrb(timeline.metadata());
+  final Set<_FrbContentWatch> contentWatches = {};
   @override
-  Future<DisplayMemberPage?> next() {
-    if (_closed || _feed._admissionsClosed) throw _conversationClosedFailure;
-    if (_reading != null) {
-      throw const StudioFailure(
-        code: StudioFailureCode.conflict,
-        message: 'A display member read is already in flight',
-        retryable: false,
-        correlationId: 'client-display-members-concurrent-next',
-      );
-    }
-    final work = _next();
-    _reading = work;
-    unawaited(
-      work.then<void>(
-        (_) {
-          if (identical(_reading, work)) _reading = null;
-        },
-        onError: (Object _, StackTrace _) {
-          if (identical(_reading, work)) _reading = null;
-        },
-      ),
-    );
-    return work;
-  }
-
-  Future<DisplayMemberPage?> _next() async {
-    try {
-      final handle = _handle ??= await _opening;
-      final page = await FrbStudioTransport._bridgeCall(handle.next);
-      if (_closed || _feed._admissionsClosed) throw _conversationClosedFailure;
-      return page == null ? null : _displayMemberPageFromFrb(page);
-    } catch (error, stack) {
-      Error.throwWithStackTrace(_studioFailure(error), stack);
+  void stopDelivery() {
+    membersScope.requestClose();
+    for (final watch in List.of(contentWatches)) {
+      watch.requestClose();
     }
   }
 
   @override
-  void requestClose() {
-    _closed = true;
-    try {
-      _handle?.requestClose();
-    } catch (_) {
-      /* close retains the error */
-    }
+  void requestNativeClose() => timeline.requestClose();
+  @override
+  Future<void> cancelNative() => FrbStudioTransport._bridgeCall(timeline.close);
+  @override
+  void disposeNative() {
+    timeline.dispose();
+    _handle = null;
+    _reader = null;
   }
 
   @override
-  Future<void> close() {
-    requestClose();
-    final existing = _closing;
-    if (existing != null) return existing;
-    final work = _join();
-    _closing = work;
-    unawaited(
-      work.then<void>(
-        (_) {},
-        onError: (Object _, StackTrace _) {
-          if (identical(_closing, work)) _closing = null;
-        },
-      ),
-    );
-    return work;
+  Future<void> closeChildren() async {
+    // Native timeline close joins its member watches. Their Dart-owned handles
+    // remain in membersScope until their own ACK/dispose, including late opens.
+    await Future.wait<void>([
+      for (final watch in List.of(contentWatches))
+        Future<void>.sync(watch.close),
+    ]);
   }
+}
 
-  Future<void> _join() async {
-    frb_timeline.BridgeDisplayMembers handle;
-    try {
-      handle = _handle ??= await _opening;
-    } catch (_) {
-      // Native open owns its unpublished cleanup. No handle was issued here.
-      _feed._memberWatches.remove(this);
-      return;
-    }
-    handle.requestClose();
-    await FrbStudioTransport._bridgeCall(handle.close);
-    try {
-      await _reading;
-    } catch (_) {
-      /* the next caller retains its result */
-    }
-    if (!_disposed) {
-      handle.dispose();
-      _disposed = true;
-    }
-    _feed._memberWatches.remove(this);
-  }
+final class _FrbDisplayMembers
+    extends
+        _FrbPortProxy<
+          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberPage>
+        >
+    implements DisplayMembers {
+  _FrbDisplayMembers(super.entry, super.raw);
+  @override
+  Future<DisplayMemberPage?> next() => _raw.next();
 }

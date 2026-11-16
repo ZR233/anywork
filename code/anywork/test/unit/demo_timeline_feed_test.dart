@@ -1,6 +1,7 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -972,10 +973,12 @@ void main() {
       );
       final rejected = expectLater(opening, throwsA(isA<StudioFailure>()));
       final connection = await entered.future;
-      final closing = api.cancelDartSubscriptions(budgetMs: 1000);
+      final closing = api.cancelDartSubscriptions(
+        budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+      );
       release.complete(connection);
       await rejected;
-      expect(await closing, isEmpty);
+      expect(await closing, isDartResourceCloseClean);
       await expectLater(
         connection.reader.readBusinessRefs(),
         throwsA(isA<StudioFailure>()),
@@ -1046,7 +1049,12 @@ void main() {
     );
     await feed.reader.readBusinessRefs();
     expect(woke, isFalse);
-    expect(await api.cancelDartSubscriptions(budgetMs: 1000), isEmpty);
+    expect(
+      await api.cancelDartSubscriptions(
+        budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+      ),
+      isDartResourceCloseClean,
+    );
     expect(await waiting, isNull);
     await expectLater(events.next(), throwsA(isA<StudioFailure>()));
     await expectLater(
@@ -1059,8 +1067,12 @@ void main() {
     final api = RecordingDemoTransport();
     await api.readBootstrap();
     addTearDown(
-      () async =>
-          expect(await api.cancelDartSubscriptions(budgetMs: 1000), isEmpty),
+      () async => expect(
+        await api.cancelDartSubscriptions(
+          budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+        ),
+        isDartResourceCloseClean,
+      ),
     );
     api.timelineReaderFactory = (_, feed) async => MappedTimelineReader(feed);
     final feed = await api.openTimelineReader(
@@ -1150,13 +1162,17 @@ Future<_FastDemo> _open([_FastDemo? transport]) async {
   final api = transport ?? _FastDemo();
   await api.readBootstrap();
   addTearDown(
-    () async =>
-        expect(await api.cancelDartSubscriptions(budgetMs: 1000), isEmpty),
+    () async => expect(
+      await api.cancelDartSubscriptions(
+        budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+      ),
+      isDartResourceCloseClean,
+    ),
   );
   return api;
 }
 
-class _FastDemo extends DemoStudioTransport {
+class _FastDemo extends TestDemoStudioTransport {
   @override
   Duration get promptStartDelay => const Duration(milliseconds: 2);
   @override

@@ -1,12 +1,13 @@
+import 'test_app_lifecycle.dart';
+
 import 'dart:async';
 
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import 'mapped_conversation_feed.dart';
 
 /// Controls only delivery at the transport boundary; production owners apply all state.
-class ControlledTimelineTransport extends DemoStudioTransport {
+class ControlledTimelineTransport extends TestDemoStudioTransport {
   final readers = <ControlledTimelineReader>[];
   final opened = StreamController<ControlledTimelineReader>.broadcast();
   ViewUpdate? initial;

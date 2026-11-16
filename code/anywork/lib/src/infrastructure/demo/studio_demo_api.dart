@@ -10,6 +10,7 @@ import 'package:anywork_client/conversation_encoding.dart';
 import 'package:anywork_client/conversation.dart' show DisplayMembers;
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/model_directory.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_ports.dart';
 import 'package:flutter/foundation.dart'
     show visibleForTesting, listEquals, mapEquals;
@@ -21,6 +22,7 @@ import 'accounts/demo_account_observation.dart';
 part 'studio_demo_conversation.dart';
 part 'studio_demo_settings.dart';
 part 'studio_demo_timeline.dart';
+part 'studio_demo_resources.dart';
 
 const _conversationClosedFailure = StudioFailure(
   code: StudioFailureCode.cancelled,
@@ -94,31 +96,38 @@ final class _DemoDirectoryChangeSignal {
     DemoStudioTransport transport, {
     bool Function(ProductTopicFrame frame)? isRelevant,
   }) : _isRelevant = isRelevant ?? _allDirectoryChanges {
-    _subscription = transport
-        .subscribeProductTopic(const ThreadDirectoryTopic())
-        .listen(
-          (frame) {
-            if (_baselinePending) {
-              _baselinePending = false;
-              if (!_ready.isCompleted) _ready.complete();
-              return;
-            }
-            if (!_isRelevant(frame)) return;
-            _dirty = true;
-            if (_wake case final wake? when !wake.isCompleted) wake.complete();
-          },
-          onError: (Object error, StackTrace stackTrace) {
-            _failure ??= error;
-            _failureStack ??= stackTrace;
+    _acquisition = transport.contentScope.open<ProductTopicObservation>(
+      'demo-directory-changes',
+      (op) => transport.openProductTopic(
+        const ThreadDirectoryTopic(),
+        resourceId: op.resourceId,
+      ),
+      ownership: ClientOwnership.proxy,
+      consume: (port, op) async {
+        await for (final frame in port.frames) {
+          if (op.closeRequested) break;
+          if (_baselinePending) {
+            _baselinePending = false;
             if (!_ready.isCompleted) _ready.complete();
-            if (_wake case final wake? when !wake.isCompleted) wake.complete();
-          },
-        );
+            continue;
+          }
+          if (!_isRelevant(frame)) continue;
+          _dirty = true;
+          if (_wake case final wake? when !wake.isCompleted) wake.complete();
+        }
+      },
+      onFailure: (Object error, StackTrace stackTrace) {
+        _failure ??= error;
+        _failureStack ??= stackTrace;
+        if (!_ready.isCompleted) _ready.complete();
+        if (_wake case final wake? when !wake.isCompleted) wake.complete();
+      },
+    );
   }
 
   static bool _allDirectoryChanges(ProductTopicFrame _) => true;
 
-  late final StreamSubscription<ProductTopicFrame> _subscription;
+  late final ClientAcquisition<ProductTopicObservation> _acquisition;
   final bool Function(ProductTopicFrame frame) _isRelevant;
   final Completer<void> _ready = Completer<void>();
   Completer<void>? _wake;
@@ -147,21 +156,30 @@ final class _DemoDirectoryChangeSignal {
 
   void requestClose() {
     _closed = true;
+    _acquisition.requestClose();
     if (!_ready.isCompleted) _ready.complete();
     if (_wake case final wake? when !wake.isCompleted) wake.complete();
   }
 
-  Future<void> close() async {
+  Future<void> close() {
     requestClose();
-    await _subscription.cancel();
+    return _acquisition.close();
   }
+
+  Future<void> retryClose() => _acquisition.retryClose();
 }
 
 final class _DemoThreadsObservation implements ThreadsObservationHandle {
-  _DemoThreadsObservation(this.transport, this.query, this.window)
-    : _changes = _DemoDirectoryChangeSignal(transport);
+  _DemoThreadsObservation(
+    this.transport,
+    this.query,
+    this.window,
+    this.resourceId,
+  ) : _changes = _DemoDirectoryChangeSignal(transport);
 
   final DemoStudioTransport transport;
+  @override
+  final ClientResourceId resourceId;
   final DirectoryQuery query;
   final DirectoryWindow window;
   final _DemoDirectoryChangeSignal _changes;
@@ -207,12 +225,21 @@ final class _DemoThreadsObservation implements ThreadsObservationHandle {
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => _close(retry: false);
+
+  @override
+  Future<void> retryClose() => _close(retry: true);
+
+  Future<void> _close({required bool retry}) async {
     requestClose();
-    await _changes.close();
     final pending = _next;
     if (pending != null) {
       await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+    if (retry) {
+      await _changes.retryClose();
+    } else {
+      await _changes.close();
     }
   }
 }
@@ -226,7 +253,7 @@ bool _sameThreadIds(List<String> left, List<String> right) {
 }
 
 final class _DemoThreadObservation implements ThreadObservationHandle {
-  _DemoThreadObservation(this.transport, this.threadId)
+  _DemoThreadObservation(this.transport, this.threadId, this.resourceId)
     : _changes = _DemoDirectoryChangeSignal(
         transport,
         isRelevant: (frame) => switch (frame) {
@@ -241,6 +268,8 @@ final class _DemoThreadObservation implements ThreadObservationHandle {
       );
 
   final DemoStudioTransport transport;
+  @override
+  final ClientResourceId resourceId;
   final String threadId;
   final _DemoDirectoryChangeSignal _changes;
   Future<ThreadMetadataFrame?>? _next;
@@ -275,12 +304,21 @@ final class _DemoThreadObservation implements ThreadObservationHandle {
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => _close(retry: false);
+
+  @override
+  Future<void> retryClose() => _close(retry: true);
+
+  Future<void> _close({required bool retry}) async {
     requestClose();
-    await _changes.close();
     final pending = _next;
     if (pending != null) {
       await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
+    }
+    if (retry) {
+      await _changes.retryClose();
+    } else {
+      await _changes.close();
     }
   }
 }
@@ -298,9 +336,14 @@ class DemoStudioTransport extends StudioTransport
   Future<RecoveryStateSnapshot> retryRecovery() async => _demoRecoveryState();
 
   DemoStudioTransport({
+    required this.contentScope,
     this.lspActivityLoop = false,
-    this._accountCatalog = demoAccountCatalogFixture,
-  });
+    AccountCatalogView accountCatalog = demoAccountCatalogFixture,
+    // Keep the named argument public for callers in other libraries.
+    // ignore: prefer_initializing_formals
+  }) : _accountCatalog = accountCatalog;
+
+  final ClientScope contentScope;
 
   /// 目录分页窗口的页大小；Driver 模式填充大量历史会话以验收触底加载。
   static const int directoryPageSize = 20;
@@ -319,6 +362,8 @@ class DemoStudioTransport extends StudioTransport
   final Set<_DemoDelay> _demoDelays = {};
   final List<StudioShutdownIssue> _demoBusinessIssues = [];
   Future<void>? _demoBusinessStopped;
+  ClientCloseBudget? _demoCloseBudget;
+  Future<DartResourceCloseResult>? _demoContentClosing;
   Future<StudioExitReport>? _demoShutdown;
 
   void _ensureDemoRunning() {
@@ -417,27 +462,36 @@ class DemoStudioTransport extends StudioTransport
   void sealForShutdown() {
     _accountAdmissionsSealed = true;
     _stopDemoBusiness();
-    for (final observation in _accountObservations.keys.toList()) {
-      observation.requestClose();
-    }
+    contentScope.requestClose();
   }
 
   @override
-  Future<List<StudioShutdownIssue>> cancelDartSubscriptions({
-    required int budgetMs,
-  }) async {
+  Future<DartResourceCloseResult> cancelDartSubscriptions({
+    required ClientCloseBudget budget,
+  }) {
+    if (_demoContentClosing case final closing?) return closing;
+    final completed = Completer<DartResourceCloseResult>();
+    // Publish the work and its original clock before stop callbacks can reenter.
+    _demoContentClosing = completed.future;
+    _demoCloseBudget = budget;
+    unawaited(
+      _closeDemoContent(budget)
+          .then<void>(completed.complete, onError: completed.completeError),
+    );
+    return completed.future;
+  }
+
+  Future<DartResourceCloseResult> _closeDemoContent(
+    ClientCloseBudget budget,
+  ) async {
     sealForShutdown();
-    final deadline = DateTime.now().add(Duration(milliseconds: budgetMs));
     final issues = <StudioShutdownIssue>[];
+    late final CloseReport resources;
     await Future.wait([
       () async {
         try {
-          final remaining = deadline.difference(DateTime.now());
-          await _joinDemoConversations().timeout(
-            remaining > Duration.zero
-                ? remaining
-                : const Duration(microseconds: 1),
-          );
+          final remaining = budget.remaining;
+          await _joinDemoConversations().timeout(remaining);
         } catch (_) {
           issues.add(
             const StudioShutdownIssue(
@@ -452,12 +506,8 @@ class DemoStudioTransport extends StudioTransport
       }(),
       () async {
         try {
-          final remaining = deadline.difference(DateTime.now());
-          await _joinDemoBusiness().timeout(
-            remaining > Duration.zero
-                ? remaining
-                : const Duration(microseconds: 1),
-          );
+          final remaining = budget.remaining;
+          await _joinDemoBusiness().timeout(remaining);
         } catch (_) {
           issues.add(
             const StudioShutdownIssue(
@@ -470,47 +520,40 @@ class DemoStudioTransport extends StudioTransport
           );
         }
       }(),
-      for (final observation in _accountObservations.keys.toList())
-        () async {
-          try {
-            final remaining = deadline.difference(DateTime.now());
-            await observation.close().timeout(
-              remaining > Duration.zero
-                  ? remaining
-                  : const Duration(microseconds: 1),
-            );
-          } catch (_) {
-            issues.add(
-              const StudioShutdownIssue(
-                stage: 'demo-account-observation',
-                code: 'closeFailed',
-                message: 'Account observation did not close',
-                retryable: true,
-                correlationId: 'demo-account-close',
-              ),
-            );
-          }
-        }(),
+      () async {
+        resources = await contentScope.close(budget: budget);
+      }(),
     ]);
-    return [...issues, ..._demoBusinessIssues];
+    return DartResourceCloseResult(
+      resources: resources,
+      issues: [...issues, ..._demoBusinessIssues],
+    );
   }
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) async {
     if (_accountAdmissionsSealed) {
       throw StateError('Demo account observation is closed');
     }
-    late final DemoAccountObservation observation;
-    observation = DemoAccountObservation(
-      read: () => _readAccountDomain(target),
-      onClosed: () {
-        _accountObservations.remove(observation);
+    final entry = contentScope.open<DemoAccountObservation>(
+      'demo-account-observation',
+      (op) async {
+        late final DemoAccountObservation observation;
+        observation = DemoAccountObservation(
+          resourceId: op.resourceId,
+          read: () => _readAccountDomain(target),
+          onClosed: () => _accountObservations.remove(observation),
+        );
+        _accountObservations[observation] = target;
+        return observation;
       },
+      identity: resourceId,
     );
-    _accountObservations[observation] = target;
-    return observation;
+    await entry.ready;
+    return _DemoAccountPort(entry);
   }
 
   @override
@@ -1291,38 +1334,72 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<void> beginRuntimeExit({required int remainingMs}) async {
     sealForShutdown();
-    await _joinDemoBusiness().timeout(
-      Duration(milliseconds: remainingMs > 0 ? remainingMs : 1),
-    );
+    await _joinDemoBusiness().timeout(Duration(milliseconds: remainingMs));
   }
 
   @override
   Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    bool externalDartResourcesReported = false,
     StudioExitIntent intent = StudioExitIntent.exit,
-  }) => _demoShutdown ??= _shutdownDemo(
-    remainingMs: remainingMs,
-    externalIssues: externalIssues,
-  );
+  }) {
+    if (_demoShutdown case final closing?) return closing;
+    if (externalDartResourcesReported && _demoCloseBudget == null) {
+      return Future.error(
+        StateError('Demo content cleanup must start before report handoff'),
+      );
+    }
+    final completed = Completer<StudioExitReport>();
+    _demoShutdown = completed.future;
+    // A direct runtime shutdown establishes the clock only if the coordinator
+    // has not already started content cleanup with its shared budget.
+    final budget =
+        _demoCloseBudget ??
+        ClientCloseBudget(
+          Duration(milliseconds: remainingMs < 0 ? 0 : remainingMs),
+        );
+    unawaited(
+      _shutdownDemo(
+        budget: budget,
+        externalIssues: List.unmodifiable(externalIssues),
+        externalDartResourcesReported: externalDartResourcesReported,
+      ).then<void>(completed.complete, onError: completed.completeError),
+    );
+    return completed.future;
+  }
 
   Future<StudioExitReport> _shutdownDemo({
-    required int remainingMs,
+    required ClientCloseBudget budget,
     required List<StudioShutdownIssue> externalIssues,
+    required bool externalDartResourcesReported,
   }) async {
-    final ownIssues = await cancelDartSubscriptions(budgetMs: remainingMs);
-    final issues = [...externalIssues, ...ownIssues];
+    final issues = [...externalIssues];
+    if (!externalDartResourcesReported) {
+      final own = await cancelDartSubscriptions(budget: budget);
+      issues.addAll([
+        for (final issue in own.issues)
+          if (!externalIssues.any((external) => identical(external, issue)))
+            issue,
+        for (final resource in own.resources.unresolved)
+          StudioShutdownIssue(
+            stage: resource.owner,
+            code: 'closeFailed',
+            message: 'a Dart-owned resource has not confirmed cleanup',
+            retryable: true,
+            correlationId: 'demo-resource-${resource.resourceId}',
+          ),
+      ]);
+    }
+    // With explicit handoff, the coordinator already merged every resource
+    // identity and non-resource issue. Do not wait again or append local copies.
     for (final phase in StudioShutdownPhase.values) {
-      if (shutdownPhaseDelay > Duration.zero) {
-        await Future<void>.delayed(shutdownPhaseDelay);
-      }
+      await _waitDemoShutdownPhase(budget);
       if (phase == StudioShutdownPhase.flushingPersistence) {
         _emitShutdownProgress(
           const FlushingPersistenceProgress(pendingCommits: 3),
         );
-        if (shutdownPhaseDelay > Duration.zero) {
-          await Future<void>.delayed(shutdownPhaseDelay);
-        }
+        await _waitDemoShutdownPhase(budget);
         _emitShutdownProgress(
           const FlushingPersistenceProgress(pendingCommits: 0),
         );
@@ -1349,6 +1426,13 @@ class DemoStudioTransport extends StudioTransport
         persistence: const DrainedStudioPendingPersistence(),
       ),
     );
+  }
+
+  Future<void> _waitDemoShutdownPhase(ClientCloseBudget budget) async {
+    final delay = shutdownPhaseDelay;
+    if (delay <= Duration.zero || budget.expired) return;
+    final remaining = budget.remaining;
+    await Future<void>.delayed(delay < remaining ? delay : remaining);
   }
 
   void _emitShutdownProgress(StudioShutdownProgress progress) {
@@ -1825,16 +1909,32 @@ class DemoStudioTransport extends StudioTransport
   @override
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  ) async {
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  }) async {
     _ensureDemoRunning();
-    return _DemoThreadsObservation(this, query, window);
+    final entry = contentScope.open<_DemoThreadsObservation>(
+      'demo-threads-observation',
+      (op) async => _DemoThreadsObservation(this, query, window, op.resourceId),
+      identity: resourceId,
+    );
+    await entry.ready;
+    return _DemoThreadsPort(entry);
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) async {
     _ensureDemoRunning();
-    return _DemoThreadObservation(this, threadId);
+    final entry = contentScope.open<_DemoThreadObservation>(
+      'demo-thread-observation',
+      (op) async => _DemoThreadObservation(this, threadId, op.resourceId),
+      identity: resourceId,
+    );
+    await entry.ready;
+    return _DemoThreadPort(entry);
   }
 
   ThreadDirectoryFrame _readDirectoryFrame(
@@ -4452,63 +4552,18 @@ class DemoStudioTransport extends StudioTransport
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    if (lspActivityLoop && topic == const LspTopic()) {
-      _startLspActivityLoop();
-    }
-    var detached = false;
-    var baselineEmitted = false;
-    final pending = <ProductTopicEventPayload>[];
-    late final StreamController<ProductTopicFrame> controller;
-    late final void Function(ProductTopicEventPayload) sink;
-
-    void detach() {
-      if (detached) return;
-      detached = true;
-      final sinks = _topicSinks[topic];
-      if (sinks != null) {
-        sinks.remove(sink);
-        if (sinks.isEmpty) _topicSinks.remove(topic);
-      }
-    }
-
-    void receive(ProductTopicEventPayload payload) {
-      if (detached) return;
-      if (!baselineEmitted) {
-        // 基线尚未交付：本 topic 事件先缓冲，保证先基线后增量（无关领域不进入本 receiver）。
-        pending.add(payload);
-        return;
-      }
-      _emitProductFrame(controller, topic, payload);
-    }
-
-    sink = receive;
-
-    controller = StreamController<ProductTopicFrame>(
-      onListen: () async {
-        // receiver 先登记，再取得 canonical 基线：期间本 topic 的事件不丢。
-        (_topicSinks[topic] ??= <void Function(ProductTopicEventPayload)>{})
-            .add(receive);
-        try {
-          final baseline = await _demoTopicBaseline(topic);
-          if (detached) return;
-          baselineEmitted = true;
-          controller.add(baseline);
-          for (final payload in pending) {
-            _emitProductFrame(controller, topic, payload);
-          }
-          pending.clear();
-        } catch (error, stackTrace) {
-          if (!detached) {
-            controller.addError(error, stackTrace);
-          }
-        }
-      },
-      onCancel: () async {
-        detach();
-      },
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
+    _ensureDemoRunning();
+    final entry = contentScope.open<_DemoProductTopicResource>(
+      'demo-product-topic',
+      (op) async => _DemoProductTopicResource(this, topic, op.resourceId),
+      identity: resourceId,
     );
-    return controller.stream;
+    await entry.ready;
+    return _DemoProductTopicPort(entry);
   }
 
   /// 把一个 owner 事实发布给该 topic 的已登记 receiver；无接收者时不缓冲。
@@ -7489,7 +7544,10 @@ ThreadWorkspace _demoUpdateInteraction(
 
 /// Deterministic demo fixture exposed only by the dedicated Driver build.
 class DriverDemoStudioTransport extends DemoStudioTransport {
-  DriverDemoStudioTransport({super.lspActivityLoop});
+  DriverDemoStudioTransport({
+    required super.contentScope,
+    super.lspActivityLoop,
+  });
 
   /// 为子任务交互旅程准备真实 demo 工作区；订阅与归档仍走原所有者。
   void prepareChildInteractionScenario() {

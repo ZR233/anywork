@@ -9,6 +9,7 @@ import '../../accounts/domain/account_values.dart';
 import '../../accounts/domain/accounts_repository.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
+import '../../lifecycle/client_resource.dart';
 import '../../models/delegation_models.dart';
 import '../../models/failure_models.dart';
 import '../../observation/latest_value.dart';
@@ -434,10 +435,34 @@ final class _ModelAccountDemand implements AccountDemand {
   final AccountDemand catalog;
   final AccountDemand configuration;
   Future<void>? _releasing;
+  List<ClientResourceId>? _retirementResourceIds;
   @override
-  Future<void> release() =>
-      _releasing ??= Future.wait([catalog.release(), configuration.release()])
-          .then<void>((_) {});
+  List<ClientResourceId> get retirementResourceIds =>
+      _retirementResourceIds ?? const [];
+  @override
+  Future<void> release() {
+    final existing = _releasing;
+    if (existing != null) return existing;
+    final completion = Completer<void>();
+    final result = _releasing = completion.future;
+    // Both demand revocations run synchronously, even if a sibling throws.
+    final catalogClose = Future<void>.sync(catalog.release);
+    final configurationClose = Future<void>.sync(configuration.release);
+    _retirementResourceIds ??= List.unmodifiable({
+      ...catalog.retirementResourceIds,
+      ...configuration.retirementResourceIds,
+    });
+    completion.complete(
+      Future.wait<void>([catalogClose, configurationClose]).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          if (identical(_releasing, result)) _releasing = null;
+          Error.throwWithStackTrace(error, stack);
+        },
+      ),
+    );
+    return result;
+  }
 }
 
 final class _SyncQueryIdentity {

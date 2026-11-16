@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -826,7 +828,7 @@ void main() {
       (tester) async {
         const threadId = 'thread-main';
         final transport = _PlanVisibilityTransport();
-        final graph = AppGraph(
+        final graph = testAppGraph(
           transport: transport,
           statisticsFeed: const TestStatisticsFeedPort(),
           clientId: 'plan-activity-visibility',
@@ -1325,7 +1327,7 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'activity visibility close',
         );
         expect(lease.isRetired, isTrue);

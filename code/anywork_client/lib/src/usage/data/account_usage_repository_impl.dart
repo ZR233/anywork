@@ -7,6 +7,7 @@ import '../../accounts/data/account_settings_mutations.dart'
 import '../../accounts/domain/account_identity.dart';
 import '../../accounts/domain/account_values.dart';
 import '../../accounts/domain/accounts_repository.dart';
+import '../../lifecycle/client_resource.dart';
 import '../../models/failure_models.dart';
 import '../../observation/latest_value.dart';
 import '../domain/account_usage.dart';
@@ -212,9 +213,7 @@ final class AccountUsageRepositoryImpl implements AccountUsageRepository {
       unawaited(summaries.release());
       rethrow;
     }
-    return _UsageDemand(() async {
-      await Future.wait([summaries.release(), usage.release()]);
-    });
+    return _UsageDemand(summaries, usage);
   }
 
   @override
@@ -312,9 +311,14 @@ final class _UsageQueryFailure {
 }
 
 final class _UsageDemand implements AccountDemand {
-  _UsageDemand(this._release);
-  final Future<void> Function() _release;
+  _UsageDemand(this.summaries, this.usage);
+  final AccountDemand summaries;
+  final AccountDemand usage;
   Future<void>? _releasing;
+  List<ClientResourceId>? _retirementResourceIds;
+  @override
+  List<ClientResourceId> get retirementResourceIds =>
+      _retirementResourceIds ?? const [];
   @override
   Future<void> release() {
     final existing = _releasing;
@@ -322,11 +326,21 @@ final class _UsageDemand implements AccountDemand {
     final completion = Completer<void>();
     final result = _releasing = completion.future;
     // Native close may synchronously release this same display demand again.
-    try {
-      completion.complete(_release());
-    } catch (error, stack) {
-      completion.completeError(error, stack);
-    }
+    final summariesClose = Future<void>.sync(summaries.release);
+    final usageClose = Future<void>.sync(usage.release);
+    _retirementResourceIds ??= List.unmodifiable({
+      ...summaries.retirementResourceIds,
+      ...usage.retirementResourceIds,
+    });
+    completion.complete(
+      Future.wait<void>([summariesClose, usageClose]).then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stack) {
+          if (identical(_releasing, result)) _releasing = null;
+          Error.throwWithStackTrace(error, stack);
+        },
+      ),
+    );
     return result;
   }
 }

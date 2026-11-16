@@ -19,6 +19,7 @@ import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.da
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/infrastructure/frb/studio_update_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -65,14 +66,28 @@ void main() {
     });
   }
 
-  final transport = _SubmissionTransport(record);
+  final root = ClientScope(owner: 'message-submission');
+  final runtime = FrbRuntimeOwner(startupScope: root.child('startup'));
+  final transport = _SubmissionTransport(
+    record,
+    runtime: runtime,
+    contentScope: root.child('transport-content'),
+    progressScope: root.child('shutdown-progress'),
+  );
   // Same real adapters as the production composition root; only the transport
   // subclass adds explicit test-owned barriers around real calls/delivery.
   final graph = AppGraph(
+    scope: root.child('app'),
+    closeLifecycleRoot: (budget) async {
+      final report = await root.close(budget: budget);
+      runtime.recordLifecycleCloseReport(report);
+      return report;
+    },
     transport: transport,
+    acpBusinessPort: FrbAcpBusinessPort(ensureReady: runtime.ensureReady),
     statisticsFeed: const FrbStatisticsFeedPort(),
-    updateApi: const FrbStudioUpdateApi(),
-    startupHost: FrbStudioStartupHost(),
+    updateApi: FrbStudioUpdateApi(ensureReady: runtime.ensureReady),
+    startupHost: FrbStudioStartupHost(runtime),
   );
   final container = ProviderContainer(
     overrides: [
@@ -106,7 +121,8 @@ void main() {
         transport,
         (_) {},
         remainingMs: 30000,
-        closeClient: (deadline) => graph.close(deadline: deadline),
+        closeClient: (budget) => graph.close(budget: budget),
+        closeRoot: graph.closeLifecycleRoot,
       );
       report['shutdownIssues'] = shutdown.shutdown.issues
           .map((issue) => issue.toString())
@@ -164,7 +180,7 @@ void main() {
         await tester.pumpWidget(const SizedBox());
         expect(
           (await graph.client.conversations.retryCleanup(
-            deadline: DateTime.now().add(const Duration(seconds: 5)),
+            budget: ClientCloseBudget(const Duration(seconds: 5)),
           )).complete,
           isTrue,
         );
@@ -615,7 +631,12 @@ void main() {
 
 /// The gate delays real work, not its outcome. No receipt or frame is synthesized.
 class _SubmissionTransport extends FrbStudioTransport {
-  _SubmissionTransport(this.record);
+  _SubmissionTransport(
+    this.record, {
+    required super.runtime,
+    required super.contentScope,
+    required super.progressScope,
+  });
   final void Function(String, [Map<String, Object?>]) record;
   Completer<void>? _rpc;
   Completer<void>? _feed;

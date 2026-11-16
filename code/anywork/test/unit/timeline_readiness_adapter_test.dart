@@ -1,6 +1,7 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
-import 'package:anywork/src/app/app_graph.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/recording_demo_transport.dart';
@@ -18,16 +19,14 @@ void main() {
       opened.complete(held);
       return held;
     };
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'reader-readiness',
     );
     addTearDown(() async {
       if (!release.isCompleted) release.complete();
-      await graph.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      );
+      await graph.close(budget: ClientCloseBudget(const Duration(seconds: 5)));
     });
     await graph.client.bootstrap();
     graph.timeline.updateReadDemand(chatDemand);

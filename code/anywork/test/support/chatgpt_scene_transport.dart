@@ -1,3 +1,6 @@
+import 'test_app_lifecycle.dart';
+import 'test_resource_owners.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
@@ -10,7 +13,7 @@ import '../../../anywork_client/test/support/accounts_test_runtime.dart';
 
 /// Controls external replies only. The account Client, command lanes, router,
 /// Riverpod projections and widgets are production implementations.
-class ChatGptSceneTransport extends DemoStudioTransport {
+class ChatGptSceneTransport extends TestDemoStudioTransport {
   ChatGptSceneTransport() : super(accountCatalog: _catalog());
   final _observers = <AccountObservationTarget, Set<TestAccountObservation>>{};
   final logins = <String, ChatGptLoginSnapshot>{};
@@ -142,16 +145,18 @@ class ChatGptSceneTransport extends DemoStudioTransport {
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) => ownTestAccountObservation(contentScope, resourceId, (operation) async {
     late TestAccountObservation observation;
     observation = TestAccountObservation(
       () => _observers[target]?.remove(observation),
+      resourceId: operation.resourceId,
     );
     _observers.putIfAbsent(target, () => {}).add(observation);
     observation.emit(await readAccountDomain(target));
     return observation;
-  }
+  });
 
   void emit(AccountDomainFrame frame) {
     for (final observer
