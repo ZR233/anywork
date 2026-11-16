@@ -66,5 +66,89 @@ class LinuxContainerTest(unittest.TestCase):
         self.assertFalse(any(value.startswith("CARGO_HOME=") for value in arguments))
 
 
+class LinuxBuildHandoffTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(
+            prefix="image handoff-", dir=os.environ.get("PR_HANDOFF_TEST_SCRATCH")
+        )
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.workspace = Path(__file__).resolve().parents[2]
+        self.calls = self.root / "docker.jsonl"
+        self.output = self.root / "github-env"
+        binary = self.root / "bin"
+        binary.mkdir()
+        docker = binary / "docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "calls = Path(os.environ['DOCKER_CALLS'])\n"
+            "with calls.open('a') as log:\n"
+            "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "if sys.argv[1] == 'pull':\n"
+            "    attempts = sum(json.loads(line)[0] == 'pull' for line in calls.read_text().splitlines())\n"
+            "    if attempts <= int(os.environ['DOCKER_PULL_FAILURES']):\n"
+            "        print('read: connection reset by peer', file=sys.stderr)\n"
+            "        sys.exit(23)\n"
+            "elif sys.argv[1:3] == ['image', 'inspect']:\n"
+            "    print(os.environ['IMAGE_KEY'])\n"
+            "else:\n"
+            "    sys.exit(97)\n"
+        )
+        docker.chmod(0o755)
+        sleep = binary / "sleep"
+        sleep.write_text("#!/usr/bin/env bash\nexit 0\n")
+        sleep.chmod(0o755)
+        key = subprocess.check_output(
+            ["python3", "docker/linux/scripts/image-key.py"],
+            cwd=self.workspace, text=True,
+        ).strip()
+        self.image = "ghcr.io/zr233/anywork-linux-build@sha256:" + "a" * 64
+        self.environment = dict(
+            os.environ, PATH=f"{binary}{os.pathsep}{os.environ['PATH']}",
+            LINUX_IMAGE_REF=self.image, IMAGE_KEY=key,
+            DOCKER_CALLS=str(self.calls), GITHUB_ENV=str(self.output),
+        )
+
+    def run_handoff(self, failures):
+        self.calls.unlink(missing_ok=True)
+        self.output.unlink(missing_ok=True)
+        return subprocess.run(
+            ["bash", ".github/scripts/linux-build-handoff.sh"],
+            cwd=self.workspace,
+            env=dict(self.environment, DOCKER_PULL_FAILURES=str(failures)),
+            text=True, capture_output=True, check=False,
+        )
+
+    def commands(self):
+        return [json.loads(line) for line in self.calls.read_text().splitlines()]
+
+    def test_success_and_transient_failures_restore_the_same_digest(self):
+        for failures in (0, 1, 2):
+            with self.subTest(failures=failures):
+                result = self.run_handoff(failures)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                pulls = [args for args in self.commands() if args[0] == "pull"]
+                self.assertEqual(pulls, [["pull", self.image]] * (failures + 1))
+                self.assertEqual(
+                    self.output.read_text(), f"LINUX_BUILD_IMAGE={self.image}\n"
+                )
+
+    def test_persistent_failure_returns_the_original_error_without_export(self):
+        result = self.run_handoff(3)
+        self.assertEqual(result.returncode, 23, result.stderr)
+        self.assertEqual(self.commands(), [["pull", self.image]] * 3)
+        self.assertIn("connection reset by peer", result.stderr)
+        self.assertFalse(self.output.exists())
+
+    def test_download_success_does_not_retry_or_accept_an_identity_mismatch(self):
+        self.environment["IMAGE_KEY"] = "0" * 64
+        result = self.run_handoff(0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual([args[0] for args in self.commands()], ["pull", "image"])
+        self.assertFalse(self.output.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

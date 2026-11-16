@@ -4,7 +4,18 @@ set -euo pipefail
 
 if [ -n "${LINUX_IMAGE_REF:-}" ]; then
   [[ "$LINUX_IMAGE_REF" =~ ^ghcr\.io/zr233/anywork-linux-build@sha256:[0-9a-f]{64}$ ]]
-  docker pull "$LINUX_IMAGE_REF"
+  for attempt in 1 2 3; do
+    if docker pull "$LINUX_IMAGE_REF"; then
+      break
+    else
+      pull_status=$?
+      if [ "$attempt" -eq 3 ]; then
+        exit "$pull_status"
+      fi
+      echo "::warning::Image download failed (attempt $attempt/3); retrying the same digest." >&2
+      sleep "$((attempt * 2))"
+    fi
+  done
   image="$LINUX_IMAGE_REF"
 else
   [[ "${LINUX_IMAGE_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]
