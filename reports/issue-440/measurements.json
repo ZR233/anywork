@@ -44,14 +44,14 @@
         "physical_lines": 214324
       }
     },
-    "9035673bc02cdde6d0c181c233bdfe2cadc42bc9": {
+    "9c69048a43fcd7fed5d36e87e0d5177fed4ad6fb": {
       "generated_source": {
         "files": 158,
         "physical_lines": 293021
       },
       "handwritten_source_files_including_inline_tests": {
         "files": 2155,
-        "physical_lines": 742329
+        "physical_lines": 742377
       },
       "test_source_files": {
         "files": 389,
@@ -170,17 +170,17 @@
   },
   "audit_cleanup": {
     "base": "c8548e0a6ce027770ad4858ecb6c14f9f2e32098",
-    "head": "9035673bc02cdde6d0c181c233bdfe2cadc42bc9",
+    "head": "9c69048a43fcd7fed5d36e87e0d5177fed4ad6fb",
     "groups": {
       "handwritten_source_files_including_inline_tests": {
-        "added": 59,
-        "deleted": 63,
-        "net": -4
+        "added": 114,
+        "deleted": 70,
+        "net": 44
       },
       "other": {
-        "added": 413,
+        "added": 418,
         "deleted": 0,
-        "net": 413
+        "net": 418
       },
       "test_source_files": {
         "added": 32,
