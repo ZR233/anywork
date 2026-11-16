@@ -427,7 +427,7 @@ pub(crate) mod tests {
         config::{ConfigPaths, ConfigStore, StudioConfig},
     };
 
-    pub(super) const MODEL: &str = "bridge-chat-fixture";
+    pub(crate) const MODEL: &str = "bridge-chat-fixture";
     const ACCOUNT: &str = "bridge-chat-fixture";
     const PROMPT: &str = "conversation read lease";
     const INPUT: &str = "input-bridge-chat";
@@ -445,7 +445,7 @@ pub(crate) mod tests {
             Self::with_followup(None).await
         }
 
-        pub(super) async fn with_followup(reply: Option<Reply>) -> Result<Self> {
+        pub(crate) async fn with_followup(reply: Option<Reply>) -> Result<Self> {
             Self::with_model_followup(reply, Self::model_info()).await
         }
 
@@ -621,7 +621,7 @@ pub(crate) mod tests {
                 .await
         }
 
-        pub(super) async fn submit_followup(&self) -> Result<()> {
+        pub(crate) async fn submit_followup(&self) -> Result<()> {
             let snapshot = self.runtime.thread_snapshot(&self.thread_id).await?;
             Box::pin(
                 self.runtime.submit_prompt_command(
@@ -642,6 +642,10 @@ pub(crate) mod tests {
             )
             .await?;
             Ok(())
+        }
+
+        pub(crate) fn home_path(&self) -> std::path::PathBuf {
+            self._temp.path().join("home")
         }
 
         pub(crate) async fn finish(self, result: Result<()>) -> Result<()> {
