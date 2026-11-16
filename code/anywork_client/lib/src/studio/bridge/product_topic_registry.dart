@@ -548,7 +548,7 @@ final class _Lease implements BridgeTopicLease {
       entry.refs--;
       if (entry.refs == 0) {
         _retirement = entry._source;
-        if (_retirement case final source?) {
+        if (_retirement case final source? when !source.acquisition.isClosed) {
           _retirementResourceIds = List.unmodifiable([
             source.acquisition.resourceId,
           ]);

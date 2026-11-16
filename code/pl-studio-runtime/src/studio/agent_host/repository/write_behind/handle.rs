@@ -136,6 +136,11 @@ impl ThreadWriteBehindWriter {
         self.shared.state.subscribe()
     }
 
+    #[cfg(test)]
+    pub(in crate::studio) fn state_subscriber_count_for_test(&self) -> usize {
+        self.shared.state.receiver_count()
+    }
+
     /// 跳过当前退避等待并立即重试队首批次；不丢弃任何待落库事实。
     pub(in crate::studio) fn retry_now(&self) {
         if self.pending_commit_count() > 0 && self.task_is_none() {

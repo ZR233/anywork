@@ -5,7 +5,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_connectors.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_views.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/presentation/providers/thread_directory_store.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -522,7 +521,7 @@ void main() {
         statisticsFeed: const TestStatisticsFeedPort(),
       );
       final container = ProviderContainer(
-        overrides: [anyworkClientProvider.overrideWithValue(first.client)],
+        overrides: [appGraphProvider.overrideWithValue(first)],
       );
       addTearDown(() async {
         container.dispose();
@@ -600,7 +599,7 @@ void main() {
 
       // Same thread ID on a new Client must not read the retired Client's row.
       container.updateOverrides([
-        anyworkClientProvider.overrideWithValue(replacement.client),
+        appGraphProvider.overrideWithValue(replacement),
       ]);
       await tester.pump();
       await pumpClientUntil(

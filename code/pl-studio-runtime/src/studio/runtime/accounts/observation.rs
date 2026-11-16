@@ -1,5 +1,6 @@
 use super::super::StudioRuntime;
 use crate::StudioProductTopic;
+use crate::studio::product_event_bus::ProductTopicSignal;
 use anyhow::Result;
 use pl_protocol::studio::{
     AccountDomainFrame, AccountObservationTarget, ResourceStamp, StudioError, StudioErrorCode,
@@ -22,10 +23,33 @@ struct ObservationInner {
 }
 
 struct ReadState {
-    signal: Option<watch::Receiver<()>>,
+    signal: Option<AccountSignal>,
     initial: bool,
     last: Option<ResourceStamp>,
     target_revision: Option<Option<u64>>,
+}
+
+enum AccountSignal {
+    Topic(ProductTopicSignal),
+    Login(watch::Receiver<()>),
+}
+
+impl AccountSignal {
+    async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        match self {
+            Self::Topic(signal) => signal.changed().await,
+            Self::Login(signal) => signal.changed().await,
+        }
+    }
+
+    fn mark_current(&mut self) {
+        match self {
+            Self::Topic(signal) => signal.mark_current(),
+            Self::Login(signal) => {
+                signal.borrow_and_update();
+            }
+        }
+    }
 }
 
 pub(super) fn open(
@@ -55,12 +79,14 @@ pub(super) fn open(
         AccountObservationTarget::AcpLocalDetection => StudioProductTopic::AcpLocalDetection,
     };
     let signal = if matches!(&target, AccountObservationTarget::ChatGptLogin { .. }) {
-        runtime.chatgpt_auth.subscribe()
+        AccountSignal::Login(runtime.chatgpt_auth.subscribe())
     } else {
-        runtime
-            .agent_facility
-            .product_events
-            .subscribe_topic_signal(&topic)
+        AccountSignal::Topic(
+            runtime
+                .agent_facility
+                .product_events
+                .subscribe_topic_signal(&topic),
+        )
     };
     Ok(AccountObservation {
         inner: Arc::new(ObservationInner {
@@ -104,7 +130,7 @@ impl AccountObservation {
             }
             state.initial = false;
             if let Some(signal) = state.signal.as_mut() {
-                signal.borrow_and_update();
+                signal.mark_current();
             }
             let target_revision = match &self.inner.target {
                 AccountObservationTarget::Detail { identity } => Some(

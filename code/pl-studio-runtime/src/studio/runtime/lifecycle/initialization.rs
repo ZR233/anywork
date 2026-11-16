@@ -8,7 +8,9 @@ use crate::studio::startup::{StartupBackup, input_error};
 use crate::{StudioStartupError, StudioStartupErrorKind, StudioStartupStage, StudioStore};
 
 use super::super::StudioRuntime;
-use super::super::background_task::{self, BackgroundTask};
+use super::super::observation_lifecycle::{
+    ObservationCloseError, ObserverOpenResult, ObserverTask, RuntimeObserver,
+};
 
 type Observer = Arc<dyn Fn(StudioStartupStage) + Send + Sync>;
 
@@ -364,7 +366,9 @@ impl StudioRuntime {
             }
         }
         // 配置 watch 转发由 runtime 持有；失败路径由 `dispose_startup` 取消并等待。
-        self.start_agent_profiles_forwarder().await;
+        self.start_agent_profiles_forwarder()
+            .await
+            .map_err(|error| observer_start_error("start_agent_profiles", error))?;
         self.store.calls().start().await;
         let writer = self
             .agent_facility
@@ -378,17 +382,22 @@ impl StudioRuntime {
                     anyhow::anyhow!("missing persistence owner"),
                 )
             })?;
-        *self.persistence_observer.lock().await = Some(BackgroundTask::new(
-            self.agent_facility
-                .product_events
-                .observe_persistence(writer.subscribe_state()),
-        ));
+        self.start_persistence_observer(writer)
+            .await
+            .map_err(|error| {
+                observer_start_error(
+                    "start_persistence_observer",
+                    super::super::observation_lifecycle::ObservationStartError(error).into(),
+                )
+            })?;
         self.start_model_refresh().await;
         self.start_model_catalog_probes()
             .await
             .map_err(|error| internal("start_model_catalogs", error))?;
         self.start_tool_refresh().await;
-        self.start_lsp_state_watcher().await;
+        self.start_lsp_state_watcher()
+            .await
+            .map_err(|error| observer_start_error("start_lsp_state", error))?;
         check_cancelled(cancellation)?;
         self.runtime_state
             .apply(crate::studio::StudioRuntimeCommand::FinishInitialize {
@@ -404,21 +413,60 @@ impl StudioRuntime {
         Ok(())
     }
 
-    async fn dispose_startup(&self) -> Result<(), StudioStartupError> {
-        self.account_usage.request_close();
-        let usage = self.account_usage.close().await;
-        let catalogs = self.stop_model_catalog_probes().await;
+    fn start_persistence_observer(
+        &self,
+        writer: crate::studio::agent_host::ThreadWriteBehindWriter,
+    ) -> impl std::future::Future<Output = ObserverOpenResult> + Send + 'static {
+        let bus = self.agent_facility.product_events.clone();
+        let threads = self.store.thread_persistence().clone();
+        self.observations.start(
+            RuntimeObserver::Persistence,
+            move |cancellation| async move {
+                // 两个通知接收者都在作用域登记后创建；未启动的 future 不持观察需求。
+                let task = bus.observe_persistence(
+                    writer.subscribe_state(),
+                    threads.subscribe(),
+                    cancellation.clone(),
+                );
+                Ok(ObserverTask::new(cancellation, task))
+            },
+        )
+    }
+
+    pub(super) async fn dispose_startup(&self) -> Result<(), StudioStartupError> {
+        // 在任何 join 前通知所有独立 owner；投影的当前迭代只能自然收束。
+        self.broadcast_cancel().await;
         // All independent cleanup runs even when one task reports an error.
-        let results = tokio::join!(
-            self.stop_recovery_scan(),
-            self.stop_model_refresh(),
-            self.stop_tool_refresh(),
-            self.stop_lsp_state_watcher(),
-            self.stop_agent_profiles_forwarder()
+        let (usage, catalogs, results, observers, sessions) = tokio::join!(
+            self.account_usage.close(),
+            self.stop_model_catalog_probes(),
+            async {
+                tokio::join!(
+                    self.stop_recovery_scan(),
+                    self.stop_model_refresh(),
+                    self.stop_tool_refresh(),
+                )
+            },
+            async {
+                tokio::join!(
+                    self.observations.close(RuntimeObserver::Lsp, None),
+                    self.observations.close(RuntimeObserver::Profiles, None),
+                    self.observations.close(RuntimeObserver::Persistence, None),
+                )
+            },
+            async {
+                let result = self.shutdown_agent_framework().await;
+                #[cfg(test)]
+                if result.is_ok() {
+                    self.service_stops.note_sessions_acked();
+                }
+                result
+            },
         );
-        let observer = background_task::stop(&self.persistence_observer).await;
-        let sessions = self.shutdown_agent_framework().await;
-        let lsp = if sessions.is_ok() {
+        let lsp = if sessions.is_ok() && observers.0.is_clean() {
+            #[cfg(test)]
+            self.service_stops
+                .note_stop("lsp", &self.observations.lsp_projection_probe());
             self.external_runtimes
                 .lsp
                 .shutdown()
@@ -426,10 +474,13 @@ impl StudioRuntime {
                 .map_err(anyhow::Error::from)
         } else {
             Err(anyhow::anyhow!(
-                "Session resources have not closed; shared LSP retained"
+                "Session or LSP projection resources have not closed; shared LSP retained"
             ))
         };
         let ssh = if sessions.is_ok() && lsp.is_ok() {
+            #[cfg(test)]
+            self.service_stops
+                .note_stop("ssh", &self.observations.lsp_projection_probe());
             self.ssh_manager
                 .shutdown()
                 .await
@@ -465,15 +516,19 @@ impl StudioRuntime {
         };
         catalogs.map_err(|error| internal("stop_model_catalogs", error))?;
         usage.map_err(|error| internal("stop_account_usage", error))?;
-        for result in [results.0, results.1, results.2, results.3, results.4] {
+        for result in [results.0, results.1, results.2] {
             result.map_err(|error| internal("stop_services", error))?;
         }
-        observer.map_err(|error| {
-            internal(
-                "stop_persistence_observer",
-                anyhow::anyhow!(error.to_string()),
-            )
-        })?;
+        // 保留原有失败优先级：服务（LSP、Profiles）先于 persistence observer。
+        for (step, report) in [
+            ("stop_services", observers.0),
+            ("stop_services", observers.1),
+            ("stop_persistence_observer", observers.2),
+        ] {
+            if !report.is_clean() {
+                return Err(internal(step, ObservationCloseError(report)));
+            }
+        }
         sessions.map_err(|error| internal("close_sessions", error))?;
         lsp.map_err(|error| internal("close_lsp", error))?;
         ssh.map_err(|error| environment("close_ssh", error))?;
@@ -504,6 +559,26 @@ fn internal(step: &'static str, source: impl Into<anyhow::Error>) -> StudioStart
     StudioStartupError::new(step, StudioStartupErrorKind::Internal, source)
 }
 
+fn observer_start_error(step: &'static str, source: anyhow::Error) -> StudioStartupError {
+    let cancelled = source
+        .downcast_ref::<super::super::observation_lifecycle::ObservationStartError>()
+        .is_some_and(|error| {
+            matches!(
+                error.0.as_ref(),
+                pl_lifecycle::OpenError::Cancelled | pl_lifecycle::OpenError::ScopeClosed
+            )
+        });
+    StudioStartupError::new(
+        step,
+        if cancelled {
+            StudioStartupErrorKind::Cancelled
+        } else {
+            StudioStartupErrorKind::Internal
+        },
+        source,
+    )
+}
+
 fn environment(step: &'static str, source: impl Into<anyhow::Error>) -> StudioStartupError {
     StudioStartupError::new(step, StudioStartupErrorKind::Environment, source)
 }
@@ -523,4 +598,109 @@ fn check_cancelled(cancellation: &CancellationToken) -> Result<(), StudioStartup
 async fn timed_step<F: std::future::Future>(name: &'static str, future: F) -> F::Output {
     let _timing = crate::startup_timing::Stage::new(name);
     future.await
+}
+
+#[cfg(test)]
+mod observer_start_tests {
+    use super::*;
+    use crate::studio::runtime::observation_lifecycle::{
+        ObservationStartError, RuntimeObservationOwner,
+    };
+
+    #[tokio::test]
+    async fn persistence_receivers_are_created_only_after_scope_admission() -> anyhow::Result<()> {
+        use crate::studio::runtime::bot_archive_test_host::BotArchiveTestHost;
+
+        let temp = tempfile::tempdir()?;
+        let host = BotArchiveTestHost::new(temp.path()).await?;
+        let writer = host
+            .runtime
+            .agent_facility
+            .persistence
+            .lock()
+            .await
+            .clone()
+            .expect("initialized persistence owner");
+        let threads = host.runtime.store.thread_persistence().clone();
+        let counts = || {
+            (
+                writer.state_subscriber_count_for_test(),
+                threads.state_subscriber_count_for_test(),
+            )
+        };
+        let baseline = counts();
+        let mut runtime = host.runtime.as_ref().clone();
+        runtime.observations = Arc::new(RuntimeObservationOwner::new());
+
+        let unpolled = runtime.start_persistence_observer(writer.clone());
+        assert_eq!(counts(), baseline);
+        runtime.observations.request_close();
+        assert!(
+            runtime
+                .observations
+                .close(RuntimeObserver::Persistence, None)
+                .await
+                .is_clean()
+        );
+        assert!(matches!(
+            unpolled.await,
+            Err(error) if matches!(error.as_ref(), pl_lifecycle::OpenError::ScopeClosed)
+        ));
+        assert_eq!(counts(), baseline);
+
+        runtime.observations = Arc::new(RuntimeObservationOwner::new());
+        let started = runtime
+            .start_persistence_observer(writer.clone())
+            .await
+            .map_err(ObservationStartError)?;
+        assert_eq!(counts(), (baseline.0 + 1, baseline.1 + 1));
+        runtime.observations.request_close();
+        assert!(
+            runtime
+                .observations
+                .close(RuntimeObserver::Persistence, None)
+                .await
+                .is_clean()
+        );
+        assert_eq!(counts(), baseline);
+        drop(started);
+        drop(runtime);
+        host.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[test]
+    fn startup_observer_errors_keep_original_source_and_cancel_classification() {
+        for (source, kind) in [
+            (
+                pl_lifecycle::OpenError::ScopeClosed,
+                StudioStartupErrorKind::Cancelled,
+            ),
+            (
+                pl_lifecycle::OpenError::Cancelled,
+                StudioStartupErrorKind::Cancelled,
+            ),
+            (
+                pl_lifecycle::OpenError::Panicked,
+                StudioStartupErrorKind::Internal,
+            ),
+            (
+                pl_lifecycle::OpenError::WorkerStopped,
+                StudioStartupErrorKind::Internal,
+            ),
+        ] {
+            let source = Arc::new(source);
+            let error = observer_start_error(
+                "start_lsp_state",
+                ObservationStartError(source.clone()).into(),
+            );
+            assert_eq!(error.kind, kind);
+            assert_eq!(error.step, "start_lsp_state");
+            let retained = std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<ObservationStartError>()
+                .expect("original typed startup error");
+            assert!(Arc::ptr_eq(&source, &retained.0));
+        }
+    }
 }
