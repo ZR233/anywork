@@ -5,6 +5,10 @@ use sha2::Sha256;
 
 use super::{HistoryCut, HistoryError, HistoryEventsQuery, Result};
 
+// A legal 16 KiB indexed header can be repeated in a query identity, then base64 encoded.
+// Leave room for that identity and the signed cut without issuing an unreadable cursor.
+const MAX_TOKEN_BYTES: usize = 64 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Query {
     Main,
@@ -67,14 +71,20 @@ impl Codec {
         })?;
         let mut mac = self.mac();
         mac.update(&data);
-        Ok(format!(
+        let token = format!(
             "{}.{}",
             URL_SAFE_NO_PAD.encode(&data),
             URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-        ))
+        );
+        if token.len() > MAX_TOKEN_BYTES {
+            return Err(HistoryError::InvalidDemand(
+                "history cursor identity exceeds its bounded encoding".into(),
+            ));
+        }
+        Ok(token)
     }
     pub fn decode<T: DeserializeOwned>(&self, token: &str) -> Result<T> {
-        if token.len() > 16 * 1024 {
+        if token.len() > MAX_TOKEN_BYTES {
             return Err(HistoryError::InvalidCursor);
         }
         let (data, signature) = token.split_once('.').ok_or(HistoryError::InvalidCursor)?;

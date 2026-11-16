@@ -501,6 +501,30 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
         Err(HistoryError::InvalidCursor)
     ));
     other_reader.close().await;
+    let long_call_id = "c".repeat(14_000);
+    let mut long_events = Vec::new();
+    for id in ["long-first", "long-second"] {
+        let mut event = HistoryEvent::new(id, HistoryEventKind::EntityStarted, 1);
+        event.header.call_id = Some(long_call_id.clone());
+        long_events.push(event);
+    }
+    store.accept_batch(&long_events).await?;
+    let query = HistoryEventsQuery::Call {
+        call_id: long_call_id,
+    };
+    let request = HistoryDemand {
+        max_rows: 1,
+        max_bytes: 1_048_576,
+    };
+    let first = reader
+        .events_page(query.clone(), None, None, request)
+        .await?;
+    let next = first
+        .next
+        .expect("full long-identity page must have a cursor");
+    assert!(next.len() > 16 * 1024);
+    let second = reader.events_page(query, None, Some(next), request).await?;
+    assert_eq!(second.entries[0].header.event_id, "long-first");
     reader.close().await;
     store.close().await?;
     Ok(())
