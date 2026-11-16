@@ -111,7 +111,11 @@ stdout 与 stderr 的纯输出内容共用请求的 UTF-8 字节预算，默认�
 
 ## 9.5 Lua 编排与供应商编程式调用
 
-Native 的 `exec` 是 Lua 5.4 编排入口，参数为必填 `code`、可选 `timeoutMs` 与 `maxOutputBytes`。原 shell 工具为 `exec_command`，输入为 `command`、`interactive`、`cwd`、`timeoutSeconds`、`maxOutputChars`。不再接收旧 shell `exec` 调用；历史中的旧名称和原 `pl.tool.exec` v1/v2 回执继续按保存格式读取。
+Native 的 `exec` 是 Lua 5.4 编排入口，参数为必填 `code`、可选 `args`、`timeoutMs` 与 `maxOutputBytes`。
+
+`args` 是 JSON 对象（默认 `{}`），经既有 Serde 转换后作为本次 VM 的全局变量 `args` 交给程序；字段值可以是任意 JSON 类型，嵌套 null 对应 `json.null`。不能再将整个对象编码为 JSON 字符串传入。命令、补丁及其他正文优先放在该字段，不拼入 Lua 源码。例如 `{"code":"return tools.exec_command(args)","args":{"command":"pwd"}}`，补丁则使用 `{"code":"return tools.apply_patch(args.patch)","args":{"patch":"*** Begin Patch\n...\n*** End Patch"}}`。只解析 `code`，不将 `args` 当代码求值；数据不会增加工具、路径或执行权限，也不跨调用保留。
+
+原 shell 工具为 `exec_command`，输入为 `command`、`interactive`、`cwd`、`timeoutSeconds`、`maxOutputChars`。不再接收旧 shell `exec` 调用；历史中的旧名称和原 `pl.tool.exec` v1/v2 回执继续按保存格式读取。
 
 外层 `exec` 复用标准后台任务策略：超过前台交付窗口就返回程序 taskId，原 VM 和子命令继续由 Thread 持有；`wait` 等待该程序终态，取消和关闭仍由原 owner 收束。Lua 内子调用继续等待真实终态；需要输入时，另一次程序用任务查询取得运行中子命令的 taskId，再调用 `write_stdin`。这支持标准输入管道，不包含 PTY 或持久 REPL。
 

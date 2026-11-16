@@ -62,6 +62,7 @@ async fn parallel_failure_stops_queued_side_effects_before_explicit_recovery() {
 fn input(code: &str) -> ExecInput {
     ExecInput {
         code: code.into(),
+        args: Default::default(),
         timeout_ms: None,
         max_output_bytes: None,
     }
@@ -172,7 +173,16 @@ async fn caller_can_extend_deadline_and_model_output_without_extra_ceiling() {
 async fn syntax_and_unknown_binding_diagnostics_do_not_admit_calls_or_dump_results() {
     for (code, hint) in [
         ("pwd; rg --files", "before any tool started"),
+        (
+            r#"tools.read({command="grep 'alpha\|beta' sample.txt"})"#,
+            "invalid escape",
+        ),
+        ("tools.read([=[text])", "unfinished long string"),
         ("tools.missing({})", "frozen SDK"),
+        (
+            "parallel(function() return tools.read(1) end, function() return tools.read(2) end)",
+            "expected table",
+        ),
         ("tools.read('fail')", "deliberate tool failure"),
     ] {
         let host = Host::default();
@@ -187,4 +197,57 @@ async fn syntax_and_unknown_binding_diagnostics_do_not_admit_calls_or_dump_resul
             usize::from(code == "tools.read('fail')")
         );
     }
+}
+
+#[tokio::test]
+async fn json_arguments_reach_tools_without_lua_string_interpolation() {
+    let arguments = json!({
+        "command": "grep -n 'alpha\\|beta' sample.txt",
+        "patch": "*** Begin Patch\n*** Add File: fixture.txt\n+[[plain]]\n+[=[level-one]=]\n*** End Patch\n",
+        "quoted": "it's \"ready\"; C:\\work\\new",
+        "items": [null, true, 7, "雪"],
+        "empty": [],
+    });
+    let definition = pl_tool_lua::definition("tools.read(args)");
+    let pl_agent_tool::InputFormat::JsonSchema(schema) = definition.input() else {
+        panic!("exec must publish a JSON input schema");
+    };
+    assert_eq!(schema["properties"]["args"]["type"], "object");
+    // A JSON-encoded string is not the named argument object advertised to the model.
+    assert!(
+        serde_json::from_value::<ExecInput>(json!({
+            "code": "return tools.read(args)",
+            "args": "{\"command\":\"pwd\"}",
+        }))
+        .is_err()
+    );
+    let host = Host::default();
+    for arguments in [arguments, json!("tools.write('must not run'); ]=]\n雪\\n")] {
+        let request: ExecInput = serde_json::from_value(json!({
+            "code": "return tools.read(args.value).value",
+            "args": {"value": arguments},
+        }))
+        .unwrap();
+        let result = execute(request, host.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.error, None);
+        match &arguments {
+            Value::String(text) => assert_eq!(&result.output, text),
+            _ => assert_eq!(
+                serde_json::from_str::<Value>(&result.output).unwrap(),
+                arguments
+            ),
+        }
+    }
+    assert_eq!(host.calls.load(Ordering::SeqCst), 2);
+    let omitted: ExecInput = serde_json::from_value(json!({
+        "code": "assert(next(args) == nil); return 'fresh'",
+    }))
+    .unwrap();
+    let next = execute(omitted, host, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(next.error, None);
+    assert_eq!(next.output, "fresh");
 }
