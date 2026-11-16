@@ -12,7 +12,7 @@ T useClientResource<T extends ClientLease>(
   T Function() acquire, {
   required String owner,
 }) {
-  final scope = ref.read(appGraphProvider).uiResources.child(owner);
+  final scope = ref.watch(appGraphProvider).uiResources.child(owner);
   ref.onDispose(scope.requestClose);
   return scope.acquireLease(owner, acquire);
 }

@@ -329,6 +329,9 @@ final class _ResourceEntry<R extends ClientResource> extends _Entry
   StackTrace? _requestFailureStack;
 
   @override
+  bool get isClosed => state == _ResourceState.closed;
+
+  @override
   Future<R> get ready {
     if (_ready case final ready?) return ready.future;
     final closed = Future<R>.error(const ClientResourceClosed());

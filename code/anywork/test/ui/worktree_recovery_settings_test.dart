@@ -150,11 +150,17 @@ void main() {
     final transport = _WorkspaceLookupTransport();
     final graph = await _bootstrap(tester, transport);
     final metadata = graph.client.threadDirectory.observeThread('thread-main');
-    final metadataState = await metadata.state
-        .waitFor((state) => state.frame != null)
-        .timeout(const Duration(seconds: 5));
+    final metadataState = await pumpClientFuture(
+      tester,
+      metadata.state.waitFor((state) => state.frame != null),
+      'original workspace metadata',
+    );
     final root = metadataState.frame!.row!;
-    await metadata.release();
+    await pumpClientFuture(
+      tester,
+      metadata.release(),
+      'release workspace metadata',
+    );
     await pumpClientFuture(
       tester,
       graph.client.threadCommands.archiveThread(root.threadId),

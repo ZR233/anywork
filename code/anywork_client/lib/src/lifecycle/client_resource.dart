@@ -84,6 +84,12 @@ abstract interface class ClientAcquisition<R extends ClientResource>
     implements ClientResource {
   /// The created resource, or a creation or [ClientResourceClosed] failure.
   Future<R> get ready;
+
+  /// Whether creation has settled and all cleanup has completed successfully.
+  ///
+  /// A failed or still-running cleanup is not closed. A lease can omit an
+  /// already closed acquisition from its retirement identities.
+  bool get isClosed;
 }
 
 /// Indicates that an operation cannot be delivered because its scope closed.

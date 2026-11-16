@@ -252,7 +252,8 @@ final class _AccountDemand implements AccountDemand {
       _retirement = _owner._release(_target);
       final resourceId = _retirement?.resourceId;
       _retirementResourceIds = List.unmodifiable([
-        if (resourceId != null) resourceId,
+        if (resourceId != null && _retirement?.acquisition?.isClosed != true)
+          resourceId,
       ]);
     }
     // Install the result before invoking requestClose, which may reenter release.

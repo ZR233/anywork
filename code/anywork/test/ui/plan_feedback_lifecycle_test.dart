@@ -56,17 +56,22 @@ void main() {
       transport: transport,
       clientId: 'plan-feedback',
     );
-    await graph.client.bootstrap();
-    await (graph
-          ..timeline.updateReadDemand(chatDemand)
-          ..setConversationPageVisible(true))
-        .client
-        .directoryCommands
-        .selectThread(threadId);
-    await graph.client.conversations
-        .session(threadId)
-        .source
-        .waitFor((s) => s.hasSnapshot);
+    await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+    graph.timeline.updateReadDemand(chatDemand);
+    graph.setConversationPageVisible(true);
+    await pumpClientFuture(
+      tester,
+      graph.client.directoryCommands.selectThread(threadId),
+      'select thread',
+    );
+    await pumpClientFuture(
+      tester,
+      graph.client.conversations
+          .session(threadId)
+          .source
+          .waitFor((s) => s.hasSnapshot),
+      'conversation snapshot',
+    );
     await _publishPlanDocument(
       tester,
       graph,
@@ -82,8 +87,12 @@ void main() {
       interaction = next;
       transport.echo = next;
       final session = graph.client.conversations.session(threadId);
-      await transport.publishWorkspace(
-        session.state.workspace!.copyWith(interactions: [next]),
+      await pumpClientFuture(
+        tester,
+        transport.publishWorkspace(
+          session.state.workspace!.copyWith(interactions: [next]),
+        ),
+        'publish plan interaction',
       );
     }
 
@@ -332,17 +341,22 @@ void main() {
       transport: transport,
       clientId: 'plan-actions-layout',
     );
-    await graph.client.bootstrap();
-    await (graph
-          ..timeline.updateReadDemand(chatDemand)
-          ..setConversationPageVisible(true))
-        .client
-        .directoryCommands
-        .selectThread(threadId);
-    await graph.client.conversations
-        .session(threadId)
-        .source
-        .waitFor((s) => s.hasSnapshot);
+    await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+    graph.timeline.updateReadDemand(chatDemand);
+    graph.setConversationPageVisible(true);
+    await pumpClientFuture(
+      tester,
+      graph.client.directoryCommands.selectThread(threadId),
+      'select thread',
+    );
+    await pumpClientFuture(
+      tester,
+      graph.client.conversations
+          .session(threadId)
+          .source
+          .waitFor((s) => s.hasSnapshot),
+      'conversation snapshot',
+    );
     await _publishPlanDocument(
       tester,
       graph,
@@ -353,8 +367,12 @@ void main() {
     final interaction = _planInteraction(threadId);
     transport.echo = interaction;
     final planSession = graph.client.conversations.session(threadId);
-    await transport.publishWorkspace(
-      planSession.state.workspace!.copyWith(interactions: [interaction]),
+    await pumpClientFuture(
+      tester,
+      transport.publishWorkspace(
+        planSession.state.workspace!.copyWith(interactions: [interaction]),
+      ),
+      'publish layout plan interaction',
     );
     final plan = interaction.planConfirmation!;
 
@@ -601,7 +619,11 @@ Future<void> _publishPlanDocument(
   String markdown,
 ) async {
   final session = graph.client.conversations.session(threadId);
-  await timelineReady(graph.timeline, session.threadId);
+  await pumpClientFuture(
+    tester,
+    timelineReady(graph.timeline, session.threadId),
+    'plan timeline ready',
+  );
   transport.seedConversationState(
     threadId,
     ThreadRuntimeUpdate(

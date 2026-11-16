@@ -800,6 +800,38 @@ void main() {
     await nextLease.release();
   });
 
+  test('scoped topic release omits an already closed failed source', () async {
+    final transport = _TopicTransport();
+    final sdk = transport.root.child('topic-registry');
+    final page = transport.root.child('page');
+    final failed = Completer<void>();
+    final registry = BridgeTopicRegistry(
+      transport,
+      scope: sdk,
+      onFrame: (_) {},
+      onTopicConnection: (_, state) {
+        if (state?.phase == ProductTopicConnectionPhase.reconnecting &&
+            !failed.isCompleted) {
+          failed.complete();
+        }
+      },
+    );
+    final opening = transport.nextOpenGate = Completer<void>();
+    final lease = page.acquireLease(
+      'updater-page',
+      () => registry.acquire(const UpdaterTopic()),
+    );
+    await transport.created(0);
+    opening.completeError(StateError('topic open failed'));
+    await failed.future;
+    expect((await sdk.retryCleanup(budget: _budget())).complete, isTrue);
+
+    final report = await page.close(budget: _budget());
+    expect(lease.retirementResourceIds, isEmpty);
+    expect(report.complete, isTrue);
+    expect(registry.activeTopicRefCountViews(), isEmpty);
+  });
+
   test('late open is owned and closed without starting a consumer', () async {
     final transport = _TopicTransport();
     final client = _client(transport, 'opening');
