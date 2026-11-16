@@ -5,8 +5,65 @@ use anyhow::Result;
 use crate::studio::{ThreadKind, ThreadRecord, ThreadVisibility};
 
 use super::super::StudioRuntime;
+use super::{UserThreadAction, ensure_user_root_target};
+use crate::thread_assembler::ThreadAssemblyError;
 
 impl StudioRuntime {
+    /// Prepare a user input while the caller holds the Studio lifecycle lock.
+    ///
+    /// Activation owns its own preparation task and takes the per-agent permit itself. Do not
+    /// hold that permit while awaiting it. After activation, retain the permit through Core's
+    /// admission and revalidate the exact session and Thread incarnation under that permit.
+    pub(super) async fn prepare_prompt_admission(
+        &self,
+        id: &str,
+        action: UserThreadAction,
+        input_id: &str,
+    ) -> Result<(
+        ThreadRecord,
+        pl_core::thread::ThreadHandle,
+        tokio::sync::OwnedMutexGuard<()>,
+    )> {
+        let started = std::time::Instant::now();
+        self.ensure_prompt_runtime_ready().await?;
+        let thread = self.ensure_thread_owner(id).await?;
+        let operation_started = std::time::Instant::now();
+        let session = self.require_session(id)?;
+        let permit = session.agent_operation(id).await;
+        tracing::debug!(
+            target: "prompt_submission",
+            thread_id = id,
+            input_id,
+            ?action,
+            owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
+            operation_wait_us = operation_started.elapsed().as_micros() as u64,
+            "prompt thread admission acquired"
+        );
+        let record = self.read_owned_thread(id).await?;
+        ensure_user_root_target(&record, action)?;
+        self.store.ensure_agent_execution_allowed(id).await?;
+        self.validate_prompt_owner(id, &session, &thread)?;
+        Ok((record, thread, permit))
+    }
+
+    pub(super) fn validate_prompt_owner(
+        &self,
+        id: &str,
+        session: &crate::session::SessionRuntime,
+        thread: &pl_core::thread::ThreadHandle,
+    ) -> Result<()> {
+        let current = self.require_session(id)?;
+        if !std::sync::Arc::ptr_eq(&session.0, &current.0)
+            || !session
+                .thread(id)
+                .is_some_and(|owner| owner.same_instance(thread))
+        {
+            return Err(ThreadAssemblyError::Closed.into());
+        }
+        session.ensure_agent_admission_open(id)?;
+        Ok(())
+    }
+
     pub(in crate::studio::runtime) async fn register_new_thread(
         &self,
         thread: ThreadRecord,

@@ -634,6 +634,25 @@ impl SessionRuntime {
             || state.failed_preparations.contains_key(thread_id)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn wait_for_registered_activation(&self, id: &str) {
+        loop {
+            let changed = self.0.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self
+                .0
+                .state()
+                .creating
+                .get(id)
+                .is_some_and(|preparation| preparation.result.is_some())
+            {
+                return;
+            }
+            changed.await;
+        }
+    }
+
     /// 取出本次装配预先放入的目录身份。没有目录身份就拒绝，不从 ThreadId 合成 AgentId。
     fn consume_activation(&self, thread_id: &str) -> Result<ThreadActivation, ThreadAssemblyError> {
         let mut state = self.0.state();
