@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 /// Current frozen assistant-frame version.
 pub const FRAME_VERSION: u32 = 6;
-pub(super) const LEGACY_FRAME_VERSION: u32 = 5;
+pub(in crate::runtime) const LEGACY_FRAME_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FrameContract {

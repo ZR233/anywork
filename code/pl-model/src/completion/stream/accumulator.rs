@@ -42,6 +42,8 @@ pub(crate) struct StreamCompletionAccumulator {
     content_parts: Vec<ModelStreamContentPart>,
     content_indexes: HashMap<String, usize>,
     blocks: Vec<ModelStreamBlock>,
+    /// Derived lookup by block or provider item identity; the ordered blocks remain the source.
+    block_indexes: HashMap<String, Vec<usize>>,
     /// Bounded shallow block relationships; native bodies remain owned/charged by replay.
     block_bytes: usize,
     tool_calls: Vec<ToolCall>,
@@ -175,6 +177,7 @@ impl StreamCompletionAccumulator {
             content_parts: Vec::new(),
             content_indexes: HashMap::new(),
             blocks: Vec::new(),
+            block_indexes: HashMap::new(),
             block_bytes: 0,
             tool_calls: Vec::new(),
             tool_call_callers: HashMap::new(),
@@ -530,9 +533,12 @@ impl StreamCompletionAccumulator {
                 }
                 let duplicate = self.presentation_indexes.contains_key(&id);
                 self.record_presentation_item(item)?;
-                for block in &mut self.blocks {
-                    if block.provider_item_id.as_deref() == Some(id.as_str()) {
-                        block.closed = true;
+                if let Some(indexes) = self.block_indexes.get(&id) {
+                    for &index in indexes {
+                        let block = &mut self.blocks[index];
+                        if block.provider_item_id.as_deref() == Some(id.as_str()) {
+                            block.closed = true;
+                        }
                     }
                 }
                 self.presentation_states.insert(id.clone(), state);
@@ -972,9 +978,16 @@ impl StreamCompletionAccumulator {
             .iter()
             .filter(|part| {
                 part.kind == CompletionPresentationPartKind::OutputText
-                    && self.blocks.iter().any(|block| {
-                        block.id == part.block_id && block.channel == Some(TraceTextChannel::Final)
-                    })
+                    && self
+                        .block_indexes
+                        .get(&part.block_id)
+                        .is_some_and(|indexes| {
+                            indexes.iter().any(|&index| {
+                                let block = &self.blocks[index];
+                                block.id == part.block_id
+                                    && block.channel == Some(TraceTextChannel::Final)
+                            })
+                        })
             })
             .collect::<Vec<_>>();
         let content = if final_parts.is_empty() {
@@ -1300,11 +1313,13 @@ impl StreamCompletionAccumulator {
             .and_then(|part| self.replay.native_item(&part.item_id))
             .is_some_and(|item| Some(item) == metadata);
         let owned_metadata = metadata.filter(|_| !shared_metadata);
-        if let Some(index) = self
-            .blocks
-            .iter()
-            .position(|block| block.id == *id && block.kind == kind && block.channel == channel)
-        {
+        let existing = self.block_indexes.get(id).and_then(|indexes| {
+            indexes.iter().copied().find(|&index| {
+                let block = &self.blocks[index];
+                block.id == *id && block.kind == kind && block.channel == channel
+            })
+        });
+        if let Some(index) = existing {
             if metadata.is_some() {
                 self.replay.replace_block_metadata(
                     self.blocks[index].provider_metadata.as_ref(),
@@ -1318,9 +1333,21 @@ impl StreamCompletionAccumulator {
             }
             return Ok(());
         }
+        let index_bytes = |key: &str| {
+            std::mem::size_of::<usize>()
+                + if self.block_indexes.contains_key(key) {
+                    0
+                } else {
+                    std::mem::size_of::<(String, Vec<usize>)>() + key.len()
+                }
+        };
         let bytes = std::mem::size_of::<ModelStreamBlock>()
             + id.len()
-            + provider.map_or(0, |provider| provider.item_id.len());
+            + provider.map_or(0, |provider| provider.item_id.len())
+            + index_bytes(id)
+            + provider
+                .filter(|provider| provider.item_id != *id)
+                .map_or(0, |provider| index_bytes(&provider.item_id));
         let next = self
             .block_bytes
             .checked_add(bytes)
@@ -1329,6 +1356,7 @@ impl StreamCompletionAccumulator {
                 PureError::MemoryError("provider block identities exceed 16 MiB".into())
             })?;
         self.replay.replace_block_metadata(None, owned_metadata)?;
+        let index = self.blocks.len();
         self.blocks.push(ModelStreamBlock {
             id: id.clone(),
             kind,
@@ -1337,6 +1365,18 @@ impl StreamCompletionAccumulator {
             provider_metadata: owned_metadata.cloned(),
             closed,
         });
+        self.block_indexes
+            .entry(id.clone())
+            .or_default()
+            .push(index);
+        if let Some(provider) = provider
+            && provider.item_id != *id
+        {
+            self.block_indexes
+                .entry(provider.item_id.clone())
+                .or_default()
+                .push(index);
+        }
         self.block_bytes = next;
         Ok(())
     }

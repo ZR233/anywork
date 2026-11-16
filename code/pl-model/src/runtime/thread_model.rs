@@ -28,7 +28,7 @@ pub mod migration;
 pub(crate) mod progress;
 mod receipt;
 mod recovery;
-pub(super) use codec::FRAME_VERSION;
+pub(super) use codec::{FRAME_VERSION, LEGACY_FRAME_VERSION};
 pub use media::{
     ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
 };

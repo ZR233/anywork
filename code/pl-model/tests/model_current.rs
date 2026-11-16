@@ -204,9 +204,20 @@ fn edit_parameters(
 }
 
 #[tokio::test]
-async fn recovery_does_not_infer_compatible_chat_parallel_or_storage_defaults() {
-    let fixture = FixtureServer::start(Vec::new()).await.unwrap();
-    let info = recovery_info(ModelTransportProfile::chat_completions_http());
+async fn recovery_keeps_compatible_chat_storage_unspecified_without_guessing_parallel_default() {
+    let reply = || {
+        Reply::Sse(vec![json!({"id":"resumed","model":"current-model",
+        "choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":"stop"}],
+        "usage":{"prompt_tokens":3,"completion_tokens":1}})])
+    };
+    let fixture = FixtureServer::start(vec![
+        Step::prompt(Protocol::Chat, "unknown store", 0, reply()),
+        Step::prompt(Protocol::Chat, "null store", 1, reply()),
+    ])
+    .await
+    .unwrap();
+    let mut info = recovery_info(ModelTransportProfile::chat_completions_http());
+    info.binding.request.body.remove("store");
     let source = recovery_factory(&fixture, info.clone(), None, Vec::new());
     let parameters = saved_parameters(&source, vec![local_tool("saved_tool")]).await;
     let mut unknown_parallel = info.clone();
@@ -215,19 +226,28 @@ async fn recovery_does_not_infer_compatible_chat_parallel_or_storage_defaults() 
     {
         options.parallel_tool_calls = false;
     }
-    let mut unknown_store = info.clone();
-    unknown_store.binding.request.body.remove("store");
-    let mut null_store = info;
+    let mut null_store = info.clone();
     null_store
         .binding
         .request
         .body
         .insert("store".into(), json!(null));
-    for (case, current, reason) in [
-        ("unknown parallel", unknown_parallel, "parallel"),
-        ("unknown store", unknown_store, "storage"),
-        ("null store", null_store, "storage"),
-    ] {
+    let mut session = recovery_factory(&fixture, unknown_parallel, None, Vec::new())
+        .open_session()
+        .await
+        .unwrap();
+    let mut resumed = confirmed_request("unknown parallel", "unknown parallel");
+    resumed.tools = vec![local_tool("saved_tool")].into();
+    resumed.recovery_parameters = Some(parameters.clone());
+    let error = match session.prepare(resumed).await {
+        Err(error) => error,
+        Ok(_) => panic!("unproved parallel default admitted"),
+    };
+    assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
+    assert!(error.to_string().contains("parallel"), "{error}");
+    session.close().await.unwrap();
+
+    for (case, current) in [("unknown store", info), ("null store", null_store)] {
         let mut session = recovery_factory(&fixture, current, None, Vec::new())
             .open_session()
             .await
@@ -235,15 +255,18 @@ async fn recovery_does_not_infer_compatible_chat_parallel_or_storage_defaults() 
         let mut resumed = confirmed_request(case, case);
         resumed.tools = vec![local_tool("saved_tool")].into();
         resumed.recovery_parameters = Some(parameters.clone());
-        let error = match session.prepare(resumed).await {
-            Err(error) => error,
-            Ok(_) => panic!("unproved provider default admitted: {case}"),
-        };
-        assert_eq!(error.kind, ModelFailureKind::IncompatibleContext);
-        assert!(error.to_string().contains(reason), "{case}: {error}");
+        session
+            .prepare(resumed)
+            .await
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
         session.close().await.unwrap();
     }
-    assert!(fixture.finish().await.unwrap().is_empty());
+    let recorded = fixture.finish().await.unwrap();
+    assert!(recorded[0].body.get("store").is_none());
+    assert!(recorded[1].body["store"].is_null());
 }
 
 #[tokio::test]

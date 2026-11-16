@@ -220,6 +220,23 @@ impl SavedToolProgress {
 
     /// Rebuilds a complete observation baseline, not an executable task or an append lineage.
     pub fn restore(&self) -> Result<crate::model::ToolProgress, CurrentError> {
+        self.validate()?;
+        Ok(crate::model::ToolProgress::new(
+            self.version,
+            self.parts
+                .iter()
+                .map(|part| {
+                    crate::model::ToolProgressPart::from_current(
+                        part.id.clone(),
+                        part.version,
+                        part.text.clone(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    fn validate(&self) -> Result<(), CurrentError> {
         let mut ids = std::collections::BTreeSet::new();
         let bytes = self.parts.iter().try_fold(0u64, |bytes, part| {
             if !ids.insert(&part.id) {
@@ -234,19 +251,7 @@ impl SavedToolProgress {
         {
             return Err(CurrentError::InvalidToolPreview);
         }
-        Ok(crate::model::ToolProgress::new(
-            self.version,
-            self.parts
-                .iter()
-                .map(|part| {
-                    crate::model::ToolProgressPart::from_current(
-                        part.id.clone(),
-                        part.version,
-                        part.text.clone(),
-                    )
-                })
-                .collect(),
-        ))
+        Ok(())
     }
 }
 
@@ -517,7 +522,7 @@ impl ThreadCurrent {
         }
         self.state.context.pending_calls()?;
         for preview in self.state.tool_previews.values() {
-            preview.restore()?;
+            preview.validate()?;
         }
         if let Some(call) = &self.model_call {
             if call.source_execution_id.is_empty()

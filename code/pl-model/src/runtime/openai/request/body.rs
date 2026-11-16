@@ -333,9 +333,9 @@ fn validate_recovery_effects(
             ));
         }
     }
-    // Do not turn contradictory/unknown Chat defaults into a cross-provider retention claim.
-    // The public OpenAI API explicitly supports store=false: request it, rather than infer a
-    // default. Other routes need an explicit supported off setting; missing is not false.
+    // The public OpenAI Chat API explicitly supports store=false. For other Chat providers an
+    // omitted setting is not proof of either behavior, so preserve their ordinary request rather
+    // than require a provider-specific field that may not exist.
     if !responses
         && protocol == ProtocolKind::OpenAi
         && !chatgpt
@@ -343,9 +343,12 @@ fn validate_recovery_effects(
     {
         body.insert("store".into(), Value::Bool(false));
     }
-    if body.get("store") != Some(&Value::Bool(false)) {
+    let store = body.get("store");
+    if (responses && store != Some(&Value::Bool(false)))
+        || (!responses && !matches!(store, None | Some(Value::Null | Value::Bool(false))))
+    {
         return Err(protocol_error(
-            "recovery cannot establish disabled server storage from this provider's omitted/unknown store setting",
+            "recovery cannot introduce an explicit server storage request",
         ));
     }
     Ok(())
