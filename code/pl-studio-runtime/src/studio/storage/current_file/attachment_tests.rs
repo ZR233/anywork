@@ -163,9 +163,7 @@ fn current_in(slot: Slot, content: ContextContent, epoch: RuntimeEpoch) -> Threa
 }
 
 fn file(directory: &std::path::Path) -> CurrentFile {
-    // Use the real atomic helper to seed disk fixtures; platform durability policy is not under test.
     CurrentFile::new(directory.into(), THREAD.into())
-        .with_write(Arc::new(pl_tool::workspace::write_file_atomically))
 }
 
 fn asset_path(directory: &std::path::Path, reference: &ResourceReference) -> std::path::PathBuf {
@@ -386,7 +384,6 @@ async fn known_attachment_decode_errors_fail_but_unrelated_opaque_stays_transpar
     Ok(())
 }
 
-#[cfg(not(windows))]
 #[tokio::test(start_paused = true)]
 async fn opaque_attachment_save_failure_preserves_old_current_and_receipt() -> Result<()> {
     use crate::studio::storage::{

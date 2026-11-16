@@ -644,7 +644,7 @@ async fn save(file: &CurrentFile, shared: &Shared, owner: &Active) -> Result<Cur
                 result.context("current capture exceeded one second")??
             }
         };
-        // This denotes completed capture, not a prediction of successful fsync.
+        // This denotes completed capture, not a prediction of successful writing.
         current.saved_at = utc_millis();
         ensure!(!cancellation.is_cancelled(), "current capture cancelled");
         file.validate(&current, Some(&owner.epoch))?;
@@ -878,7 +878,6 @@ mod tests {
         }
     }
 
-    #[cfg(not(windows))]
     #[tokio::test(start_paused = true)]
     async fn real_core_producer_dirty_saves_json_and_close_uses_final_handoff_then_restores_paused()
     -> Result<()> {
@@ -1032,7 +1031,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(windows))]
     #[tokio::test(start_paused = true)]
     async fn real_core_observer_replacement_joins_old_subscription_and_close_rejects_new_admission()
     -> Result<()> {
@@ -1511,7 +1509,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn failure_before_or_after_replace_never_acknowledges_or_rolls_back() -> Result<()> {
+    async fn failed_overwrite_does_not_acknowledge_and_partial_file_can_be_retried() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let mode = Arc::new(AtomicUsize::new(0));
         let io_mode = mode.clone();
@@ -1520,15 +1518,13 @@ mod tests {
                 move |path, bytes| {
                     let mode = io_mode.load(Ordering::SeqCst);
                     if mode == 1 {
-                        return Err(io::Error::other("injected pre-rename failure"));
+                        return Err(io::Error::other("injected failure before write"));
                     }
-                    pl_tool::workspace::write_file_atomically(path, bytes)?;
                     if mode == 2 {
-                        return Err(io::Error::other(
-                            "injected post-rename directory sync failure",
-                        ));
+                        std::fs::write(path, &bytes[..bytes.len() / 2])?;
+                        return Err(io::Error::other("injected failure during write"));
                     }
-                    Ok(())
+                    std::fs::write(path, bytes)
                 },
             )),
         );
@@ -1548,15 +1544,20 @@ mod tests {
         writer.flush(epoch).await?;
         let success = writer.snapshot();
         let path = directory.path().join("current.json");
-        for (failure_mode, next, disk_revision) in [(1, 2, 1), (2, 3, 3)] {
+        for (failure_mode, next) in [(1, 2), (2, 3)] {
             mode.store(failure_mode, Ordering::SeqCst);
             revision.store(next, Ordering::SeqCst);
             let error = writer.flush(epoch).await.unwrap_err();
             assert!(format!("{error:#}").contains("injected"));
-            assert_eq!(
-                serde_json::from_slice::<ThreadCurrent>(&std::fs::read(&path)?)?.snapshot_revision,
-                disk_revision
-            );
+            let bytes = std::fs::read(&path)?;
+            if failure_mode == 1 {
+                assert_eq!(
+                    serde_json::from_slice::<ThreadCurrent>(&bytes)?.snapshot_revision,
+                    1
+                );
+            } else {
+                assert!(serde_json::from_slice::<ThreadCurrent>(&bytes).is_err());
+            }
             let state = writer.snapshot();
             assert_eq!(state.receipt, success.receipt);
             assert_eq!(
@@ -1572,6 +1573,10 @@ mod tests {
         mode.store(0, Ordering::SeqCst);
         revision.store(4, Ordering::SeqCst);
         assert_eq!(writer.flush(epoch).await?.snapshot_revision, 4);
+        assert_eq!(
+            serde_json::from_slice::<ThreadCurrent>(&std::fs::read(&path)?)?.snapshot_revision,
+            4
+        );
         writer.close(epoch).await?;
         Ok(())
     }

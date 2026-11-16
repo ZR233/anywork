@@ -120,7 +120,6 @@ mod tests {
         )
     }
 
-    #[cfg(not(windows))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_threads_cannot_both_register_and_save_the_same_current_path() -> Result<()>
     {
@@ -185,7 +184,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(windows))]
     #[tokio::test]
     async fn independent_state_entry_points_reuse_thread_registration_until_real_join() -> Result<()>
     {

@@ -781,6 +781,13 @@ jobs:
       - name: Verify POSIX LSP configuration paths on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked -p pl-lsp --test posix_configuration
+      - name: Verify current persistence and recovery on Windows
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: |
+          cargo test --locked -p pl-studio-runtime --lib studio::storage::current
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p pl-studio-runtime --lib studio::storage::state::current::tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify Windows installer handoff from published and current clients
         if: needs.changes.outputs.windows_gui_build == 'true'
         shell: pwsh

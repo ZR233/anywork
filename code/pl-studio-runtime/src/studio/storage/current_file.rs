@@ -1,25 +1,31 @@
 //! Complete current JSON and retained session resources. No history dependency or migration.
 
-use std::{borrow::Cow, collections::HashSet, io, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::HashSet, io, path::PathBuf};
+
+#[cfg(test)]
+use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{ContextContent, ResourceAccess},
     thread::current::{RuntimeEpoch, ThreadCurrent},
 };
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::resource_store::FileResourceStore;
 use crate::studio::paths::CURRENT_FILE_NAME;
 
-/// The single physical publication boundary; tests may fail before or after replacement.
+/// The single physical write boundary, replaceable only for fault-injection tests.
+#[cfg(test)]
 pub(super) type CurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result<()> + Send + Sync>;
 
 #[derive(Clone)]
 pub(super) struct CurrentFile {
     directory: PathBuf,
     thread_id: String,
-    write: CurrentWrite,
+    #[cfg(test)]
+    write: Option<CurrentWrite>,
 }
 
 impl std::fmt::Debug for CurrentFile {
@@ -36,13 +42,14 @@ impl CurrentFile {
         Self {
             directory,
             thread_id,
-            write: Arc::new(write_current_atomically),
+            #[cfg(test)]
+            write: None,
         }
     }
 
     #[cfg(test)]
     pub(super) fn with_write(mut self, write: CurrentWrite) -> Self {
-        self.write = write;
+        self.write = Some(write);
         self
     }
 
@@ -96,18 +103,42 @@ impl CurrentFile {
         verify_recovery_resources(current, &resources, cancellation).await
     }
 
-    /// Encoding and the complete synchronous publication are one owned, non-aborted operation.
-    /// An error after replacement is not a rollback and must never produce a success receipt.
+    /// Encoding and the complete write are owned by the writer until they finish.
+    /// A failed or interrupted overwrite may leave an incomplete file.
     pub(super) async fn save(&self, current: ThreadCurrent) -> Result<()> {
-        let file = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let bytes = serde_json::to_vec(&current).context("encode complete Thread current")?;
-            let path = file.directory.join(CURRENT_FILE_NAME);
-            (file.write)(&path, &bytes)
-                .with_context(|| format!("publish Thread current {}", path.display()))
-        })
-        .await
-        .context("join current publication")?
+        let bytes = tokio::task::spawn_blocking(move || serde_json::to_vec(&current))
+            .await
+            .context("join current encoder")?
+            .context("encode complete Thread current")?;
+        tokio::fs::create_dir_all(&self.directory)
+            .await
+            .with_context(|| format!("create current directory {}", self.directory.display()))?;
+        let path = self.directory.join(CURRENT_FILE_NAME);
+        #[cfg(test)]
+        if let Some(write) = self.write.clone() {
+            let write_path = path.clone();
+            return tokio::task::spawn_blocking(move || write(&write_path, &bytes))
+                .await
+                .context("join injected current write")?
+                .with_context(|| format!("write Thread current {}", path.display()));
+        }
+
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        // Preserve the previous private-file creation policy while writing in place.
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&path)
+            .await
+            .with_context(|| format!("open Thread current {}", path.display()))?;
+        file.write_all(&bytes)
+            .await
+            .with_context(|| format!("write Thread current {}", path.display()))?;
+        // Tokio's file writes may still be running on its blocking pool until flush completes.
+        file.flush()
+            .await
+            .with_context(|| format!("finish Thread current write {}", path.display()))
     }
 }
 
@@ -149,21 +180,6 @@ async fn verify_recovery_resources(
     Ok(())
 }
 
-fn write_current_atomically(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    // The shared helper currently skips directory synchronization on Windows. Fail closed until
-    // its platform publication contract is implemented; do not invent a durability substitute.
-    #[cfg(windows)]
-    {
-        let _ = (path, bytes);
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "current publication requires directory synchronization, unavailable in the Windows atomic helper",
-        ))
-    }
-    #[cfg(not(windows))]
-    pl_tool::workspace::write_file_atomically(path, bytes)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,8 +194,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let history = directory.path().join("history.sqlite");
         std::fs::write(&history, b"not a SQLite database")?;
-        let file = CurrentFile::new(directory.path().into(), "file-test".into())
-            .with_write(Arc::new(pl_tool::workspace::write_file_atomically));
+        let file = CurrentFile::new(directory.path().into(), "file-test".into());
         assert!(file.load().await?.is_none());
         let epoch = RuntimeEpoch::new();
         let mut current = ThreadCurrent::new("file-test".into(), epoch);
@@ -211,6 +226,21 @@ mod tests {
         file.save(current).await?;
         let restored = file.load().await?.expect("complete current exists");
         assert_eq!(serde_json::to_value(restored)?, expected);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(directory.path().join(CURRENT_FILE_NAME))?
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "new current files are private");
+        }
+        let smaller = ThreadCurrent::new("file-test".into(), epoch);
+        file.save(smaller.clone()).await?;
+        assert_eq!(
+            serde_json::to_value(file.load().await?.expect("overwritten current exists"))?,
+            serde_json::to_value(smaller)?,
+            "overwriting a longer current must not leave a trailing fragment"
+        );
         assert_eq!(std::fs::read(history)?, b"not a SQLite database");
         assert_eq!(
             std::fs::read_dir(directory.path())?.count(),
@@ -260,8 +290,7 @@ mod tests {
                 "application/octet-stream",
             )
             .await?;
-        let file = CurrentFile::new(directory.path().into(), "file-test".into())
-            .with_write(Arc::new(pl_tool::workspace::write_file_atomically));
+        let file = CurrentFile::new(directory.path().into(), "file-test".into());
         let mut current = ThreadCurrent::new("file-test".into(), RuntimeEpoch::new());
         current.state.context.records = vec![ContextRecord {
             id: "attachment-record".into(),

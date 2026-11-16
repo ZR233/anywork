@@ -1516,14 +1516,36 @@ mod chatgpt_tests {
     #[test]
     fn recovery_public_parallel_default_is_not_assumed_for_chatgpt_sessions() {
         let (_temp, mut runner) = fixture();
-        let parameter = runner.model.parameters.iter_mut().find(|parameter| parameter.name == "effort").unwrap();
-        parameter.wire.get_mut("high").unwrap().remove.push("parallel_tool_calls".into());
+        let parameter = runner
+            .model
+            .parameters
+            .iter_mut()
+            .find(|parameter| parameter.name == "effort")
+            .unwrap();
+        parameter
+            .wire
+            .get_mut("high")
+            .unwrap()
+            .remove
+            .push("parallel_tool_calls".into());
         runner.model.validate().unwrap();
-        let mut selected = request(); selected.frozen_options = true; selected.parallel_tool_calls = true;
-        selected.reasoning = Some(crate::completion::ReasoningConfig { effort: Some("high".into()), summary: None });
-        selected.tools = vec![ToolSpec::Function { name: "lookup".into(), description: "lookup".into(),
-            input_schema: json!({"type":"object"}), allowed_callers: Vec::new(), output_schema: None }];
-        let error = runner.prepare_request_body(selected.clone(), None).unwrap_err();
+        let mut selected = request();
+        selected.frozen_options = true;
+        selected.parallel_tool_calls = true;
+        selected.reasoning = Some(crate::completion::ReasoningConfig {
+            effort: Some("high".into()),
+            summary: None,
+        });
+        selected.tools = vec![ToolSpec::Function {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            input_schema: json!({"type":"object"}),
+            allowed_callers: Vec::new(),
+            output_schema: None,
+        }];
+        let error = runner
+            .prepare_request_body(selected.clone(), None)
+            .unwrap_err();
         assert!(error.to_string().contains("parallel"), "{error}");
         // The same explicit OpenAI protocol without the SIWC boundary has the documented
         // public Responses default true; no URL/model-name heuristic is involved.
