@@ -8,9 +8,12 @@ import '../../../anywork_client.dart'
         UnresolvedResource,
         ValueObservation;
 import '../../../directory_ports.dart';
+import '../../../lifecycle.dart';
 import '../../../models.dart';
 
-typedef _Open<T> = Future<_NativeObservation<T>> Function();
+typedef _Open<T> = Future<_NativeObservation<T>> Function(
+  ClientOperation operation,
+);
 typedef _Validate<T> = void Function(T frame);
 typedef _Accept<T> = void Function(T frame);
 
@@ -24,18 +27,20 @@ StudioFailure _protocolFailure(String message) => StudioFailure(
 final class ThreadDirectoryStore {
   ThreadDirectoryStore({
     required DirectoryFeedPort feed,
+    required ClientScope scope,
     void Function(ResourceStamp stamp)? onStamp,
     void Function(UnresolvedResource failure)? onCleanupFailure,
   }) : _feed = feed,
+       _scope = scope,
        _onStamp = onStamp,
        _onCleanupFailure = onCleanupFailure;
 
   final DirectoryFeedPort _feed;
+  final ClientScope _scope;
   final void Function(ResourceStamp stamp)? _onStamp;
   final void Function(UnresolvedResource failure)? _onCleanupFailure;
   final Map<_ThreadsDemand, _DirectorySlot<ThreadDirectoryFrame>> _threads = {};
   final Map<String, _DirectorySlot<ThreadMetadataFrame>> _metadata = {};
-  final Set<_DirectorySlot<Object?>> _retiring = {};
   bool _sealed = false;
 
   /// One-shot diagnostics over the actual bounded list demands currently held.
@@ -57,12 +62,19 @@ final class ThreadDirectoryStore {
   ) {
     if (_sealed) throw StateError('Thread directory observations are closed');
     final demand = _ThreadsDemand(query, window);
-    final slot = _threads.putIfAbsent(demand, () {
-      return _DirectorySlot<ThreadDirectoryFrame>(
+    var slot = _threads[demand];
+    if (slot == null || slot._retiring) {
+      final previous = slot?.currentSource;
+      slot = _DirectorySlot<ThreadDirectoryFrame>(
         owner: this,
         label: 'threads:$query:$window',
-        open: () async {
-          final handle = await _feed.openThreadsObservation(query, window);
+        predecessor: previous,
+        open: (operation) async {
+          final handle = await _feed.openThreadsObservation(
+            query,
+            window,
+            resourceId: operation.resourceId,
+          );
           return _ThreadsNative(handle);
         },
         validate: (frame) {
@@ -81,20 +93,28 @@ final class ThreadDirectoryStore {
           }
         },
         onAccept: (frame) => _onStamp?.call(frame.stamp),
-      )..start();
-    });
+      );
+      _threads[demand] = slot;
+      slot.start();
+    }
     return slot.borrow();
   }
 
   DirectoryObservation<ThreadMetadataFrame> observeThread(String threadId) {
     if (_sealed) throw StateError('Thread directory observations are closed');
     if (threadId.isEmpty) throw ArgumentError.value(threadId, 'threadId');
-    final slot = _metadata.putIfAbsent(threadId, () {
-      return _DirectorySlot<ThreadMetadataFrame>(
+    var slot = _metadata[threadId];
+    if (slot == null || slot._retiring) {
+      final previous = slot?.currentSource;
+      slot = _DirectorySlot<ThreadMetadataFrame>(
         owner: this,
         label: 'thread:$threadId',
-        open: () async {
-          final handle = await _feed.openThreadObservation(threadId);
+        predecessor: previous,
+        open: (operation) async {
+          final handle = await _feed.openThreadObservation(
+            threadId,
+            resourceId: operation.resourceId,
+          );
           return _ThreadNative(handle);
         },
         validate: (frame) {
@@ -109,48 +129,44 @@ final class ThreadDirectoryStore {
           }
         },
         onAccept: (frame) => _onStamp?.call(frame.stamp),
-      )..start();
-    });
+      );
+      _metadata[threadId] = slot;
+      slot.start();
+    }
     return slot.borrow();
   }
 
-  Future<CloseReport> close() {
+  Future<CloseReport> close({required ClientCloseBudget budget}) {
     _sealed = true;
     final slots = <_DirectorySlot<Object?>>{
-      ..._retiring,
       ..._threads.values,
       ..._metadata.values,
     };
     for (final slot in slots) {
       slot.requestRetire();
     }
-    return retryCleanup();
+    return _scope.close(budget: budget);
   }
 
   /// Retries only native owners already retiring after an earlier close failure.
   ///
   /// Runtime cleanup must not seal admission for unrelated or replacement
   /// observations.
-  Future<CloseReport> retryCleanup() async {
-    final slots = Set<_DirectorySlot<Object?>>.of(_retiring);
-    final unresolved = <UnresolvedResource>[];
-    for (final slot in slots) {
-      try {
-        await slot.retire();
-      } catch (error) {
-        unresolved.add(slot.unresolved(error));
-      }
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
+    final report = await _scope.retryCleanup(budget: budget);
+    for (final slot in <_DirectorySlot<Object?>>{
+      ..._threads.values,
+      ..._metadata.values,
+    }) {
+      if (!slot._retiring && slot._predecessor != null) slot.start();
     }
-    return CloseReport(unresolved: unresolved);
+    return report;
   }
 
-  void _beginRetire(_DirectorySlot<Object?> slot) {
+  void _settled(_DirectorySlot<Object?> slot) {
     _threads.removeWhere((_, candidate) => identical(candidate, slot));
     _metadata.removeWhere((_, candidate) => identical(candidate, slot));
-    _retiring.add(slot);
   }
-
-  void _settled(_DirectorySlot<Object?> slot) => _retiring.remove(slot);
 
   void _cleanupFailed(UnresolvedResource failure) {
     _onCleanupFailure?.call(failure);
@@ -177,7 +193,8 @@ final class _DirectorySlot<T> {
     required this.open,
     required this.validate,
     required this.onAccept,
-  });
+    _DirectorySource<T>? predecessor,
+  }) : _predecessor = predecessor;
 
   final ThreadDirectoryStore owner;
   final String label;
@@ -187,18 +204,54 @@ final class _DirectorySlot<T> {
   final LatestValue<DirectoryObservationState<T>> source = LatestValue(
     const DirectoryObservationState(),
   );
-  _DirectoryAttempt<T>? _attempt;
+  _DirectorySource<T>? _current;
+  _DirectorySource<T>? _predecessor;
   Future<void>? _transition;
-  Future<void>? _closing;
   int _generation = 0;
   int _borrowers = 0;
   bool _retiring = false;
-  bool _settled = false;
+
+  _DirectorySource<T>? get currentSource => _current ?? _predecessor;
 
   T? get frame => _retiring ? null : source.value.frame;
 
   void start() {
-    _attempt = _DirectoryAttempt(this, ++_generation)..start();
+    if (_predecessor != null) {
+      unawaited(
+        refresh().then<void>((_) {}, onError: (Object _, StackTrace _) {}),
+      );
+    } else {
+      _open();
+    }
+  }
+
+  void _open() {
+    if (_retiring || owner._sealed) return;
+    final generation = ++_generation;
+    final current = _current = _DirectorySource<T>();
+    current.acquisition = owner._scope.open<_NativeObservation<T>>(
+      'thread-directory:$label',
+      (operation) {
+        current.resourceId = operation.resourceId;
+        return open(operation);
+      },
+      ownership: ClientOwnership.proxy,
+      consume: (handle, operation) async {
+        while (!operation.closeRequested) {
+          final frame = await handle.next();
+          if (frame == null) {
+            if (!operation.closeRequested) {
+              throw StateError('Directory observation ended without close');
+            }
+            return;
+          }
+          // Do not drop a next that already completed before requestClose.
+          accept(generation, frame);
+        }
+      },
+      onFailure: (error, stack) => failed(generation, error),
+    );
+    if (_retiring || owner._sealed) current.requestClose();
   }
 
   DirectoryObservation<T> borrow() {
@@ -238,85 +291,101 @@ final class _DirectorySlot<T> {
     }
     final existing = _transition;
     if (existing != null) return existing;
-    source.publish(
-      DirectoryObservationState(frame: source.value.frame, isLoading: true),
-    );
-    final previous = _attempt;
-    previous?.requestClose();
-    final transition = () async {
-      if (previous != null) await previous.close();
-      if (_retiring) return;
-      _attempt = _DirectoryAttempt(this, ++_generation)..start();
-    }();
-    _transition = transition;
+    final previous = currentSource;
+    final completion = Completer<void>();
+    final transition = _transition = completion.future;
     unawaited(
       transition.then<void>(
-        (_) => _transition = null,
+        (_) {
+          if (identical(_transition, transition)) _transition = null;
+        },
         onError: (Object error, StackTrace _) {
-          _transition = null;
+          if (identical(_transition, transition)) _transition = null;
           failed(_generation, error);
         },
       ),
     );
+    completion.complete(
+      Future<void>.sync(() async {
+        source.publish(
+          DirectoryObservationState(frame: source.value.frame, isLoading: true),
+        );
+        previous?.requestClose();
+        if (previous != null) await previous.close();
+        if (_retiring || owner._sealed) return;
+        _predecessor = null;
+        _open();
+      }),
+    );
     return transition;
   }
 
-  void release() {
-    if (_borrowers == 0) return;
+  _DirectorySource<T>? release() {
+    if (_borrowers == 0) return null;
     _borrowers -= 1;
-    if (_borrowers == 0) requestRetire();
+    if (_borrowers != 0) return null;
+    // This is the synchronous domain decision. The lease captures identity
+    // before requestClose can synchronously admit a replacement demand.
+    _retiring = true;
+    return currentSource;
   }
 
   void requestRetire() {
-    if (_retiring) return;
     _retiring = true;
-    owner._beginRetire(this as _DirectorySlot<Object?>);
-    _attempt?.requestClose();
+    currentSource?.requestClose();
   }
 
-  Future<void> retire() {
-    if (_settled) return Future.value();
-    final existing = _closing;
-    if (existing != null) return existing;
+  Future<void> retire(_DirectorySource<T>? retirement, {bool retry = false}) {
     requestRetire();
-    final operation = () async {
-      final transition = _transition;
-      if (transition != null) await transition;
-      final attempt = _attempt;
-      if (attempt != null) await attempt.close();
-      _settled = true;
-      source.publish(
-        DirectoryObservationState(
-          isLoading: false,
-          error: source.value.error,
-          closed: true,
-        ),
-      );
-      owner._settled(this as _DirectorySlot<Object?>);
-    }();
-    final tracked = operation.then<void>(
-      (_) {},
+    final closing = retirement == null
+        ? Future<void>.value()
+        : retirement.close(retry: retry);
+    return closing.then<void>(
+      (_) {
+        owner._settled(this as _DirectorySlot<Object?>);
+        source.publish(
+          DirectoryObservationState(
+            isLoading: false,
+            error: source.value.error,
+            closed: true,
+          ),
+        );
+      },
       onError: (Object error, StackTrace stack) {
-        _closing = null;
-        owner._cleanupFailed(unresolved(error));
-        Error.throwWithStackTrace(error, stack);
+        final resourceId = retirement?.resourceId;
+        try {
+          if (resourceId != null) {
+            owner._cleanupFailed(
+              UnresolvedResource(
+                resourceId: resourceId,
+                owner: 'thread-directory:$label',
+                attemptId: const AttemptId(0),
+                reason: error,
+              ),
+            );
+          }
+        } finally {
+          // No source identity means there is no source report to publish.
+          // The lease entry still observes this original release failure, even
+          // if a diagnostic callback itself throws during synchronous delivery.
+          Error.throwWithStackTrace(error, stack);
+        }
       },
     );
-    _closing = tracked;
-    return tracked;
   }
-
-  UnresolvedResource unresolved(Object error) => UnresolvedResource(
-    owner: 'thread-directory:$label',
-    attemptId: const AttemptId(0),
-    reason: error,
-  );
 }
 
 final class _DirectoryBorrow<T> implements DirectoryObservation<T> {
   _DirectoryBorrow(this._slot);
   final _DirectorySlot<T> _slot;
+  bool _released = false;
+  bool _lastBorrower = false;
+  _DirectorySource<T>? _retirement;
+  List<ClientResourceId> _retirementResourceIds = const [];
   Future<void>? _releasing;
+
+  @override
+  List<ClientResourceId> get retirementResourceIds => _retirementResourceIds;
 
   @override
   ValueObservation<DirectoryObservationState<T>> get state => _slot.source;
@@ -325,20 +394,34 @@ final class _DirectoryBorrow<T> implements DirectoryObservation<T> {
   Future<void> release() {
     final existing = _releasing;
     if (existing != null) return existing;
+    final retry = _released;
+    if (!_released) {
+      _released = true;
+      _retirement = _slot.release();
+      _lastBorrower = _slot._borrowers == 0;
+      _retirementResourceIds = List.unmodifiable([
+        if (_retirement?.resourceId case final resourceId?) resourceId,
+      ]);
+    }
     final completion = Completer<void>();
     _releasing = completion.future;
     completion.complete(
-      Future<void>.sync(() {
-        _slot.release();
-        if (_slot._retiring) return _slot.retire();
-      }),
+      _lastBorrower
+          ? _slot.retire(_retirement, retry: retry)
+          : Future<void>.value(),
+    );
+    unawaited(
+      completion.future.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) => _releasing = null,
+      ),
     );
     return completion.future;
   }
 
   @override
   Future<void> refresh() {
-    if (_releasing != null) {
+    if (_released) {
       return Future.error(
         StateError('Directory observation demand is released'),
       );
@@ -347,81 +430,38 @@ final class _DirectoryBorrow<T> implements DirectoryObservation<T> {
   }
 }
 
-final class _DirectoryAttempt<T> {
-  _DirectoryAttempt(this.slot, this.generation);
-  final _DirectorySlot<T> slot;
-  final int generation;
-  _NativeObservation<T>? _handle;
-  final Completer<void> _consumer = Completer<void>();
-  Future<void>? _closing;
-  bool _stop = false;
-  bool _settled = false;
+// A domain identity reference, not a second lifecycle owner. It is installed
+// before factory callbacks can reenter refresh/release; all work is delegated to
+// the one scope acquisition once open returns it in the same synchronous turn.
+final class _DirectorySource<T> {
+  ClientResourceId? resourceId;
+  ClientAcquisition<_NativeObservation<T>>? acquisition;
 
-  void start() {
-    unawaited(
-      _run().then<void>(
-        (_) => _consumer.complete(),
-        onError: (Object error, StackTrace _) {
-          slot.failed(generation, error);
-          _consumer.complete();
-          requestClose();
-        },
-      ),
-    );
-  }
+  void requestClose() => acquisition?.requestClose();
 
-  Future<void> _run() async {
-    final handle = await slot.open();
-    _handle = handle;
-    if (_stop) {
-      handle.requestClose();
-      return;
-    }
-    while (!_stop) {
-      final frame = await handle.next();
-      if (frame == null) {
-        if (!_stop) {
-          throw StateError('Directory observation ended without close');
+  Future<void> close({bool retry = false}) {
+    Future<void> closeSource() {
+      final entry = acquisition;
+      if (entry == null) {
+        if (resourceId != null) {
+          throw StateError(
+            'Directory acquisition registration did not complete',
+          );
         }
-        return;
+        return Future<void>.value();
       }
-      // A completed next racing close is still accepted for this exact demand.
-      slot.accept(generation, frame);
+      entry.requestClose();
+      return retry ? entry.retryClose() : entry.close();
     }
-  }
 
-  void requestClose() {
-    _stop = true;
-    _handle?.requestClose();
-  }
-
-  Future<void> close() {
-    if (_settled) return Future.value();
-    final existing = _closing;
-    if (existing != null) return existing;
-    requestClose();
-    final operation = () async {
-      await _consumer.future;
-      final handle = _handle;
-      if (handle != null) await handle.close();
-      _settled = true;
-    }();
-    final tracked = operation.then<void>(
-      (_) {},
-      onError: (Object error, StackTrace stack) {
-        _closing = null;
-        Error.throwWithStackTrace(error, stack);
-      },
-    );
-    _closing = tracked;
-    return tracked;
+    return acquisition == null
+        ? Future<void>.microtask(closeSource)
+        : closeSource();
   }
 }
 
-abstract interface class _NativeObservation<T> {
+abstract interface class _NativeObservation<T> implements ClientResource {
   Future<T?> next();
-  void requestClose();
-  Future<void> close();
 }
 
 final class _ThreadsNative implements _NativeObservation<ThreadDirectoryFrame> {
@@ -429,11 +469,15 @@ final class _ThreadsNative implements _NativeObservation<ThreadDirectoryFrame> {
   final ThreadsObservationHandle handle;
 
   @override
+  ClientResourceId get resourceId => handle.resourceId;
+  @override
   Future<ThreadDirectoryFrame?> next() => handle.next();
   @override
   void requestClose() => handle.requestClose();
   @override
   Future<void> close() => handle.close();
+  @override
+  Future<void> retryClose() => handle.retryClose();
 }
 
 final class _ThreadNative implements _NativeObservation<ThreadMetadataFrame> {
@@ -441,9 +485,13 @@ final class _ThreadNative implements _NativeObservation<ThreadMetadataFrame> {
   final ThreadObservationHandle handle;
 
   @override
+  ClientResourceId get resourceId => handle.resourceId;
+  @override
   Future<ThreadMetadataFrame?> next() => handle.next();
   @override
   void requestClose() => handle.requestClose();
   @override
   Future<void> close() => handle.close();
+  @override
+  Future<void> retryClose() => handle.retryClose();
 }

@@ -1,3 +1,7 @@
+import '../support/test_app_lifecycle.dart';
+import '../support/test_resource_owners.dart';
+import '../support/pump_client_future.dart';
+
 import 'package:anywork/src/features/settings/settings_agents_tab.dart';
 import 'package:anywork/src/features/settings/settings_agent_profile_dialog.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
@@ -25,23 +29,23 @@ void main() {
   testWidgets(
     'an open Agent Profile dialog follows a newer catalog and keeps its draft route',
     (tester) async {
-      // App-owned asynchronous lanes must be created and joined in the same
-      // real async zone, rather than trapping their initial futures in fake time.
+      // App-owned lanes start in real time. Widget demand below also creates
+      // fake-time consumers, so closing must drain both queues.
       final graph = (await tester.runAsync(
-        () async => AppGraph(
+        () async => testAppGraph(
           transport: _UnusedTransport(),
           statisticsFeed: const TestStatisticsFeedPort(),
           clientId: 'profile-catalog',
         ),
       ))!;
       addTearDown(() async {
-        final report = await tester.runAsync(
-          () => graph.close(
-            deadline: DateTime.now().add(const Duration(seconds: 3)),
-          ),
+        final report = await pumpClientFuture(
+          tester,
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
+          'profile catalog teardown close',
         );
         expect(
-          report?.unresolved.map(
+          report.unresolved.map(
             (resource) => '${resource.owner}: ${resource.reason}',
           ),
           isEmpty,
@@ -140,13 +144,13 @@ void main() {
       // unmount. Release it and really join the graph before the timer invariant.
       container.dispose();
       await tester.pump();
-      final report = await tester.runAsync(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 3)),
-        ),
+      final report = await pumpClientFuture(
+        tester,
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
+        'profile catalog close',
       );
       expect(
-        report!.unresolved.map(
+        report.unresolved.map(
           (resource) => '${resource.owner}: ${resource.reason}',
         ),
         isEmpty,
@@ -260,14 +264,13 @@ void main() {
   });
 
   test('settings accounts view keeps snapshot origins for grouping', () {
-    final graph = AppGraph(
+    final graph = testAppGraph(
       transport: _UnusedTransport(),
       statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'origin-adapter',
     );
     addTearDown(
-      () =>
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+      () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
     );
     _seed(
       graph,
@@ -335,8 +338,10 @@ void main() {
 
 class _UnusedTransport extends UnusedAccountPorts implements StudioTransport {
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) => ownTestProductTopic(contentScope, resourceId, const Stream.empty());
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnsupportedError('Unused transport: ${invocation.memberName}');

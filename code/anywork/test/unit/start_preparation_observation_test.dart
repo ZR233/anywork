@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
 import 'dart:async';
@@ -5,14 +6,13 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _waitLimit = Duration(seconds: 5);
 
-final class _PreparingTransport extends DemoStudioTransport {
+final class _PreparingTransport extends TestDemoStudioTransport {
   _PreparingTransport() : super(lspActivityLoop: false);
 
   StreamController<NewThreadStartEvent>? _events;
@@ -81,7 +81,7 @@ void main() {
     'start-page observers rebind to the same preparation after disposal',
     () async {
       final transport = _PreparingTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'preparation-adapter',
@@ -106,7 +106,7 @@ void main() {
           }
         } finally {
           final report = await graph
-              .close(deadline: DateTime.now().add(_waitLimit))
+              .close(budget: ClientCloseBudget(_waitLimit))
               .timeout(_waitLimit + const Duration(seconds: 1));
           expect(
             report.complete,

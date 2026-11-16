@@ -11,6 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart'
 import '../../domain/models/studio_models.dart';
 
 import 'package:anywork_client/studio_ports.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/conversation_ports.dart';
 import 'package:anywork_client/conversation.dart'
     show DisplayMembers, ProtocolVersionMismatch;
@@ -72,6 +73,7 @@ part 'studio_conversation_descriptor.dart';
 part 'studio_presentation_converters.dart';
 part 'studio_conversation_content_watch.dart';
 part 'studio_api_contract.dart';
+part 'frb_runtime_owner.dart';
 part 'studio_frb_converters.dart';
 part 'studio_state_converters.dart';
 part 'studio_settings_converters.dart';

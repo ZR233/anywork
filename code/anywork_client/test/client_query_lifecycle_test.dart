@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
 final class _QueryTransport implements StudioTransport {
+  final lifecycleScope = ClientScope(owner: 'test-runtime');
   final entered = Completer<void>();
   final reply = Completer<Uint8List>();
   int calls = 0;
@@ -74,9 +76,14 @@ void main() {
       final transport = _QueryTransport();
       final client = AnyworkClient(
         transport: transport,
+        scope: transport.lifecycleScope.child('client'),
         clientId: 'remote-ssh',
       );
-      addTearDown(() => client.close());
+      addTearDown(
+        () => client.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        ),
+      );
 
       final saved = await client.remote.saveSshServer(
         const SaveSshServerCommand(
@@ -202,18 +209,24 @@ void main() {
       final transport = _QueryTransport();
       final client = AnyworkClient(
         transport: transport,
+        scope: transport.lifecycleScope.child('client'),
         clientId: 'query-reentry',
       );
       late Future<CloseReport> closing;
       transport.onRead = () {
-        closing = client.close(deadline: DateTime.utc(2000));
+        closing = client.close(budget: ClientCloseBudget(Duration.zero));
       };
       final reading = client.readAttachmentBytes('thread', 'attachment');
       final report = await closing;
       expect(report.unresolved.any((item) => item.owner == 'queries'), isTrue);
       transport.reply.complete(Uint8List(0));
       await reading;
-      expect((await client.retryCleanup()).complete, isTrue);
+      expect(
+        (await client.retryCleanup(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        )).complete,
+        isTrue,
+      );
     },
   );
 
@@ -223,13 +236,17 @@ void main() {
       final transport = _QueryTransport();
       final client = AnyworkClient(
         transport: transport,
+        scope: transport.lifecycleScope.child('client'),
         clientId: 'query-close',
       );
       final reading = client.readAttachmentBytes('thread', 'attachment');
       await transport.entered.future;
-      final closing = client.close(deadline: DateTime.utc(2000));
+      final closing = client.close(budget: ClientCloseBudget(Duration.zero));
       expect(
-        identical(closing, client.close(deadline: DateTime.utc(2100))),
+        identical(
+          closing,
+          client.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
+        ),
         isTrue,
       );
       final report = await closing;
@@ -241,7 +258,12 @@ void main() {
       expect(transport.calls, 1);
       transport.reply.complete(Uint8List.fromList([7]));
       expect(await reading, [7]);
-      expect((await client.retryCleanup()).complete, isTrue);
+      expect(
+        (await client.retryCleanup(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        )).complete,
+        isTrue,
+      );
     },
   );
 }

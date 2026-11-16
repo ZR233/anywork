@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/shell/sidebar/sidebar_connectors.dart';
@@ -130,7 +132,7 @@ void main() {
       for (final id in ['A', 'B', for (var i = 0; i < 18; i++) 'extra-$i']) {
         transport.seedThread(_row(id));
       }
-      final graph = AppGraph(
+      final graph = testAppGraph(
         transport: transport,
         statisticsFeed: const TestStatisticsFeedPort(),
       );
@@ -140,7 +142,7 @@ void main() {
       addTearDown(() async {
         final report = await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'close the sidebar graph',
         );
         expect(
@@ -510,12 +512,12 @@ void main() {
     (tester) async {
       final transport = _Transport()..seedThread(_row('A'));
       transport.failMetadataOpen = StateError('metadata offline');
-      final first = AppGraph(
+      final first = testAppGraph(
         transport: transport,
         statisticsFeed: const TestStatisticsFeedPort(),
       );
       final replacementTransport = _Transport();
-      final replacement = AppGraph(
+      final replacement = testAppGraph(
         transport: replacementTransport,
         statisticsFeed: const TestStatisticsFeedPort(),
       );
@@ -526,13 +528,13 @@ void main() {
         container.dispose();
         final firstReport = await pumpClientFuture(
           tester,
-          first.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          first.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'close the retired Client graph',
         );
         final replacementReport = await pumpClientFuture(
           tester,
           replacement.close(
-            deadline: DateTime.now().add(const Duration(seconds: 5)),
+            budget: ClientCloseBudget(const Duration(seconds: 5)),
           ),
           'close the replacement Client graph',
         );
@@ -679,13 +681,19 @@ void main() {
 
 final class _Transport extends RecordingDemoTransport
     with DirectoryFeedFixture {
+  @override
+  ClientScope get lifecycleScope => contentScope;
+
   Object? failMetadataOpen;
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) {
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) {
     final failure = failMetadataOpen;
     failMetadataOpen = null;
     if (failure != null) return Future.error(failure);
-    return super.openThreadObservation(threadId);
+    return super.openThreadObservation(threadId, resourceId: resourceId);
   }
 }

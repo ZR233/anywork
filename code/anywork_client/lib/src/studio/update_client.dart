@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:math';
 
+import '../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
 import '../../models.dart';
 import '../../studio_ports.dart';
 import '../contracts/stamps.dart';
@@ -54,7 +56,12 @@ final class StudioUpdateClient {
   );
   final Map<int, _UpdateAttempt> _attempts = {};
   final Map<int, _UpdateRpc> _rpcs = {};
-  final Map<String, Object> _cleanupFailures = {};
+  final Map<String, ({ClientResourceId resourceId, Object reason})>
+  _cleanupFailures = {};
+  final String _resourceScopeId = _newResourceScopeId();
+  int _resourceSequence = 0;
+  ClientResourceId? _automaticResourceId;
+  ClientResourceId? _closeResourceId;
   Observation? _observation;
   bool _automaticJoined = true;
   Future<void>? _automaticTask;
@@ -93,6 +100,9 @@ final class StudioUpdateClient {
 
   List<UnresolvedResource> get unresolvedResources => _report().unresolved;
 
+  ClientResourceId _allocateResourceId() =>
+      ClientResourceId(_resourceScopeId, ++_resourceSequence);
+
   /// Called once by application assembly, after this owner is installed.
   void attach() {
     if (_closed) throw StateError('Update client is closed');
@@ -119,6 +129,7 @@ final class StudioUpdateClient {
     try {
       // The producer outlives its start RPC. Retain its ownership until a
       // real cancellation ACK, including an unknown startup outcome.
+      _automaticResourceId = _allocateResourceId();
       _automaticStarted = true;
       _automaticJoined = false;
       completed = Completer<void>();
@@ -151,7 +162,7 @@ final class StudioUpdateClient {
 
   Future<T> _rpc<T>(String name, Future<T> Function() action) {
     final id = ++_rpcSequence;
-    final rpc = _UpdateRpc(id, name);
+    final rpc = _UpdateRpc(id, name, _allocateResourceId());
     _rpcs[id] = rpc;
     return _runRpc(rpc, action);
   }
@@ -219,7 +230,7 @@ final class StudioUpdateClient {
     }
     // Install ownership exists before the first transport await. A late native
     // operation always belongs to this attempt, even after application close.
-    final attempt = _UpdateAttempt(++_sequence);
+    final attempt = _UpdateAttempt(++_sequence, _allocateResourceId());
     _attempts[attempt.id] = attempt;
     _active = attempt;
     final completed = Completer<StudioUpdateInstallResult>();
@@ -373,11 +384,11 @@ final class StudioUpdateClient {
     }
   }
 
-  /// Every caller joins the first close and its original absolute deadline.
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
+  /// Every caller joins the first close and its original optional budget.
+  Future<CloseReport> close({ClientCloseBudget? budget}) =>
+      _closing ??= _close(budget);
 
-  Future<CloseReport> retryCleanup({DateTime? deadline}) {
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) {
     if (!_closed)
       throw StateError('Close the update client before retrying cleanup');
     for (final attempt in _attempts.values) {
@@ -386,22 +397,25 @@ final class StudioUpdateClient {
     if (!_automaticStopRunning && !_automaticJoined) {
       _automaticStopTask = null;
     }
-    return _close(deadline);
+    return _close(budget);
   }
 
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
+    _closeResourceId ??= _allocateResourceId();
     _closed = true;
     _observation?.cancel();
     final work = _joinOwners();
     try {
-      final remaining = deadline?.difference(DateTime.now());
-      if (remaining == null) {
+      if (budget == null) {
         await work;
       } else {
-        await work.timeout(remaining.isNegative ? Duration.zero : remaining);
+        await work.timeout(budget.remaining);
       }
     } catch (error) {
-      _cleanupFailures['update-close'] = error;
+      _cleanupFailures['update-close'] = (
+        resourceId: _closeResourceId!,
+        reason: error,
+      );
     }
     return _report();
   }
@@ -439,7 +453,10 @@ final class StudioUpdateClient {
       _automaticJoined = true;
       _cleanupFailures.remove('automatic-update');
     } catch (error) {
-      _cleanupFailures['automatic-update'] = error;
+      _cleanupFailures['automatic-update'] = (
+        resourceId: _automaticResourceId!,
+        reason: error,
+      );
     } finally {
       _automaticStopRunning = false;
     }
@@ -469,21 +486,24 @@ final class StudioUpdateClient {
     unresolved: [
       if (_closed && !_automaticJoined)
         UnresolvedResource(
+          resourceId: _automaticResourceId!,
           owner: 'automatic-update',
           attemptId: const AttemptId(0),
           reason:
-              _cleanupFailures['automatic-update'] ??
+              _cleanupFailures['automatic-update']?.reason ??
               StateError('Automatic update cancellation is pending'),
         ),
       if (_closed)
         for (final rpc in _rpcs.values)
           UnresolvedResource(
+            resourceId: rpc.resourceId,
             owner: 'update-rpc:${rpc.name}',
             attemptId: AttemptId(rpc.id),
             reason: StateError('Update RPC has not reached its terminal state'),
           ),
       for (final attempt in _attempts.values)
         UnresolvedResource(
+          resourceId: attempt.resourceId,
           owner: 'update:${attempt.id}',
           attemptId: AttemptId(attempt.id),
           reason:
@@ -493,24 +513,27 @@ final class StudioUpdateClient {
       for (final entry in _cleanupFailures.entries)
         if (entry.key != 'automatic-update' || _automaticJoined)
           UnresolvedResource(
+            resourceId: entry.value.resourceId,
             owner: entry.key,
             attemptId: const AttemptId(0),
-            reason: entry.value,
+            reason: entry.value.reason,
           ),
     ],
   );
 }
 
 final class _UpdateRpc {
-  _UpdateRpc(this.id, this.name);
+  _UpdateRpc(this.id, this.name, this.resourceId);
   final int id;
+  final ClientResourceId resourceId;
   final String name;
   final Completer<void> done = Completer();
 }
 
 final class _UpdateAttempt {
-  _UpdateAttempt(this.id);
+  _UpdateAttempt(this.id, this.resourceId);
   final int id;
+  final ClientResourceId resourceId;
   final Completer<StudioUpdateOperation?> opened = Completer();
   StudioUpdateOperation? operation;
   Future<StudioUpdateInstallResult>? task;
@@ -518,6 +541,15 @@ final class _UpdateAttempt {
   Object? cleanupFailure;
   bool joined = false;
   bool cancelRequested = false;
+}
+
+String _newResourceScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'studio-update-$nonce';
 }
 
 bool _isInstalling(UpdaterStateSnapshot state) =>

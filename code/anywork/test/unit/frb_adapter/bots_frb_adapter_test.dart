@@ -1,6 +1,5 @@
+import '../../support/test_app_lifecycle.dart';
 import '../../support/test_statistics_feed.dart';
-
-import 'package:anywork/src/app/app_graph.dart';
 
 import 'dart:async';
 import 'dart:convert';
@@ -139,7 +138,10 @@ final class _FrbEnvelopeBotsTransport extends RecordingDemoTransport {
   StreamController<ProductTopicFrame>? _bots;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  TestTopicFrames testProductTopicFrames(
+    ProductTopic topic,
+    TestTopicFrames upstream,
+  ) {
     if (topic == const BotsTopic()) {
       late final StreamController<ProductTopicFrame> controller;
       controller = StreamController<ProductTopicFrame>(
@@ -148,9 +150,9 @@ final class _FrbEnvelopeBotsTransport extends RecordingDemoTransport {
         },
       );
       _bots = controller;
-      return controller.stream;
+      return TestTopicFrames.controller(controller);
     }
-    return super.subscribeProductTopic(topic);
+    return upstream;
   }
 
   void emitBots(frb_topic.BridgeProductTopicStreamEnvelope envelope) {
@@ -339,16 +341,15 @@ void main() {
           ),
         ),
       );
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'bots-frb-driver',
       );
       final client = graph.client;
       addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
-        ),
+        () =>
+            graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       );
       await client.bootstrap();
       final scope = client.channels.acquireSettingsScope(

@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../../app/app_graph.dart';
 import '../../presentation/providers/client_provider.dart';
 import '../../presentation/providers/account_domains.dart';
 import '../../presentation/providers/mcp_store.dart';
@@ -62,7 +63,19 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   /// lease. Source updates do not rebuild the owner of admitted commands.
   void Function() observeServices() {
     final client = ref.read(anyworkClientProvider);
-    final lease = client.channels.acquireThreadLsp(threadId);
+    final scope = ref
+        .read(appGraphProvider)
+        .uiResources
+        .child('thread-lsp-popover');
+    try {
+      scope.acquireLease(
+        'thread-lsp-popover',
+        () => client.channels.acquireThreadLsp(threadId),
+      );
+    } catch (_) {
+      scope.requestClose();
+      rethrow;
+    }
     final retention = ref.keepAlive();
     Observation? observation;
     var released = false;
@@ -71,17 +84,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
       released = true;
       observation?.cancel();
       _displayObservations.remove(release);
-      unawaited(
-        lease.release().catchError((Object error) {
-          client.resourceFailure.publish(
-            UnresolvedResource(
-              owner: 'thread-lsp-popover:$threadId',
-              attemptId: const AttemptId(0),
-              reason: error,
-            ),
-          );
-        }),
-      );
+      scope.requestClose();
       retention.close();
     }
 

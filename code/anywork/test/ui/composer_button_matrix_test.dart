@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
@@ -61,8 +62,14 @@ final class _ScriptedTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<ThreadObservationHandle> openThreadObservation(String threadId) async {
-    final inner = await super.openThreadObservation(threadId);
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  }) async {
+    final inner = await super.openThreadObservation(
+      threadId,
+      resourceId: resourceId,
+    );
     final status = directoryStatus;
     return status == null ? inner : _StatusObservation(inner, status);
   }
@@ -171,6 +178,10 @@ final class _StatusObservation implements ThreadObservationHandle {
   void requestClose() => inner.requestClose();
   @override
   Future<void> close() => inner.close();
+  @override
+  ClientResourceId get resourceId => inner.resourceId;
+  @override
+  Future<void> retryClose() => inner.retryClose();
 }
 
 StudioCommandReceipt _receipt(OperationId operationId) => StudioCommandReceipt(
@@ -234,7 +245,7 @@ Future<_Composer> _composer(
   final transport = _ScriptedTransport()
     ..directoryStatus = directoryStatus
     ..restoredPlan = restoredPlan;
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: transport,
     clientId: 'composer-matrix',
     statisticsFeed: const TestStatisticsFeedPort(),
@@ -243,7 +254,7 @@ Future<_Composer> _composer(
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'composer matrix teardown',
     );
   });
@@ -335,9 +346,7 @@ Future<void> _close(WidgetTester tester, _Composer composer) async {
   await tester.pumpWidget(const SizedBox.shrink());
   await pumpClientFuture(
     tester,
-    composer.graph.close(
-      deadline: DateTime.now().add(const Duration(seconds: 5)),
-    ),
+    composer.graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     'composer matrix close',
   );
 }

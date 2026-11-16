@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -778,7 +780,7 @@ final class _Harness {
     _composerObservation?.cancel();
     await tester.pumpWidget(const SizedBox());
     final closing = owner.close(
-      deadline: DateTime.now().add(const Duration(milliseconds: 500)),
+      budget: ClientCloseBudget(const Duration(milliseconds: 500)),
     );
     final report = await pumpClientFuture(
       tester,

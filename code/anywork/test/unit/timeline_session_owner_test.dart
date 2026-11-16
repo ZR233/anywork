@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -427,14 +429,16 @@ void main() {
     final h = _Harness();
     await h.open();
     final lease = h.lease..bind();
-    final report = await h.owner.close(deadline: DateTime.utc(2000));
+    final report = await h.owner.close(
+      budget: ClientCloseBudget(Duration.zero),
+    );
     expect(report.complete, isFalse);
     expect(lease.isReleased, isFalse);
     expect(lease.isRetired, isTrue);
     await lease.unbind();
     expect(
       (await h.owner.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
+        budget: ClientCloseBudget(const Duration(seconds: 5)),
       )).complete,
       isTrue,
     );
@@ -444,7 +448,7 @@ void main() {
 
 final class _Harness {
   _Harness({this.viewport = true}) {
-    graph = AppGraph(
+    graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'cursor-owner-test',
@@ -452,7 +456,7 @@ final class _Harness {
     addTearDown(() async {
       await transport.settleFixtures();
       final report = await graph.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
+        budget: ClientCloseBudget(const Duration(seconds: 5)),
       );
       expect(report.complete, isTrue, reason: '${report.unresolved}');
     });

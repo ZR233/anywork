@@ -1,8 +1,9 @@
+import '../../support/frb_test_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/handlers/chat.dart' as wire;
 import 'package:anywork/src/rust/api/studio/types/chat.dart' as dto;
 import 'package:anywork/src/rust/api/studio/types/thread_stream.dart' as state;
@@ -29,7 +30,7 @@ void main() {
             correlationId: 'protocol-reason',
             detailsJson: details,
           );
-        final feed = FrbConversationFeed(native);
+        final feed = await testFrbConversationFeed(native);
         await expectLater(
           feed.reader.loadOlder(before: 'before', demand: chatDemand),
           throwsA(
@@ -58,7 +59,7 @@ void main() {
       'FRB $placement preserves immutable records, completion positions and bytes and credit',
       () async {
         final native = _GeneratedFeed();
-        final feed = FrbConversationFeed(native);
+        final feed = await testFrbConversationFeed(native);
         final iterator = StreamIterator(feed.events);
         final bytes = Uint8List.fromList(utf8.encode('中文 🐱 opaque JSON'));
         final entries = [
@@ -172,7 +173,7 @@ void main() {
 
   test('original facade reader maps Prepend demand, manifest, and byte windows independently of events', () async {
     final native = _GeneratedFeed();
-    final feed = FrbConversationFeed(native);
+    final feed = await testFrbConversationFeed(native);
     final reader = feed.reader;
     expect(feed.reader, same(reader));
     final batch = await reader.loadOlder(
@@ -241,7 +242,7 @@ void main() {
     'typed query failures retain classification and correlation identity',
     () async {
       final native = _GeneratedFeed()..queryFailure = _failure;
-      final feed = FrbConversationFeed(native);
+      final feed = await testFrbConversationFeed(native);
       await expectLater(
         feed.reader.loadOlder(before: 'before', demand: chatDemand),
         throwsA(_typedFailure),
@@ -266,29 +267,32 @@ void main() {
     },
   );
 
-  test('terminal sequence zero and reused sequence pass through without adapter ACK', () async {
-    for (final sequence in [0, 3]) {
-      final native = _GeneratedFeed();
-      final feed = FrbConversationFeed(native);
-      final iterator = StreamIterator(feed.events);
-      native.send(
-        const dto.BridgeConversationEvent.closed(),
-        sequence: sequence,
-      );
-      expect(await iterator.moveNext(), isTrue);
-      expect(iterator.current.deliverySequence, sequence);
-      expect(iterator.current.event, isA<ConversationClosedEvent>());
-      expect(native.acks, isEmpty);
-      await feed.close();
-      await iterator.cancel();
-    }
-  });
+  for (final sequence in [0, 3]) {
+    test(
+      'terminal sequence $sequence passes through without adapter ACK',
+      () async {
+        final native = _GeneratedFeed();
+        final feed = await testFrbConversationFeed(native);
+        final iterator = StreamIterator(feed.events);
+        native.send(
+          const dto.BridgeConversationEvent.closed(),
+          sequence: sequence,
+        );
+        expect(await iterator.moveNext(), isTrue);
+        expect(iterator.current.deliverySequence, sequence);
+        expect(iterator.current.event, isA<ConversationClosedEvent>());
+        expect(native.acks, isEmpty);
+        await feed.close();
+        await iterator.cancel();
+      },
+    );
+  }
 
   test('facade close joins every content watch despite feed and one watch failure, then retries retained owner', () async {
     final native = _GeneratedFeed()
       ..closeFailure = _failure
       ..failedWatch = 'watch-1';
-    final feed = FrbConversationFeed(native);
+    final feed = await testFrbConversationFeed(native);
     final errors = <Object>[];
     final first = feed.reader
         .watchContent(
@@ -322,7 +326,7 @@ void main() {
     );
     native.closeFailure = null;
     native.failedWatch = null;
-    await feed.close();
+    await feed.retryClose();
     expect(native.closeCalls, 2);
     expect(native.watchCloseCalls.where((id) => id == 'watch-1'), hasLength(2));
     expect(native.watchCloseCalls.where((id) => id == 'watch-2'), hasLength(1));

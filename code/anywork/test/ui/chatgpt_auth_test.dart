@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/routing/app_route.dart';
 import 'package:anywork/src/app/routing/application_router.dart';
@@ -40,7 +42,7 @@ void main() {
       );
 
       final transport = ChatGptSceneTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         transport: transport,
         statisticsFeed: DemoStatisticsFeedPort(),
       );
@@ -67,9 +69,7 @@ void main() {
         );
         final closed = await pumpClientFuture(
           tester,
-          graph.close(
-            deadline: DateTime.now().add(const Duration(seconds: 30)),
-          ),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
           'ChatGPT authentication graph close',
         );
         expect(closed.unresolved, isEmpty);

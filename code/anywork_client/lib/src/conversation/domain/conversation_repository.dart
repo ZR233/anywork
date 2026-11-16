@@ -1,3 +1,4 @@
+import '../../../lifecycle.dart' show ClientCloseBudget;
 import '../../../conversation_ports.dart' show TimelineReader;
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
@@ -22,8 +23,8 @@ abstract interface class ConversationRepository {
     required ChatScope scope,
     required ReadDemand demand,
   });
-  Future<CloseReport> close({DateTime? deadline});
-  Future<CloseReport> retryCleanup({DateTime? deadline});
+  Future<CloseReport> close({ClientCloseBudget? budget});
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget});
 }
 
 abstract interface class ConversationSession {
@@ -84,8 +85,8 @@ abstract interface class ConversationContent implements ConversationQueries {
     ConversationBatchConsumer consumer, {
     required ReadDemand demand,
   });
-  Future<CloseReport> close({DateTime? deadline});
-  Future<CloseReport> joinRetired({DateTime? deadline});
+  Future<CloseReport> close({ClientCloseBudget? budget});
+  Future<CloseReport> joinRetired({ClientCloseBudget? budget});
   void refresh();
   ConversationQueryScope openScope({required int generation});
 }
@@ -124,5 +125,5 @@ abstract interface class ConversationQueryScope {
     required ReadDemand demand,
   });
   void retire();
-  Future<CloseReport> close({DateTime? deadline});
+  Future<CloseReport> close({ClientCloseBudget? budget});
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import '../../../accounts.dart';
 import '../../../accounts_ports.dart';
@@ -6,10 +7,10 @@ import '../../../account_usage.dart';
 import '../../../acp.dart';
 import '../../../acp_ports.dart';
 import '../../../model_directory.dart';
+import '../../../lifecycle.dart';
 import '../../acp/data/acp_service_impl.dart';
 import '../../commands/mutation_board.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/close_report.dart';
 import '../../models/command_receipts.dart';
 import '../../models/studio_state_snapshots.dart';
 import '../../models_domain/data/models_repository_impl.dart';
@@ -29,11 +30,13 @@ final class AccountDomainResources {
     required AcpPort acpPort,
     required this.coordinator,
     required this.mutations,
+    required ClientScope scope,
     required String owner,
   }) {
     _observations = AccountObservations(
       feed: feed,
       owner: owner,
+      scope: scope,
       consume: _consume,
       failed: _failed,
     );
@@ -75,6 +78,11 @@ final class AccountDomainResources {
   late final ModelsRepositoryImpl _models;
   late final AccountUsageRepositoryImpl _usage;
   late final AcpServiceImpl _acp;
+  final String _commandScopeId = _newCommandScopeId();
+  final Map<String, ClientResourceId> _commandResourceIds = {};
+  final Map<String, Future<void>> _commandJoins = {};
+  final Map<String, UnresolvedResource> _commandFailures = {};
+  Future<CloseReport>? _closing;
   AccountsRepository get accounts => _accounts;
   ModelsRepository get models => _models;
   AccountUsageRepository get usage => _usage;
@@ -292,37 +300,120 @@ final class AccountDomainResources {
     }
   }
 
-  Future<CloseReport> close({required DateTime deadline}) async {
-    // Synchronously seal all command lanes before awaiting any sibling owner.
-    final commandJoins = [
-      _models.close(),
-      _usage.close(),
-      _acp.close(),
-      _accounts.close(),
-    ];
-    final observations = _observations.close(deadline: deadline);
-    final unresolved = <UnresolvedResource>[];
-    for (var index = 0; index < commandJoins.length; index++) {
-      try {
-        final remaining = deadline.difference(DateTime.now());
-        await commandJoins[index].timeout(
-          remaining > Duration.zero
-              ? remaining
-              : const Duration(microseconds: 1),
-        );
-      } catch (error) {
-        unresolved.add(
-          UnresolvedResource(
-            owner: 'account-domain-command:$index',
-            attemptId: const AttemptId(0),
-            reason: error,
-          ),
-        );
-      }
-    }
-    final report = await observations;
-    if (unresolved.isEmpty && report.complete)
-      _settingsMutations.disposeConfirmations();
-    return CloseReport(unresolved: [...report.unresolved, ...unresolved]);
+  Future<CloseReport> close({required ClientCloseBudget budget}) {
+    final existing = _closing;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    final result = _closing = completion.future;
+    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
+    return result;
   }
+
+  Future<CloseReport> _close(ClientCloseBudget budget) async {
+    // Synchronously seal all command lanes before awaiting any sibling owner.
+    final commandJoins = <Future<void>>[
+      _joinCommand(
+        'account-model-commands',
+        Future<void>.sync(_models.close),
+        budget,
+      ),
+      _joinCommand(
+        'account-usage-commands',
+        Future<void>.sync(_usage.close),
+        budget,
+      ),
+      _joinCommand('acp-commands', Future<void>.sync(_acp.close), budget),
+      _joinCommand(
+        'account-commands',
+        Future<void>.sync(_accounts.close),
+        budget,
+      ),
+    ];
+    final observations = _observations.close(budget: budget);
+    await Future.wait(commandJoins);
+    return _finishCloseReport(await observations);
+  }
+
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
+    final observations = _observations.retryCleanup(budget: budget);
+    // These are joins of already admitted commands, never command replays.
+    await Future.wait([
+      for (final entry in _commandJoins.entries.toList())
+        _joinCommand(entry.key, entry.value, budget),
+    ]);
+    return _finishCloseReport(await observations);
+  }
+
+  CloseReport _finishCloseReport(CloseReport observations) {
+    if (_closing != null && _commandFailures.isEmpty && observations.complete)
+      _settingsMutations.disposeConfirmations();
+    return CloseReport(
+      unresolved: [...observations.unresolved, ..._commandFailures.values],
+    );
+  }
+
+  Future<void> _joinCommand(
+    String owner,
+    Future<void> task,
+    ClientCloseBudget budget,
+  ) async {
+    final resourceId = _commandResourceIds.putIfAbsent(
+      owner,
+      () => ClientResourceId(_commandScopeId, _commandResourceIds.length + 1),
+    );
+    _commandJoins[owner] = task;
+    final settled = task.then<void>(
+      (_) {
+        if (identical(_commandJoins[owner], task)) {
+          unawaited(_commandJoins.remove(owner));
+          _commandFailures.remove(owner);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        if (identical(_commandJoins[owner], task)) {
+          _commandFailures[owner] = UnresolvedResource(
+            resourceId: resourceId,
+            owner: owner,
+            attemptId: AttemptId(resourceId.sequence),
+            reason: error,
+            stages: [
+              ClientResourceStage(
+                owner: owner,
+                phase: ClientClosePhase.close,
+                error: error,
+                stackTrace: stack,
+              ),
+            ],
+          );
+        }
+      },
+    );
+    try {
+      await settled.timeout(budget.remaining);
+    } on TimeoutException catch (error) {
+      // Keep the original task: a late real completion clears only this join.
+      _commandFailures[owner] = UnresolvedResource(
+        resourceId: resourceId,
+        owner: owner,
+        attemptId: AttemptId(resourceId.sequence),
+        reason: error,
+        stages: [
+          ClientResourceStage(
+            owner: owner,
+            phase: ClientClosePhase.close,
+            pending: true,
+          ),
+        ],
+      );
+    }
+  }
+}
+
+String _newCommandScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'account-commands-$nonce';
 }

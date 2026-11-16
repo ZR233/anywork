@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import '../support/chat_fixtures.dart';
@@ -28,12 +30,12 @@ void main() {
     'idle context follows canonical catalog while running binding stays frozen',
     () async {
       final transport = _StatusTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'context-policy',
       );
-      addTearDown(() => graph.close(deadline: _deadline()));
+      addTearDown(() => graph.close(budget: testBudgetUntil(_deadline())));
       await graph.client.bootstrap();
       graph.timeline.updateReadDemand(chatDemand);
       await (graph..setConversationPageVisible(true)).client.directoryCommands
@@ -173,7 +175,7 @@ void main() {
     'cold compact initializes state and retains command state across source updates',
     (tester) async {
       final transport = _StatusTransport()..compactGate = Completer<void>();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'status-cold-compact',
@@ -436,7 +438,7 @@ void main() {
       container.dispose();
       final report = await pumpClientFuture(
         tester,
-        graph.close(deadline: _deadline()),
+        graph.close(budget: testBudgetUntil(_deadline())),
         'context connector teardown',
       );
       expect(report.complete, isTrue);
@@ -445,12 +447,12 @@ void main() {
 
   test('status projections isolate throughput from context, chrome, and unrelated facts', () async {
     final transport = _StatusTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'status-throughput',
     );
-    addTearDown(() => graph.close(deadline: _deadline()));
+    addTearDown(() => graph.close(budget: testBudgetUntil(_deadline())));
     await graph.client.bootstrap();
     graph.timeline.updateReadDemand(chatDemand);
     await (graph..setConversationPageVisible(true)).client.directoryCommands
@@ -692,14 +694,16 @@ final class _StatusTransport extends RecordingDemoTransport {
   StreamController<ProductTopicFrame>? _lspFrames;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
-    final upstream = super.subscribeProductTopic(topic);
+  TestTopicFrames testProductTopicFrames(
+    ProductTopic topic,
+    TestTopicFrames upstream,
+  ) {
     if (topic is! ThreadLspTopic) return upstream;
     StreamSubscription<ProductTopicFrame>? subscription;
     late final StreamController<ProductTopicFrame> controller;
     controller = StreamController<ProductTopicFrame>(
       onListen: () {
-        subscription = upstream.listen(
+        subscription = upstream.frames.listen(
           controller.add,
           onError: controller.addError,
           onDone: controller.close,
@@ -710,7 +714,7 @@ final class _StatusTransport extends RecordingDemoTransport {
       },
     );
     _lspFrames = controller;
-    return controller.stream;
+    return TestTopicFrames.controller(controller);
   }
 
   void emitThreadLsp(ThreadLspStateSnapshot snapshot) {

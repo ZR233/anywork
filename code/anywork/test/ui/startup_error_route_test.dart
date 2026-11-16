@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
 import 'package:anywork/src/app/anywork_app.dart';
@@ -21,7 +22,7 @@ void main() {
       correlationId: 'startup-route-failure',
     );
     final transport = _StartupFailureTransport(failure);
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'startup-route',
@@ -30,7 +31,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'startup failure teardown',
       );
     });
@@ -64,7 +65,7 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'startup failure close',
     );
   });

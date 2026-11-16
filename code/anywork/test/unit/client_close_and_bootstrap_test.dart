@@ -1,8 +1,9 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:anywork/src/app/app_graph.dart';
 
 import '../support/test_statistics_feed.dart';
 
@@ -39,7 +40,7 @@ void main() {
   test('close joins failed bootstrap across error zones without losing the caller error', () async {
     final failure = StateError('startup failed before baseline');
     final transport = _LateBootstrapTransport(failure: failure);
-    final client = AnyworkClient(
+    final client = testAnyworkClient(
       transport: transport,
       clientId: 'cross-zone-bootstrap',
     );
@@ -55,7 +56,7 @@ void main() {
     }, (error, _) => uncaught.add(error));
     await transport.entered.future;
     final closing = client.close(
-      deadline: DateTime.now().add(const Duration(seconds: 1)),
+      budget: ClientCloseBudget(const Duration(seconds: 1)),
     );
     transport.release.complete();
     expect(await callerError.future, same(failure));
@@ -69,20 +70,22 @@ void main() {
     expect(client.applicationTopics, isEmpty);
     expect(client.settings.state.configLoaded, isFalse);
     expect(transport.bootstrapCalls, 0);
-    expect((await client.retryCleanup()).complete, isTrue);
+    expect(
+      (await client.retryCleanup(budget: testCloseBudget())).complete,
+      isTrue,
+    );
   });
 
   test('closing a project discards only its logical drafts and releases their permits', () async {
     final transport = RecordingDemoTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'project-close',
     );
     final client = graph.client;
     addTearDown(
-      () =>
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     );
     await client.bootstrap();
     final workspaceId = client.selection.state.selectedProjectId!;
@@ -109,23 +112,22 @@ void main() {
     );
     expect(client.drafts.existingComposer('thread-main')?.state, isNull);
     expect(composer.state.draft, isEmpty);
-    expect((await client.close()).complete, isTrue);
+    expect((await client.close(budget: testCloseBudget())).complete, isTrue);
   });
 
   test(
     'template failure retries its own resource without re-running bootstrap',
     () async {
       final transport = _CatalogFailureTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         transport: transport,
         statisticsFeed: const TestStatisticsFeedPort(),
         clientId: 'bootstrap-retry',
       );
       final client = graph.client;
       addTearDown(
-        () => graph.close(
-          deadline: DateTime.now().add(const Duration(seconds: 3)),
-        ),
+        () =>
+            graph.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
       );
       await client.bootstrap();
       await expectLater(graph.accounts.loadTemplates(), throwsStateError);
@@ -135,7 +137,7 @@ void main() {
       expect(transport.bootstrapCalls, 1);
       expect(transport.catalogCalls, 2);
       expect(client.applicationTopics, isNotEmpty);
-      expect((await client.close()).complete, isTrue);
+      expect((await client.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -143,16 +145,19 @@ void main() {
     'late bootstrap stays owned at deadline and cannot reopen a closed client',
     () async {
       final transport = _LateBootstrapTransport();
-      final client = AnyworkClient(
+      final client = testAnyworkClient(
         transport: transport,
         clientId: 'late-bootstrap',
       );
       final boot = client.bootstrap();
       await transport.entered.future;
       final deadline = DateTime.utc(2000);
-      final closing = client.close(deadline: deadline);
+      final closing = client.close(budget: testBudgetUntil(deadline));
       expect(
-        identical(closing, client.close(deadline: DateTime.utc(2100))),
+        identical(
+          closing,
+          client.close(budget: testBudgetUntil(DateTime.utc(2100))),
+        ),
         isTrue,
       );
       final report = await closing;
@@ -165,7 +170,10 @@ void main() {
       await boot;
       expect(client.applicationTopics, isEmpty);
       expect(client.settings.state.configLoaded, isFalse);
-      expect((await client.retryCleanup()).complete, isTrue);
+      expect(
+        (await client.retryCleanup(budget: testCloseBudget())).complete,
+        isTrue,
+      );
     },
   );
 }

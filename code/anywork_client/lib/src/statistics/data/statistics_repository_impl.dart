@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:math';
 
+import '../../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart';
 import '../../models/failure_models.dart' show StudioFailureCode;
@@ -28,7 +30,8 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   final String _owner;
   final LatestValue<StatisticsRepositoryState> _state;
   final Map<int, _StatisticsAttempt> _attempts = {};
-  final Map<String, UnresolvedResource> _unresolved = {};
+  final Map<ClientResourceId, UnresolvedResource> _unresolved = {};
+  final String _resourceScopeId = _newResourceScopeId();
 
   int _nextAttemptId = 0;
   int _generation = 0;
@@ -83,10 +86,10 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) =>
-      _closing ??= _close(deadline);
+  Future<CloseReport> close({ClientCloseBudget? budget}) =>
+      _closing ??= _close(budget);
 
-  Future<CloseReport> _close(DateTime? deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget? budget) async {
     _closed = true;
     _visibleDemands = 0;
     _retryTimer?.cancel();
@@ -98,19 +101,19 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
         .where((attempt) => !attempt.settled)
         .toList();
     final work = [for (final attempt in attempts) _requestRetirement(attempt)];
-    await _joinBounded(work, deadline);
+    await _joinBounded(work, budget);
     return CloseReport(unresolved: _unresolved.values);
   }
 
   @override
-  Future<CloseReport> retryCleanup({DateTime? deadline}) async {
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) async {
     final unresolved = _attempts.values
         .where((attempt) => !attempt.settled && attempt.retireRequested)
         .toList();
     final work = [
       for (final attempt in unresolved) _requestRetirement(attempt),
     ];
-    await _joinBounded(work, deadline);
+    await _joinBounded(work, budget);
     return CloseReport(unresolved: _unresolved.values);
   }
 
@@ -147,7 +150,11 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     if (_closed || _visibleDemands == 0 || _current != null) return;
     final attemptId = ++_nextAttemptId;
     final generation = ++_generation;
-    final attempt = _StatisticsAttempt(id: attemptId, generation: generation);
+    final attempt = _StatisticsAttempt(
+      id: attemptId,
+      generation: generation,
+      resourceId: ClientResourceId(_resourceScopeId, attemptId),
+    );
     _attempts[attemptId] = attempt;
     _current = attempt;
     attempt.opening = Future<void>.microtask(() async {
@@ -431,7 +438,8 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       error,
       category: StatisticsFailureCategory.cleanup,
     );
-    _unresolved[_resourceOwner(attempt)] = UnresolvedResource(
+    _unresolved[attempt.resourceId] = UnresolvedResource(
+      resourceId: attempt.resourceId,
       owner: _resourceOwner(attempt),
       attemptId: AttemptId(attempt.id),
       reason: failure,
@@ -458,7 +466,7 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
     // connection handle existed. Only then can its unresolved record settle.
     attempt.settled = true;
     _attempts.remove(attempt.id);
-    _unresolved.remove(_resourceOwner(attempt));
+    _unresolved.remove(attempt.resourceId);
     _stabilityTimer?.cancel();
     _stabilityTimer = null;
     if (identical(_current, attempt)) _current = null;
@@ -532,15 +540,17 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
   String _resourceOwner(_StatisticsAttempt attempt) =>
       'statistics-feed:$_owner:${attempt.id}';
 
-  Future<void> _joinBounded(List<Future<void>> work, DateTime? deadline) async {
+  Future<void> _joinBounded(
+    List<Future<void>> work,
+    ClientCloseBudget? budget,
+  ) async {
     if (work.isEmpty) return;
     final joined = Future.wait<void>(work);
     try {
-      final remaining = deadline?.difference(DateTime.now());
-      if (remaining == null) {
+      if (budget == null) {
         await joined;
       } else {
-        await joined.timeout(remaining.isNegative ? Duration.zero : remaining);
+        await joined.timeout(budget.remaining);
       }
     } on TimeoutException catch (error) {
       final failure = StatisticsFailure.fromObject(
@@ -551,7 +561,8 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       for (final attempt in _attempts.values.where(
         (attempt) => !attempt.settled,
       )) {
-        _unresolved[_resourceOwner(attempt)] = UnresolvedResource(
+        _unresolved[attempt.resourceId] = UnresolvedResource(
+          resourceId: attempt.resourceId,
           owner: _resourceOwner(attempt),
           attemptId: AttemptId(attempt.id),
           reason: failure,
@@ -565,7 +576,8 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
       for (final attempt in _attempts.values.where(
         (attempt) => !attempt.settled,
       )) {
-        _unresolved[_resourceOwner(attempt)] = UnresolvedResource(
+        _unresolved[attempt.resourceId] = UnresolvedResource(
+          resourceId: attempt.resourceId,
           owner: _resourceOwner(attempt),
           attemptId: AttemptId(attempt.id),
           reason: failure,
@@ -576,9 +588,14 @@ final class StatisticsRepositoryImpl implements StatisticsRepository {
 }
 
 final class _StatisticsAttempt {
-  _StatisticsAttempt({required this.id, required this.generation});
+  _StatisticsAttempt({
+    required this.id,
+    required this.generation,
+    required this.resourceId,
+  });
 
   final int id;
+  final ClientResourceId resourceId;
   final int generation;
   StatisticsFeedConnection? connection;
   Future<void>? opening;
@@ -588,6 +605,15 @@ final class _StatisticsAttempt {
   bool retireRequested = false;
   bool reconnectWhenSettled = false;
   bool settled = false;
+}
+
+String _newResourceScopeId() {
+  final random = Random.secure();
+  final nonce = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return 'statistics-feed-$nonce';
 }
 
 final class _StatisticsObservation implements StatisticsObservation {

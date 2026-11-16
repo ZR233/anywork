@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart'
     show CloseReport, StudioTransport;
+import 'package:anywork_client/lifecycle.dart' show ClientCloseBudget;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -200,6 +201,7 @@ class StudioExitCoordinator {
     this.onFailure,
     this.shutdownOverride,
     this.closeClient,
+    this.closeRoot,
     this.onBeginExit,
   });
 
@@ -211,7 +213,8 @@ class StudioExitCoordinator {
 
   /// 注入式清理（测试/自定义），成功即视为 Clean；默认走 [runStudioShutdown]。
   final Future<void> Function()? shutdownOverride;
-  final Future<CloseReport> Function(DateTime deadline)? closeClient;
+  final Future<CloseReport> Function(ClientCloseBudget budget)? closeClient;
+  final Future<CloseReport> Function(ClientCloseBudget budget)? closeRoot;
   final void Function(String? version, bool restart)? onBeginExit;
   StudioExitIntent? _intent;
   bool _updateNotice = false;
@@ -503,7 +506,7 @@ class StudioExitCoordinator {
   /// 有界清理：按剩余预算截断；超时是真实的 [StudioShutdownOutcome.degraded]
   /// （保存事实未知），绝不抛出异常覆盖可靠的 runtime 报告。
   Future<StudioExitReport> _runCleanupBounded(int budget) {
-    final timeout = Duration(milliseconds: budget <= 0 ? 1 : budget);
+    final timeout = Duration(milliseconds: budget <= 0 ? 0 : budget);
     return _runCleanup(budget).timeout(
       timeout,
       onTimeout: () => StudioExitReport(
@@ -536,6 +539,7 @@ class StudioExitCoordinator {
       remainingMs: budget,
       intent: _intent ?? StudioExitIntent.exit,
       closeClient: closeClient,
+      closeRoot: closeRoot,
     );
   }
 
@@ -543,16 +547,19 @@ class StudioExitCoordinator {
     Future<void> Function() action,
     int budget,
   ) async {
+    final closeBudget = ClientCloseBudget(Duration(milliseconds: budget));
     CloseReport? clientReport;
     await Future.wait<void>([
       Future<void>.sync(action),
       if (closeClient case final close?)
-        close(DateTime.now().add(Duration(milliseconds: budget)))
-            .then<void>((value) {
-              clientReport = value;
-            }),
+        close(closeBudget).then<void>((value) {
+          clientReport = value;
+        }),
     ]);
-    final unresolved = clientReport?.unresolved ?? const [];
+    final rootReport = await closeRoot?.call(closeBudget);
+    final unresolved = CloseReport(
+      unresolved: [...?clientReport?.unresolved, ...?rootReport?.unresolved],
+    ).unresolved;
     return StudioExitReport(
       shutdown: StudioShutdownReport(
         outcome: unresolved.isEmpty

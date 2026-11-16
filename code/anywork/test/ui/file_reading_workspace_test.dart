@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -90,7 +92,7 @@ void main() {
         await tester.binding.setSurfaceSize(const Size(1200, 900));
         addTearDown(() => tester.binding.setSurfaceSize(null));
         final transport = _AttachmentTransport();
-        final graph = AppGraph(
+        final graph = testAppGraph(
           statisticsFeed: const TestStatisticsFeedPort(),
           transport: transport,
           clientId: 'file-reading-workspace',
@@ -304,7 +306,7 @@ void main() {
         await tester.pumpWidget(const SizedBox());
         await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'graph close',
         );
       },

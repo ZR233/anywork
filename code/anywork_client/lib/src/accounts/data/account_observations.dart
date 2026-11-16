@@ -1,25 +1,26 @@
 import 'dart:async';
 
 import '../../../accounts_ports.dart';
+import '../../../lifecycle.dart';
 import '../../contracts/stamps.dart';
-import '../../lifecycle/close_report.dart';
 import '../../models/failure_models.dart';
 import '../domain/accounts_repository.dart';
 
-/// Owns exact open/next/consumer/close lifetimes. It stores clocks, not content.
+/// Pools account demand and admits frames; the scope owns source lifetimes.
 final class AccountObservations {
   AccountObservations({
     required this.feed,
     required this.owner,
+    required this.scope,
     required this.consume,
     required this.failed,
   });
   final AccountFeedPort feed;
   final String owner;
+  final ClientScope scope;
   final void Function(AccountDomainFrame) consume;
   final void Function(AccountObservationTarget, StudioFailure) failed;
-  final Map<AccountObservationTarget, _AccountObservationSlot> _slots = {};
-  final Set<_AccountObservationSlot> _retiring = {};
+  final Map<AccountObservationTarget, _AccountObservationSession> _slots = {};
   final Map<AccountObservationTarget, int> _demand = {};
   final Map<AccountObservationTarget, ResourceStamp> _observed = {};
   final Set<void Function()> _listeners = {};
@@ -46,24 +47,19 @@ final class AccountObservations {
     final generation = ++_generation;
     _epochs.clear();
     _observed.clear();
-    // Detach exactly the retiring slots before native close can synchronously
-    // reenter admission. No old tail may remove a replacement by target key.
+    // Keep the old identity at its target until cleanup ACK. A new generation
+    // changes frame admission, not ownership of an unsuccessfully closed source.
     final retiring = _slots.values.toList();
-    _slots.clear();
-    _retiring.addAll(retiring);
+    for (final session in retiring) {
+      session.retiring = true;
+    }
     final listeners = List.of(_listeners);
     final targets = _demand.keys.toList();
     return (
       generation: generation,
       commit: () {
-        for (final slot in retiring) {
-          slot.requestClose();
-          unawaited(
-            slot.retire().then<void>(
-              (_) {},
-              onError: (Object _, StackTrace _) {},
-            ),
-          );
+        for (final session in retiring) {
+          _joinRetirement(session);
         }
         for (final listener in listeners) {
           if (generation != _generation) return;
@@ -132,45 +128,78 @@ final class AccountObservations {
       }
       rethrow;
     }
-    return _AccountDemand(() => _release(target));
+    return _AccountDemand(this, target);
   }
 
   void _ensure(AccountObservationTarget target) {
     if (_sealed || (_demand[target] ?? 0) == 0) return;
     final existing = _slots[target];
     if (existing != null) {
-      if (existing._stop)
-        unawaited(
-          existing.retire().then<void>((_) {
-            _ensure(target);
-          }, onError: (Object _, StackTrace _) {}),
-        );
+      if (existing.retiring) _joinRetirement(existing, resumeDemand: true);
       return;
     }
-    final slot = _AccountObservationSlot(
+    final session = _AccountObservationSession(
       target: target,
       owner: this,
       generation: _generation,
     );
-    _slots[target] = slot;
-    slot.start();
-  }
-
-  Future<void> _release(AccountObservationTarget target) async {
-    final count = _demand[target] ?? 0;
-    if (count <= 1) {
-      _demand.remove(target);
-      final slot = _slots[target];
-      if (slot != null) await slot.retire();
-    } else {
-      _demand[target] = count - 1;
+    _slots[target] = session;
+    try {
+      session.start();
+    } catch (_) {
+      if (identical(_slots[target], session)) _slots.remove(target);
+      rethrow;
     }
   }
 
-  void _settled(_AccountObservationSlot slot) {
-    if (identical(_slots[slot.target], slot)) _slots.remove(slot.target);
-    _retiring.remove(slot);
-    if (!slot.failed) _ensure(slot.target);
+  _AccountObservationSession? _release(AccountObservationTarget target) {
+    final count = _demand[target] ?? 0;
+    if (count <= 1) {
+      _demand.remove(target);
+      final session = _slots[target];
+      if (session != null) session.retiring = true;
+      return session;
+    } else {
+      _demand[target] = count - 1;
+    }
+    return null;
+  }
+
+  void _joinRetirement(
+    _AccountObservationSession session, {
+    bool resumeDemand = false,
+  }) {
+    unawaited(
+      _retire(session).then<void>((_) {
+        if (resumeDemand) _ensure(session.target);
+      }, onError: (Object _, StackTrace _) {}),
+    );
+  }
+
+  Future<void> _retire(
+    _AccountObservationSession session, {
+    bool retry = false,
+  }) {
+    session.retiring = true;
+    Future<void> closeSource() {
+      final acquisition = session.acquisition!;
+      acquisition.requestClose();
+      return retry ? acquisition.retryClose() : acquisition.close();
+    }
+
+    // The factory may synchronously release demand before open returns its
+    // already registered acquisition. Only this callback is deferred; creation,
+    // consumer completion and cleanup remain held by the scope entry.
+    final closing = session.acquisition == null
+        ? Future<void>.microtask(closeSource)
+        : closeSource();
+    return closing.then<void>((_) {
+      if (!identical(_slots[session.target], session)) return;
+      _slots.remove(session.target);
+      if (!session.failed || session.generation != _generation) {
+        _ensure(session.target);
+      }
+    });
   }
 
   Future<void> refresh(AccountObservationTarget target) async {
@@ -184,50 +213,69 @@ final class AccountObservations {
     apply(frame);
   }
 
-  Future<CloseReport> close({required DateTime deadline}) async {
+  Future<CloseReport> close({required ClientCloseBudget budget}) {
     _sealed = true;
     _demand.clear();
-    final slots = [..._slots.values, ..._retiring];
-    // Broadcast before waiting for any individual late open or native read.
-    for (final slot in slots) {
-      slot.requestClose();
+    return scope.close(budget: budget);
+  }
+
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) async {
+    final report = await scope.retryCleanup(budget: budget);
+    // Cleanup remains entirely in the scope. Resume business demand only after
+    // its old acquisition can join the actual owner's successful ACK.
+    for (final target in _demand.keys.toList()) {
+      _ensure(target);
     }
-    final unresolved = <UnresolvedResource>[];
-    await Future.wait([
-      for (final slot in slots)
-        () async {
-          try {
-            final remaining = deadline.difference(DateTime.now());
-            await slot.retire().timeout(
-              remaining > Duration.zero
-                  ? remaining
-                  : const Duration(microseconds: 1),
-            );
-          } catch (error) {
-            unresolved.add(
-              UnresolvedResource(
-                owner: '$owner:account:${slot.target.key}',
-                attemptId: const AttemptId(0),
-                reason: error,
-              ),
-            );
-          }
-        }(),
-    ]);
-    return CloseReport(unresolved: unresolved);
+    return report;
   }
 }
 
 final class _AccountDemand implements AccountDemand {
-  _AccountDemand(this._release);
-  final Future<void> Function() _release;
+  _AccountDemand(this._owner, this._target);
+  final AccountObservations _owner;
+  final AccountObservationTarget _target;
+  bool _released = false;
+  _AccountObservationSession? _retirement;
+  List<ClientResourceId> _retirementResourceIds = const [];
   Future<void>? _releasing;
+
   @override
-  Future<void> release() => _releasing ??= _release();
+  List<ClientResourceId> get retirementResourceIds => _retirementResourceIds;
+
+  @override
+  Future<void> release() {
+    final existing = _releasing;
+    if (existing != null) return existing;
+    final retry = _released;
+    if (!_released) {
+      _released = true;
+      _retirement = _owner._release(_target);
+      final resourceId = _retirement?.resourceId;
+      _retirementResourceIds = List.unmodifiable([
+        if (resourceId != null) resourceId,
+      ]);
+    }
+    // Install the result before invoking requestClose, which may reenter release.
+    final completion = Completer<void>();
+    _releasing = completion.future;
+    final session = _retirement;
+    completion.complete(
+      session == null
+          ? Future<void>.value()
+          : _owner._retire(session, retry: retry),
+    );
+    unawaited(
+      completion.future.then<void>(
+        (_) {},
+        onError: (Object _, StackTrace _) => _releasing = null,
+      ),
+    );
+    return completion.future;
+  }
 }
 
-final class _AccountObservationSlot {
-  _AccountObservationSlot({
+final class _AccountObservationSession {
+  _AccountObservationSession({
     required this.target,
     required this.owner,
     required this.generation,
@@ -235,25 +283,28 @@ final class _AccountObservationSlot {
   final AccountObservationTarget target;
   final AccountObservations owner;
   final int generation;
-  AccountDomainObservation? _handle;
-  final Completer<void> _consumer = Completer<void>();
-  Future<void>? _closing;
-  bool _stop = false;
-  bool _settled = false;
+  ClientAcquisition<AccountDomainObservation>? acquisition;
+  ClientResourceId? resourceId;
+  bool retiring = false;
   bool failed = false;
 
   void start() {
-    // A failed consumer always retires its source. No successor next is issued
-    // after a frame failed reduction or its identity could not be verified.
-    unawaited(
-      _run().then<void>(
-        (_) {
-          _consumer.complete();
-        },
-        onError: (Object error, StackTrace stack) {
-          failed = true;
-          _consumer.complete();
-          if (generation == owner.generation)
+    acquisition = owner.scope.open<AccountDomainObservation>(
+      '${owner.owner}:account:${target.key}',
+      (operation) {
+        resourceId = operation.resourceId;
+        return owner.feed.openAccountObservation(
+          target,
+          resourceId: operation.resourceId,
+        );
+      },
+      ownership: ClientOwnership.proxy,
+      consume: _consume,
+      onFailure: (error, stack) {
+        failed = true;
+        retiring = true;
+        try {
+          if (generation == owner.generation) {
             owner.failed(
               target,
               error is StudioFailure
@@ -265,25 +316,25 @@ final class _AccountObservationSlot {
                       correlationId: 'accounts-observation',
                     ),
             );
-          unawaited(
-            retire().then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-          );
-        },
-      ),
+          }
+        } finally {
+          owner._joinRetirement(this);
+        }
+      },
     );
+    if (retiring) owner._joinRetirement(this);
   }
 
-  Future<void> _run() async {
-    final handle = await owner.feed.openAccountObservation(target);
-    _handle = handle;
-    if (_stop) {
-      handle.requestClose();
-      return;
-    }
-    while (!_stop) {
+  Future<void> _consume(
+    AccountDomainObservation handle,
+    ClientOperation operation,
+  ) async {
+    while (!operation.closeRequested) {
       final frame = await handle.next();
       if (frame == null) {
-        if (!_stop) throw StateError('Account observation ended without close');
+        if (!operation.closeRequested) {
+          throw StateError('Account observation ended without close');
+        }
         return;
       }
       if (frame.target != target)
@@ -292,35 +343,5 @@ final class _AccountObservationSlot {
       // it then continuing the same source would lose the native baseline.
       owner.apply(frame, connectionGeneration: generation);
     }
-  }
-
-  void requestClose() {
-    _stop = true;
-    _handle?.requestClose();
-  }
-
-  Future<void> retire() {
-    if (_settled) return Future.value();
-    final existing = _closing;
-    if (existing != null) return existing;
-    requestClose();
-    final result = () async {
-      await _consumer.future;
-      final handle = _handle;
-      if (handle != null) await handle.close();
-      _settled = true;
-      owner._settled(this);
-    }();
-    _closing = result;
-    unawaited(
-      result.then<void>(
-        (_) {},
-        onError: (Object _, StackTrace _) {
-          // Retain the exact handle and cleanup responsibility; the next close retries that owner.
-          _closing = null;
-        },
-      ),
-    );
-    return result;
   }
 }

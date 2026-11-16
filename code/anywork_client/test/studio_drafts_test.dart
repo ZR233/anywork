@@ -2,9 +2,13 @@ import 'support/timeline_transport.dart';
 import 'support/conversation_delivery.dart';
 
 import 'dart:async';
+
+import 'support/product_topic_owner.dart';
+
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -177,7 +181,10 @@ final class _DraftTransport extends AccountsTestTransport
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
     final controller = StreamController<ProductTopicFrame>(
       sync: true,
       onListen: () {
@@ -187,9 +194,17 @@ final class _DraftTransport extends AccountsTestTransport
         }
       },
     );
-    addTearDown(() => controller.close());
+    final ownerScope = lifecycleScope.child('topic-owner');
+    addTearDown(() async {
+      // A late source may never acquire a stream listener. Its controller's
+      // done Future is not the resource ACK; join the actual owner instead.
+      final report = await ownerScope.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
+      expect(report.complete, isTrue);
+    });
     _topicControllers[topic] = controller;
-    return controller.stream;
+    return openTestProductTopic(ownerScope, resourceId, controller);
   }
 
   void emitProjectDirectory(ProjectDirectoryState directory) {
@@ -499,6 +514,7 @@ Future<AnyworkClient> _client(
   final board = MutationBoard(clientId: id);
   final domains = AccountDomainResources(
     feed: transport,
+    scope: transport.lifecycleScope.child('account-domains'),
     configuration: transport,
     modelPort: transport,
     usagePort: transport,
@@ -509,11 +525,11 @@ Future<AnyworkClient> _client(
   );
   domains.adoptOwnerEpoch('owner');
   addTearDown(
-    () =>
-        domains.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+    () => domains.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
   );
   final client = AnyworkClient(
     transport: transport,
+    scope: transport.lifecycleScope.child('client'),
     clientId: id,
     settingsWrites: coordinator,
     mutationBoard: board,
@@ -603,7 +619,7 @@ Future<void> _close(AnyworkClient client, _DraftTransport transport) async {
   await client.drafts.startDraft.close();
   await client.drafts.composer('thread').close();
   await client.drafts.attachments.close();
-  await client.close();
+  await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   await transport.frames.close();
 }
 
@@ -771,7 +787,12 @@ void main() {
     expect(operation.state.value.effective, isTrue);
     expect(operation.state.value.durable, isTrue);
     client.conversations.setVisibleThread(null);
-    expect((await client.conversations.retryCleanup()).complete, isTrue);
+    expect(
+      (await client.conversations.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
     selected.cancel();
     await _close(client, transport);
   });
@@ -3087,7 +3108,7 @@ void main() {
       isTrue,
       reason: 'Explicit cleanup does not rewrite the original close result',
     );
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   });
 
   test(
@@ -3171,15 +3192,19 @@ void main() {
       if (!cleaned.isCompleted) cleaned.complete();
       await admission;
       await attachmentClosing;
-      await client.close();
-      await client.retryCleanup();
+      await client.close(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
+      await client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
     });
     await stageEntered.future;
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
 
-    final pastDeadline = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-    final closing = client.close(deadline: pastDeadline);
+    final exhaustedBudget = ClientCloseBudget(Duration.zero);
+    final closing = client.close(budget: exhaustedBudget);
     final firstReport = await closing;
     expect(firstReport.complete, isFalse);
     expect(
@@ -3191,7 +3216,7 @@ void main() {
     // The retry's attachment task can return immediately because there are
     // no recorded failures yet. It must still join the original staging task.
     final pendingStageReport = await client.retryCleanup(
-      deadline: pastDeadline,
+      budget: exhaustedBudget,
     );
     expect(pendingStageReport.complete, isFalse);
     expect(
@@ -3200,7 +3225,7 @@ void main() {
     );
     expect(client.drafts.attachments.unresolvedAttachmentIds, isEmpty);
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
-    expect(identical(closing, client.close(deadline: pastDeadline)), isTrue);
+    expect(identical(closing, client.close(budget: exhaustedBudget)), isTrue);
 
     staged.complete('/clipboard-staging.png');
     expect(await cleanupEntered.future, '/clipboard-staging.png');
@@ -3210,7 +3235,7 @@ void main() {
       reason: 'Exit sealed native admissions before late staging completed',
     );
     final pendingCleanupReport = await client.retryCleanup(
-      deadline: pastDeadline,
+      budget: exhaustedBudget,
     );
     expect(pendingCleanupReport.complete, isFalse);
     expect(
@@ -3220,7 +3245,9 @@ void main() {
 
     cleaned.complete();
     await admission;
-    final finalReport = await client.retryCleanup();
+    final finalReport = await client.retryCleanup(
+      budget: ClientCloseBudget(const Duration(seconds: 30)),
+    );
     expect(finalReport.complete, isTrue);
     expect(client.unresolvedResources, isEmpty);
     expect(
@@ -3296,7 +3323,7 @@ void main() {
     cleanupSucceeds = true;
     await client.drafts.attachments.retryCleanup();
     expect(client.drafts.attachments.unresolvedStagingPaths, isEmpty);
-    await client.close();
+    await client.close(budget: ClientCloseBudget(const Duration(seconds: 30)));
   });
 
   test('project recovery and exact child issues still permit healthy root selection, history and accepted submit', () async {

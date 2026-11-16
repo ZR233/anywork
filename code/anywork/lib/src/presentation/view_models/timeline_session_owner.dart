@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:developer' as developer;
+import 'dart:math';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:flutter/foundation.dart' show Key, ValueKey, ValueNotifier;
 import 'package:flutter/widgets.dart' show ScrollController, WidgetsBinding;
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -19,6 +21,15 @@ import '../../features/conversation/timeline/view_models/timeline_message_contro
 export '../../features/conversation/timeline/state/timeline_view_state.dart';
 
 const Object _unset = Object();
+
+ClientResourceId _newTimelineResourceId() {
+  final random = Random.secure();
+  final identity = List.generate(
+    16,
+    (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
+  ).join();
+  return ClientResourceId(identity, 0);
+}
 
 /// Component futures may fail after a partial mutation. Their response cannot be replayed.
 final class _TimelineApplyFailure implements Exception {
@@ -47,6 +58,8 @@ final class TimelineDisplayLease
     );
   }
 
+  final ClientResourceId resourceId = _newTimelineResourceId();
+
   @override
   final String threadId;
   final int generation;
@@ -70,6 +83,8 @@ final class TimelineDisplayLease
   final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<ConversationQueryScope> _ownedQueries = {};
   final Map<ConversationQueryScope, Future<void>> _closingQueries = {};
+  final Map<ConversationQueryScope, (Object, StackTrace?)> _queryCleanupErrors =
+      {};
   ConversationQueryScope? _queries;
   String? _before;
   int? _firstOrder;
@@ -79,7 +94,42 @@ final class TimelineDisplayLease
   bool _retired = false;
   bool _disposed = false;
   int _mutations = 0;
-  Object? queryCleanupError;
+  Object? get queryCleanupError {
+    if (_queryCleanupErrors.isEmpty) return null;
+    if (_queryCleanupErrors.length == 1) {
+      final error = _queryCleanupErrors.values.single.$1;
+      if (error is! CloseReport) return error;
+    }
+    return _queryCleanupReport;
+  }
+
+  CloseReport get _queryCleanupReport => CloseReport(
+    unresolved: [
+      for (final scope in _ownedQueries) ...[
+        // A retained scope's live snapshot supersedes an earlier close report.
+        if (scope is ConversationReadScope) ...scope.cleanupReport.unresolved,
+        if (_queryCleanupErrors[scope] case (final CloseReport report, _)) ...[
+          if (scope is! ConversationReadScope) ...report.unresolved,
+        ] else if (_queryCleanupErrors[scope] case (final error, final stack))
+          UnresolvedResource(
+            resourceId: resourceId,
+            owner: 'timeline-display:$threadId',
+            attemptId: AttemptId(generation),
+            reason: error,
+            ownership: ClientOwnership.owned,
+            stages: [
+              ClientResourceStage(
+                owner: 'timeline-display:$threadId',
+                phase: ClientClosePhase.close,
+                ownership: ClientOwnership.owned,
+                error: error,
+                stackTrace: stack,
+              ),
+            ],
+          ),
+      ],
+    ],
+  );
   final Set<TimelineChildrenDisplay> _childrenDisplays = {};
   final Set<TimelineCurrentDisplay> _currentDisplays = {};
   TimelineContentLayout? _firstContentLayout;
@@ -167,7 +217,6 @@ final class TimelineDisplayLease
       bodyScope = null;
       bodyGeneration = null;
       if (original == null) return;
-      original.retire();
       unawaited(_settleQueries(original));
     };
     intent.readBody = (generation, reference, range) async {
@@ -281,9 +330,11 @@ final class TimelineDisplayLease
   @override
   ConversationQueryScope openScope({required int generation}) {
     if (_retired) throw const StaleConversationScope();
-    _ownedQueries.removeWhere(
-      (scope) => scope is ConversationReadScope && scope.isSettled,
-    );
+    _ownedQueries.removeWhere((scope) {
+      if (scope is! ConversationReadScope || !scope.isSettled) return false;
+      _queryCleanupErrors.remove(scope);
+      return true;
+    });
     final scope = ConversationReadScope(
       threadId: threadId,
       generation: generation,
@@ -315,7 +366,9 @@ final class TimelineDisplayLease
   Future<void> closeDetailQueries(ConversationQueryScope scope) async {
     await _settleQueries(scope);
     if (_ownedQueries.contains(scope)) {
-      throw StateError('History reader has not closed: $queryCleanupError');
+      final (error, stack) = _queryCleanupErrors[scope]!;
+      if (stack != null) Error.throwWithStackTrace(error, stack);
+      throw error;
     }
   }
 
@@ -360,7 +413,6 @@ final class TimelineDisplayLease
       _queries = null;
     }
     for (final scope in _ownedQueries.toList()) {
-      scope.retire();
       unawaited(_settleQueries(scope));
     }
     _releaseIfReady();
@@ -371,25 +423,32 @@ final class TimelineDisplayLease
     if (!_ownedQueries.contains(scope)) return Future.value();
     final existing = _closingQueries[scope];
     if (existing != null) return existing;
-    final task = _closeQuery(scope);
+    final completion = Completer<void>();
+    final task = completion.future;
     _closingQueries[scope] = task;
+    completion.complete(_closeQuery(scope, task));
     return task;
   }
 
-  Future<void> _closeQuery(ConversationQueryScope scope) async {
-    scope.retire();
+  Future<void> _closeQuery(
+    ConversationQueryScope scope,
+    Future<void> closing,
+  ) async {
     try {
+      scope.retire();
       final report = await scope.close();
       if (report.complete) {
         _ownedQueries.remove(scope);
-        if (_ownedQueries.isEmpty) queryCleanupError = null;
+        _queryCleanupErrors.remove(scope);
       } else {
-        queryCleanupError = report;
+        _queryCleanupErrors[scope] = (report, null);
       }
-    } catch (error) {
-      queryCleanupError = error;
+    } catch (error, stack) {
+      _queryCleanupErrors[scope] = (error, stack);
     } finally {
-      _closingQueries.remove(scope);
+      if (identical(_closingQueries[scope], closing)) {
+        _closingQueries.remove(scope);
+      }
       _releaseIfReady();
     }
   }
@@ -443,6 +502,7 @@ final class TimelineSessionOwner {
   bool _bindingConsumer = false;
   bool _closed = false;
   Future<CloseReport>? _closing;
+  Future<CloseReport>? _retryingCleanup;
   ReadDemand? _readDemand;
   final Stopwatch _layoutClock = Stopwatch()..start();
   String? _selectionTarget;
@@ -704,13 +764,7 @@ final class TimelineSessionOwner {
         }
       }
     } finally {
-      read.reader?.requestClose();
-      try {
-        await read.reader?.close();
-        _reads.remove(read);
-      } catch (error) {
-        read.closeError = error;
-      }
+      await read.close();
     }
   }
 
@@ -1214,7 +1268,7 @@ final class TimelineSessionOwner {
     }
   }
 
-  Future<CloseReport> close({DateTime? deadline}) {
+  Future<CloseReport> close({ClientCloseBudget? budget}) {
     final existing = _closing;
     if (existing != null) return existing;
     final completion = Completer<CloseReport>();
@@ -1240,7 +1294,7 @@ final class TimelineSessionOwner {
         for (final lease in leases) {
           _retire(lease);
         }
-        return _join(leases, deadline);
+        return _join(leases, budget);
       }).then<void>(
         (report) {
           if (!report.complete && identical(_closing, closing)) _closing = null;
@@ -1257,51 +1311,130 @@ final class TimelineSessionOwner {
 
   Future<CloseReport> _join(
     Set<TimelineDisplayLease> leases,
-    DateTime? deadline,
-  ) async {
+    ClientCloseBudget? budget, {
+    List<_TimelineRead>? reads,
+    Set<_TimelineRead> retryReads = const {},
+  }) async {
+    final capturedReads = reads ?? _reads.toList();
     final pending = Future.wait<void>([
       _commits,
-      for (final read in _reads.toList()) read.join(),
+      for (final read in capturedReads)
+        read.join(retry: retryReads.contains(read)),
       ?_olderInFlight,
       for (final lease in leases) lease.released,
     ]);
-    if (deadline == null) {
+    if (budget == null) {
       await pending;
     } else {
-      final remaining = deadline.difference(DateTime.now());
-      if (remaining > Duration.zero) {
-        try {
-          await pending.timeout(remaining);
-        } on TimeoutException {
-          // All owners and native close obligations remain retained for retry.
-        }
+      try {
+        await pending.timeout(budget.remaining);
+      } on TimeoutException {
+        // All owners and native close obligations remain retained for retry.
       }
     }
     return CloseReport(
       unresolved: [
-        for (final read in _reads)
-          UnresolvedResource(
-            owner: 'timeline-reader:${read.session.threadId}',
-            attemptId: AttemptId(read.selection),
-            reason: read.closeError ?? StateError('Reader is still closing'),
-          ),
-        for (final lease in leases)
-          if (!lease.isReleased)
+        for (final read in capturedReads)
+          if (_reads.contains(read))
             UnresolvedResource(
+              resourceId: read.resourceId,
+              owner: 'timeline-reader:${read.session.threadId}',
+              attemptId: AttemptId(read.selection),
+              reason:
+                  read.closeError?.$1 ??
+                  read.requestError?.$1 ??
+                  StateError('Reader is still closing'),
+              ownership: ClientOwnership.owned,
+              stages: [
+                if (read.requestError case final failure?)
+                  ClientResourceStage(
+                    owner: 'timeline-reader:${read.session.threadId}',
+                    phase: ClientClosePhase.closeRequest,
+                    ownership: ClientOwnership.owned,
+                    error: failure.$1,
+                    stackTrace: failure.$2,
+                  ),
+                if (read.closeErrors.isEmpty)
+                  ClientResourceStage(
+                    owner: 'timeline-reader:${read.session.threadId}',
+                    phase: ClientClosePhase.close,
+                    ownership: ClientOwnership.owned,
+                    pending: read.closePending,
+                  )
+                else
+                  for (final failure in read.closeErrors)
+                    ClientResourceStage(
+                      owner: 'timeline-reader:${read.session.threadId}',
+                      phase: ClientClosePhase.close,
+                      ownership: ClientOwnership.owned,
+                      pending: read.closePending,
+                      error: failure.$1,
+                      stackTrace: failure.$2,
+                    ),
+              ],
+            ),
+        for (final lease in leases)
+          if (!lease.isReleased) ...[
+            ...lease._queryCleanupReport.unresolved,
+            UnresolvedResource(
+              resourceId: lease.resourceId,
               owner: 'timeline-display:${lease.threadId}',
               attemptId: AttemptId(lease.generation),
-              reason: StateError(
-                'Display is not released: '
-                '${lease.queryCleanupError ?? "waiting for operations/subtree detach"}',
-              ),
+              reason: StateError('Display is not released'),
+              ownership: ClientOwnership.owned,
+              stages: [
+                ClientResourceStage(
+                  owner: 'timeline-display:${lease.threadId}',
+                  phase: ClientClosePhase.consumer,
+                  ownership: ClientOwnership.owned,
+                  pending: true,
+                ),
+              ],
             ),
+          ],
       ],
     );
+  }
+
+  /// Retries failed cleanup on this timeline owner's original resources.
+  ///
+  /// Only reader attempts already failed at entry are retried. Pending attempts
+  /// are joined, and successful readers are not closed again. Retiring queries
+  /// and displays rejoin their original cleanup without reopening business
+  /// resources or disposing a controller still borrowed by a mounted widget.
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) {
+    final existing = _retryingCleanup;
+    if (existing != null) return existing;
+    final completion = Completer<CloseReport>();
+    final retrying = completion.future;
+    _retryingCleanup = retrying;
+    unawaited(
+      Future<CloseReport>.sync(() {
+        final reads = _reads.where((read) => read.cleanupRequested).toList();
+        final retryReads = reads.where((read) => read.canRetryClose).toSet();
+        final leases = _retiring.toSet();
+        for (final lease in leases) {
+          _retire(lease);
+        }
+        return _join(leases, budget, reads: reads, retryReads: retryReads);
+      }).then<void>(
+        (report) {
+          if (identical(_retryingCleanup, retrying)) _retryingCleanup = null;
+          completion.complete(report);
+        },
+        onError: (Object error, StackTrace stack) {
+          if (identical(_retryingCleanup, retrying)) _retryingCleanup = null;
+          completion.completeError(error, stack);
+        },
+      ),
+    );
+    return retrying;
   }
 }
 
 final class _TimelineRead implements Observation {
   _TimelineRead(this.owner, this.selection, this.session, this.restarts);
+  final ClientResourceId resourceId = _newTimelineResourceId();
   final TimelineSessionOwner owner;
   final int selection;
   final ConversationSession session;
@@ -1310,32 +1443,80 @@ final class _TimelineRead implements Observation {
   ViewCursor? cursor;
   int? through;
   Future<void>? task;
-  Object? closeError;
+  final List<(Object, StackTrace)> closeErrors = [];
+  (Object, StackTrace)? get closeError => closeErrors.firstOrNull;
+  (Object, StackTrace)? requestError;
+  Future<void>? _closeAttempt;
+  bool _closePending = false;
+  bool _stopRequested = false;
+
+  bool get cleanupRequested => isCancelled || _closeAttempt != null;
+  bool get closePending => _closeAttempt == null || _closePending;
+  bool get canRetryClose =>
+      _closeAttempt != null && !_closePending && closeError != null;
   @override
   bool isCancelled = false;
   @override
   bool get isPaused => false;
   @override
   void cancel() {
+    if (isCancelled) return;
     isCancelled = true;
-    reader?.requestClose();
+    _requestStop();
+  }
+
+  void _requestStop() {
+    final original = reader;
+    if (original == null || _stopRequested) return;
+    _stopRequested = true;
+    try {
+      original.requestClose();
+      requestError = null;
+    } catch (error, stack) {
+      requestError = (error, stack);
+    }
   }
 
   @override
   void pause() => throw UnsupportedError('Timeline reader cannot be paused');
   @override
   void resume() {}
-  Future<void> join() async {
+  Future<void> close() => _closeAttempt ?? _startCloseAttempt();
+
+  Future<void> _startCloseAttempt() {
+    final retry = _closeAttempt != null;
+    final completion = Completer<void>();
+    final closing = completion.future;
+    _closeAttempt = closing;
+    _closePending = true;
+    isCancelled = true;
+    if (retry) _stopRequested = false;
+    completion.complete(
+      Future<void>.sync(() async {
+        _requestStop();
+        try {
+          await reader?.close();
+          closeErrors.clear();
+          requestError = null;
+          owner._reads.remove(this);
+        } catch (error, stack) {
+          closeErrors.add((error, stack));
+        } finally {
+          if (identical(_closeAttempt, closing)) _closePending = false;
+        }
+      }),
+    );
+    return closing;
+  }
+
+  Future<void> join({bool retry = false}) {
+    if (retry && canRetryClose) unawaited(_startCloseAttempt());
     cancel();
+    return _joinAttempt();
+  }
+
+  Future<void> _joinAttempt() async {
     await task;
-    if (closeError != null) {
-      try {
-        await reader?.close();
-        closeError = null;
-        owner._reads.remove(this);
-      } catch (error) {
-        closeError = error;
-      }
-    }
+    await _closeAttempt;
   }
 }

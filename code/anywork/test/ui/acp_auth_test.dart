@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -28,7 +30,7 @@ void main() {
       await tester.binding.setSurfaceSize(const Size(1280, 900));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       final transport = AcpSceneTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         transport: transport,
         statisticsFeed: DemoStatisticsFeedPort(),
       );
@@ -46,9 +48,7 @@ void main() {
         router.dispose();
         final report = await pumpClientFuture(
           tester,
-          graph.close(
-            deadline: DateTime.now().add(const Duration(seconds: 30)),
-          ),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 30))),
           'ACP authentication graph close',
         );
         expect(report.unresolved, isEmpty);
