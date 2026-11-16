@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart' show AnyworkClient;
 import 'package:test/test.dart';
@@ -422,25 +423,39 @@ void main() {
     test('AnyworkClient owns optional assembly and joins observation-only shutdown', () async {
       final source = ControlledAcpObservation();
       final port = _port()..sources.add(source);
+      final transport = TestConversationTransport();
       final app = AnyworkClient(
-        transport: TestConversationTransport(),
+        transport: transport,
+        scope: transport.lifecycleScope.child('client'),
         clientId: 'app',
         acpBusinessPort: port,
       );
       final observation = await app.acpSessions.open(_request);
       final read = observation.next();
       await source.enteredRead.future;
-      expect((await app.close()).complete, isTrue);
+      expect(
+        (await app.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        )).complete,
+        isTrue,
+      );
       expect(await read, isNull);
       expect(source.closes, 1);
       expect(port.calls.map((c) => c.$1), ['open']);
+      final nativeTransport = TestConversationTransport();
       final native = AnyworkClient(
-        transport: TestConversationTransport(),
+        transport: nativeTransport,
+        scope: nativeTransport.lifecycleScope.child('client'),
         clientId: 'native',
       );
       expect(() => native.acpSessions, throwsUnsupportedError);
       expect(native.hasAcpConversation('thread'), isFalse);
-      expect((await native.close()).complete, isTrue);
+      expect(
+        (await native.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        )).complete,
+        isTrue,
+      );
     });
 
     test(
@@ -449,20 +464,29 @@ void main() {
         final source = ControlledAcpObservation()
           ..cleanupError = StateError('cleanup');
         final port = _port()..sources.add(source);
+        final transport = TestConversationTransport();
         final app = AnyworkClient(
-          transport: TestConversationTransport(),
+          transport: transport,
+          scope: transport.lifecycleScope.child('client'),
           clientId: 'app',
           acpBusinessPort: port,
         );
         await app.acpSessions.open(_request);
-        final report = await app.close();
+        final report = await app.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        );
         expect(report.complete, isFalse);
         expect(
           report.unresolved.map((e) => e.owner),
           contains('acp-observations'),
         );
         source.cleanupError = null;
-        expect((await app.retryCleanup()).complete, isTrue);
+        expect(
+          (await app.retryCleanup(
+            budget: ClientCloseBudget(const Duration(seconds: 30)),
+          )).complete,
+          isTrue,
+        );
         expect(source.closes, 2);
         expect(port.calls.map((c) => c.$1), ['open']);
       },

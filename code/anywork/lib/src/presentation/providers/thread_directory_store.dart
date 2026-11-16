@@ -1,11 +1,9 @@
-import 'dart:async';
-
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/foundation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'client_provider.dart';
 import 'observe_client.dart';
+import 'use_client_resource.dart';
 
 part 'thread_directory_store.g.dart';
 
@@ -15,28 +13,12 @@ DirectoryObservation<ThreadMetadataFrame> threadMetadataDemand(
   Ref ref,
   String threadId,
 ) {
-  final demand = ref
-      .watch(anyworkClientProvider)
-      .threadDirectory
-      .observeThread(threadId);
-  ref.onDispose(() {
-    unawaited(
-      demand.release().catchError((Object error, StackTrace stack) {
-        // The SDK retains this exact unresolved owner for cleanup retry.
-        FlutterError.reportError(
-          FlutterErrorDetails(
-            exception: error,
-            stack: stack,
-            library: 'thread metadata observation',
-            context: ErrorDescription(
-              'while releasing the metadata demand for $threadId',
-            ),
-          ),
-        );
-      }),
-    );
-  });
-  return demand;
+  return useClientResource(
+    ref,
+    () =>
+        ref.read(anyworkClientProvider).threadDirectory.observeThread(threadId),
+    owner: 'thread-metadata-demand',
+  );
 }
 
 /// Metadata is independent of list membership, filtering and pagination.

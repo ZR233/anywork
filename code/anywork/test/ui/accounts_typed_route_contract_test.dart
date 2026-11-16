@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -2332,7 +2334,7 @@ Future<
   })
 >
 _mountRouter(WidgetTester tester, {bool manualModel = false}) async {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: RecordingDemoTransport(),
     statisticsFeed: const TestStatisticsFeedPort(),
     clientId: 'typed-account-route-contract',
@@ -2432,7 +2434,7 @@ _mountRouter(WidgetTester tester, {bool manualModel = false}) async {
     await attempt('close same AppGraph', () async {
       final report = await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 10))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 10))),
         'close route fixture',
       );
       expect(

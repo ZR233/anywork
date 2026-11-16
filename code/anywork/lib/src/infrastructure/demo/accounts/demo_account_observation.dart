@@ -1,10 +1,17 @@
 import 'dart:async';
 
 import 'package:anywork_client/accounts_ports.dart';
+import 'package:anywork_client/lifecycle.dart';
 
 /// One bounded pull observation over the demo backend's canonical facts.
 final class DemoAccountObservation implements AccountDomainObservation {
-  DemoAccountObservation({required this.read, required this.onClosed});
+  DemoAccountObservation({
+    required this.resourceId,
+    required this.read,
+    required this.onClosed,
+  });
+  @override
+  final ClientResourceId resourceId;
   final AccountDomainFrame Function() read;
   final void Function() onClosed;
   bool _dirty = true;
@@ -12,7 +19,6 @@ final class DemoAccountObservation implements AccountDomainObservation {
   bool _settled = false;
   Completer<void>? _changed;
   Future<AccountDomainFrame?>? _inFlight;
-  Future<void>? _closing;
 
   void notify() {
     if (_closed) return;
@@ -59,16 +65,18 @@ final class DemoAccountObservation implements AccountDomainObservation {
   }
 
   @override
-  Future<void> close() => _closing ??= _close();
-  Future<void> _close() async {
+  Future<void> close() async {
     requestClose();
     final pending = _inFlight;
     if (pending != null) {
       await pending.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     }
     if (!_settled) {
-      _settled = true;
       onClosed();
+      _settled = true;
     }
   }
+
+  @override
+  Future<void> retryClose() => close();
 }

@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork_client/conversation.dart';
@@ -93,7 +95,7 @@ void main() {
     expect(feed.acks, [
       1,
     ], reason: 'Queries do not own feed credit or history admission');
-    expect((await h.owner.close()).complete, isTrue);
+    expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
   });
 
   for (final lateFailure in [false, true]) {
@@ -146,7 +148,10 @@ void main() {
         expect((await close).complete, isTrue);
         expect(h.consumer.batches, hasLength(1));
         expect(feed.acks, [1]);
-        expect((await h.owner.close()).complete, isTrue);
+        expect(
+          (await h.owner.close(budget: testCloseBudget())).complete,
+          isTrue,
+        );
       },
     );
   }
@@ -176,7 +181,7 @@ void main() {
       [ChatPlacement.set],
       reason: 'Reporting stale after consumer.applyBatch cannot undo admission',
     );
-    expect((await h.owner.close()).complete, isTrue);
+    expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
   });
 
   test(
@@ -224,7 +229,7 @@ void main() {
       expect((await older).before, 'older');
       expect(h.consumer.batches.first.throughSeq, 1);
       expect(feed.acks, [1]); // A query is not another transport delivery.
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -254,7 +259,7 @@ void main() {
     await feed.ackScenario(4);
     expect(h.owner.activity.value!.entries, isEmpty);
     expect(h.consumer.batches, hasLength(1));
-    expect((await h.owner.close()).complete, isTrue);
+    expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
   });
   for (final sequence in [0, 1]) {
     test('terminal sequence $sequence is classified without credit or ACK', () async {
@@ -278,7 +283,7 @@ void main() {
       );
       // Even an accepted component operation cannot publish after this barrier.
       gate.complete();
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
       expect(
         feed.acks,
         isEmpty,
@@ -326,7 +331,7 @@ void main() {
         isEmpty,
         reason: 'A retired attempt never returns content credit',
       );
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -351,7 +356,7 @@ void main() {
       await h.owner.ready;
       expect(h.owner.activity.value, isNull);
       expect(h.consumer.batches.single.entries, isEmpty);
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -361,11 +366,14 @@ void main() {
       final h = _Harness()..attach();
       final feed = await h.opened();
       feed.closeFailure = StateError('read lease close failed');
-      final report = await h.owner.close();
+      final report = await h.owner.close(budget: testCloseBudget());
       expect(report.complete, isFalse);
       expect(h.owner.ownedAttemptCount, 1);
       feed.closeFailure = null;
-      expect((await h.owner.retryCleanup()).complete, isTrue);
+      expect(
+        (await h.owner.retryCleanup(budget: testCloseBudget())).complete,
+        isTrue,
+      );
       expect(h.transport.feeds, [feed]);
       expect(feed.closes, 2);
     },
@@ -383,11 +391,14 @@ void main() {
         throwsA(isA<StaleConversationScope>()),
       );
       scope.retire();
-      expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
+      expect(
+        (await scope.close(budget: ClientCloseBudget(Duration.zero))).complete,
+        isFalse,
+      );
       feed.reader.page.completeError(StateError('old database failed'));
       await assertion;
       expect((await scope.close()).complete, isTrue);
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -426,12 +437,15 @@ void main() {
       expect(resumes, 1);
       scope.retire();
       expect(nativeWatch.requests, greaterThan(0)); // Synchronous native wake.
-      expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
+      expect(
+        (await scope.close(budget: ClientCloseBudget(Duration.zero))).complete,
+        isFalse,
+      );
       cancelled.complete();
       expect((await scope.close()).complete, isTrue);
       expect(closes, 1);
       await subscription.cancel();
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -461,7 +475,7 @@ void main() {
       2,
       reason: 'Retry joins the same native handle, not the cached Dart cancellation',
     );
-    expect((await h.owner.close()).complete, isTrue);
+    expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
   });
 
   test(
@@ -489,7 +503,7 @@ void main() {
       native.failure = null;
       expect((await scope.close()).complete, isTrue);
       await subscription.cancel();
-      expect((await h.owner.close()).complete, isTrue);
+      expect((await h.owner.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 
@@ -530,7 +544,7 @@ void main() {
       report.unresolved.map((resource) => resource.reason),
       contains(same(cancellationFailure)),
     );
-    expect((await h.owner.close()).complete, isFalse);
+    expect((await h.owner.close(budget: testCloseBudget())).complete, isFalse);
   });
 }
 

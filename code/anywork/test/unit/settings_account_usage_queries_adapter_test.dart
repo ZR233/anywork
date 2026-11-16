@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -11,7 +13,7 @@ import '../support/scripted_usage_transport.dart';
 import '../support/test_statistics_feed.dart';
 
 AppGraph _graph(ScriptedUsageTransport transport) {
-  final graph = AppGraph(
+  final graph = testAppGraph(
     transport: transport,
     statisticsFeed: const TestStatisticsFeedPort(),
     clientId: 'usage-adapter',
@@ -24,7 +26,7 @@ AppGraph _graph(ScriptedUsageTransport transport) {
     ]),
   );
   addTearDown(
-    () => graph.close(deadline: DateTime.now().add(const Duration(seconds: 3))),
+    () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
   );
   return graph;
 }

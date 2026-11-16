@@ -199,7 +199,8 @@ class _StudioLifecycleCoordinatorState
         if (mounted) _shutdownProgress.beginExit(version, restart);
       },
       shutdownOverride: widget.shutdown,
-      closeClient: (deadline) => graph.close(deadline: deadline),
+      closeClient: (budget) => graph.close(budget: budget),
+      closeRoot: graph.closeLifecycleRoot,
     );
     // 安装 native -> Dart 退出回调，并提前把 canonical 日志目录交给 native。
     StudioExitCoordinator.install(_coordinator);

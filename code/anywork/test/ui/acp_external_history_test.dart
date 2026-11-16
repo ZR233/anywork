@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -275,7 +277,7 @@ final class _HistoryHarness {
       ],
     ]);
     final port = ControlledAcpBusinessPort()..sources.add(source);
-    final client = AnyworkClient(
+    final client = testAnyworkClient(
       transport: TestConversationTransport(),
       clientId: 'external-history-test',
       acpBusinessPort: port,

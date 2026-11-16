@@ -1,3 +1,4 @@
+import '../../../lifecycle.dart' show ClientCloseBudget;
 import '../../lifecycle/close_report.dart' show CloseReport;
 import 'statistics_failure.dart';
 import 'statistics_models.dart';
@@ -80,10 +81,10 @@ abstract interface class StatisticsRepository {
   StatisticsVisibilityLease acquireVisibleDemand();
 
   /// Bounded cleanup joins existing resources; failure retains their owners for retry.
-  Future<CloseReport> close({DateTime? deadline});
+  Future<CloseReport> close({ClientCloseBudget? budget});
 
   /// Retries cleanup of the same unresolved feed/scope; never opens a replacement to mask it.
-  Future<CloseReport> retryCleanup({DateTime? deadline});
+  Future<CloseReport> retryCleanup({ClientCloseBudget? budget});
 
   /// Explicitly restarts a bounded, failed connection attempt while demand remains visible.
   void retry();

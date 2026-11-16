@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -178,14 +179,13 @@ void main() {
 
   test('Project recovery gates Project operations while exact Thread recovery gates only its owner', () async {
     final transport = _ScopedRecoveryTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'exact-recovery-owner',
     );
     addTearDown(
-      () =>
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     );
     final client = graph.client;
     await client.bootstrap();
@@ -326,7 +326,7 @@ void main() {
     'closing the selected thread does not reopen content from shell',
     (tester) async {
       final transport = _DirectoryFailureTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'closing-shell',
@@ -335,7 +335,7 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'closing shell teardown',
         );
       });
@@ -377,7 +377,7 @@ void main() {
       final openedWindows = transport.timelineReaders.length;
       await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'close while shell remains mounted',
       );
       for (var frame = 0; frame < 4; frame++) {
@@ -396,7 +396,7 @@ void main() {
     'shell sidebar keeps running status beside advisory recovery diagnostic',
     (tester) async {
       final transport = _SidebarStatusTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'sidebar-recovery-status',
@@ -405,7 +405,7 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'sidebar recovery status teardown',
         );
       });
@@ -693,7 +693,7 @@ void main() {
     'directory failure retains the shell and explicitly retries its topic',
     (tester) async {
       final transport = _DirectoryFailureTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'directory-recovery',
@@ -707,7 +707,7 @@ void main() {
         await tester.pumpWidget(const SizedBox.shrink());
         await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'directory recovery close',
         );
       });
@@ -730,15 +730,28 @@ void main() {
       await tester.enterText(input, 'draft survives directory outage');
       final project = graph.client.selection.state.selectedProjectId;
       transport.fail();
-      // Release the production retry timers using Flutter's virtual clock.
-      for (var attempt = 0; attempt < 8; attempt++) {
-        if (graph.client.project.state.projectSync.phase ==
-            DomainSyncPhase.failed) {
-          break;
-        }
+      // Each retry must join its prior observation and listen to the next
+      // source before advancing that source's retry timer. A fixed pump count
+      // can otherwise spend its clock advances on an unfinished retirement.
+      for (var attempt = 1; attempt <= 5; attempt++) {
+        await pumpClientUntil(
+          tester,
+          () =>
+              transport.directoryAttempts == attempt &&
+              graph.client.project.state.projectSync.phase ==
+                  DomainSyncPhase.reconnecting,
+          'directory attempt $attempt failed before its retry timer',
+        );
         await tester.pump(const Duration(seconds: 5));
-        await tester.runAsync(() async {});
       }
+      await pumpClientUntil(
+        tester,
+        () =>
+            graph.client.project.state.projectSync.phase ==
+            DomainSyncPhase.failed,
+        'directory topic exhausted its five automatic retries',
+      );
+      expect(transport.directoryAttempts, 6);
       expect(
         graph.client.project.state.projectSync.phase,
         DomainSyncPhase.failed,
@@ -761,6 +774,7 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(retry, findsNothing);
+      expect(transport.directoryAttempts, 7);
       expect(
         tester.widget<TextField>(input).controller!.text,
         'draft survives directory outage',
@@ -770,7 +784,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
       await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'explicit directory recovery close',
       );
     },
@@ -808,6 +822,7 @@ final class _ScopedRecoveryTransport extends RecordingDemoTransport {
 
 final class _DirectoryFailureTransport extends RecordingDemoTransport {
   bool unavailable = false;
+  int directoryAttempts = 0;
   MultiStreamController<ProductTopicFrame>? _directory;
 
   void fail() {
@@ -816,27 +831,38 @@ final class _DirectoryFailureTransport extends RecordingDemoTransport {
   }
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  TestTopicFrames testProductTopicFrames(
+    ProductTopic topic,
+    TestTopicFrames upstream,
+  ) {
     if (topic is! ProjectDirectoryTopic) {
-      return super.subscribeProductTopic(topic);
+      return upstream;
     }
-    if (unavailable) return Stream.error(StateError('directory offline'));
-    return Stream<ProductTopicFrame>.multi((controller) {
-      _directory = controller;
-      final source = super
-          .subscribeProductTopic(topic)
-          .listen(
-            controller.addSync,
-            onError: controller.addErrorSync,
-            onDone: controller.closeSync,
-          );
-      controller.onCancel = source.cancel;
-    });
+    directoryAttempts++;
+    if (unavailable) {
+      return TestTopicFrames.stream(
+        Stream.error(StateError('directory offline')),
+      );
+    }
+    return TestTopicFrames.stream(
+      Stream<ProductTopicFrame>.multi((controller) {
+        _directory = controller;
+        final source = upstream.frames.listen(
+          controller.addSync,
+          onError: controller.addErrorSync,
+          onDone: controller.closeSync,
+        );
+        controller.onCancel = source.cancel;
+      }),
+    );
   }
 }
 
 final class _SidebarStatusTransport extends RecordingDemoTransport
-    with DirectoryFeedFixture {}
+    with DirectoryFeedFixture {
+  @override
+  ClientScope get lifecycleScope => contentScope;
+}
 
 Future<SessionDirectoryRow> _readThread(AnyworkClient client, String id) async {
   final demand = client.threadDirectory.observeThread(id);

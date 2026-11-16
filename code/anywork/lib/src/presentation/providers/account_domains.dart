@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/account_usage.dart';
 import 'package:anywork_client/acp.dart';
@@ -8,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/app_graph.dart';
 import 'observe_client.dart';
+import 'use_client_resource.dart';
 
 final accountsRepositoryProvider = Provider<AccountsRepository>(
   (ref) => ref.read(appGraphProvider).accounts,
@@ -22,27 +21,22 @@ final acpServiceProvider = Provider<AcpService>(
   (ref) => ref.read(appGraphProvider).acp,
 );
 
-void _releaseOnDispose(Ref ref, AccountDemand demand) {
-  // Failed native retirement remains registered with its application owner;
-  // provider disposal owns no business cancellation or shutdown authority.
-  ref.onDispose(() {
-    unawaited(
-      demand.release().then<void>((_) {}, onError: (Object _, StackTrace _) {}),
-    );
-  });
-}
-
 final accountsStateProvider = Provider.autoDispose<AccountsState>((ref) {
   final accounts = ref.read(accountsRepositoryProvider);
   return observeClient(ref, accounts.state, (_) => ref.invalidateSelf());
 });
 
 final _modelSelectionDemandProvider = Provider.autoDispose<void>((ref) {
-  _releaseOnDispose(
+  useClientResource(
     ref,
-    ref.read(accountsRepositoryProvider).observeSummaries(),
+    () => ref.read(accountsRepositoryProvider).observeSummaries(),
+    owner: 'model-selection-accounts',
   );
-  _releaseOnDispose(ref, ref.read(modelsRepositoryProvider).observeDirectory());
+  useClientResource(
+    ref,
+    () => ref.read(modelsRepositoryProvider).observeDirectory(),
+    owner: 'model-selection-directory',
+  );
 });
 
 final modelDirectoryStateProvider = Provider.autoDispose<ModelDirectoryState>((

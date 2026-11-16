@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -691,7 +692,11 @@ void main() {
     fixture.attach('thread', demand: _demand);
     final observation = session.content.state.watch((state) {
       if (state is ChatOpening<bool>) {
-        unawaited(fixture.client.close());
+        unawaited(
+          fixture.client.close(
+            budget: ClientCloseBudget(const Duration(seconds: 30)),
+          ),
+        );
       }
     });
     fixture.repository.setVisibleThread('thread');
@@ -775,7 +780,9 @@ void main() {
     Future<CloseReport>? closing;
     final observation = session.source.watch((value) {
       if (value.sync.phase == DomainSyncPhase.connecting) {
-        closing = fixture.client.close();
+        closing = fixture.client.close(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        );
       }
     });
     fixture.repository.setVisibleThread('thread');

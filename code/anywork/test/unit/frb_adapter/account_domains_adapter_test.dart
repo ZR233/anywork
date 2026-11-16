@@ -1,3 +1,6 @@
+import '../../support/frb_test_lifecycle.dart';
+import '../../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork_client/accounts.dart';
@@ -11,7 +14,6 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:anywork/src/app/app_composition.dart';
 import 'package:anywork/src/app/app_graph.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/api/studio/accounts/types.dart'
     as frb_accounts;
@@ -40,7 +42,7 @@ final class _SummaryBridgeApi implements RustLibApi {
 
 Future<void> _close(AppGraph graph) async {
   final report = await graph.close(
-    deadline: DateTime.now().add(const Duration(seconds: 2)),
+    budget: ClientCloseBudget(const Duration(seconds: 2)),
   );
   expect(
     report.complete,
@@ -53,12 +55,11 @@ void main() {
   test('FRB summaries preserve typed ACP connection revisions without loading details', () async {
     final api = _SummaryBridgeApi();
     RustLib.initMock(api: api);
-    FrbStudioTransport.debugOverrideInitialization(() async {});
+
     addTearDown(() {
-      FrbStudioTransport.debugOverrideInitialization(null);
       RustLib.dispose();
     });
-    final transport = FrbStudioTransport();
+    final transport = TestFrbStudioTransport();
     const capabilities = frb_accounts.BridgeAccountCapabilities(
       setDefault: false,
       edit: true,
@@ -138,10 +139,18 @@ void main() {
     });
     await runZoned(
       () async {
-        final transport = DemoStudioTransport(lspActivityLoop: true);
-        final lsp = transport
-            .subscribeProductTopic(const LspTopic())
-            .listen((_) {});
+        final transport = TestDemoStudioTransport(lspActivityLoop: true);
+        final lspEntry = transport.lifecycleRoot
+            .child('sdk')
+            .open<ProductTopicObservation>(
+              'lsp-demand',
+              (operation) => transport.openProductTopic(
+                const LspTopic(),
+                resourceId: operation.resourceId,
+              ),
+              ownership: ClientOwnership.proxy,
+            );
+        final lsp = (await lspEntry.ready).frames.listen((_) {});
         addTearDown(lsp.cancel);
         await transport.startAcpInstall(
           operationId: const OperationId('shutdown-install'),
@@ -149,8 +158,10 @@ void main() {
         );
         expect(timers.where((timer) => timer.isActive), isNotEmpty);
         await transport.beginRuntimeExit(remainingMs: 1000);
-        final issues = await transport.cancelDartSubscriptions(budgetMs: 1000);
-        expect(issues, isEmpty);
+        final issues = await transport.cancelDartSubscriptions(
+          budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+        );
+        expect(issues, isDartResourceCloseClean);
         expect(
           timers.where((timer) => timer.isActive),
           isEmpty,
@@ -294,10 +305,18 @@ void main() {
   test(
     'demo pull observation has one pending next and close really joins it',
     () async {
-      final transport = DemoStudioTransport();
-      final observation = await transport.openAccountObservation(
-        const AccountSummariesTarget(),
-      );
+      final transport = TestDemoStudioTransport();
+      final acquisition = transport.lifecycleRoot
+          .child('sdk')
+          .open<AccountDomainObservation>(
+            'account-demand',
+            (operation) => transport.openAccountObservation(
+              const AccountSummariesTarget(),
+              resourceId: operation.resourceId,
+            ),
+            ownership: ClientOwnership.proxy,
+          );
+      final observation = await acquisition.ready;
       final initial = await observation.next() as AccountSummariesFrame;
       final native = initial.accounts.first;
       expect(native.identity, isA<NativeAccountIdentity>());
@@ -339,10 +358,15 @@ void main() {
       observation.requestClose();
       expect(await waiting, isNull);
       await observation.close();
-      final issues = await transport.cancelDartSubscriptions(budgetMs: 1000);
-      expect(issues, isEmpty);
+      final issues = await transport.cancelDartSubscriptions(
+        budget: ClientCloseBudget(const Duration(milliseconds: 1000)),
+      );
+      expect(issues, isDartResourceCloseClean);
       await expectLater(
-        transport.openAccountObservation(const AccountUsageTarget()),
+        transport.openAccountObservation(
+          const AccountUsageTarget(),
+          resourceId: observation.resourceId,
+        ),
         throwsStateError,
       );
     },

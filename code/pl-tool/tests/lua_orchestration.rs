@@ -132,14 +132,14 @@ async fn real_thread_retains_nested_originals_without_putting_them_into_model_hi
         let calls = Arc::new(AtomicUsize::new(0));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let code = if fail || denied {
-            "local function child() local ok,err=pcall(function() return tools.child({n=7}) end); assert(not ok); return tostring(err) end; parallel({child,child,child}); return 'handled'"
+            "local function child() local ok,err=pcall(function() return tools.child(args) end); assert(not ok); return tostring(err) end; parallel({child,child,child}); return 'handled'"
         } else {
-            "local r=parallel({function() return tools.child({n=7}) end,function() return tools.child({n=7}) end,function() return tools.child({n=7}) end}); return r[1].selected"
+            "local r=parallel({function() return tools.child(args) end,function() return tools.child(args) end,function() return tools.child(args) end}); return r[1].selected"
         };
         let model = host::Calls {
             calls: std::collections::VecDeque::from([(
                 "exec".into(),
-                json!({"code":code}).to_string(),
+                json!({"code":code,"args":{"n":7}}).to_string(),
             )]),
             requests: requests.clone(),
         };

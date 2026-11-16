@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'support/product_topic_owner.dart';
+
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 import 'package:anywork_client/model_directory.dart';
@@ -76,8 +79,18 @@ class _Transport extends AccountsTestTransport {
   int refreshes = 0;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) =>
-      const Stream.empty();
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
+    final controller = StreamController<ProductTopicFrame>();
+    unawaited(controller.close());
+    return openTestProductTopic(
+      lifecycleScope.child('topic-owner'),
+      resourceId,
+      controller,
+    );
+  }
 
   @override
   Future<SettingsStateSnapshot> readSettingsState() async {

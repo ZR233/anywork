@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/recording_demo_transport.dart' show timelineReady;
 
 import 'dart:async';
@@ -5,7 +6,6 @@ import 'dart:convert';
 
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -303,18 +303,17 @@ void main() {
   });
 }
 
-Future<(AppGraph, DemoStudioTransport)> _open() async {
-  final transport = DemoStudioTransport();
-  final graph = AppGraph(
+Future<(AppGraph, TestDemoStudioTransport)> _open() async {
+  final transport = TestDemoStudioTransport();
+  final graph = testAppGraph(
     statisticsFeed: const TestStatisticsFeedPort(),
     transport: transport,
     clientId: 'demo-business-reference-contract',
   );
   addTearDown(() async {
     expect(
-      (await graph.close(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
-      )).complete,
+      (await graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))))
+          .complete,
       isTrue,
     );
   });

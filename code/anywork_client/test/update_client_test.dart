@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -386,9 +387,12 @@ void main() {
     final client = _client(api, UpdaterStore());
     final check = client.check();
     final failure = expectLater(check, throwsStateError);
-    final closing = client.close(deadline: DateTime.utc(2000));
+    final closing = client.close(budget: ClientCloseBudget(Duration.zero));
     expect(
-      identical(client.close(deadline: DateTime.utc(2099)), closing),
+      identical(
+        client.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
+        closing,
+      ),
       isTrue,
     );
     final report = await closing;
@@ -489,9 +493,12 @@ void main() {
     final store = UpdaterStore()..apply(_available(7));
     final client = _client(api, store);
     final install = client.install();
-    final closing = client.close(deadline: DateTime.utc(2000));
+    final closing = client.close(budget: ClientCloseBudget(Duration.zero));
     expect(
-      identical(client.close(deadline: DateTime.utc(2099)), closing),
+      identical(
+        client.close(budget: ClientCloseBudget(const Duration(seconds: 3))),
+        closing,
+      ),
       isTrue,
     );
     expect((await closing).complete, isFalse);

@@ -35,6 +35,7 @@ import 'package:anywork/src/features/status/context_usage_readout.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/rendering.dart';
 import 'package:material_ui/material_ui.dart';
@@ -171,7 +172,8 @@ void main() {
         graph.client.transport,
         (_) {},
         remainingMs: 30000,
-        closeClient: (deadline) => graph.close(deadline: deadline),
+        closeClient: (budget) => graph.close(budget: budget),
+        closeRoot: graph.closeLifecycleRoot,
       );
       expect(shutdown.shutdown.isClean, isTrue);
       expect(shutdown.shutdown.issues, isEmpty);
@@ -240,7 +242,7 @@ void main() {
         await tester.pumpWidget(const SizedBox());
         expect(
           (await graph.client.conversations.retryCleanup(
-            deadline: DateTime.now().add(const Duration(seconds: 5)),
+            budget: ClientCloseBudget(const Duration(seconds: 5)),
           )).complete,
           isTrue,
         );
@@ -1272,7 +1274,7 @@ final class _ConceptScene {
       expect(before.queryCleanupError, isNull);
       expect(
         (await graph.client.conversations.retryCleanup(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
+          budget: ClientCloseBudget(const Duration(seconds: 5)),
         )).complete,
         isTrue,
       );
@@ -1444,7 +1446,7 @@ final class _ConceptScene {
     expect(originalWindow.window, isNull);
     expect(
       (await graph.client.conversations.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
+        budget: ClientCloseBudget(const Duration(seconds: 5)),
       )).complete,
       isTrue,
     );
@@ -2753,7 +2755,7 @@ final class _ConceptScene {
           scope.retire();
           expect(
             (await scope.close(
-              deadline: DateTime.now().add(const Duration(seconds: 5)),
+              budget: ClientCloseBudget(const Duration(seconds: 5)),
             )).complete,
             isTrue,
           );
@@ -4099,7 +4101,7 @@ final class _ConceptScene {
     final joinedWait = Stopwatch()..start();
     expect(
       (await graph.client.conversations.retryCleanup(
-        deadline: DateTime.now().add(const Duration(seconds: 5)),
+        budget: ClientCloseBudget(const Duration(seconds: 5)),
       )).complete,
       isTrue,
     );

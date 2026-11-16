@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_graph.dart';
@@ -7,7 +9,6 @@ import 'package:anywork/src/features/settings/settings_scope.dart';
 import 'package:anywork/src/features/status/thread_status_bar.dart';
 import 'package:anywork/src/features/status/status_view.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:material_ui/material_ui.dart';
@@ -24,7 +25,7 @@ void main() {
   testWidgets(
     'McpTab manages Host and SSH single-file TOML catalogs without runtime probe actions',
     (tester) async {
-      final transport = DemoStudioTransport(lspActivityLoop: false);
+      final transport = TestDemoStudioTransport(lspActivityLoop: false);
       await transport.saveSshServer(
         const SaveSshServerCommand(
           alias: 'gpu-box',
@@ -33,7 +34,7 @@ void main() {
           username: 'ubuntu',
         ),
       );
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'mcp-settings-ui',
@@ -172,7 +173,7 @@ void main() {
       container.dispose();
       final report = await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'mcp settings teardown',
       );
       expect(report.complete, isTrue);
@@ -186,7 +187,7 @@ void main() {
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.reset);
       final transport = _RecordingMcpReconnectTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'thread-mcp-status-ui',
@@ -745,7 +746,7 @@ void main() {
       container.dispose();
       final report = await pumpClientFuture(
         tester,
-        graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+        graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
         'thread mcp teardown',
       );
       expect(report.complete, isTrue);
@@ -753,7 +754,7 @@ void main() {
   );
 }
 
-final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
+final class _RecordingMcpReconnectTransport extends TestDemoStudioTransport {
   _RecordingMcpReconnectTransport() : super(lspActivityLoop: false);
 
   final List<({String threadId, String? serverId})> reconnectCalls = [];
@@ -795,9 +796,12 @@ final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
   int threadLspMainBaselineCount = 0;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  TestTopicFrames testProductTopicFrames(
+    ProductTopic topic,
+    TestTopicFrames upstream,
+  ) {
     if (topic is! ThreadLspTopic && topic is! ThreadMcpTopic) {
-      return super.subscribeProductTopic(topic);
+      return upstream;
     }
     late final StreamController<ProductTopicFrame> controller;
     controller = StreamController<ProductTopicFrame>(
@@ -823,7 +827,7 @@ final class _RecordingMcpReconnectTransport extends DemoStudioTransport {
       },
     );
     _topics[topic] = controller;
-    return controller.stream;
+    return TestTopicFrames.controller(controller);
   }
 
   void emitThreadLsp(ThreadLspStateSnapshot snapshot) {

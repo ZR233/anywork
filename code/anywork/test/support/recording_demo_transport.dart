@@ -1,6 +1,7 @@
+import 'test_app_lifecycle.dart';
+
 import 'dart:async';
 
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import 'mapped_conversation_feed.dart';
@@ -9,7 +10,8 @@ import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
-class RecordingDemoTransport extends DemoStudioTransport {
+class RecordingDemoTransport extends TestDemoStudioTransport {
+  RecordingDemoTransport({super.lifecycleRoot});
   final List<RecordingConversationFeed> feeds = [];
   final List<RecordingConversationStateFeed> stateFeeds = [];
   final Map<String, Completer<RecordingConversationStateFeed>>

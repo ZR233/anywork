@@ -1,3 +1,5 @@
+import '../../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/app_composition.dart';
@@ -227,14 +229,12 @@ void _expectTarget(b.BridgeAcpSessionTarget value) {
 
 void main() {
   late _BusinessApi api;
-  const port = FrbAcpBusinessPort();
+  final port = FrbAcpBusinessPort(ensureReady: () async {});
   setUp(() {
     api = _BusinessApi();
     RustLib.initMock(api: api);
-    FrbStudioTransport.debugOverrideInitialization(() async {});
   });
   tearDown(() {
-    FrbStudioTransport.debugOverrideInitialization(null);
     RustLib.dispose();
   });
 
@@ -657,12 +657,14 @@ void main() {
       };
     api.observations.add(handle);
     final graph = createProductionAppGraph();
+    (graph.client.transport as FrbStudioTransport).runtime
+        .debugOverrideInitialization(() async {});
     final observation = await graph.client.acpSessions.open(_open);
     expect(observation, isA<AcpSessionObservation>());
     expect(handle.reads, 0);
     var finished = false;
     final closing = graph
-        .close(deadline: DateTime.now().add(const Duration(seconds: 5)))
+        .close(budget: ClientCloseBudget(const Duration(seconds: 5)))
         .then((report) {
           finished = true;
           return report;
@@ -690,7 +692,7 @@ void main() {
     final graph = createDemoAppGraph();
     expect(() => graph.client.acpSessions, throwsUnsupportedError);
     final report = await graph.close(
-      deadline: DateTime.now().add(const Duration(seconds: 5)),
+      budget: ClientCloseBudget(const Duration(seconds: 5)),
     );
     expect(report.complete, true);
     expect(api.calls, isEmpty);

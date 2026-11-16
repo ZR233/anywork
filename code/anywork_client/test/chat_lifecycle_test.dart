@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -104,19 +105,28 @@ void main() {
     expect((await closing).complete, isTrue);
     expect(details.first.ownedAttemptCount, 0);
     expect(main.eventConsumers, 1);
-    expect((await fixture.close()).complete, isTrue);
+    expect(fixture.transport.productTopicOwners, isNotEmpty);
+    final topicOwner = fixture.transport.productTopicOwners.first;
+    topicOwner.closeGate = Completer<void>();
+    final clientClosing = fixture.close();
+    await topicOwner.closeRequested.future;
+    expect(topicOwner.closeAcknowledged.isCompleted, isFalse);
+    topicOwner.closeGate!.complete();
+    expect((await clientClosing).complete, isTrue);
+    expect(topicOwner.closeCalls, 1);
+    expect(topicOwner.closeAcknowledged.isCompleted, isTrue);
     expect(main.closeCompleted.isCompleted, isTrue);
     expect(feeds.every((feed) => feed.closeCompleted.isCompleted), isTrue);
     expect(details.every((content) => content.ownedAttemptCount == 0), isTrue);
   });
-  test('repository retryCleanup honors expired absolute deadline and preserves original native join', () async {
+  test('repository retryCleanup honors expired budget and preserves original native join', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     feed.closeGate = Completer<void>();
     fixture.repository.setVisibleThread(null);
     await feed.closeStarted.future;
-    final expired = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
-    final first = await fixture.repository.retryCleanup(deadline: expired);
+    final expired = ClientCloseBudget(Duration.zero);
+    final first = await fixture.repository.retryCleanup(budget: expired);
     expect(first.complete, isFalse);
     expect(
       first.unresolved.map((entry) => entry.owner),
@@ -124,7 +134,7 @@ void main() {
     );
     expect(feed.closeCompleted.isCompleted, isFalse);
     expect(feed.closeCalls, 1);
-    final again = await fixture.repository.retryCleanup(deadline: expired);
+    final again = await fixture.repository.retryCleanup(budget: expired);
     expect(again.complete, isFalse);
     expect(
       feed.closeCalls,
@@ -132,9 +142,13 @@ void main() {
       reason: 'An expired retry neither cancels nor replaces actual close',
     );
     feed.closeGate!.complete();
-    expect((await fixture.repository.retryCleanup()).complete, isTrue);
+    final cleanupBudget = ClientCloseBudget(const Duration(seconds: 30));
+    expect(
+      (await fixture.repository.retryCleanup(budget: cleanupBudget)).complete,
+      isTrue,
+    );
     expect(fixture.transport.opens, hasLength(1));
-    await fixture.close();
+    await fixture.close(budget: cleanupBudget);
   });
 
   test('retirement starts native close but joins the blocked ACK before releasing ownership', () async {
@@ -342,7 +356,7 @@ void main() {
     );
     final content = fixture.session('A').content;
     final expired = await content.joinRetired(
-      deadline: DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
+      budget: ClientCloseBudget(Duration.zero),
     );
     expect(expired.complete, isFalse);
     var joined = false;
@@ -840,7 +854,7 @@ void main() {
       final fixture = ConversationFixture();
       fixture.attach('thread', demand: _demand);
       fixture.repository.setVisibleThread('thread');
-      final closing = fixture.close(deadline: DateTime.now());
+      final closing = fixture.close(budget: ClientCloseBudget(Duration.zero));
       final report = await closing;
       expect(report.complete, isFalse);
       final feed = TestConversationFeed()..closeGate = Completer<void>();
@@ -848,7 +862,12 @@ void main() {
       await feed.closeStarted.future;
       feed.closeGate!.complete();
       await feed.closeCompleted.future;
-      expect((await fixture.client.retryCleanup()).complete, isTrue);
+      expect(
+        (await fixture.client.retryCleanup(
+          budget: ClientCloseBudget(const Duration(seconds: 30)),
+        )).complete,
+        isTrue,
+      );
     },
   );
 
@@ -858,7 +877,12 @@ void main() {
     feed.closeFailure = StateError('native join failed');
     expect((await fixture.close()).complete, isFalse);
     feed.closeFailure = null;
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(
+      (await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
     expect(feed.closeCalls, 2);
     expect(fixture.transport.opens, hasLength(1));
   });
@@ -896,7 +920,9 @@ void main() {
       expect(secondAttempt, isNot(firstAttempt));
 
       fixture.repository.setVisibleThread(null);
-      final report = await fixture.close(deadline: DateTime.utc(2000));
+      final report = await fixture.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
       expect(
         report.unresolved.any(
           (entry) =>
@@ -914,7 +940,9 @@ void main() {
       await first.closeCompleted.future;
       expect(first.closeCalls, greaterThanOrEqualTo(1));
 
-      final retired = await fixture.client.retryCleanup();
+      final retired = await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
       expect(retired.complete, isFalse);
       expect(
         fixture.client.unresolvedResources.any(
@@ -928,7 +956,9 @@ void main() {
       );
 
       second.closeFailure = null;
-      final recovered = await fixture.client.retryCleanup();
+      final recovered = await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
       expect(recovered.complete, isTrue);
       expect(
         fixture.transport.opens.where((open) => open.threadId == 'thread-main'),

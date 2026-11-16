@@ -1,3 +1,5 @@
+import 'test_app_lifecycle.dart';
+
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/plan_detail_connector.dart';
@@ -28,7 +30,7 @@ class PlanDocumentHarness {
     WidgetTester tester,
     PlanDocumentTransport transport,
   ) async {
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'plan-recovery',
@@ -125,7 +127,7 @@ class PlanDocumentHarness {
     await tester.pumpWidget(const SizedBox.shrink());
     final report = await pumpClientFuture(
       tester,
-      graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
       'close graph',
     );
     expect(report.complete, isTrue);

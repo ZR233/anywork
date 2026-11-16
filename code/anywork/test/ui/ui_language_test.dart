@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/anywork_app.dart';
@@ -65,7 +67,7 @@ void main() {
         (call) async => call.method == 'beginExit' ? 10000 : null,
       );
       final transport = _LanguageTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         transport: transport,
         statisticsFeed: const TestStatisticsFeedPort(),
         clientId: 'ui-language',
@@ -93,7 +95,7 @@ void main() {
         );
         final report = await pumpClientFuture(
           tester,
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
           'close language fixture',
         );
         expect(

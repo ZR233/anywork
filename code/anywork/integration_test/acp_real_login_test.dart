@@ -62,7 +62,8 @@ void main() {
             graph.client.transport,
             (_) {},
             remainingMs: 30000,
-            closeClient: (deadline) => graph.close(deadline: deadline),
+            closeClient: (budget) => graph.close(budget: budget),
+            closeRoot: graph.closeLifecycleRoot,
           );
           expect(report.shutdown.isClean, isTrue);
           expect(report.shutdown.issues, isEmpty);

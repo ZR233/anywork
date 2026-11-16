@@ -1,15 +1,20 @@
 import '../../../models.dart';
+import '../../../lifecycle.dart';
 import '../../../studio_ports.dart';
 import '../anywork_client.dart';
 import '../stores/domain_sync.dart';
 import '../stores/canonical_clock.dart';
-import '../../lifecycle/close_report.dart';
 import 'product_topic_registry.dart';
 
 class StudioChannels {
-  StudioChannels(this._client, StudioTransport api) {
+  StudioChannels(
+    this._client,
+    StudioTransport api, {
+    required ClientScope scope,
+  }) {
     _topics = BridgeTopicRegistry(
       api,
+      scope: scope,
       onFrame: _onTopicFrame,
       onTopicConnection: _onTopicConnection,
     );
@@ -88,16 +93,13 @@ class StudioChannels {
       _topics.activeTopicRefCountViews();
 
   /// The Client owns product subscriptions independently of page observers.
-  Future<CloseReport> dispose({DateTime? deadline}) {
+  Future<CloseReport> dispose({required ClientCloseBudget budget}) {
     _disposed = true;
-    return _topics.releaseAll(deadline: deadline);
+    return _topics.releaseAll(budget: budget);
   }
 
-  Future<CloseReport> retryCleanup({DateTime? deadline}) =>
-      _topics.retryCleanup(deadline: deadline);
-
-  List<UnresolvedResource> get unresolvedResources =>
-      _topics.unresolvedResources;
+  Future<CloseReport> retryCleanup({required ClientCloseBudget budget}) =>
+      _topics.retryCleanup(budget: budget);
 
   void _onTopicConnection(
     ProductTopic topic,

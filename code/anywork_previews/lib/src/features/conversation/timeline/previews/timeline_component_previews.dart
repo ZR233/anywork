@@ -841,6 +841,19 @@ Widget timelineNarrowScaledPreview() => _timelinePreviewHost(
 Widget timelineCombinedPreview() =>
     _timelinePreviewHost(const _TimelineCombinedPreview());
 
+@Preview(
+  name: '子智能体 / 上级委派与补充消息',
+  group: 'Timeline · 组合视图',
+  size: Size(900, 620),
+)
+@Preview(
+  name: '子智能体 / 上级消息 · 窄窗口',
+  group: 'Timeline · 组合视图',
+  size: Size(390, 720),
+)
+Widget timelineParentAgentPreview() =>
+    _timelinePreviewHost(const _TimelineCombinedPreview(parentMessages: true));
+
 @Preview(name: '间距 / 正文与工作组', group: 'Timeline · 组合视图', size: Size(1040, 680))
 Widget timelineSpacingPreview() =>
     _timelinePreviewHost(const _TimelineCombinedPreview(spacing: true));
@@ -852,8 +865,12 @@ Widget timelineSpacingNarrowPreview() => _timelinePreviewHost(
 );
 
 class _TimelineCombinedPreview extends StatefulWidget {
-  const _TimelineCombinedPreview({this.spacing = false});
+  const _TimelineCombinedPreview({
+    this.spacing = false,
+    this.parentMessages = false,
+  });
   final bool spacing;
+  final bool parentMessages;
 
   @override
   State<_TimelineCombinedPreview> createState() =>
@@ -862,7 +879,11 @@ class _TimelineCombinedPreview extends StatefulWidget {
 
 class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
   late final _PreviewTimelineControls controls = _PreviewTimelineControls(
-    messages: widget.spacing ? TimelinePreviewFixtures.spacingMessages() : null,
+    messages: widget.parentMessages
+        ? TimelinePreviewFixtures.parentAgentMessages()
+        : widget.spacing
+        ? TimelinePreviewFixtures.spacingMessages()
+        : null,
   );
 
   @override

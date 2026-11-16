@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -244,7 +245,7 @@ void main() {
       first.readContent(reference: _reference, range: _range),
       throwsA(isA<StaleConversationScope>()),
     );
-    final timed = await first.close(deadline: DateTime.now());
+    final timed = await first.close(budget: ClientCloseBudget(Duration.zero));
     expect(timed.complete, isFalse);
     expect(first.pendingQueries, 1);
     expect(sibling.isActive, isTrue);
@@ -280,6 +281,47 @@ void main() {
       );
       expect(feed.acknowledgements, [1]);
       expect((await fixture.close()).complete, isTrue);
+    },
+  );
+
+  test(
+    'cleanup snapshot observes a pending read without retiring or joining it',
+    () async {
+      final fixture = ConversationFixture();
+      addTearDown(fixture.close);
+      final feed = await fixture.open(demand: _demand);
+      final scope = fixture.session().content.openScope(
+        generation: 7,
+      ) as ConversationReadScope;
+      final reply = Completer<ContentWindow>();
+      addTearDown(() {
+        if (!reply.isCompleted) reply.complete(_window());
+      });
+      feed.reader.onContent = (_, __) => reply.future;
+      final reading = expectLater(
+        scope.readContent(reference: _reference, range: _range),
+        throwsA(isA<StaleConversationScope>()),
+      );
+      final original = scope.cleanupReport.unresolved.single;
+      expect(original.stages.single.phase, ClientClosePhase.consumer);
+      expect(original.stages.single.pending, isTrue);
+      expect(original.stages.single.error, isNull);
+      expect(
+        scope.cleanupReport.unresolved.single.resourceId,
+        original.resourceId,
+      );
+      expect(scope.isActive, isTrue);
+      expect(feed.reader.requestCloseCalls, 0);
+      expect(feed.reader.closeCalls, 0);
+
+      final pending = await scope.close(
+        budget: ClientCloseBudget(Duration.zero),
+      );
+      expect(pending.unresolved.single.resourceId, original.resourceId);
+      reply.complete(_window());
+      await reading;
+      expect((await scope.close()).complete, isTrue);
+      expect(scope.cleanupReport.complete, isTrue);
     },
   );
 
@@ -324,7 +366,10 @@ void main() {
     await handle.joinStarted.future;
     expect(handle.calls.first, 'requestClose');
     expect(handle.waitingWoken.isCompleted, isTrue);
-    expect((await scope.close(deadline: DateTime.now())).complete, isFalse);
+    expect(
+      (await scope.close(budget: ClientCloseBudget(Duration.zero))).complete,
+      isFalse,
+    );
     handle.cancelGate!.complete();
     await handle.cancelFinished.future;
     handle.joinGate!.complete();
@@ -343,7 +388,9 @@ void main() {
       final fixture = ConversationFixture();
       addTearDown(fixture.close);
       final feed = await fixture.open(demand: _demand);
-      final scope = fixture.session().content.openScope(generation: 1);
+      final scope = fixture.session().content.openScope(
+        generation: 1,
+      ) as ConversationReadScope;
       final handle = _ControlledContentWatch()
         ..cancelGate = Completer<void>()
         ..joinGate = Completer<void>();
@@ -354,18 +401,44 @@ void main() {
           .listen((_) {});
       await handle.listening.future;
 
+      final identity = scope.cleanupReport.unresolved.single.resourceId;
+      expect(scope.cleanupReport.unresolved.single.resourceId, identity);
+      expect(scope.isActive, isTrue);
+      expect(handle.calls, isEmpty);
+
       scope.retire();
       expect(scope.isActive, isFalse);
       expect(handle.waitingWoken.isCompleted, isTrue);
       await handle.cancelStarted.future;
       await handle.joinStarted.future;
       expect(handle.calls.first, 'requestClose');
-      final timed = await scope.close(deadline: DateTime.now());
+      final timed = await scope.close(budget: ClientCloseBudget(Duration.zero));
       expect(timed.complete, isFalse);
+      expect(timed.unresolved.single.resourceId, identity);
+      expect(
+        timed.unresolved.single.stages.where((stage) => stage.pending),
+        hasLength(2),
+      );
       handle.joinGate!.complete();
-      await handle.firstJoinFinished.future;
+      await handle.joining;
+      final consumerPending = scope.cleanupReport.unresolved.single;
+      expect(consumerPending.resourceId, identity);
+      expect(
+        consumerPending.stages
+            .singleWhere((stage) => stage.phase == ClientClosePhase.close)
+            .complete,
+        isTrue,
+      );
+      expect(
+        consumerPending.stages
+            .singleWhere((stage) => stage.phase == ClientClosePhase.consumer)
+            .pending,
+        isTrue,
+      );
+      expect(handle.joinCalls, 1);
       handle.cancelGate!.complete();
       expect((await scope.close()).complete, isTrue);
+      expect(scope.cleanupReport.complete, isTrue);
       expect(handle.cancelCalls, 1);
       expect(handle.joinCalls, 1);
       expect(feed.requestCloseCalls, 0);
@@ -381,9 +454,14 @@ void main() {
           final fixture = ConversationFixture();
           addTearDown(fixture.close);
           final feed = await fixture.open(demand: _demand);
-          final scope = fixture.session().content.openScope(generation: 1);
+          final scope = fixture.session().content.openScope(
+            generation: 1,
+          ) as ConversationReadScope;
           final failure = StateError('original watch join failed');
-          final handle = _ControlledContentWatch()..joinFailure = failure;
+          final failureStack = StackTrace.current;
+          final handle = _ControlledContentWatch()
+            ..joinFailure = failure
+            ..joinFailureStack = failureStack;
           addTearDown(handle.dispose);
           var opens = 0;
           feed.reader.onWatchHandle = (reference, range) {
@@ -405,12 +483,34 @@ void main() {
           );
           expect(handle.joinCalls, 1);
           expect(handle.cancelCalls, 1);
+          final original = failed.unresolved.single;
+          final snapshot = scope.cleanupReport.unresolved.single;
+          expect(snapshot.resourceId, original.resourceId);
+          expect(snapshot.reason, same(failure));
+          final stage = snapshot.stages.singleWhere(
+            (stage) => stage.phase == ClientClosePhase.close,
+          );
+          expect(stage.error, same(failure));
+          expect(stage.stackTrace, same(failureStack));
+          expect(stage.pending, isFalse);
+          expect(
+            scope.cleanupReport.unresolved.single.resourceId,
+            original.resourceId,
+          );
+          expect(
+            handle.joinCalls,
+            1,
+            reason: 'snapshot reads cannot retry cleanup',
+          );
 
           handle.joinFailure = null;
           final retried = retryWithClient
-              ? await fixture.client.retryCleanup()
+              ? await fixture.client.retryCleanup(
+                  budget: ClientCloseBudget(const Duration(seconds: 30)),
+                )
               : await scope.close();
           expect(retried.complete, isTrue);
+          expect(scope.cleanupReport.complete, isTrue);
           expect(handle.joinCalls, 2);
           expect(
             handle.cancelCalls,
@@ -469,7 +569,8 @@ void main() {
           }
           await handle.joinStarted.future;
           expect(
-            (await scope.close(deadline: DateTime.now())).complete,
+            (await scope.close(budget: ClientCloseBudget(Duration.zero)))
+                .complete,
             isFalse,
           );
           handle.joinGate!.complete();
@@ -517,7 +618,9 @@ void main() {
         failed.unresolved.map((entry) => entry.reason),
         contains(same(failure)),
       );
-      final retried = await fixture.client.retryCleanup();
+      final retried = await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      );
       expect(retried.complete, isFalse);
       expect(
         retried.unresolved.map((entry) => entry.reason),
@@ -575,6 +678,8 @@ final class _ControlledContentWatch implements ConversationContentWatch {
   Completer<void>? joinGate;
   Object? cancelFailure;
   Object? joinFailure;
+  StackTrace? joinFailureStack;
+  Future<void>? joining;
   int windowsReads = 0;
   int cancelCalls = 0;
   int joinCalls = 0;
@@ -597,14 +702,21 @@ final class _ControlledContentWatch implements ConversationContentWatch {
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => joining = _join();
+
+  Future<void> _join() async {
     calls.add('join');
     joinCalls++;
     if (!joinStarted.isCompleted) joinStarted.complete();
     try {
       await waitingWoken.future;
       await joinGate?.future;
-      if (joinFailure case final failure?) throw failure;
+      if (joinFailure case final failure?) {
+        Error.throwWithStackTrace(
+          failure,
+          joinFailureStack ?? StackTrace.current,
+        );
+      }
       successfulJoins++;
     } finally {
       if (!firstJoinFinished.isCompleted) firstJoinFinished.complete();

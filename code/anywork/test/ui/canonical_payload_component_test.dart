@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -22,7 +24,6 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
-import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -714,7 +715,7 @@ class _Scope extends Fake implements ConversationQueryScope {
   @override
   void retire() => active = false;
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     closed = true;
     return CloseReport();
   }

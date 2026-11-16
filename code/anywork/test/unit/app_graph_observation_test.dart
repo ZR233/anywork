@@ -1,3 +1,4 @@
+import '../support/test_app_lifecycle.dart';
 import '../support/chat_fixtures.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -9,7 +10,6 @@ import 'package:anywork/src/presentation/providers/composer_draft_controller.dar
 import 'package:anywork/src/presentation/providers/start_session_controller.dart';
 import 'package:anywork/src/presentation/providers/skills_store.dart';
 import 'package:anywork/src/presentation/providers/session_costs_store.dart';
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
 import 'package:anywork_client/studio_client.dart'
     show CloseReport, DomainSyncPhase, FailedComposerThreadState;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,7 +24,7 @@ void main() {
     'reentrant graph close keeps the first future and mounted display report',
     () async {
       final transport = RecordingDemoTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'reentrant-graph-close',
@@ -37,10 +37,12 @@ void main() {
       final lease = graph.timeline.lease('thread-main')!..bind();
       Future<CloseReport>? nested;
       final observation = graph.timeline.source.watch((state) {
-        if (state == null) nested = graph.close(deadline: _deadline());
+        if (state == null) {
+          nested = graph.close(budget: testBudgetUntil(_deadline()));
+        }
       });
       try {
-        final closing = graph.close(deadline: DateTime.utc(2000));
+        final closing = graph.close(budget: ClientCloseBudget(Duration.zero));
         expect(nested, same(closing));
         final report = await closing;
         expect(report.complete, isFalse);
@@ -52,24 +54,27 @@ void main() {
         );
         expect(lease.isReleased, isFalse);
         await lease.unbind();
-        expect(graph.close(deadline: _deadline()), same(closing));
+        expect(
+          graph.close(budget: testBudgetUntil(_deadline())),
+          same(closing),
+        );
       } finally {
         observation.cancel();
         if (!lease.isReleased) await lease.unbind();
-        await graph.timeline.close(deadline: _deadline());
-        await graph.client.retryCleanup(deadline: _deadline());
+        await graph.timeline.close(budget: testBudgetUntil(_deadline()));
+        await graph.client.retryCleanup(budget: testBudgetUntil(_deadline()));
       }
     },
   );
 
   test('observing missing resources never admits a Client owner', () async {
     final transport = RecordingDemoTransport();
-    final graph = AppGraph(
+    final graph = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: transport,
       clientId: 'missing-owner',
     );
-    addTearDown(() => graph.close(deadline: _deadline()));
+    addTearDown(() => graph.close(budget: testBudgetUntil(_deadline())));
     final client = graph.client;
     final container = _container(graph);
     final session = container.listen(
@@ -114,12 +119,12 @@ void main() {
     'account cancellation, disposal and rebuilding preserve app resources',
     () async {
       final transport = RecordingDemoTransport();
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'observer-owner',
       );
-      addTearDown(() => graph.close(deadline: _deadline()));
+      addTearDown(() => graph.close(budget: testBudgetUntil(_deadline())));
       await graph.client.bootstrap();
       await (graph
             ..timeline.updateReadDemand(chatDemand)
@@ -229,7 +234,7 @@ void main() {
       expect(transport.timelineReaders, hasLength(1));
       expect(connection.initialCalls, 1);
 
-      final report = await graph.close(deadline: _deadline());
+      final report = await graph.close(budget: testBudgetUntil(_deadline()));
       expect(report.unresolved, isEmpty);
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
@@ -240,18 +245,18 @@ void main() {
   test('two injected AppGraphs have independent sessions and drafts', () async {
     final firstTransport = RecordingDemoTransport();
     final secondTransport = RecordingDemoTransport();
-    final first = AppGraph(
+    final first = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: firstTransport,
       clientId: 'first-app',
     );
-    final second = AppGraph(
+    final second = testAppGraph(
       statisticsFeed: const TestStatisticsFeedPort(),
       transport: secondTransport,
       clientId: 'second-app',
     );
-    addTearDown(() => first.close(deadline: _deadline()));
-    addTearDown(() => second.close(deadline: _deadline()));
+    addTearDown(() => first.close(budget: testBudgetUntil(_deadline())));
+    addTearDown(() => second.close(budget: testBudgetUntil(_deadline())));
     await Future.wait([first.client.bootstrap(), second.client.bootstrap()]);
     final beforeVisibleSelection = first.timeline.monotonicMicros;
     first.setConversationPageVisible(true);
@@ -331,7 +336,10 @@ void main() {
       'second app',
     );
 
-    expect((await first.close(deadline: _deadline())).complete, isTrue);
+    expect(
+      (await first.close(budget: testBudgetUntil(_deadline()))).complete,
+      isTrue,
+    );
     expect(firstTransport.timelineReaders.single.joined.isCompleted, isTrue);
     expect(secondTransport.timelineReaders.single.requestCloseCalls, 0);
     expect(second.client.isClosed, isFalse);
@@ -347,7 +355,7 @@ void main() {
   test(
     'late open after selecting B is reclaimed without clearing current B',
     () async {
-      final transport = DemoStudioTransport(lspActivityLoop: false);
+      final transport = TestDemoStudioTransport(lspActivityLoop: false);
       final firstOpen = Completer<RecordingTimelineReader>();
       final releaseFirst = Completer<void>();
       var mainOpens = 0;
@@ -361,14 +369,14 @@ void main() {
         }
         return window;
       };
-      final graph = AppGraph(
+      final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
         clientId: 'late-demo-attempt',
       );
       addTearDown(() async {
         if (!releaseFirst.isCompleted) releaseFirst.complete();
-        await graph.close(deadline: _deadline());
+        await graph.close(budget: testBudgetUntil(_deadline()));
       });
       await graph.client.bootstrap();
       await (graph

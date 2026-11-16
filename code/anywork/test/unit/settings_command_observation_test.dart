@@ -1,9 +1,10 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/model_directory.dart';
-import 'package:anywork/src/app/app_graph.dart';
 
 import '../support/test_statistics_feed.dart';
 
@@ -40,14 +41,13 @@ class _SettingsTransport extends RecordingDemoTransport {
 
 void main() {
   test('created no-charge account clears to automatic without replaying an override', () async {
-    final graph = AppGraph(
+    final graph = testAppGraph(
       transport: RecordingDemoTransport(),
       statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'created-billing',
     );
     addTearDown(
-      () =>
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     );
     await graph.client.bootstrap();
     final summaries = graph.accounts.observeSummaries();
@@ -133,14 +133,13 @@ void main() {
   });
 
   test('model commands observe their own canonical content and retain independent settings', () async {
-    final graph = AppGraph(
+    final graph = testAppGraph(
       transport: RecordingDemoTransport(),
       statisticsFeed: const TestStatisticsFeedPort(),
       clientId: 'enabled-receipt',
     );
     addTearDown(
-      () =>
-          graph.close(deadline: DateTime.now().add(const Duration(seconds: 5))),
+      () => graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
     );
     await graph.client.bootstrap();
     final summaries = graph.accounts.observeSummaries();
@@ -220,7 +219,10 @@ void main() {
     'old Settings ACK cannot clear newer intent and never rereads bootstrap',
     () async {
       final transport = _SettingsTransport();
-      final client = AnyworkClient(transport: transport, clientId: 'settings');
+      final client = testAnyworkClient(
+        transport: transport,
+        clientId: 'settings',
+      );
       await client.bootstrap();
       final commands = client.settingsCommands;
       final first = commands.applySettingsField(
@@ -247,7 +249,7 @@ void main() {
       expect(client.settings.state.commands.containsKey('follow'), isFalse);
       expect(transport.bootstrapCalls, 1);
       expect(transport.calls, [x.id, y.id]);
-      expect((await client.close()).complete, isTrue);
+      expect((await client.close(budget: testCloseBudget())).complete, isTrue);
     },
   );
 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -272,10 +273,15 @@ void main() {
         await consumer.waitForCount(1);
         feed.send(terminal);
         await feed.requestCloseStarted.future;
-        final closing = fixture.close(deadline: DateTime.now());
+        final closing = fixture.close(budget: ClientCloseBudget(Duration.zero));
         expect((await closing).complete, isFalse);
         gate.complete();
-        expect((await fixture.client.retryCleanup()).complete, isTrue);
+        expect(
+          (await fixture.client.retryCleanup(
+            budget: ClientCloseBudget(const Duration(seconds: 30)),
+          )).complete,
+          isTrue,
+        );
         expect(feed.acknowledgements, isEmpty);
       },
     );
@@ -302,7 +308,9 @@ void main() {
     fixture.transport.opens[1].result.complete(second);
     final replacement = chatSet(messages: [chatMessage(id: 'replacement')]);
     await second.deliver(ConversationChatEvent(batch: replacement));
-    final report = await content.joinRetired(deadline: DateTime.now());
+    final report = await content.joinRetired(
+      budget: ClientCloseBudget(Duration.zero),
+    );
     expect(report.complete, isFalse);
     oldGate.complete();
     expect((await content.joinRetired()).complete, isTrue);
@@ -368,7 +376,12 @@ void main() {
     expect(feed.acknowledgements, [1]);
     expect((await fixture.close()).complete, isFalse);
     feed.closeFailure = null;
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(
+      (await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
     expect(feed.closeCalls, 2);
     expect(fixture.transport.opens, hasLength(1));
   });
@@ -387,7 +400,12 @@ void main() {
     expect(feed.closeCompleted.isCompleted, isFalse);
     expect(feed.reader.closeCalls, 1);
     feed.reader.closeFailure = null;
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(
+      (await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
     expect(feed.reader.closeCalls, 2);
     expect(feed.closeCompleted.isCompleted, isTrue);
     expect(fixture.transport.opens, hasLength(1));
@@ -404,15 +422,22 @@ void main() {
     final second = TestConversationFeed(subscriptionId: 'healthy');
     fixture.transport.opens[1].result.complete(second);
     await second.deliver(ConversationChatEvent(batch: chatSet()));
-    expect((await fixture.repository.retryCleanup()).complete, isFalse);
+    final cleanupBudget = ClientCloseBudget(const Duration(seconds: 30));
+    expect(
+      (await fixture.repository.retryCleanup(budget: cleanupBudget)).complete,
+      isFalse,
+    );
     expect(second.requestCloseCalls, 0);
     expect(second.reader.closeCalls, 0);
     first.closeFailure = null;
-    expect((await fixture.repository.retryCleanup()).complete, isTrue);
+    expect(
+      (await fixture.repository.retryCleanup(budget: cleanupBudget)).complete,
+      isTrue,
+    );
     expect(second.requestCloseCalls, 0);
     expect(second.reader.closeCalls, 0);
     expect(fixture.session().content.state.value, isA<ChatReady<bool>>());
-    expect((await fixture.close()).complete, isTrue);
+    expect((await fixture.close(budget: cleanupBudget)).complete, isTrue);
   });
 }
 

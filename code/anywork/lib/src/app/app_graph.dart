@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/statistics.dart';
 import 'package:anywork_client/statistics_ports.dart';
 import 'package:anywork_client/accounts.dart';
@@ -22,6 +23,8 @@ import 'studio_startup_host.dart';
 /// transport implementation and the SDK-only Client.
 class AppGraph {
   AppGraph({
+    required this.scope,
+    required this.closeLifecycleRoot,
     required StudioTransport transport,
     required StatisticsFeedPort statisticsFeed,
     String? clientId,
@@ -36,12 +39,14 @@ class AppGraph {
     StudioStartupHost? startupHost,
     ClipboardImageStager? clipboardImageStager,
   }) : startupHost = startupHost ?? ImmediateStudioStartupHost() {
+    uiResources = scope.child('ui');
     final staged = <String, StagedClipboardImage>{};
     final stager = clipboardImageStager ?? const SystemClipboardImageStager();
     final instanceId = clientId ?? 'app-${identityHashCode(this)}';
     final mutations = MutationBoard(clientId: instanceId);
     final settingsWrites = SettingsWriteCoordinator();
     accountDomains = AccountDomainResources(
+      scope: scope.child('accounts'),
       feed: accountFeed ?? transport as AccountFeedPort,
       configuration:
           accountConfiguration ?? transport as AccountConfigurationPort,
@@ -53,6 +58,7 @@ class AppGraph {
       owner: instanceId,
     );
     client = AnyworkClient(
+      scope: scope.child('client'),
       transport: transport,
       clientId: instanceId,
       mutationBoard: mutations,
@@ -95,6 +101,10 @@ class AppGraph {
     _selectionObservation = selection.observation;
   }
 
+  final ClientScope scope;
+  final Future<CloseReport> Function(ClientCloseBudget budget)
+  closeLifecycleRoot;
+  late final ClientScope uiResources;
   final StudioStartupHost startupHost;
   ValueListenable<StudioStartupPhase> get startupProgress =>
       startupHost.progress;
@@ -243,12 +253,12 @@ class AppGraph {
     }
   }
 
-  Future<CloseReport> close({required DateTime deadline}) {
+  Future<CloseReport> close({required ClientCloseBudget budget}) {
     final existing = _closing;
     if (existing != null) return existing;
     final completion = Completer<CloseReport>();
     _closing = completion.future;
-    completion.complete(Future<CloseReport>.sync(() => _close(deadline)));
+    completion.complete(Future<CloseReport>.sync(() => _close(budget)));
     return completion.future;
   }
 
@@ -257,7 +267,7 @@ class AppGraph {
   /// `timeline.close` 在首次 await 之前同步清空展示元数据；视图卸载后其真实 `dispose`
   /// 才允许 lease 销毁 controller 并观察 stock stream done。树仍借用 controller 时不会
   /// 提前 ACK，重复 close 得到同一个释放结果（design/26 §26.8）。
-  Future<CloseReport> _close(DateTime deadline) async {
+  Future<CloseReport> _close(ClientCloseBudget budget) async {
     _closed = true;
     _selectionObservation?.cancel();
     _selectionObservation = null;
@@ -266,15 +276,17 @@ class AppGraph {
     _workspaceObservation?.cancel();
     _workspaceObservation = null;
     _releaseBackendDemand();
-    final clientClose = client.close(deadline: deadline);
-    final timelineClose = timeline.close(deadline: deadline);
-    final statisticsClose = statisticsRepository.close(deadline: deadline);
-    final accountClose = accountDomains.close(deadline: deadline);
+    final clientClose = client.close(budget: budget);
+    final timelineClose = timeline.close(budget: budget);
+    final statisticsClose = statisticsRepository.close(budget: budget);
+    final accountClose = accountDomains.close(budget: budget);
+    final scopeClose = scope.close(budget: budget);
     final reports = await Future.wait([
       timelineClose,
       clientClose,
       statisticsClose,
       accountClose,
+      scopeClose,
     ]);
     return CloseReport(
       unresolved: [for (final report in reports) ...report.unresolved],
@@ -285,6 +297,9 @@ class AppGraph {
 final class _ModelDirectoryDemand implements AccountDemand {
   _ModelDirectoryDemand(this.lease);
   final BridgeTopicLease lease;
+  @override
+  List<ClientResourceId> get retirementResourceIds =>
+      lease.retirementResourceIds;
   @override
   Future<void> release() => lease.release();
 }

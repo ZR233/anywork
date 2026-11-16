@@ -10,6 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/views/timeline_view.d
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -62,7 +63,8 @@ void main() {
         graph.client.transport,
         (_) {},
         remainingMs: 30000,
-        closeClient: (deadline) => graph.close(deadline: deadline),
+        closeClient: (budget) => graph.close(budget: budget),
+        closeRoot: graph.closeLifecycleRoot,
       );
       expect(
         report.shutdown.isClean,
@@ -95,7 +97,7 @@ void main() {
         await tester.pumpWidget(const SizedBox());
         expect(
           (await graph.client.conversations.retryCleanup(
-            deadline: DateTime.now().add(const Duration(seconds: 5)),
+            budget: ClientCloseBudget(const Duration(seconds: 5)),
           )).complete,
           isTrue,
         );

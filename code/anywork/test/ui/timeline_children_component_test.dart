@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -8,9 +10,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_chil
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/src/contracts/stamps.dart';
 import 'package:anywork_client/src/conversation/data/conversation_repository_impl.dart';
-import 'package:anywork_client/src/lifecycle/close_report.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
 import 'package:anywork_client/src/studio/stores/thread_directory_store.dart';
 import 'package:material_ui/material_ui.dart';
@@ -27,8 +27,14 @@ import '../../../anywork_client/test/support/timeline_transport.dart'
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 
-ThreadDirectoryStore _threadDirectory() =>
-    ThreadDirectoryStore(feed: RecordingDemoTransport());
+ThreadDirectoryStore _threadDirectory(_Transport owner) {
+  final transport = RecordingDemoTransport(lifecycleRoot: owner.lifecycleRoot);
+  addTearDown(() => transport.lifecycleRoot.close(budget: testCloseBudget()));
+  return ThreadDirectoryStore(
+    feed: transport,
+    scope: transport.lifecycleRoot.child('directory'),
+  );
+}
 
 void main() {
   {
@@ -38,7 +44,8 @@ void main() {
         final transport = _Transport();
         final repository = ConversationRepositoryImpl(
           transport: transport,
-          directory: _threadDirectory(),
+          directory: _threadDirectory(transport),
+          scope: transport.lifecycleRoot.child('repository'),
           onRevision: (_, _) {},
         );
         transport.feed.reader.onOlder = (before, _) async {
@@ -117,7 +124,7 @@ void main() {
         );
         final report = await pumpClientFuture(
           tester,
-          repository.close(),
+          repository.close(budget: testCloseBudget()),
           'independent scope and repository joined',
         );
         expect(report.complete, isTrue);
@@ -292,7 +299,8 @@ void main() {
       final transport = _Transport();
       final repository = ConversationRepositoryImpl(
         transport: transport,
-        directory: _threadDirectory(),
+        directory: _threadDirectory(transport),
+        scope: transport.lifecycleRoot.child('repository'),
         onRevision: (_, _) {},
       );
       final recorded = _RecordingRepository(repository);
@@ -526,7 +534,7 @@ void main() {
       expect(
         (await pumpClientFuture(
           tester,
-          repository.close(),
+          repository.close(budget: testCloseBudget()),
           'close diagnostic children',
         )).complete,
         isTrue,
@@ -546,7 +554,8 @@ void main() {
       final transport = _Transport();
       final repository = ConversationRepositoryImpl(
         transport: transport,
-        directory: _threadDirectory(),
+        directory: _threadDirectory(transport),
+        scope: transport.lifecycleRoot.child('repository'),
         onRevision: (_, _) {},
       );
       await tester.pumpWidget(
@@ -596,7 +605,7 @@ void main() {
       transport.feed.closeGate!.complete();
       final report = await pumpClientFuture(
         tester,
-        repository.close(),
+        repository.close(budget: testCloseBudget()),
         'children native close failure',
       );
       expect(
@@ -608,7 +617,7 @@ void main() {
       transport.feed.reader.closeFailure = null;
       final recovered = await pumpClientFuture(
         tester,
-        repository.retryCleanup(),
+        repository.retryCleanup(budget: testCloseBudget()),
         'children original close retry',
       );
       expect(recovered.complete, isTrue);
@@ -627,7 +636,8 @@ void main() {
       final transport = _Transport();
       final repository = ConversationRepositoryImpl(
         transport: transport,
-        directory: _threadDirectory(),
+        directory: _threadDirectory(transport),
+        scope: transport.lifecycleRoot.child('repository'),
         onRevision: (_, _) {},
       );
       var parentActive = true;
@@ -723,7 +733,7 @@ void main() {
       await tester.pump();
       await pumpClientFuture(
         tester,
-        repository.close(),
+        repository.close(budget: testCloseBudget()),
         'close Children repository',
       );
       expect(tester.takeException(), isNull);
@@ -737,7 +747,8 @@ void main() {
         final transport = _Transport();
         final repository = ConversationRepositoryImpl(
           transport: transport,
-          directory: _threadDirectory(),
+          directory: _threadDirectory(transport),
+          scope: transport.lifecycleRoot.child('repository'),
           onRevision: (_, _) {},
         );
         final recorded = _RecordingRepository(repository);
@@ -918,7 +929,7 @@ void main() {
         expect(
           (await pumpClientFuture(
             tester,
-            repository.close(),
+            repository.close(budget: testCloseBudget()),
             'close replacement child',
           )).complete,
           isTrue,
@@ -1022,13 +1033,14 @@ final class _LateContent extends Fake implements ConversationContent {
   }
 
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     closeCalls++;
     return CloseReport();
   }
 }
 
 final class _Transport implements ConversationTransport {
+  final lifecycleRoot = ClientScope(owner: 'children-component-test');
   final feed = TestConversationFeed();
   final feeds = <TestConversationFeed>[];
   final opened = Completer<void>();

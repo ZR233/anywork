@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'models.dart';
 import 'directory_ports.dart';
+import 'lifecycle.dart';
 import 'src/modes/modes_ports.dart';
 import 'transport_ports.dart';
 import 'src/studio/bootstrap.dart';
@@ -12,8 +13,17 @@ export 'src/studio/thread_frames.dart';
 export 'src/studio/bootstrap.dart';
 export 'directory_ports.dart';
 
+/// 一个产品主题的显式资源代理；流取消不代表原生资源已经关闭。
+abstract interface class ProductTopicObservation implements ClientResource {
+  /// 仅供所属 SDK acquisition 的单个消费者读取。
+  Stream<ProductTopicFrame> get frames;
+}
+
 abstract interface class RuntimeTransport {
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic);
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  });
 }
 
 abstract interface class AttachmentTransport {
@@ -80,6 +90,19 @@ abstract interface class PersistenceQueueReader {
   Future<PersistenceQueueSnapshot> readPersistenceQueue();
 }
 
+/// Shutdown results retain resource identities until all scopes are merged.
+/// Non-resource transport failures remain separate typed shutdown issues.
+final class DartResourceCloseResult {
+  DartResourceCloseResult({
+    CloseReport? resources,
+    Iterable<StudioShutdownIssue> issues = const [],
+  }) : resources = resources ?? CloseReport(),
+       issues = List.unmodifiable(issues);
+
+  final CloseReport resources;
+  final List<StudioShutdownIssue> issues;
+}
+
 abstract class StudioTransport
     implements
         RuntimeTransport,
@@ -91,9 +114,14 @@ abstract class StudioTransport
         ModeEditorTransport {
   /// Exit admission belongs to this application transport instance.
   void sealForShutdown() {}
-  Future<List<StudioShutdownIssue>> cancelDartSubscriptions({
-    required int budgetMs,
-  }) async => const [];
+  Future<DartResourceCloseResult> cancelDartSubscriptions({
+    required ClientCloseBudget budget,
+  }) async => DartResourceCloseResult();
+
+  /// Join the independently owned shutdown progress resources.
+  Future<DartResourceCloseResult> closeShutdownProgress({
+    required ClientCloseBudget budget,
+  }) async => DartResourceCloseResult();
 
   /// Memoized early-exit issue for this transport, if [error] is the original
   /// failure already recorded by [beginRuntimeExit]. Dart-only transports
@@ -221,12 +249,19 @@ abstract class StudioTransport
     required ThreadModeId mode,
   });
 
-  /// 订阅一个 typed 产品 topic；一次订阅只观察一个领域。
+  /// 打开一个 typed 产品 topic；一次观察只包含一个领域。
   ///
   /// 首帧是 register receiver 之后读取的 canonical Baseline（含领域 revision），
   /// 随后是携带领域 revision 的 owner 事件；`Lagged` 表示无法证明增量连续，调用方
-  /// 只重建该 topic（cancel 后重新订阅、以新 Baseline 首帧恢复），不做全量重读。
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic);
+  /// 只重建该 topic（旧资源真实关闭后重新打开、以新 Baseline 首帧恢复），不做全量重读。
+  /// [resourceId] 沿调用链传给实际 owner；返回的代理不另持有原生关闭工作。
+  /// `frames` 的监听取消只停止消费，`close` 才等待 native ACK、句柄与底层流清理；
+  /// 失败保留原资源，普通 close 不重试，管理侧显式 retryClose 才重试同一原件。
+  @override
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  });
 
   Stream<StudioShutdownProgress> subscribeShutdownProgress();
 
@@ -245,12 +280,15 @@ abstract class StudioTransport
   ///
   /// [remainingMs] 是 native 宿主剩余清理预算（上限 28 秒）。[externalIssues] 是 Dart
   /// 拥有的外部 owner（产品/Thread 流、关机进度流）在本次预算内收束得到的 typed issue，
-  /// 作为本次关闭的最终成功前置条件随请求交给 runtime 单编排；默认空表示调用方已确保无
-  /// 外部问题。只有真实 `Clean` 才代表持久化已安全排空；`Degraded` 或超时不代表保存成
-  /// 功，调用方据此决定退出码。Cleanup 失败时保留 native owner 并把错误抛给调用方。
+  /// 作为本次关闭的最终成功前置条件随请求交给 runtime 单编排。
+  /// [externalDartResourcesReported] 仅由完成资源报告合并的协调器设为 true，表示
+  /// [externalIssues] 已包含 Dart 资源的全部未决项；它不改变 FRB wire 参数。独立调用者
+  /// 默认不能作此声明，传输实现仍须报告自己持有的资源。只有真实 `Clean` 才代表持久化
+  /// 已安全排空；`Degraded` 或超时不代表保存成功，调用方据此决定退出码。
   Future<StudioExitReport> shutdownRuntime({
     required int remainingMs,
     List<StudioShutdownIssue> externalIssues = const [],
+    bool externalDartResourcesReported = false,
     StudioExitIntent intent = StudioExitIntent.exit,
   });
 

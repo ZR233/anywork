@@ -1,6 +1,10 @@
 import 'dart:async';
+
+import 'product_topic_owner.dart';
+
 import 'dart:convert';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import 'directory_feed.dart';
@@ -544,6 +548,7 @@ class TestConversationTransport extends StudioTransport
   stateOpens = [];
   ConversationStateFeed Function(String threadId, int index)? stateFeedFactory;
   final List<ProductTopic> productTopics = [];
+  final List<TestProductTopicOwner> productTopicOwners = [];
   final Map<ProductTopic, Completer<void>> _topicOpening = {};
   final Map<ProductTopic, StreamController<ProductTopicFrame>> _topicStreams =
       {};
@@ -597,15 +602,24 @@ class TestConversationTransport extends StudioTransport
       : (_topicOpening[topic] ??= Completer<void>()).future;
 
   @override
-  Stream<ProductTopicFrame> subscribeProductTopic(ProductTopic topic) {
+  Future<ProductTopicObservation> openProductTopic(
+    ProductTopic topic, {
+    required ClientResourceId resourceId,
+  }) async {
     productTopics.add(topic);
     final stream = StreamController<ProductTopicFrame>();
     stream.onCancel = () {
       unawaited(stream.close());
     };
     _topicStreams[topic] = stream;
+    final observation = await openTestProductTopic(
+      lifecycleScope.child('topic-owner'),
+      resourceId,
+      stream,
+    );
+    productTopicOwners.add(observation.source);
     _topicOpening.remove(topic)?.complete();
-    return stream.stream;
+    return observation;
   }
 
   void emitProductTopicFrame(ProductTopicFrame frame) {
@@ -618,11 +632,14 @@ class TestConversationTransport extends StudioTransport
     _topicStreams[topic]?.add(frame);
   }
 
-  Future<void> closeProductTopicStreams() async {
-    for (final stream in _topicStreams.values) {
-      await stream.close();
-    }
-    _topicStreams.clear();
+  Future<CloseReport> closeProductTopicStreams({
+    required ClientCloseBudget budget,
+  }) async {
+    // The scope owns each actual topic source and its cleanup ACK. Awaiting a
+    // second close() on a never-listened controller would never complete.
+    final report = await lifecycleScope.close(budget: budget);
+    if (report.complete) _topicStreams.clear();
+    return report;
   }
 
   @override
@@ -644,6 +661,7 @@ class ConversationFixture {
     };
     client = AnyworkClient(
       transport: this.transport,
+      scope: this.transport.lifecycleScope.child('client'),
       clientId: 'conversation-test',
     );
   }
@@ -684,10 +702,16 @@ class ConversationFixture {
     return feed;
   }
 
-  Future<CloseReport> close({DateTime? deadline}) async {
-    final report = await client.close(deadline: deadline);
-    await transport.closeProductTopicStreams();
-    return report;
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
+    final closeBudget =
+        budget ?? ClientCloseBudget(const Duration(seconds: 30));
+    final report = await client.close(budget: closeBudget);
+    final transportReport = await transport.closeProductTopicStreams(
+      budget: closeBudget,
+    );
+    return CloseReport(
+      unresolved: [...report.unresolved, ...transportReport.unresolved],
+    );
   }
 }
 

@@ -1,4 +1,6 @@
-import 'package:anywork/src/infrastructure/demo/studio_demo_api.dart';
+import 'test_app_lifecycle.dart';
+import 'test_resource_owners.dart';
+
 import 'package:anywork_client/accounts_ports.dart';
 import 'package:anywork_client/studio_client.dart';
 
@@ -6,7 +8,7 @@ import '../../../anywork_client/test/support/accounts_test_runtime.dart';
 
 /// External transport responses are controlled. AppGraph, the SDK Client,
 /// command lanes, account feeds, Riverpod and all widgets remain production code.
-class AcpSceneTransport extends DemoStudioTransport {
+class AcpSceneTransport extends TestDemoStudioTransport {
   final _observers = <TestAccountObservation>{};
   AcpAuthSnapshotView snapshot = const AcpAuthSnapshotView.empty();
   String? _epoch;
@@ -101,15 +103,25 @@ class AcpSceneTransport extends DemoStudioTransport {
 
   @override
   Future<AccountDomainObservation> openAccountObservation(
-    AccountObservationTarget target,
-  ) async {
-    if (target is! AcpAuthTarget) return super.openAccountObservation(target);
-    await readAccountDomain(target);
-    late TestAccountObservation observation;
-    observation = TestAccountObservation(() => _observers.remove(observation));
-    _observers.add(observation);
-    observation.emit(AcpAuthFrame(stamp, snapshot));
-    return observation;
+    AccountObservationTarget target, {
+    required ClientResourceId resourceId,
+  }) async {
+    if (target is! AcpAuthTarget) {
+      return super.openAccountObservation(target, resourceId: resourceId);
+    }
+    return ownTestAccountObservation(contentScope, resourceId, (
+      operation,
+    ) async {
+      await readAccountDomain(target);
+      late TestAccountObservation observation;
+      observation = TestAccountObservation(
+        () => _observers.remove(observation),
+        resourceId: operation.resourceId,
+      );
+      _observers.add(observation);
+      observation.emit(AcpAuthFrame(stamp, snapshot));
+      return observation;
+    });
   }
 
   void publish(String accountId, int revision, AcpAuthStateView state) {

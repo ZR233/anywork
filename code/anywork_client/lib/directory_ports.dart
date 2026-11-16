@@ -2,30 +2,31 @@
 library;
 
 import 'models.dart';
+import 'lifecycle.dart';
 import 'src/observation/latest_value.dart';
 
-abstract interface class ThreadsObservationHandle {
+abstract interface class ThreadsObservationHandle implements ClientResource {
   Future<ThreadDirectoryFrame?> next();
-  void requestClose();
-  Future<void> close();
 }
 
-abstract interface class ThreadObservationHandle {
+abstract interface class ThreadObservationHandle implements ClientResource {
   Future<ThreadMetadataFrame?> next();
-  void requestClose();
-  Future<void> close();
 }
 
 abstract interface class DirectoryFeedPort {
   Future<ThreadsObservationHandle> openThreadsObservation(
     DirectoryQuery query,
-    DirectoryWindow window,
-  );
+    DirectoryWindow window, {
+    required ClientResourceId resourceId,
+  });
 
-  Future<ThreadObservationHandle> openThreadObservation(String threadId);
+  Future<ThreadObservationHandle> openThreadObservation(
+    String threadId, {
+    required ClientResourceId resourceId,
+  });
 }
 
-abstract interface class DirectoryObservation<T> {
+abstract interface class DirectoryObservation<T> implements ClientLease {
   ValueObservation<DirectoryObservationState<T>> get state;
   Future<void> refresh();
 

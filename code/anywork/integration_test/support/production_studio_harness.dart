@@ -10,6 +10,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/rendering.dart';
@@ -211,7 +212,8 @@ final class ProductionStudioHarness {
       graph.client.transport,
       (_) {},
       remainingMs: 30000,
-      closeClient: (deadline) => graph.close(deadline: deadline),
+      closeClient: (budget) => graph.close(budget: budget),
+      closeRoot: graph.closeLifecycleRoot,
     );
     final shutdownDiagnostic = const JsonEncoder.withIndent('  ').convert({
       'clean': report.shutdown.isClean,
@@ -375,7 +377,7 @@ final class ProductionStudioScene {
       await tester.pumpWidget(const SizedBox());
       expect(
         (await graph.client.conversations.retryCleanup(
-          deadline: DateTime.now().add(const Duration(seconds: 5)),
+          budget: ClientCloseBudget(const Duration(seconds: 5)),
         )).complete,
         isTrue,
       );

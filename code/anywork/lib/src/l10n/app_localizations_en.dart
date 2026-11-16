@@ -2125,7 +2125,7 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
-  String get timelineParentAgent => 'Main agent';
+  String get timelineParentAgent => 'Parent agent';
 
   @override
   String timelineSkillUserActivated(String name) {

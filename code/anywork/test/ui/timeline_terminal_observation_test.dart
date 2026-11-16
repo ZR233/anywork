@@ -1,3 +1,5 @@
+import '../support/test_app_lifecycle.dart';
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -323,7 +325,7 @@ final class _Scope extends Fake implements TimelineQueryScope {
   @override
   void retire() => active = false;
   @override
-  Future<CloseReport> close({DateTime? deadline}) async {
+  Future<CloseReport> close({ClientCloseBudget? budget}) async {
     closed = true;
     return CloseReport();
   }

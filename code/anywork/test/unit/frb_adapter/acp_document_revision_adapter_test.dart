@@ -1,4 +1,5 @@
-import 'package:anywork/src/infrastructure/frb/studio_api.dart';
+import '../../support/frb_test_lifecycle.dart';
+
 import 'package:anywork/src/rust/api/studio/accounts/types.dart' as account_dto;
 import 'package:anywork/src/rust/api/studio/types/acp.dart' as acp_dto;
 import 'package:anywork/src/rust/api/studio/types/command.dart' as command_dto;
@@ -114,12 +115,11 @@ void main() {
     test('production FRB preserves ACP document u64 $revision', () async {
       final api = _AcpDocumentBoundary(revision);
       RustLib.initMock(api: api);
-      FrbStudioTransport.debugOverrideInitialization(() async {});
+
       addTearDown(() {
-        FrbStudioTransport.debugOverrideInitialization(null);
         RustLib.dispose();
       });
-      final transport = FrbStudioTransport();
+      final transport = TestFrbStudioTransport();
       const identity = AcpAccountIdentity('local-command');
       final frame = await transport.readAccountDomain(
         const AccountDetailTarget(identity),

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -75,12 +76,19 @@ void main() {
     final feed = _CoupledFeed()..closeGate = Completer<void>();
     final fixture = await _start(feed);
     addTearDown(feed.dispose);
-    final report = await fixture.close(deadline: DateTime.now());
+    final report = await fixture.close(
+      budget: ClientCloseBudget(Duration.zero),
+    );
     expect(report.complete, isFalse);
     await feed.nativeCloseEntered.future;
     expect(feed.cancelCalls, 0);
     feed.closeGate!.complete();
-    expect((await fixture.client.retryCleanup()).complete, isTrue);
+    expect(
+      (await fixture.client.retryCleanup(
+        budget: ClientCloseBudget(const Duration(seconds: 30)),
+      )).complete,
+      isTrue,
+    );
     expect(feed.cancelCalls, 1);
   });
 
@@ -97,7 +105,9 @@ void main() {
     );
     expect(feed.closeCompleted.isCompleted, isTrue);
     expect(feed.cancelCalls, 1);
-    final retried = await fixture.client.retryCleanup();
+    final retried = await fixture.client.retryCleanup(
+      budget: ClientCloseBudget(const Duration(seconds: 30)),
+    );
     expect(retried.complete, isFalse);
     expect(
       feed.cancelCalls,
