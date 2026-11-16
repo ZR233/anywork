@@ -770,7 +770,7 @@ mod tests {
     use crate::runtime_test_support as support;
     use anyhow::{Context, ensure};
     use pl_protocol::ThreadWorkspaceMode;
-    use pl_provider_fixture::{Protocol, ReplyStage, Step};
+    use pl_provider_fixture::ReplyStage;
 
     async fn settled(
         thread: &pl_core::thread::ThreadHandle,
@@ -778,7 +778,13 @@ mod tests {
         let mut updates = thread.subscribe();
         tokio::time::timeout(support::integration_test_deadline()?, async {
             while let Some(snapshot) = updates.next().await {
-                if snapshot.execution.is_none() && snapshot.continuation.is_some() {
+                if snapshot.execution.is_none()
+                    && snapshot.continuation.is_some()
+                    && matches!(
+                        snapshot.input_execution,
+                        pl_core::thread::input::InputExecution::Paused
+                    )
+                {
                     return Ok(snapshot);
                 }
             }
@@ -786,6 +792,38 @@ mod tests {
         })
         .await
         .context("stopped execution did not settle")?
+    }
+
+    async fn evict(
+        runtime: &StudioRuntime,
+        session: &crate::session::SessionRuntime,
+        id: &str,
+    ) -> Result<()> {
+        let thread = session.thread(id).context("owner before idle eviction")?;
+        thread.flush().await?;
+        runtime.thread_observations.synchronize(Some(id)).await?;
+        let evicted = session.evict_idle(id).await?;
+        let diagnostic = thread.snapshot();
+        ensure!(
+            evicted,
+            "stopped root was not evicted: inputs={:?}, turns={:?}, tasks={:?}, interactions={:?}, permissions={:?}, inbox={:?}, consumed={}, persistence={:?}, input_execution={:?}, observed={:?}",
+            diagnostic.inputs,
+            diagnostic.turns,
+            diagnostic.tasks,
+            diagnostic.interactions,
+            diagnostic.permissions,
+            diagnostic.inbox,
+            diagnostic.consumed_messages,
+            diagnostic.persistence,
+            diagnostic.input_execution,
+            session
+                .observed_threads()
+                .iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        );
+        ensure!(session.thread(id).is_none(), "root is still resident");
+        Ok(())
     }
 
     fn reason(error: &anyhow::Error) -> Option<&str> {
@@ -799,15 +837,12 @@ mod tests {
         const PROMPT: &str = "continue the interrupted work";
         let first = ReplyStage::new();
         let second = ReplyStage::new();
+        let third = ReplyStage::new();
         let env = support::Environment::new(
             vec![
                 support::prompt_step(PROMPT, 0, support::held_reply(&first, "first")),
-                Step::delivery(
-                    Protocol::ResponsesHttp,
-                    PROMPT,
-                    1,
-                    support::held_reply(&second, "continued"),
-                ),
+                support::prompt_step(PROMPT, 1, support::held_reply(&second, "continued")),
+                support::prompt_step(PROMPT, 2, support::held_reply(&third, "hot-continued")),
             ],
             vec![],
         )
@@ -829,6 +864,11 @@ mod tests {
                 .context("saved route")?
                 .0
                 .revision;
+            thread.flush().await?;
+            env.runtime
+                .thread_observations
+                .synchronize(Some(&id))
+                .await?;
             let running_request = ContinueThreadRequest {
                 operation_id: "running".into(),
                 expected_continuation_id: "not-yet".into(),
@@ -854,6 +894,11 @@ mod tests {
                 .await?;
             let stopped = settled(&thread).await?;
             first.release();
+            thread.flush().await?;
+            env.runtime
+                .thread_observations
+                .synchronize(Some(&id))
+                .await?;
             let point = stopped.continuation.context("stopped continuation")?.id;
             let request = ContinueThreadRequest {
                 operation_id: "continue-once".into(),
@@ -888,11 +933,7 @@ mod tests {
                 error.downcast_ref::<crate::ConfigRuntimeError>().is_some(),
                 "unexpected route error: {error:#}"
             );
-            ensure!(
-                session.evict_idle(&id).await?,
-                "stopped root was not evicted"
-            );
-            ensure!(session.thread(&id).is_none(), "root is still resident");
+            evict(&env.runtime, &session, &id).await?;
             let error = tokio::time::timeout(
                 support::integration_test_deadline()?,
                 env.runtime.continue_thread(id.clone(), stale),
@@ -904,10 +945,7 @@ mod tests {
                 reason(&error) == Some("staleContinuation"),
                 "unexpected cold stale error: {error:#}"
             );
-            ensure!(
-                session.evict_idle(&id).await?,
-                "stale check owner was not evicted"
-            );
+            evict(&env.runtime, &session, &id).await?;
             let accepted = tokio::time::timeout(
                 support::integration_test_deadline()?,
                 env.runtime.continue_thread(id.clone(), request.clone()),
@@ -935,12 +973,36 @@ mod tests {
                     },
                 )
                 .await?;
-            settled(&resumed).await?;
+            let stopped_again = settled(&resumed).await?;
             second.release();
-            ensure!(
-                session.evict_idle(&id).await?,
-                "continued root was not evicted"
-            );
+            resumed.flush().await?;
+            env.runtime
+                .thread_observations
+                .synchronize(Some(&id))
+                .await?;
+            let hot_request = ContinueThreadRequest {
+                operation_id: "continue-hot".into(),
+                expected_continuation_id: stopped_again
+                    .continuation
+                    .context("second continuation")?
+                    .id,
+                expected_model_route_revision: route,
+            };
+            env.runtime.continue_thread(id.clone(), hot_request).await?;
+            support::reached(&third).await?;
+            let execution = resumed.snapshot().execution.context("hot execution")?.id;
+            env.runtime
+                .stop_thread(
+                    id.clone(),
+                    StopThreadRequest {
+                        operation_id: "stop-third".into(),
+                        expected_execution_id: execution,
+                    },
+                )
+                .await?;
+            settled(&resumed).await?;
+            third.release();
+            evict(&env.runtime, &session, &id).await?;
             let moved_repo = env.repo.with_file_name("temporarily-unavailable-repo");
             std::fs::rename(&env.repo, &moved_repo)?;
             let replay = env.runtime.continue_thread(id.clone(), request).await;
@@ -955,7 +1017,7 @@ mod tests {
                 "replay materialized a new owner"
             );
             ensure!(
-                env.root_provider.recorded().len() == 2,
+                env.root_provider.recorded().len() == 3,
                 "repeat started another model request"
             );
             Ok(())
@@ -963,6 +1025,7 @@ mod tests {
         .await;
         first.release();
         second.release();
+        third.release();
         env.finish(result).await
     }
 
@@ -995,7 +1058,7 @@ mod tests {
                 }).await?;
                 let point = settled(&thread).await?.continuation.context("continuation")?.id;
                 stage.release();
-                ensure!(session.evict_idle(&id).await?, "root was not evicted");
+                evict(&env.runtime, &session, &id).await?;
                 ensure!(!session.hosts(&id), "eviction left a preparation or owner");
 
                 // The real assembler task cannot pass this permit until the test releases it.

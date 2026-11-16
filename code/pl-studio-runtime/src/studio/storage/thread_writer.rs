@@ -29,7 +29,7 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
     ThreadCheckpoint, ThreadSnapshot, UsageSummary,
-    cold::{ColdStore, ColdStoreError, StoragePressure, ThreadWrite},
+    cold::{ColdStore, ColdStoreError, StorageIdleStatus, StoragePressure, ThreadWrite},
 };
 
 use tokio::time::Instant;
@@ -3293,6 +3293,96 @@ fn note_absorbed_conflict(inner: &Inner) {
     report(inner, &progress);
 }
 
+impl ThreadStorageSink {
+    fn storage_status(&self, thread_id: &str, inspect_idle: bool) -> StorageIdleStatus {
+        if thread_id != self.0.thread.id {
+            return StorageIdleStatus {
+                pressure: StoragePressure {
+                    error: Some(storage_error("Thread persistence owner mismatch")),
+                    ..Default::default()
+                },
+                reclaimable_thread_bytes: None,
+            };
+        }
+        let progress = lock_progress(&self.0);
+        // The Thread's budget covers every resident body this Thread presents, and one of them only
+        // once: the effects still queued, the prepared product batches the reliable handoff still
+        // retains (the writer's queue length alone would under-report a Thread whose projection is
+        // already done but whose save is not), the bodies its live projection and report accumulator
+        // keep after their batch became durable, and the accepted bytes retained by in-flight
+        // model/tool output. Those accepted bytes are what a Thread about to publish its result
+        // holds; leaving them out would report a Thread as idle while a call is buffering its answer.
+        let reserved = progress
+            .operation_output
+            .values()
+            .fold(0_u64, |total, output| {
+                total.saturating_add(output.retained())
+            });
+        let delivery_bytes = self.0.channel.delivery_bytes.load(Ordering::Acquire);
+        let (index_bytes, reclaimable) = if inspect_idle {
+            let index = self
+                .0
+                .channel
+                .order_index
+                .inner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let index_bytes = self.0.channel.order_index.retained_bytes();
+            // A durable projection is reconstructible, but an unfinished source, handoff,
+            // delivery or output reservation remains an obligation of this incarnation.
+            let reclaimable = if progress.effects.is_empty()
+                && progress.in_flight.is_none()
+                && progress.projection_pending.is_none()
+                && progress.operation_output.is_empty()
+                && delivery_bytes == 0
+                && self.0.channel.delivery_admissions.load(Ordering::Acquire) == 0
+                && index.by_source.is_empty()
+                && index.pending.is_empty()
+                && index.dirty.is_empty()
+            {
+                Some(progress.projection_bytes.saturating_add(index_bytes))
+            } else {
+                None
+            };
+            (index_bytes, reclaimable)
+        } else {
+            // Ordinary pressure reads stay on the existing atomic accounting path.
+            (self.0.channel.order_index.retained_bytes(), None)
+        };
+        let bytes = progress
+            .effect_bytes
+            .saturating_add(progress.queue_metadata_bytes)
+            .saturating_add(progress.prepared_bytes)
+            .saturating_add(progress.projection_bytes)
+            .saturating_add(index_bytes)
+            .saturating_add(delivery_bytes)
+            .saturating_add(reserved);
+        let pressure = StoragePressure {
+            thread_bytes: bytes,
+            store_bytes: self.0.channel.process_bytes.load(Ordering::Acquire),
+            // Typed durability receipt: the owner releases the live effect window from this at a
+            // storage safety point instead of waiting for an explicit `flush` command.
+            durable_sequence: progress.durable,
+            // Typed fault category: the history channel already classifies its own failure, so no
+            // consumer has to read the error text to know what failed.
+            fault: progress.fault.map(storage_fault_kind),
+            fault_generation: progress.fault_generation,
+            // The writer's own recovery receipt, named by generation: `fault_recovered` means the
+            // retry of *this* generation reached the fixed durable target, so the owner can require
+            // that exact verdict before releasing the fault it holds instead of accepting an older
+            // generation's success.
+            recovered_generation: progress
+                .fault_recovered
+                .then_some(progress.fault_generation),
+            error: progress.error.as_deref().map(storage_error),
+        };
+        StorageIdleStatus {
+            pressure,
+            reclaimable_thread_bytes: reclaimable,
+        }
+    }
+}
+
 impl ColdStore for ThreadStorageSink {
     fn reserve_observed_item(
         &self,
@@ -3386,53 +3476,11 @@ impl ColdStore for ThreadStorageSink {
     }
 
     fn pressure(&self, thread_id: &str) -> StoragePressure {
-        if thread_id != self.0.thread.id {
-            return StoragePressure {
-                error: Some(storage_error("Thread persistence owner mismatch")),
-                ..Default::default()
-            };
-        }
-        let progress = lock_progress(&self.0);
-        // The Thread's budget covers every resident body this Thread presents, and one of them only
-        // once: the effects still queued, the prepared product batches the reliable handoff still
-        // retains (the writer's queue length alone would under-report a Thread whose projection is
-        // already done but whose save is not), the bodies its live projection and report accumulator
-        // keep after their batch became durable, and the accepted bytes retained by in-flight
-        // model/tool output. Those accepted bytes are what a Thread about to publish its result
-        // holds; leaving them out would report a Thread as idle while a call is buffering its answer.
-        let reserved = progress
-            .operation_output
-            .values()
-            .fold(0_u64, |total, output| {
-                total.saturating_add(output.retained())
-            });
-        let bytes = progress
-            .effect_bytes
-            .saturating_add(progress.queue_metadata_bytes)
-            .saturating_add(progress.prepared_bytes)
-            .saturating_add(progress.projection_bytes)
-            .saturating_add(self.0.channel.order_index.retained_bytes())
-            .saturating_add(self.0.channel.delivery_bytes.load(Ordering::Acquire))
-            .saturating_add(reserved);
-        StoragePressure {
-            thread_bytes: bytes,
-            store_bytes: self.0.channel.process_bytes.load(Ordering::Acquire),
-            // Typed durability receipt: the owner releases the live effect window from this at a
-            // storage safety point instead of waiting for an explicit `flush` command.
-            durable_sequence: progress.durable,
-            // Typed fault category: the history channel already classifies its own failure, so no
-            // consumer has to read the error text to know what failed.
-            fault: progress.fault.map(storage_fault_kind),
-            fault_generation: progress.fault_generation,
-            // The writer's own recovery receipt, named by generation: `fault_recovered` means the
-            // retry of *this* generation reached the fixed durable target, so the owner can require
-            // that exact verdict before releasing the fault it holds instead of accepting an older
-            // generation's success.
-            recovered_generation: progress
-                .fault_recovered
-                .then_some(progress.fault_generation),
-            error: progress.error.as_deref().map(storage_error),
-        }
+        self.storage_status(thread_id, false).pressure
+    }
+
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        self.storage_status(thread_id, true)
     }
 
     fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
@@ -8688,6 +8736,29 @@ pub(crate) mod storage_fault_tests {
             pending: None,
         };
         channel.set_projection_retention(steady)?;
+        let settled = sink.idle_status(id);
+        assert_eq!(settled.pressure.thread_bytes, 256);
+        assert_eq!(settled.reclaimable_thread_bytes, Some(256));
+        let admission = channel.pin_review_delivery(store.thread_persistence().clone(), id.into());
+        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
+        drop(admission);
+        sink.reserve_operation_output(id, "empty-output", 1024)?;
+        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
+        sink.release_operation_output(id, "empty-output");
+        let delivery = store.thread_persistence().retain_review_delivery(id, 128)?;
+        let delivering = sink.idle_status(id);
+        assert_eq!(delivering.reclaimable_thread_bytes, None);
+        assert!(delivering.pressure.thread_bytes >= 384);
+        drop(delivery);
+        channel
+            .order_index
+            .reserve_observed("attempt", "live-item")?;
+        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
+        channel.order_index.finish_source("attempt");
+        channel
+            .order_index
+            .retain::<()>(&Default::default(), vec!["live-item".into()]);
+        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, Some(256));
         assert!(status.has_changed()? && pressure.has_changed()?);
         status.borrow_and_update();
         pressure.borrow_and_update();
@@ -8716,6 +8787,7 @@ pub(crate) mod storage_fault_tests {
         pressure.borrow_and_update();
         let write = ticket(id, 1);
         sink.admit(id, write.clone())?;
+        assert_eq!(sink.idle_status(id).reclaimable_thread_bytes, None);
         let mut projection = live_projection(&sink).await?;
         let mut prepared = projection
             .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)

@@ -275,10 +275,16 @@ impl Owner {
                     && self.pending.is_empty()
                     && self.uncommitted_tools.is_empty()
                     && self.pending_effects.is_empty()
+                    && self.output_obligations.is_empty()
+                    && self.pending_output_repairs.is_empty()
+                    && self.operation_budgets.is_empty()
+                    && !self.state.persistence.resume_required
                     && self.cold_error.is_none()
                     && !self.cold.as_ref().is_some_and(|store| {
-                        let pressure = store.pressure(&self.id);
-                        pressure.thread_bytes > 0 || pressure.error.is_some()
+                        let status = store.idle_status(&self.id);
+                        status.reclaimable_thread_bytes != Some(status.pressure.thread_bytes)
+                            || status.pressure.durable_sequence < self.state.commit_sequence
+                            || status.pressure.error.is_some()
                     });
                 let idle = if idle {
                     self.interrupt.begin_close();
