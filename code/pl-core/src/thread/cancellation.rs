@@ -179,6 +179,7 @@ pub(super) struct ActiveExecution {
     handle: InterruptHandle,
     pub(super) token: CancellationToken,
 }
+
 impl Drop for ActiveExecution {
     fn drop(&mut self) {
         self.handle

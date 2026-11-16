@@ -93,21 +93,17 @@ pub(super) fn project_request(
         ));
     }
     let isolation = crate::runtime::binding_cache_namespace(account_id, endpoint);
-    if endpoint.chatgpt_session.is_some() {
-        if request.replay_spans.iter().any(|span| {
-            span.source_isolation
-                .as_deref()
-                .is_some_and(|source| source != isolation)
-                && span.output.iter().any(|item| {
-                    item.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
-                })
-        }) {
-            return Err(PureError::ConfigError(
-                "ChatGPT cannot replay input[*].reasoning from a different credential owner".into(),
-            ));
-        }
-    } else {
-        drop_unreadable_cross_provider_reasoning(&mut request, isolation.as_str());
+    if request.replay_spans.iter().any(|span| {
+        span.source_isolation
+            .as_deref()
+            .is_some_and(|source| source != isolation)
+            && span.output.iter().any(|item| {
+                item.get("type").and_then(serde_json::Value::as_str) == Some("reasoning")
+            })
+    }) {
+        return Err(PureError::ConfigError(
+            "this request cannot replay native reasoning from a different credential owner".into(),
+        ));
     }
     let capabilities = model
         .capabilities
@@ -164,27 +160,4 @@ pub(super) fn project_request(
 
     request.validate_against(&model.model_id, &capabilities)?;
     Ok(request)
-}
-
-/// 出站投影：目标 provider 无法解释的来源 reasoning 不回放。
-///
-/// 原生 reasoning 的 `encrypted_content` 由产生它的 provider 账户/部署加密；切换 provider 后
-/// 目标无法解密（严格兼容网关会以 `invalid_encrypted_content` 失败）。这里按帧已记录的来源隔离
-/// 身份与目标隔离身份比较：来源不同的原生回放只移除 reasoning item，保留 assistant 文本、工具
-/// 身份与工具输出，且不重放工具副作用；来源身份缺失（旧帧或无证据）时维持既有逐字回放语义。
-fn drop_unreadable_cross_provider_reasoning(
-    request: &mut crate::completion::CompletionRequest,
-    target_isolation: &str,
-) {
-    for span in &mut request.replay_spans {
-        let Some(source) = span.source_isolation.as_deref() else {
-            continue;
-        };
-        if source == target_isolation {
-            continue;
-        }
-        span.output.retain(|item| {
-            item.get("type").and_then(serde_json::Value::as_str) != Some("reasoning")
-        });
-    }
 }

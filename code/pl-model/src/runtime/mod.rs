@@ -35,6 +35,7 @@ pub use tokio_util::sync::CancellationToken;
 pub use host_call::{ModelTurnClient, ModelTurnOptions, ModelTurnRequest};
 
 mod cache_key;
+pub(crate) mod current;
 pub use cache_key::{PromptCacheScope, binding_cache_namespace, derive_prompt_cache_key};
 
 mod prompt_diagnostics;

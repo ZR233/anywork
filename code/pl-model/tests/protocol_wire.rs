@@ -826,13 +826,8 @@ async fn thread_replays_all_assistant_output_without_losing_progress_or_wire_ide
     }
 }
 
-/// 跨 provider 历史回放：来源 provider 的原生 reasoning 由该账户/部署加密，目标 provider 无法
-/// 解密（严格兼容网关以 `invalid_encrypted_content` 失败）。按帧记录来源隔离身份，出站请求必须
-/// 只移除这类 reasoning，保留 assistant 文本、工具身份与工具输出，且不重放工具副作用；同一
-/// provider 的 reasoning 仍按原样回放（见
-/// `thread_replays_all_assistant_output_without_losing_progress_or_wire_identity`）。
 #[tokio::test]
-async fn cross_provider_replay_omits_unreadable_reasoning_but_keeps_assistant_text() {
+async fn restored_cross_provider_native_reasoning_fails_before_send_without_losing_context() {
     let output = vec![
         json!({"id":"source-reason","type":"reasoning","summary":[],"encrypted_content":"source-encrypted","status":"completed"}),
         json!({"id":"source-message","type":"message","role":"assistant","phase":"final_answer","status":"completed","content":[{"type":"output_text","text":"Provider A answer.","annotations":[]}]}),
@@ -860,9 +855,11 @@ async fn cross_provider_replay_omits_unreadable_reasoning_but_keeps_assistant_te
         model("provider-a", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let source_factory =
-        ModelFactory::new(pl_model::runtime::ThreadModel::new(source_runtime, None));
-    let thread = ThreadHandle::start(
+    let source_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+        source_runtime,
+        None,
+    ));
+    let thread = ThreadHandle::start_current(
         "cross-provider-thread".into(),
         source_factory.open_session().await.unwrap(),
     )
@@ -879,62 +876,142 @@ async fn cross_provider_replay_omits_unreadable_reasoning_but_keeps_assistant_te
         })
         .await
         .unwrap();
-    let checkpoint = thread
-        .checkpoint(thread.snapshot().commit_sequence)
-        .unwrap();
-    let saved = serde_json::to_vec(&checkpoint).unwrap();
+    let saved = thread.capture_current(Default::default()).await.unwrap();
     thread.close().await.unwrap();
 
-    let target = FixtureServer::start(vec![Step::prompt(
-        Protocol::ResponsesHttp,
-        "second",
-        0,
-        Reply::Sse(responses_text("done", "target-response", "provider-b")),
-    )])
-    .await
-    .unwrap();
+    assert_eq!(source.finish().await.unwrap().len(), 1);
+    let target = FixtureServer::start(vec![]).await.unwrap();
     let target_runtime = ModelRuntime::new_with_account_id(
         "fixture",
         ProtocolEndpoint::compatible("provider-b", target.base_url()),
         model("provider-b", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let target_factory =
-        ModelFactory::new(pl_model::runtime::ThreadModel::new(target_runtime, None));
-    let restored = ThreadHandle::resume(
-        "cross-provider-thread".into(),
-        target_factory.open_session().await.unwrap(),
-        Some(serde_json::from_slice(&saved).unwrap()),
+    let target_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+        target_runtime,
+        None,
+    ));
+    let restored =
+        ThreadHandle::restore_current(saved, Some(source_factory.open_session().await.unwrap()))
+            .unwrap();
+    restored
+        .queue_model_update("new-provider".into(), target_factory, None)
+        .await
+        .unwrap();
+    let before = restored.capture_current(Default::default()).await.unwrap();
+    assert!(before.state.private_context.is_some());
+    let error = restored
+        .resume_current(
+            "cross-turn-1".into(),
+            ModelStepLimit::Limited(1.try_into().unwrap()),
+            Default::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, pl_core::thread::current::CurrentError::Owner(ref error)
+        if matches!(error.as_ref(), pl_core::thread::ThreadError::Model(model)
+            if model.kind == pl_core::model::ModelFailureKind::IncompatibleContext))
+    );
+    let after = restored.capture_current(Default::default()).await.unwrap();
+    assert_eq!(
+        serde_json::to_value(&after.state.context).unwrap(),
+        serde_json::to_value(&before.state.context).unwrap()
+    );
+    assert_eq!(after.state.private_context, before.state.private_context);
+    restored.close().await.unwrap();
+    assert!(target.finish().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn restored_current_uses_new_model_configuration_for_plain_text_history() {
+    let server = FixtureServer::start(vec![
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "first",
+            0,
+            Reply::Sse(responses_text(
+                "first answer",
+                "source-response",
+                "source-model",
+            )),
+        ),
+        Step::prompt(
+            Protocol::ResponsesHttp,
+            "first",
+            1,
+            Reply::Sse(responses_text(
+                "new answer",
+                "target-response",
+                "target-model",
+            )),
+        ),
+    ])
+    .await
+    .unwrap();
+    let endpoint = ProtocolEndpoint::compatible("fixture", server.base_url());
+    let mut source_model = model("source-model", ModelTransportProfile::responses_http());
+    source_model.max_output_tokens = Some(123);
+    if let pl_model::model::ModelProtocolOptions::Responses(options) =
+        &mut source_model.binding.request.protocol
+    {
+        options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
+    }
+    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+        ModelRuntime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
+        None,
+    ));
+    let thread = ThreadHandle::start_current(
+        "new-configuration".into(),
+        source.open_session().await.unwrap(),
     )
     .unwrap();
-    restored
+    thread
         .run_turn(TurnInput {
-            turn_id: "cross-turn-1".into(),
-            attempt_prefix: "cross-attempt-1".into(),
+            turn_id: "first-turn".into(),
+            attempt_prefix: "unused".into(),
             content: vec![ContextContent::Text {
-                text: Arc::from("second"),
+                text: Arc::from("first"),
             }],
             max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
             cancellation: Default::default(),
         })
         .await
         .unwrap();
+    let saved = thread.capture_current(Default::default()).await.unwrap();
+    thread.close().await.unwrap();
+    let mut target_model = model("target-model", ModelTransportProfile::responses_http());
+    target_model.max_output_tokens = Some(456);
+    if let pl_model::model::ModelProtocolOptions::Responses(options) =
+        &mut target_model.binding.request.protocol
+    {
+        options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
+    }
+    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+        ModelRuntime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
+        None,
+    ));
+    let restored =
+        ThreadHandle::restore_current(saved, Some(target.open_session().await.unwrap())).unwrap();
+    assert_eq!(server.recorded().len(), 1, "loading stays paused");
+    restored
+        .resume_current(
+            "continued".into(),
+            ModelStepLimit::Limited(1.try_into().unwrap()),
+            Default::default(),
+        )
+        .await
+        .unwrap();
     restored.close().await.unwrap();
-
-    let requests = target.finish().await.unwrap();
-    let input = requests[0].body["input"].as_array().unwrap();
-    assert!(
-        !input.iter().any(|item| item["type"] == "reasoning"),
-        "cross-provider reasoning must not be replayed to a provider that cannot decrypt it"
-    );
-    let assistant = input
-        .iter()
-        .find(|item| item["type"] == "message" && item["role"] == "assistant")
-        .expect("assistant text must be replayed");
-    assert_eq!(assistant["content"][0]["text"], "Provider A answer.");
+    let requests = server.finish().await.unwrap();
+    assert_eq!(requests[0].body["model"], "source-model");
+    assert_eq!(requests[0].body["max_output_tokens"], 123);
+    assert_eq!(requests[1].body["model"], "target-model");
+    assert_eq!(requests[1].body["max_output_tokens"], 456);
+    assert!(requests[1].body.to_string().contains("first answer"));
 }
 
-/// 同一账户不能代替目标模型的原生材料适用性声明；切换仅投影历史，不丢可见答复。
+/// 同一账户不能代替目标模型的原生材料适用性声明；不兼容时保留原始材料并拒绝发送。
 #[tokio::test]
 async fn same_account_model_switch_requires_explicit_native_reasoning_compatibility() {
     let output = vec![
@@ -954,22 +1031,21 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
         (Some("native-family"), Some("native-family"), true),
         (Some(""), Some(""), false),
     ] {
-        let server = FixtureServer::start(vec![
-            Step::prompt(
-                Protocol::ResponsesHttp,
-                "first",
-                0,
-                Reply::Sse(events.clone()),
-            ),
-            Step::prompt(
+        let mut steps = vec![Step::prompt(
+            Protocol::ResponsesHttp,
+            "first",
+            0,
+            Reply::Sse(events.clone()),
+        )];
+        if replay_reasoning {
+            steps.push(Step::prompt(
                 Protocol::ResponsesHttp,
                 "second",
                 1,
                 Reply::Sse(responses_text("done", "target-response", "target-model")),
-            ),
-        ])
-        .await
-        .unwrap();
+            ));
+        }
+        let server = FixtureServer::start(steps).await.unwrap();
         let endpoint = ProtocolEndpoint::compatible("same-account", server.base_url());
         let mut source_model = model("source-model", ModelTransportProfile::responses_http());
         source_model.capabilities.native_context_family = source_family.map(str::to_owned);
@@ -1013,7 +1089,8 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
             Some(serde_json::from_slice(&saved).unwrap()),
         )
         .unwrap();
-        restored
+        let before = restored.snapshot().context;
+        let result = restored
             .run_turn(TurnInput {
                 turn_id: "target-turn".into(),
                 attempt_prefix: "target-attempt".into(),
@@ -1023,8 +1100,18 @@ async fn same_account_model_switch_requires_explicit_native_reasoning_compatibil
                 max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
                 cancellation: Default::default(),
             })
-            .await
-            .unwrap();
+            .await;
+        if !replay_reasoning {
+            assert!(
+                matches!(result, Err(pl_core::thread::ThreadError::Model(ref error))
+                if error.kind == pl_core::model::ModelFailureKind::IncompatibleContext)
+            );
+            assert_eq!(restored.snapshot().context, before);
+            restored.close().await.unwrap();
+            assert_eq!(server.finish().await.unwrap().len(), 1);
+            continue;
+        }
+        result.unwrap();
         restored.close().await.unwrap();
         let requests = server.finish().await.unwrap();
         let input = requests[1].body["input"].as_array().unwrap();
@@ -1449,33 +1536,46 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
             name,
             arguments: pl_provider_fixture::replay_tool_arguments(),
         };
+        // This regression exercises the unchanged legacy factory. Both its correction and its
+        // native call replay keep the original provider identity; the current factory is tested
+        // separately with explicitly attempt-scoped Core IDs.
+        let rejected_call_id = "bad-call";
+        let correction_prompt = format!(
+            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: model tool call {rejected_call_id} was rejected: unknown tool name \"internal-exec\". Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls."
+        );
         let server = FixtureServer::start(vec![
-        Step::prompt(
-            protocol,
-            "correct unknown tool",
-            0,
-            correction_tool_reply(protocol, "rejected", &[
-                calls("internal-exec", "bad-call"),
-                calls("exec", "unexecuted-call"),
-            ]),
-        ),
-        Step::prompt(
-            protocol,
-            "No tools in this batch were executed. This batch produced no tool side effects. Rejection: model tool call bad-call was rejected: unknown tool name \"internal-exec\". Generate a corrected response using the committed results. Select tool names exactly from the declarations in this request and follow their function parameter schemas or custom input formats. Do not repeat completed tool calls.",
-            1,
-            correction_tool_reply(protocol, "corrected", &[
-                calls("exec", "good-call"),
-            ]),
-        ),
-        Step {
-            protocol,
-            request: RequestMatch::ToolOutput {
-                call_id: "good-call".into(), marker: "replay-tool-marker".into(), step: 2,
+            Step::prompt(
+                protocol,
+                "correct unknown tool",
+                0,
+                correction_tool_reply(
+                    protocol,
+                    "rejected",
+                    &[
+                        calls("internal-exec", "bad-call"),
+                        calls("exec", "unexecuted-call"),
+                    ],
+                ),
+            ),
+            Step::prompt(
+                protocol,
+                correction_prompt,
+                1,
+                correction_tool_reply(protocol, "corrected", &[calls("exec", "good-call")]),
+            ),
+            Step {
+                protocol,
+                request: RequestMatch::ToolOutput {
+                    call_id: "good-call".into(),
+                    marker: "replay-tool-marker".into(),
+                    step: 2,
+                },
+                reply: correction_text_reply(protocol, "done", "finished"),
+                optional: false,
             },
-            reply: correction_text_reply(protocol, "done", "finished"),
-            optional: false,
-        },
-    ]).await.unwrap();
+        ])
+        .await
+        .unwrap();
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(
             ModelRuntime::new_with_account_id(
                 "fixture",
@@ -1541,12 +1641,6 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         assert_eq!(completion.model_steps, 3);
         assert_eq!(completion.outcome, TurnOutcome::Completed);
         assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert!(!thread.snapshot().context.records.iter().any(|record| {
-            record
-                .tool_calls
-                .iter()
-                .any(|call| call.call_id == "bad-call" || call.call_id == "unexecuted-call")
-        }));
         let effects = thread.effects().await.unwrap();
         let output = effects
             .iter()
@@ -1562,8 +1656,21 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         let rejected_call = output
             .tool_calls
             .iter()
-            .find(|call| call.call_id == "bad-call")
+            .find(|call| {
+                matches!(
+                    call.rejection,
+                    Some(ModelToolCallRejection::UnknownTool { .. })
+                )
+            })
             .unwrap();
+        assert!(!thread.snapshot().context.records.iter().any(|record| {
+            record.tool_calls.iter().any(|call| {
+                output
+                    .tool_calls
+                    .iter()
+                    .any(|rejected| rejected.call_id == call.call_id)
+            })
+        }));
         assert_eq!(
             rejected_call.rejection,
             Some(ModelToolCallRejection::UnknownTool {
@@ -1579,7 +1686,7 @@ async fn unknown_tool_batch_is_corrected_without_replaying_rejected_calls() {
         let valid_call = output
             .tool_calls
             .iter()
-            .find(|call| call.call_id == "unexecuted-call")
+            .find(|call| call.rejection.is_none())
             .unwrap();
         assert_eq!(valid_call.tool_id, "internal-exec");
         assert_eq!(valid_call.rejection, None);
@@ -2408,12 +2515,10 @@ async fn terminal_replay_completes_missing_items_and_rejects_conflicting_authori
     }
 }
 
-/// 跨 provider 历史回放：另一个 Responses provider 的原生 reasoning item 携带 output-only
-/// `status`，严格 Responses 网关会以 `unknown_parameter` 拒绝 `input[*].status`。回放必须去掉
-/// 该生命周期字段，同时保留 reasoning 身份/加密内容与 function_call 身份，使后续工具回合在
-/// 严格输入下完成。
+/// 原生 reasoning item 的 output-only `status` 不能发送到严格 Responses 输入；保留其余
+/// 原生字段与 function_call 身份。来源兼容性由带来源绑定的 Thread 帧单独验证。
 #[tokio::test]
-async fn cross_provider_replay_strips_output_only_status_for_strict_responses_input() {
+async fn responses_replay_strips_output_only_status_for_strict_input() {
     let output = vec![
         json!({"id":"source-reason","type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"plan the search"}],"encrypted_content":"source-encrypted","status":"completed"}),
         json!({"id":"source-call","type":"function_call","name":"lookup","call_id":"source-call","arguments":"{\"key\":\"rust\"}","status":"completed"}),
@@ -4074,6 +4179,358 @@ async fn native_openai_client_applies_typed_cache_options_to_the_shared_transpor
     let records = fixture.finish().await.unwrap();
     assert_eq!(records[0].body["prompt_cache_options"]["mode"], "explicit");
     assert_eq!(records[0].body["prompt_cache_options"]["ttl"], "24h");
+}
+
+#[tokio::test]
+async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
+    use pl_core::{
+        context::{ContextRecord, ContextSnapshot},
+        model::{ModelRequest, ModelToolDeclaration, ToolCallMode},
+    };
+    use pl_model::runtime::{ThreadModel, model_response_receipt, thread_tool_declaration};
+
+    for (protocol, transport) in [
+        (
+            Protocol::ResponsesHttp,
+            ModelTransportProfile::responses_http(),
+        ),
+        (
+            Protocol::Chat,
+            ModelTransportProfile::chat_completions_http(),
+        ),
+    ] {
+        let responses = matches!(protocol, Protocol::ResponsesHttp);
+        let tool_reply = |index: usize| {
+            if responses {
+                let item = json!({"id":format!("provider-item-{index}"),"type":"function_call",
+                    "call_id":"call_0","name":"lookup","arguments":format!("{{\"q\":{index}}}"),
+                    "status":"completed","signature":format!("signature-{index}"),
+                    "future":{"preserve":index},"caller":{"type":"program","caller_id":format!("program-{index}")}});
+                let native = json!({"id":format!("reasoning-{index}"),"type":"reasoning",
+                    "summary":[],"encrypted_content":format!("cipher-{index}"),"signature":format!("reasoning-signature-{index}")});
+                Reply::Sse(vec![
+                    json!({"type":"response.output_item.done","output_index":0,"item":native}),
+                    json!({"type":"response.output_item.done","output_index":1,"item":item}),
+                    json!({"type":"response.completed","response":{"id":format!("response-{index}"),"output":[native,item]}}),
+                ])
+            } else {
+                Reply::Sse(vec![
+                    json!({"id":format!("chat-{index}"),"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"lookup","arguments":format!("{{\"q\":{index}}}")}}]},"finish_reason":null}]}),
+                    json!({"id":format!("chat-{index}"),"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+                ])
+            }
+        };
+        let fixture = FixtureServer::start(vec![
+            Step::prompt(protocol, "repeated identity", 0, tool_reply(1)),
+            Step::prompt(protocol, "repeated identity", 1, tool_reply(2)),
+            Step::prompt(
+                protocol,
+                "repeated identity",
+                2,
+                Reply::Sse(if responses {
+                    responses_text("done", "last-response", "identity-model")
+                } else {
+                    chat_events("done", "identity-model")
+                }),
+            ),
+        ])
+        .await
+        .unwrap();
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            ProtocolEndpoint::compatible("fixture", fixture.base_url()),
+            model("identity-model", transport),
+        )
+        .unwrap();
+        let mut session = ModelFactory::new(ThreadModel::new_current(runtime, None))
+            .open_session()
+            .await
+            .unwrap();
+        let declaration = pl_model::completion::tool_definition_to_spec(
+            &pl_agent_tool::ToolDefinition::json(
+                "lookup",
+                "lookup",
+                json!({"type":"object","properties":{"q":{"type":"integer"}},"required":["q"]}),
+            )
+            .unwrap(),
+            pl_model::completion::ToolCallPolicy::DirectOnly,
+        );
+        let tools: Arc<[ModelToolDeclaration]> = vec![ModelToolDeclaration {
+            tool_id: "lookup-executor".into(),
+            declaration: thread_tool_declaration(&declaration).unwrap(),
+            presentation_contract: None,
+        }]
+        .into();
+        let mut records = vec![ContextRecord {
+            id: "user-input".into(),
+            turn_id: Some("turn".into()),
+            source: ContextSource::User,
+            content: vec![ContextContent::Text {
+                text: "repeated identity".into(),
+            }],
+            tool_calls: vec![],
+        }];
+        let mut internal_ids = Vec::new();
+        for (index, attempt) in [
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002",
+            "00000000-0000-4000-8000-000000000003",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let output = session
+                .prepare(ModelRequest {
+                    thread_id: "identity-thread".into(),
+                    turn_id: "turn".into(),
+                    attempt_id: (*attempt).into(),
+                    context: ContextSnapshot {
+                        revision: index as u64,
+                        records: records.clone().into(),
+                    },
+                    tools: tools.clone(),
+                    tool_call_mode: ToolCallMode::Parallel,
+                    solo_tool_ids: Default::default(),
+                    committed_private_context: None,
+                    resources: None,
+                    cancellation: Default::default(),
+                    progress: None,
+                    members: None,
+                })
+                .await
+                .unwrap()
+                .execute()
+                .await
+                .unwrap();
+            if index == 2 {
+                break;
+            }
+            assert_frozen_tool_bindings(&output.content, &output.tool_calls);
+            assert_eq!(output.tool_calls.len(), 1);
+            let internal_id = output.tool_calls[0].call_id.clone();
+            assert_ne!(internal_id, "call_0");
+            assert!(
+                !internal_ids.contains(&internal_id),
+                "different attempts must not alias provider call_0"
+            );
+            let receipt = model_response_receipt(&output).unwrap().unwrap();
+            assert_eq!(receipt.response.tool_calls[0].call_id, "call_0");
+            let payload = output
+                .content
+                .iter()
+                .find_map(|content| match content {
+                    ContextContent::Opaque { payload }
+                        if payload.format() == "pl.model.assistant" =>
+                    {
+                        Some(payload)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(payload.version(), 6);
+            let frame: Value = serde_json::from_str(payload.content()).unwrap();
+            assert_eq!(frame["sourceAttemptId"], *attempt);
+            assert_eq!(frame["callBindings"][0]["providerCallId"], "call_0");
+            assert_eq!(frame["callBindings"][0]["callId"], internal_id);
+            for mutation in [
+                "missing-source",
+                "source",
+                "attempt",
+                "core",
+                "provider",
+                "item",
+                "arguments",
+                "mapping-missing",
+            ] {
+                let mut frame = frame.clone();
+                match mutation {
+                    "missing-source" => {
+                        frame.as_object_mut().unwrap().remove("sourceAttemptId");
+                    }
+                    "source" => frame["sourceAttemptId"] = json!("another-attempt"),
+                    "attempt" => frame["callBindings"][0]["attemptId"] = json!("another-attempt"),
+                    "core" => frame["callBindings"][0]["callId"] = json!("substituted"),
+                    "provider" => frame["callBindings"][0]["providerCallId"] = json!("substituted"),
+                    "item" => frame["callBindings"][0]["providerItemId"] = json!("substituted"),
+                    "arguments" => {
+                        frame["bindings"][0]["arguments"]["content"] = json!("{\"q\":999}")
+                    }
+                    "mapping-missing" => frame["callBindings"] = json!([]),
+                    _ => unreachable!(),
+                }
+                let mut changed = output.clone();
+                for content in &mut changed.content {
+                    if let ContextContent::Opaque { payload } = content
+                        && payload.format() == "pl.model.assistant"
+                    {
+                        *payload = pl_core::context::OpaquePayload::new(
+                            payload.format(),
+                            6,
+                            frame.to_string(),
+                        )
+                        .unwrap();
+                    }
+                }
+                assert!(
+                    model_response_receipt(&changed).is_err(),
+                    "accepted frame mutation: {mutation}"
+                );
+            }
+            let mut changed = output.clone();
+            changed.attempt_id = "another-output-source".into();
+            assert!(model_response_receipt(&changed).is_err());
+            let mut changed = output.clone();
+            changed.tool_calls[0].call_id = "another-envelope-call".into();
+            assert!(model_response_receipt(&changed).is_err());
+            let mut changed = output.clone();
+            let mut substituted = frame.clone();
+            substituted["bindings"][0]["callId"] = json!("substituted-with-identical-arguments");
+            changed.tool_calls[0].call_id = "substituted-with-identical-arguments".into();
+            for content in &mut changed.content {
+                if let ContextContent::Opaque { payload } = content
+                    && payload.format() == "pl.model.assistant"
+                {
+                    *payload = pl_core::context::OpaquePayload::new(
+                        payload.format(),
+                        6,
+                        substituted.to_string(),
+                    )
+                    .unwrap();
+                }
+            }
+            assert!(
+                model_response_receipt(&changed).is_err(),
+                "matching parameters and a substituted outer envelope cannot replace the source binding"
+            );
+            assert_eq!(
+                receipt.response.tool_calls[0].id,
+                if responses {
+                    format!("provider-item-{}", index + 1)
+                } else {
+                    "call_0".into()
+                }
+            );
+            records.push(ContextRecord {
+                id: format!("{attempt}:output"),
+                turn_id: Some("turn".into()),
+                source: ContextSource::Assistant,
+                content: output.content,
+                tool_calls: output.tool_calls,
+            });
+            records.push(ContextRecord {
+                id: format!("result-{index}"),
+                turn_id: Some("turn".into()),
+                source: ContextSource::ToolResult {
+                    call_id: internal_id.clone(),
+                    tool_id: "lookup-executor".into(),
+                },
+                content: vec![ContextContent::Text {
+                    text: format!("result-{}", index + 1).into(),
+                }],
+                tool_calls: vec![],
+            });
+            for mutation in ["record-source", "result-reference"] {
+                let mut invalid_records = records.clone();
+                let length = invalid_records.len();
+                if mutation == "record-source" {
+                    invalid_records[length - 2].id = "another-source:output".into();
+                } else {
+                    invalid_records[length - 1].source = ContextSource::ToolResult {
+                        call_id: "call_0".into(),
+                        tool_id: "lookup-executor".into(),
+                    };
+                }
+                let invalid = ModelRequest {
+                    thread_id: "identity-thread".into(),
+                    turn_id: "turn".into(),
+                    attempt_id: "next-identity-check".into(),
+                    context: ContextSnapshot {
+                        revision: index as u64 + 1,
+                        records: invalid_records.into(),
+                    },
+                    tools: tools.clone(),
+                    tool_call_mode: ToolCallMode::Parallel,
+                    solo_tool_ids: Default::default(),
+                    committed_private_context: None,
+                    resources: None,
+                    cancellation: Default::default(),
+                    progress: None,
+                    members: None,
+                };
+                assert!(
+                    session.prepare(invalid).await.is_err(),
+                    "accepted current context mutation: {mutation}"
+                );
+            }
+            internal_ids.push(internal_id);
+        }
+        session.close().await.unwrap();
+        assert_eq!(internal_ids.len(), 2);
+        let captured = fixture.finish().await.unwrap();
+        let body = &captured[2].body;
+        if responses {
+            let input = body["input"].as_array().unwrap();
+            assert_eq!(
+                input
+                    .iter()
+                    .filter(|item| item["type"] == "reasoning")
+                    .count(),
+                2,
+                "each raw replay span includes a native non-message position before its call"
+            );
+            let calls = input
+                .iter()
+                .filter(|item| item["type"] == "function_call")
+                .collect::<Vec<_>>();
+            let results = input
+                .iter()
+                .filter(|item| item["type"] == "function_call_output")
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(results.len(), 2);
+            for index in 0..2 {
+                assert_eq!(calls[index]["call_id"], "call_0");
+                assert_eq!(calls[index]["id"], format!("provider-item-{}", index + 1));
+                assert_eq!(
+                    calls[index]["signature"],
+                    format!("signature-{}", index + 1)
+                );
+                assert_eq!(calls[index]["future"], json!({"preserve": index + 1}));
+                assert_eq!(results[index]["call_id"], "call_0");
+                let output: Value =
+                    serde_json::from_str(results[index]["output"].as_str().unwrap()).unwrap();
+                assert_eq!(output, json!({"content":format!("result-{}", index + 1)}));
+                assert_eq!(
+                    results[index]["caller"]["caller_id"],
+                    format!("program-{}", index + 1)
+                );
+            }
+        } else {
+            let messages = body["messages"].as_array().unwrap();
+            let calls = messages
+                .iter()
+                .filter_map(|message| message["tool_calls"].as_array())
+                .flatten()
+                .collect::<Vec<_>>();
+            let results = messages
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .collect::<Vec<_>>();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(results.len(), 2);
+            for index in 0..2 {
+                assert_eq!(calls[index]["id"], "call_0");
+                assert_eq!(results[index]["tool_call_id"], "call_0");
+                assert_eq!(results[index]["content"], format!("result-{}", index + 1));
+            }
+        }
+        for internal_id in internal_ids {
+            assert!(
+                !body.to_string().contains(&internal_id),
+                "Core's namespace must never leak into provider replay"
+            );
+        }
+    }
 }
 
 #[tokio::test]
@@ -6100,6 +6557,16 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         .await
         .unwrap();
     let state = thread.snapshot();
+    let proof_call_id = state
+        .context
+        .records
+        .iter()
+        .flat_map(|record| &record.tool_calls)
+        .find(|call| call.tool_id == "exec")
+        .unwrap()
+        .call_id
+        .clone();
+    assert_eq!(proof_call_id, "proof-call");
     let compacted = source
         .compact(
             ModelRequest {
@@ -6149,9 +6616,9 @@ async fn compaction_keeps_recent_execution_proof_without_reexecuting_the_tool() 
         record
             .tool_calls
             .iter()
-            .any(|call| call.call_id == "proof-call")
+            .any(|call| call.call_id == proof_call_id)
     }));
-    assert!(reduced.records.iter().any(|record| matches!(&record.source, ContextSource::ToolResult { call_id, .. } if call_id == "proof-call")));
+    assert!(reduced.records.iter().any(|record| matches!(&record.source, ContextSource::ToolResult { call_id, .. } if call_id == &proof_call_id)));
     thread.replace_context(compacted.replacement).await.unwrap();
     thread
         .run_turn(replay_turn("resume-proof", Default::default()))

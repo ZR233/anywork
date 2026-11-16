@@ -131,7 +131,7 @@ impl ThreadModel {
         request: &ModelRequest,
         previous: Option<&pl_core::thread::context_preparation::PreviousContextUsage>,
     ) -> Result<Option<pl_core::model::TokenEstimate>, ModelError> {
-        let encoded = self.encode_request(request).await?;
+        let encoded = self.encode_request(request).await?.completion;
         let observed = (|| {
             // Host exclusions have already produced the final plan. Validate against that plan,
             // rather than the complete registry that existed before context preparation.
@@ -193,7 +193,7 @@ impl ThreadModel {
         request: ModelRequest,
         options: ThreadCompactionOptions,
     ) -> Result<ThreadCompaction, ModelError> {
-        let mut encoded = self.encode_request(&request).await?;
+        let mut encoded = self.encode_request(&request).await?.completion;
         // Reduction has its own output policy; ordinary request capacity is resolved separately.
         encoded.max_tokens = None;
         let binding = receipt::ModelCallBinding::capture(&self.runtime, "compaction");

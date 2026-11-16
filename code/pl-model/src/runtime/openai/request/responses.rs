@@ -13,7 +13,9 @@ use super::content::{
     MediaRepresentationPlan, media_file_id, media_url, message_content_text, tool_media_content,
 };
 use super::protocol_error;
-use super::tool_history::{record_arguments_text, record_custom_input, tool_callers_by_call_id};
+use super::tool_history::{
+    record_arguments_text, record_custom_input, tool_callers_by_result_position,
+};
 // Provider envelope only: the canonical context remains the producer's original string.
 fn json_object_result_output(output: String) -> String {
     match serde_json::from_str::<serde_json::Value>(&output) {
@@ -115,13 +117,7 @@ impl ResponsesRequestBody {
             ));
         }
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
-        let history = request
-            .input
-            .iter()
-            .filter_map(|item| item.as_message())
-            .cloned()
-            .collect::<Vec<_>>();
-        let tool_callers = tool_callers_by_call_id(&history);
+        let tool_callers = tool_callers_by_result_position(&request.input);
 
         let mut replay_end = 0;
         let mut replay_spans = request.replay_spans.iter().peekable();
@@ -189,7 +185,7 @@ impl ResponsesRequestBody {
                     let record = msg.tool_result.as_ref().ok_or_else(|| {
                         protocol_error("tool result message missing typed tool_result record")
                     })?;
-                    let caller = tool_callers.get(&record.call_id).cloned();
+                    let caller = tool_callers.get(&position).cloned();
                     let output = message_content_text(&msg.content);
                     let has_output_schema = request.tools.iter().any(|tool| match tool {
                         ToolSpec::Function {

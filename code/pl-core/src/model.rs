@@ -13,7 +13,12 @@ pub use tokio_util::sync::CancellationToken;
 use crate::chat::PresentationPart;
 use crate::context::{ContextContent, ContextSnapshot, OpaquePayload};
 
+mod current;
 mod member;
+pub use current::{
+    CurrentCaptureError, CurrentCaptureHandle, CurrentCaptureReceiver, ModelCallExit,
+    ModelCurrentCaptureRequest,
+};
 pub(crate) use member::{
     AdmittedPart, MemberFact, MemberRegistry, ModelMemberAdmission, StartedKey,
     encoded_member_bytes, same_started_identity,
@@ -109,7 +114,8 @@ pub struct ModelToolDeclaration {
 }
 
 /// Maximum tool-call concurrency admitted by the frozen executor catalog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ToolCallMode {
     Sequential,
     Parallel,
@@ -1396,6 +1402,15 @@ pub struct ToolProgressPart {
 }
 
 impl ToolProgressPart {
+    /// Restores one complete observation as a new baseline, without a prefix lineage.
+    pub fn from_current(id: String, version: u64, text: String) -> Self {
+        Self {
+            id: Arc::from(id),
+            version,
+            content: ContentBlock::from_text(&text),
+        }
+    }
+
     /// First observation of `id`; content starts empty and the version starts at zero.
     pub fn new(id: impl Into<Arc<str>>) -> Self {
         Self {
@@ -2315,6 +2330,8 @@ pub enum ModelToolCallRejection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelToolCall {
+    /// Unambiguous attempt-scoped internal identity. The model adapter retains the original
+    /// provider ID and replay mapping in its opaque data; core does not decode this namespace.
     pub call_id: String,
     pub tool_id: String,
     pub arguments: OpaquePayload,
@@ -2512,7 +2529,8 @@ pub struct PreparedModelCall {
     tool_projection: Option<OpaquePayload>,
     session_health: Option<Arc<SessionHealth>>,
     input_estimate: Option<TokenEstimate>,
-    future: BoxFuture<'static, Result<ModelStepOutput, ModelError>>,
+    current_capture: Option<CurrentCaptureHandle>,
+    future: BoxFuture<'static, ModelCallExit>,
 }
 
 impl PreparedModelCall {
@@ -2520,6 +2538,17 @@ impl PreparedModelCall {
     pub fn new(
         future: impl Future<Output = Result<ModelStepOutput, ModelError>> + Send + 'static,
     ) -> Self {
+        Self::new_with_current(async move {
+            ModelCallExit {
+                result: future.await,
+                current: None,
+            }
+        })
+    }
+
+    /// Wraps the existing execution exit with its final producer-owned current snapshot.
+    /// The producer must construct this before dropping its accumulator, on every exit path.
+    pub fn new_with_current(future: impl Future<Output = ModelCallExit> + Send + 'static) -> Self {
         Self {
             future: Box::pin(future),
             usage_binding: None,
@@ -2527,7 +2556,18 @@ impl PreparedModelCall {
             session_health: None,
             tool_projection: None,
             request_metadata: None,
+            current_capture: None,
         }
+    }
+
+    /// Installs the single revocable capture endpoint serviced by this invocation's producer.
+    pub fn with_current_capture(mut self, capture: CurrentCaptureHandle) -> Self {
+        self.current_capture = Some(capture);
+        self
+    }
+
+    pub fn current_capture(&self) -> Option<&CurrentCaptureHandle> {
+        self.current_capture.as_ref()
     }
 
     /// Freezes adapter-owned request provenance without exposing provider types to core.
@@ -2579,8 +2619,18 @@ impl PreparedModelCall {
     /// # Errors
     /// Returns the implementation failure with any observed usage.
     pub async fn execute(self) -> Result<ModelStepOutput, ModelError> {
-        if let Some(health) = &self.session_health {
-            health.ensure_available()?;
+        self.execute_with_current().await.result
+    }
+
+    /// Executes once, handing final observations to the owner through the ordinary exit path.
+    pub async fn execute_with_current(self) -> ModelCallExit {
+        if let Some(health) = &self.session_health
+            && let Err(error) = health.ensure_available()
+        {
+            return ModelCallExit {
+                result: Err(error),
+                current: None,
+            };
         }
         match crate::error_record::catch_boundary("model execution", self.future).await {
             Ok(result) => result,
@@ -2588,7 +2638,10 @@ impl PreparedModelCall {
                 if let Some(health) = self.session_health {
                     health.poisoned.store(true, Ordering::Release);
                 }
-                Err(ModelError::from_panic(source))
+                ModelCallExit {
+                    result: Err(ModelError::from_panic(source)),
+                    current: None,
+                }
             }
         }
     }
@@ -2656,10 +2709,11 @@ impl DynModelSession {
         })
         .await
         {
-            Ok(result) => result.map(|mut call| {
+            Ok(result) => {
+                let mut call = result?;
                 call.session_health = Some(self.health.clone());
-                call
-            }),
+                Ok(call)
+            }
             Err(source) => {
                 self.health.poisoned.store(true, Ordering::Release);
                 Err(ModelError::from_panic(source))

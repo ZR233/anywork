@@ -21,6 +21,7 @@ const CALLS_DIR_NAME: &str = "calls";
 const MIGRATIONS_DIR_NAME: &str = "migrations";
 const ATTACHMENT_DRAFTS_DIR_NAME: &str = "attachment-drafts";
 const HISTORY_FILE_NAME: &str = "history.sqlite";
+pub(in crate::studio) const CURRENT_FILE_NAME: &str = "current.json";
 const ATTACHMENTS_FILE_NAME: &str = "attachments.toml";
 const RESOURCES_DIR_NAME: &str = "resources";
 const SCRATCH_DIR_NAME: &str = "temp";
@@ -312,6 +313,11 @@ impl SessionPaths {
 
     pub fn history_database(&self) -> PathBuf {
         self.root.join(HISTORY_FILE_NAME)
+    }
+
+    /// Complete recovery state, independent of the session history database.
+    pub fn current_file(&self) -> PathBuf {
+        self.root.join(CURRENT_FILE_NAME)
     }
 
     pub fn attachments_catalog(&self) -> PathBuf {

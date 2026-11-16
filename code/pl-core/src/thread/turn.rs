@@ -6,8 +6,30 @@ impl Owner {
         &mut self,
         input: TurnInput,
     ) -> Result<TurnCompletion, ThreadError> {
+        if self.current_saved_lifecycle.is_some() {
+            return Err(ThreadError::CurrentPaused);
+        }
+        if self.state.lifecycle != ThreadLifecycle::Open {
+            return Err(ThreadError::Closed);
+        }
+        if input.turn_id.is_empty()
+            || input.attempt_prefix.is_empty()
+            || self
+                .state
+                .turns
+                .iter()
+                .any(|turn| turn.turn_id == input.turn_id)
+        {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        let first_step = StepInput {
+            turn_id: input.turn_id.clone(),
+            attempt_id: self.turn_attempt_identity(&input.attempt_prefix, 0),
+            content: input.content.clone(),
+            cancellation: input.cancellation.clone(),
+        };
         let turn_id = input.turn_id.clone();
-        let result = self.execute_turn(input).await;
+        let result = self.execute_turn(input, first_step).await;
         // A Turn that ended before it ever created its record (a stop during preparation) still has to
         // settle the batch it froze: a body-less control it never consumed was replaced meanwhile and
         // must not linger as phantom owed work. The normal path settles inside its own terminal commit.
@@ -22,23 +44,20 @@ impl Owner {
         // failed or cancelled Turn as well as a completed one. A stop that named this generation
         // settles here too; the continuation point it formed is a separate durable fact and stays.
         self.finish_execution(&turn_id);
+        if result
+            .as_ref()
+            .is_ok_and(|completion| completion.outcome == TurnOutcome::Completed)
+        {
+            self.finish_current_work_if_idle();
+        }
         result
     }
 
-    async fn execute_turn(&mut self, input: TurnInput) -> Result<TurnCompletion, ThreadError> {
-        if self.state.lifecycle != ThreadLifecycle::Open {
-            return Err(ThreadError::Closed);
-        }
-        if input.turn_id.is_empty()
-            || input.attempt_prefix.is_empty()
-            || self
-                .state
-                .turns
-                .iter()
-                .any(|turn| turn.turn_id == input.turn_id)
-        {
-            return Err(ThreadError::InvalidIdentity);
-        }
+    async fn execute_turn(
+        &mut self,
+        input: TurnInput,
+        first_step: StepInput,
+    ) -> Result<TurnCompletion, ThreadError> {
         if input.cancellation.is_cancelled() {
             return Err(ThreadError::Cancelled);
         }
@@ -46,6 +65,10 @@ impl Owner {
         // allocated here when nobody did it yet. A driver-started Turn keeps the generation the
         // driver already published.
         self.begin_execution()?;
+        // run_turn may wait before it ever reaches run_step. Preserve only genuinely direct
+        // content here; queue-owned input remains in the original input records.
+        let plan = self.tools.freeze();
+        self.begin_current_step(&first_step, &plan);
         // The Turn admission gate is the one place new Turns are held back, and it is checked before
         // this Turn owns anything: while the owner waits here no Turn record exists and no input is
         // consumed, so a held Turn leaves the queue exactly as it found it.
@@ -70,7 +93,7 @@ impl Owner {
             if input.cancellation.is_cancelled() || self.interrupt.is_closing() {
                 return Err(ThreadError::Cancelled);
             }
-            self.execute_turn_loop(input).await
+            self.execute_turn_loop(input, first_step.attempt_id).await
         }
         .await;
         if matches!(result, Err(ThreadError::Closed)) && self.interrupt.is_closing() {
@@ -287,7 +310,11 @@ impl Owner {
         Ok(())
     }
 
-    async fn execute_turn_loop(&mut self, input: TurnInput) -> Result<TurnCompletion, ThreadError> {
+    async fn execute_turn_loop(
+        &mut self,
+        input: TurnInput,
+        first_attempt_id: String,
+    ) -> Result<TurnCompletion, ThreadError> {
         if input.attempt_prefix.is_empty() {
             return Err(ThreadError::InvalidIdentity);
         }
@@ -295,11 +322,15 @@ impl Owner {
         let mut step = 0_u32;
         let mut recovered_capacity = false;
         let mut correction_source = None;
+        let mut next_attempt_id = Some(first_attempt_id);
         loop {
             let completed = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
+            let attempt_id = next_attempt_id
+                .take()
+                .unwrap_or_else(|| self.turn_attempt_identity(&input.attempt_prefix, step));
             let step_input = StepInput {
                 turn_id: input.turn_id.clone(),
-                attempt_id: format!("{}:{step}", input.attempt_prefix),
+                attempt_id: attempt_id.clone(),
                 content,
                 cancellation: input.cancellation.clone(),
             };
@@ -316,27 +347,24 @@ impl Owner {
                         && !recovered_capacity
                         && !input.max_model_steps.reached(completed)
                         && self.state.attempts.last().is_some_and(|attempt| {
-                            attempt.attempt_id == format!("{}:{step}", input.attempt_prefix)
+                            attempt.attempt_id == attempt_id
                                 && attempt.status == AttemptStatus::Failed
                         }) =>
                 {
                     recovered_capacity = true;
                     let next = StepInput {
                         turn_id: input.turn_id.clone(),
-                        attempt_id: format!("{}:{completed}", input.attempt_prefix),
+                        attempt_id: self.turn_attempt_identity(&input.attempt_prefix, completed),
                         content: Vec::new(),
                         cancellation: input.cancellation.clone(),
                     };
                     // The failed attempt already admitted its input. Reduce committed history,
                     // then let the next identified attempt proceed without consuming it again.
-                    let failed_attempt_id = format!("{}:{step}", input.attempt_prefix);
-                    if !self
-                        .recover_context(&next, Some(&failed_attempt_id))
-                        .await?
-                    {
+                    if !self.recover_context(&next, Some(&attempt_id)).await? {
                         return Err(ThreadError::Model(error.clone()));
                     }
                     content = Vec::new();
+                    next_attempt_id = Some(next.attempt_id);
                     step = completed;
                     continue;
                 }
@@ -349,7 +377,7 @@ impl Owner {
                     content = vec![ContextContent::Text {
                         text: Arc::from(reason.correction_feedback()),
                     }];
-                    correction_source = Some(format!("{}:{step}", input.attempt_prefix));
+                    correction_source = Some(attempt_id);
                     step = step.checked_add(1).ok_or(ThreadError::RevisionExhausted)?;
                     continue;
                 }

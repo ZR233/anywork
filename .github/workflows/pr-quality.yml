@@ -781,6 +781,9 @@ jobs:
       - name: Verify POSIX LSP configuration paths on Windows
         if: needs.changes.outputs.rust_checks == 'true'
         run: cargo test --locked -p pl-lsp --test posix_configuration
+      - name: Verify current overwrite on Windows
+        if: needs.changes.outputs.rust_checks == 'true'
+        run: cargo test --locked -p pl-studio-runtime --lib studio::storage::current_file::tests::current_is_self_contained_even_with_unreadable_history
       - name: Verify Windows installer handoff from published and current clients
         if: needs.changes.outputs.windows_gui_build == 'true'
         shell: pwsh

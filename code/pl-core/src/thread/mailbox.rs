@@ -11,6 +11,10 @@ pub(super) enum OutputRetryReply {
 
 #[derive(Debug)]
 pub(super) enum MailboxCommand {
+    ReadCurrent {
+        captured: Option<current::CapturedStream>,
+        reply: oneshot::Sender<Result<current::CurrentRead, current::CurrentError>>,
+    },
     InvokeNested {
         caller: String,
         executor: crate::tool::opaque::ExecutionAuthority,
@@ -191,6 +195,9 @@ pub(super) enum MailboxCommand {
 impl Owner {
     pub(super) fn process_mailbox(&mut self, command: MailboxCommand) {
         match command {
+            MailboxCommand::ReadCurrent { captured, reply } => {
+                let _ = reply.send(self.read_current(captured));
+            }
             MailboxCommand::InvokeNested { reply, .. } => {
                 let _ = reply.send(Err(ThreadError::Closed));
             }

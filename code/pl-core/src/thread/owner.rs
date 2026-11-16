@@ -37,6 +37,19 @@ pub(super) struct PendingEffect {
 }
 
 pub(super) struct Owner {
+    pub(super) runtime_epoch: current::RuntimeEpoch,
+    pub(super) current_call: Option<current::CurrentModelCall>,
+    pub(super) current_capture: Option<crate::model::CurrentCaptureHandle>,
+    pub(super) current_dirty: watch::Sender<u64>,
+    pub(super) current_model_running: bool,
+    pub(super) current_snapshot_missing: bool,
+    pub(super) current_saved_execution: Option<ActiveExecution>,
+    pub(super) current_saved_lifecycle: Option<ThreadLifecycle>,
+    pub(super) current_task_start_ordinal: Option<u64>,
+    pub(super) current_retired_previews:
+        std::collections::BTreeMap<String, current::SavedToolProgress>,
+    pub(super) final_current:
+        watch::Sender<Option<Result<current::ThreadCurrent, Arc<current::CurrentError>>>>,
     pub(super) model_identity: Option<String>,
     pub(super) pending_model_update: Option<super::model_update::DeferredModelUpdate>,
     pub(super) pending_runtime_facts: std::collections::BTreeMap<String, RuntimeFact>,
@@ -229,11 +242,10 @@ impl Owner {
     /// Allocates the live identity of the execution this owner is about to run.
     ///
     /// It exists before any Turn record and before the first storage wait, so a stop names this one
-    /// generation instead of inferring a target from the newest Turn. The identity comes from a
-    /// monotonic counter rather than from the Turn, because a preparing execution that is stopped has
-    /// no Turn record and the same Turn identity may legitimately be requested again afterwards: the
-    /// counter is what keeps an old stop from ever addressing the newer execution. The identity never
-    /// changes afterwards; entering the real Turn only fills the Turn reference and moves the phase.
+    /// generation instead of inferring a target from the newest Turn. UUIDv4 identities are never
+    /// reconstructed from a restored Turn or counter. The legacy checkpoint ordinal is still
+    /// advanced for its existing consumers, but grants no authority to address a new execution.
+    /// Entering the real Turn only fills the Turn reference and moves the phase.
     pub(super) fn begin_execution(&mut self) -> Result<(), ThreadError> {
         if self.state.execution.is_some() {
             return Ok(());
@@ -245,7 +257,7 @@ impl Owner {
             .ok_or(ThreadError::RevisionExhausted)?;
         self.state.execution_sequence = sequence;
         self.state.execution = Some(ActiveExecution {
-            id: format!("execution:{sequence}"),
+            id: uuid::Uuid::new_v4().to_string(),
             phase: ExecutionPhase::Preparing,
             turn_id: None,
         });
@@ -462,6 +474,15 @@ impl Owner {
                 continue;
             }
             match command {
+                Command::CurrentResume {
+                    epoch,
+                    authorized_stops,
+                    input,
+                    reply,
+                } => {
+                    let result = self.resume_current(epoch, authorized_stops, input).await;
+                    let _ = reply.send(result);
+                }
                 Command::ReplaceModel(factory, preparation, reply) => {
                     self.model_identity = None;
                     self.pending_model_update = None;
@@ -533,9 +554,9 @@ impl Owner {
                     let _ = reply.send(result);
                 }
                 Command::AttachCold(store, reply) => {
-                    let result = if self.cold.is_some()
-                        || self.state.lifecycle != ThreadLifecycle::Open
-                    {
+                    let result = if self.current_task_start_ordinal.is_some() {
+                        Err(ThreadError::CurrentCheckpointStore)
+                    } else if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
                         Err(ThreadError::InvalidIdentity)
                     } else {
                         let pressure = store.pressure(&self.id);
@@ -635,6 +656,9 @@ impl Owner {
                     };
                     let finished = result.is_ok();
                     self.publish_snapshot();
+                    if finished {
+                        self.handoff_final_current();
+                    }
                     let _ = reply.send(result);
                     if finished {
                         return;
@@ -667,6 +691,7 @@ impl Owner {
                 tracing::error!(thread = self.id, %error, "abandoned Thread resource close failed")
             }
         }
+        self.handoff_final_current();
     }
 
     /// Subscribes to the attached backend's storage-change notification.
@@ -704,6 +729,7 @@ impl Owner {
         self.publish()?;
         if self.state.tasks.values().any(|task| {
             task.status == task::TaskStatus::Running
+                    && (self.current_task_start_ordinal.is_none() || self.executions.token(&task.id).is_some())
                     // Deletion already owns disposal of the exact retained completion. It owes
                     // joining real work, not committing a terminal cut it is about to delete.
                     && !(self.interrupt.is_deleting()
@@ -821,6 +847,13 @@ impl Owner {
             .checked_add(1)
             .expect("Thread observation revision exhausted");
         self.publish.send_replace(snapshot);
+        if self.current_task_start_ordinal.is_some() {
+            self.current_dirty.send_modify(|revision| {
+                *revision = revision
+                    .checked_add(1)
+                    .expect("current dirty revision exhausted");
+            });
+        }
     }
 
     pub(super) fn publish(&mut self) -> Result<(), ThreadError> {
@@ -872,6 +905,17 @@ impl Owner {
             &self.state.interactions,
             &self.state.permissions,
         )?;
+        for (id, progress) in &self.state.tool_progress {
+            if let Some(task) = self.state.tasks.get(id)
+                && (self.state.lifecycle != ThreadLifecycle::Open
+                    || task.status != task::TaskStatus::Running)
+            {
+                self.current_retired_previews.insert(
+                    task.call_id.clone(),
+                    current::SavedToolProgress::capture(self.runtime_epoch, progress),
+                );
+            }
+        }
         self.state.tool_progress.retain(|id, _| {
             self.state.lifecycle == ThreadLifecycle::Open
                 && self
@@ -926,6 +970,18 @@ impl Owner {
         self.state.commit_sequence = sequence;
         if let Some(store) = &self.cold {
             store.fold_usage(&mut self.state.usage_summary, &effect);
+        } else {
+            // RAM-only current still has cumulative usage; no history receipt is needed.
+            super::usage::fold_effect(&mut self.state.usage_summary, &effect);
+        }
+        if self.current_task_start_ordinal.is_some() {
+            // The explicit current owner exports facts independently. It never creates a
+            // transfer checkpoint, queues a second current body, or waits for its history receipt.
+            self.state.retain_live_facts()?;
+            self.published = self.state.clone();
+            self.effect_window.push(effect);
+            self.publish_snapshot();
+            return Ok(());
         }
         // The effect above is the only copy of this commit's facts: the write below persists a
         // transfer state that still carries them so the writer projects the effect without reading

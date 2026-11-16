@@ -557,13 +557,60 @@ fn producer_migration_preserves_opaque_material_precision_and_is_idempotent() {
         turn_action: Default::default(),
         attempt_id: "attempt-frozen".into(),
         base_context_revision: 7,
-        content: vec![pl_core::context::ContextContent::Opaque { payload: upgraded }],
-        tool_calls: vec![binding],
+        content: vec![pl_core::context::ContextContent::Opaque {
+            payload: upgraded.clone(),
+        }],
+        tool_calls: vec![binding.clone()],
         private_context: None,
         usage: Default::default(),
     };
     let receipt = model_response_receipt(&output).unwrap().unwrap();
     assert_eq!(receipt.response.tool_calls[0].payload_text(), vendor);
+    // Identity upgrading is a separate contextual pure function. It cannot infer the source from
+    // arguments, array position or the old globally scoped call name.
+    let identity_upgrade = pl_model::runtime::migration::upgrade_assistant_frame(
+        &upgraded,
+        "actual-source",
+        std::slice::from_ref(&binding),
+    )
+    .unwrap();
+    assert_eq!(identity_upgrade.payload.version(), 6);
+    assert!(
+        identity_upgrade
+            .payload
+            .content()
+            .contains("123456789012345678901234567890.123456789")
+    );
+    assert_eq!(identity_upgrade.call_ids.len(), 1);
+    let new_id = identity_upgrade.call_ids["call-frozen"].clone();
+    assert_ne!(new_id, "call-frozen");
+    let mut upgraded_output = output.clone();
+    upgraded_output.attempt_id = "actual-source".into();
+    upgraded_output.tool_calls[0].call_id = new_id;
+    upgraded_output.content = vec![pl_core::context::ContextContent::Opaque {
+        payload: identity_upgrade.payload,
+    }];
+    let receipt = model_response_receipt(&upgraded_output).unwrap().unwrap();
+    assert_eq!(receipt.response.tool_calls[0].payload_text(), vendor);
+    assert_eq!(receipt.response.tool_calls[0].call_id, "call-frozen");
+    assert!(
+        pl_model::runtime::migration::upgrade_assistant_frame(
+            &upgraded,
+            "",
+            std::slice::from_ref(&binding)
+        )
+        .is_err()
+    );
+    let mut conflicting = binding.clone();
+    conflicting.call_id = "unrelated-external-call".into();
+    assert!(
+        pl_model::runtime::migration::upgrade_assistant_frame(
+            &upgraded,
+            "actual-source",
+            &[conflicting]
+        )
+        .is_err()
+    );
     assert!(
         migrate_payload(&OpaquePayload::new("vendor.opaque", 99, vendor).unwrap())
             .unwrap()

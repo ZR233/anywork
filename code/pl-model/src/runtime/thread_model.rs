@@ -27,7 +27,7 @@ pub use member::{ModelMemberReceipt, ModelMemberState, model_member_receipt};
 pub mod migration;
 pub(crate) mod progress;
 mod receipt;
-pub(super) use codec::FRAME_VERSION;
+pub(super) use codec::{FRAME_VERSION, LEGACY_FRAME_VERSION};
 pub use media::{
     ToolAttachment, attachment_content, decode_attachment, validate_attachment_content,
 };
@@ -44,6 +44,12 @@ pub struct ThreadModel {
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
+    contract: codec::FrameContract,
+}
+
+struct EncodedRequest {
+    completion: crate::completion::CompletionRequest,
+    tool_bindings: BTreeMap<String, codec::ToolBinding>,
 }
 
 impl ThreadModel {
@@ -54,6 +60,16 @@ impl ThreadModel {
             reasoning,
             purpose: "turn".into(),
             hosted_tools: Vec::new().into(),
+            contract: codec::FrameContract::Legacy,
+        }
+    }
+
+    /// Builds the independent current contract without switching existing production factories.
+    /// This factory consumes only explicitly upgraded assistant frames and emits version 6.
+    pub fn new_current(runtime: ModelRuntime, reasoning: Option<ReasoningConfig>) -> Self {
+        Self {
+            contract: codec::FrameContract::Current,
+            ..Self::new(runtime, reasoning)
         }
     }
     /// Stable route provenance, independent of instruction, tool and execution revisions.
@@ -73,12 +89,9 @@ impl ThreadModel {
         self
     }
     /// One encoding path for execution, previews and reduction, including every tool and media.
-    async fn encode_request(
-        &self,
-        request: &ModelRequest,
-    ) -> Result<crate::completion::CompletionRequest, ModelError> {
+    async fn encode_request(&self, request: &ModelRequest) -> Result<EncodedRequest, ModelError> {
         self.validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(request, &self.runtime)?;
+        let mut encoded = codec::request(request, &self.runtime, self.contract)?;
         encoded.reasoning = self.reasoning.clone();
         if self.runtime.endpoint().chatgpt_session.is_none() {
             encoded.max_tokens = self.runtime.model().max_output_tokens;
@@ -101,7 +114,7 @@ impl ThreadModel {
                 }
             }
         }
-        encoded.tools = declarations.into_iter().map(|(_, spec)| spec).collect();
+        encoded.tools = declarations.iter().map(|(_, spec)| spec.clone()).collect();
         for tool in self.hosted_tools.iter() {
             let declaration = tool.declaration();
             if encoded
@@ -123,7 +136,23 @@ impl ThreadModel {
             .runtime
             .prepare_request(encoded)
             .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-        Ok(encoded)
+        let tool_bindings = declarations
+            .iter()
+            .map(|(tool, spec)| {
+                (
+                    spec.name().to_owned(),
+                    codec::ToolBinding::new(
+                        tool.tool_id.clone(),
+                        spec,
+                        tool.presentation_contract.clone(),
+                    ),
+                )
+            })
+            .collect();
+        Ok(EncodedRequest {
+            completion: encoded,
+            tool_bindings,
+        })
     }
 }
 
@@ -140,6 +169,7 @@ impl Model for ThreadModel {
             observed: Arc::new(Mutex::new(None)),
             prompt: super::ThreadPromptMetadata::default(),
             last_compaction_id: None,
+            contract: self.contract,
         };
         async move { Ok(DynModelSession::new(session)) }
     }
@@ -154,6 +184,7 @@ struct ThreadModelSession {
     observed: Arc<Mutex<Option<OpaquePayload>>>,
     prompt: super::ThreadPromptMetadata,
     last_compaction_id: Option<String>,
+    contract: codec::FrameContract,
 }
 
 impl CoreModelSession for ThreadModelSession {
@@ -163,8 +194,12 @@ impl CoreModelSession for ThreadModelSession {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
+            contract: self.contract,
         };
-        let encoded = configuration.encode_request(&request).await?;
+        let EncodedRequest {
+            completion: encoded,
+            tool_bindings: names,
+        } = configuration.encode_request(&request).await?;
         let observed = self
             .observed
             .lock()
@@ -181,20 +216,6 @@ impl CoreModelSession for ThreadModelSession {
                 .map_err(|_| failure(ModelFailureKind::Unavailable, AdapterError::Poisoned))? =
                 None;
         }
-        let declarations = codec::declarations(&request.tools)?;
-        let names = declarations
-            .iter()
-            .map(|(tool, spec)| {
-                (
-                    spec.name().to_owned(),
-                    codec::ToolBinding::new(
-                        tool.tool_id.clone(),
-                        spec,
-                        tool.presentation_contract.clone(),
-                    ),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
         let estimate = crate::completion::estimate_text_input_tokens(&encoded);
         if estimate
             .zip(self.runtime.context().input_token_limit)
@@ -292,7 +313,19 @@ impl CoreModelSession for ThreadModelSession {
             .with_progress(request.progress.clone())
             .with_members(request.members.clone())
             .with_prompt_cache_scope(super::PromptCacheScope::thread(&request.thread_id));
-        let call = PreparedModelCall::new(async move {
+        let contract = self.contract;
+        let (capture, current) = if contract == codec::FrameContract::Current {
+            let (handle, current) = super::current::CurrentInvocation::channel(&request.attempt_id);
+            (Some(handle), Some(current))
+        } else {
+            (None, None)
+        };
+        let invocation = if let Some(current) = &current {
+            invocation.with_current(current.clone())
+        } else {
+            invocation
+        };
+        let work = async move {
             *observed
                 .lock()
                 .map_err(|_| failure(ModelFailureKind::Unavailable, AdapterError::Poisoned))? =
@@ -318,11 +351,22 @@ impl CoreModelSession for ThreadModelSession {
                         .capabilities
                         .native_context_family
                         .clone(),
+                    contract,
                 },
                 response,
             )?;
             Ok(output)
-        });
+        };
+        let call = if let Some(capture) = capture {
+            PreparedModelCall::new_with_current(async move {
+                let result = work.await;
+                let current = current.expect("current factory").take_final();
+                pl_core::model::ModelCallExit { result, current }
+            })
+            .with_current_capture(capture)
+        } else {
+            PreparedModelCall::new(work)
+        };
         let call = call
             .with_tool_projection(tool_projection)
             .with_request_metadata(request_metadata)

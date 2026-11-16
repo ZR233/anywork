@@ -158,6 +158,35 @@ impl Owner {
             // longer owns a lease, so a differing retry can never grant new execution.
             return Err(ThreadError::InvalidIdentity);
         }
+        if self.current_saved_lifecycle.is_some() {
+            // This is an answer to an old logical prompt, not an execution lease for either owner.
+            // No authority or task future is reconstructed; a new call must ask under its new ID.
+            if previous.state != PermissionState::Pending
+                || previous.revision != resolution.expected_revision
+            {
+                return Err(ThreadError::InvalidIdentity);
+            }
+            let mut record = previous;
+            record.revision = record
+                .revision
+                .checked_add(1)
+                .ok_or(ThreadError::RevisionExhausted)?;
+            record.state = state;
+            record.response = resolution.payload;
+            record.updated_at = crate::time::unix_seconds();
+            let revision = self
+                .state
+                .interaction_collection_revision
+                .checked_add(1)
+                .ok_or(ThreadError::RevisionExhausted)?;
+            self.state
+                .permissions
+                .insert(record.id.clone(), record.clone());
+            self.state.interaction_collection_revision = revision;
+            self.published = self.state.clone();
+            self.publish_snapshot();
+            return Ok(record);
+        }
         let authority = self
             .permission_leases
             .get(&resolution.id)

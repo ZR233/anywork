@@ -102,11 +102,17 @@ fn response_facts(output: &ModelStepOutput) -> Result<Option<BillingResponse>, M
             "repeated model billing receipt",
         )));
     }
-    let frame: BillingFrame = decode(
-        payload,
-        "pl.model.assistant",
-        super::thread_model::FRAME_VERSION,
-    )?;
+    // Both factories remain callable until the production transition: their billing fields share
+    // the same shape even though the current frame also carries source identities.
+    if !matches!(
+        payload.version(),
+        super::thread_model::LEGACY_FRAME_VERSION | super::thread_model::FRAME_VERSION
+    ) {
+        return Err(invalid(std::io::Error::other(
+            "unsupported model billing receipt",
+        )));
+    }
+    let frame: BillingFrame = decode(payload, "pl.model.assistant", payload.version())?;
     let visible = output.content.iter().filter_map(|content| match content {
         ContextContent::Text { text } => Some(text.as_ref()),
         ContextContent::Opaque { .. } | ContextContent::Resource { .. } => None,
@@ -450,6 +456,30 @@ mod tests {
         let error = model_attempt_billing(attempt, 42)
             .expect_err("conflicting facts must not produce a bill");
         assert_eq!(error.kind, ModelFailureKind::UnsupportedContent);
+    }
+
+    #[test]
+    fn response_billing_accepts_both_active_frame_versions_and_rejects_unknown() {
+        for version in [
+            super::super::thread_model::LEGACY_FRAME_VERSION,
+            super::super::thread_model::FRAME_VERSION,
+            super::super::thread_model::FRAME_VERSION + 1,
+        ] {
+            let mut output = bound_output(binding());
+            let ContextContent::Opaque { payload } = &mut output.content[1] else {
+                panic!("assistant frame");
+            };
+            *payload = OpaquePayload::new(payload.format(), version, payload.content()).unwrap();
+            let result = model_attempt_billing(&attempt(AttemptOutcome::Committed(output)), 42);
+            if version <= super::super::thread_model::FRAME_VERSION {
+                assert_eq!(
+                    result.unwrap().unwrap().model_id.as_deref(),
+                    Some("frozen-model")
+                );
+            } else {
+                assert!(result.is_err());
+            }
+        }
     }
 
     #[test]

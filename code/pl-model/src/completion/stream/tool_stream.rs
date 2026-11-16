@@ -5,6 +5,7 @@ use pl_protocol::{PureError, Result};
 use crate::completion::ToolCall;
 use crate::completion::tool_arguments::function_tool_call_from_raw;
 
+use super::current::{ModelStreamToolInput, ModelStreamToolInputPhase, scoped_call_id};
 use super::event::ToolInputDeltaPayload;
 
 pub(crate) struct ToolStream {
@@ -30,9 +31,10 @@ impl ToolStream {
         let acc = self.get_or_insert_accumulator(&key, call_id, &item_id, || {
             ToolCallPayloadAccumulator::FunctionArguments(String::new())
         });
-        acc.merge_metadata(&item_id, call_id, name);
+        acc.merge_metadata(stream_id, &item_id, call_id, name);
         let delta_text = payload_delta.text().to_string();
         acc.push_delta(payload_delta);
+        acc.phase = ModelStreamToolInputPhase::Streaming;
         ToolInputSnapshot {
             tool: acc.snapshot(),
             delta: delta_text,
@@ -51,7 +53,7 @@ impl ToolStream {
         let acc = self.get_or_insert_accumulator(&key, call_id, &item_id, || {
             ToolCallPayloadAccumulator::from_payload(payload)
         });
-        acc.merge_metadata(&item_id, call_id, name);
+        acc.merge_metadata(stream_id, &item_id, call_id, name);
         ToolInputSnapshot {
             tool: acc.snapshot(),
             delta: String::new(),
@@ -67,19 +69,19 @@ impl ToolStream {
         payload: Option<ToolInputDeltaPayload>,
     ) -> Result<Option<ToolCall>> {
         let key = self.resolve_key(stream_id, call_id, item_id);
-        let mut acc = self.remove_accumulator(&key).unwrap_or_else(|| {
-            ToolCallAccumulator::new(
-                &key,
-                call_id,
-                item_id,
-                ToolCallPayloadAccumulator::FunctionArguments(String::new()),
-            )
+        let acc = self.get_or_insert_accumulator(&key, call_id, item_id, || {
+            ToolCallPayloadAccumulator::FunctionArguments(String::new())
         });
-        acc.merge_metadata(item_id, call_id, name);
+        acc.merge_metadata(stream_id, item_id, call_id, name);
         if let Some(payload) = payload {
             acc.replace_payload(payload);
         }
-        Ok(Some(acc.into_tool_call()?))
+        acc.validate_identity()?;
+        Ok(Some(
+            self.remove_accumulator(&key)
+                .expect("validated tool input")
+                .into_tool_call()?,
+        ))
     }
 
     pub(crate) fn complete_input(
@@ -94,23 +96,32 @@ impl ToolStream {
         let acc = self.get_or_insert_accumulator(&key, call_id, item_id, || {
             ToolCallPayloadAccumulator::FunctionArguments(String::new())
         });
-        acc.merge_metadata(item_id, call_id, name);
+        acc.merge_metadata(stream_id, item_id, call_id, name);
         if let Some(payload) = payload {
             acc.replace_payload(payload);
         }
+        acc.phase = ModelStreamToolInputPhase::InputCompleted;
     }
 
     pub(crate) fn finish_all(&mut self, existing: &[ToolCall]) -> Result<Vec<ToolCall>> {
-        let remaining = std::mem::take(&mut self.accumulators);
-        let mut calls = Vec::new();
-        for (_, acc) in remaining {
+        // Check before moving accepted strings out, so a failed terminal remains capturable.
+        for acc in self.accumulators.values() {
             if existing
                 .iter()
                 .any(|call| acc.matches_tool_call_identity(call))
             {
                 continue;
             }
-            calls.push(acc.into_tool_call()?);
+            acc.validate_identity()?;
+        }
+        let mut calls = Vec::new();
+        for acc in std::mem::take(&mut self.accumulators).into_values() {
+            if !existing
+                .iter()
+                .any(|call| acc.matches_tool_call_identity(call))
+            {
+                calls.push(acc.into_tool_call()?);
+            }
         }
         Ok(calls)
     }
@@ -208,14 +219,67 @@ impl ToolStream {
         self.get_or_insert_accumulator(&key, call_id, item_id, || {
             ToolCallPayloadAccumulator::FunctionArguments(String::new())
         })
-        .merge_metadata(item_id, call_id, None);
+        .merge_metadata(stream_id, item_id, call_id, None);
         key
+    }
+
+    pub(crate) fn current(&self, attempt_id: &str) -> Vec<ModelStreamToolInput> {
+        let mut inputs = self
+            .accumulators
+            .values()
+            .map(|acc| {
+                let (kind, input) = match &acc.payload {
+                    ToolCallPayloadAccumulator::FunctionArguments(text) => {
+                        (pl_protocol::ToolCallKind::Function, text)
+                    }
+                    ToolCallPayloadAccumulator::CustomInput(text) => {
+                        (pl_protocol::ToolCallKind::Custom, text)
+                    }
+                };
+                ModelStreamToolInput {
+                    stream_id: acc.stream_id.clone(),
+                    item_id: acc.id.clone(),
+                    provider_call_id: acc.call_id.clone(),
+                    call_id: scoped_call_id(attempt_id, acc.call_id.as_deref().unwrap_or(&acc.id)),
+                    name: acc.name.clone(),
+                    kind,
+                    input: input.clone(),
+                    phase: acc.phase,
+                    stream_aliases: acc.stream_id.iter().cloned().collect(),
+                    item_aliases: unique_identities(Some(&acc.trace_id), Some(&acc.id)),
+                    call_aliases: unique_identities(
+                        acc.initial_call_id.as_ref(),
+                        acc.call_id.as_ref(),
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+        inputs.sort_by(|a, b| {
+            a.stream_id
+                .cmp(&b.stream_id)
+                .then_with(|| a.item_id.cmp(&b.item_id))
+        });
+        inputs
     }
 }
 
 pub(crate) struct ToolInputSnapshot {
     pub(crate) tool: ToolCallAccumulatorSnapshot,
     pub(crate) delta: String,
+}
+
+fn unique_identities(first: Option<&String>, current: Option<&String>) -> Vec<String> {
+    let mut result = first
+        .filter(|id| !id.is_empty())
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let Some(current) = current.filter(|id| !id.is_empty())
+        && !result.contains(current)
+    {
+        result.push(current.clone());
+    }
+    result
 }
 
 struct ToolCallAccumulator {
@@ -225,6 +289,9 @@ struct ToolCallAccumulator {
     call_id: Option<String>,
     name: String,
     payload: ToolCallPayloadAccumulator,
+    phase: ModelStreamToolInputPhase,
+    stream_id: Option<String>,
+    initial_call_id: Option<String>,
 }
 
 impl ToolCallAccumulator {
@@ -248,6 +315,9 @@ impl ToolCallAccumulator {
                 .map(ToOwned::to_owned),
             name: String::new(),
             payload,
+            phase: ModelStreamToolInputPhase::Started,
+            stream_id: None,
+            initial_call_id: call_id.filter(|id| !id.is_empty()).cloned(),
         }
     }
 
@@ -272,7 +342,22 @@ impl ToolCallAccumulator {
         self.has_stable_id && self.call_id.as_deref() == Some(self.id.as_str())
     }
 
-    fn merge_metadata(&mut self, item_id: &str, call_id: Option<&String>, name: Option<String>) {
+    fn merge_metadata(
+        &mut self,
+        stream_id: Option<&String>,
+        item_id: &str,
+        call_id: Option<&String>,
+        name: Option<String>,
+    ) {
+        // Preserve only identities actually used by the resolver: the first stream anchor, the
+        // original trace/item fallback and the accepted canonical identity. Later unrelated
+        // metadata which does not upgrade these fields is not an accepted alias or a seen-set.
+        if self.stream_id.is_none() {
+            self.stream_id = stream_id.filter(|id| !id.is_empty()).cloned();
+        }
+        if self.initial_call_id.is_none() {
+            self.initial_call_id = call_id.filter(|id| !id.is_empty()).cloned();
+        }
         let call_id_was_item_fallback = self.call_id.as_deref() == Some(self.id.as_str());
         if !item_id.is_empty() && !self.has_stable_id {
             self.id = item_id.to_string();
@@ -329,7 +414,7 @@ impl ToolCallAccumulator {
         }
     }
 
-    fn into_tool_call(self) -> Result<ToolCall> {
+    fn validate_identity(&self) -> Result<()> {
         if self.name.is_empty() {
             return Err(PureError::LlmError(
                 "provider emitted tool call without name".to_string(),
@@ -340,6 +425,11 @@ impl ToolCallAccumulator {
                 "provider emitted tool call without stable id".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    fn into_tool_call(self) -> Result<ToolCall> {
+        self.validate_identity()?;
         // call_id 必填：provider 只暴露 item id 时在解码边界确定性赋 call_id = item_id。
         let call_id = self
             .call_id

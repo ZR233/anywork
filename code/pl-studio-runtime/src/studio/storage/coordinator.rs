@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
@@ -174,6 +174,21 @@ impl IncarnationStatus {
 struct ThreadStatus {
     incarnations: BTreeMap<usize, IncarnationStatus>,
     channel: Arc<HistoryChannel>,
+    /// Independent current lifecycle; history reports never acknowledge or clear this writer.
+    current: Option<RegisteredCurrentWriter>,
+}
+
+#[derive(Debug)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "current-only API is intentionally not wired to production before #470"
+    )
+)]
+struct RegisteredCurrentWriter {
+    directory_key: String,
+    writer: Arc<super::current_writer::CurrentWriter>,
 }
 
 #[cfg(test)]
@@ -271,6 +286,147 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    /// Install exactly one stable current writer in the existing per-Thread registration slot.
+    /// Prepare only the caller-owned session directory, then identify its physical location before
+    /// taking the registration lock. Creation/lookup errors propagate; no guessed missing-path key,
+    /// history access, or extra global path registry is involved. The owner must keep this directory
+    /// in place until join/release, just as for the session's other physical assets.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "current-only API is intentionally not wired to production before #470"
+        )
+    )]
+    pub(crate) async fn current_writer(
+        &self,
+        thread_id: &str,
+        directory: std::path::PathBuf,
+    ) -> Result<Arc<super::current_writer::CurrentWriter>> {
+        anyhow::ensure!(!thread_id.is_empty(), "current Thread identity is empty");
+        let (directory, directory_key) = tokio::task::spawn_blocking(move || {
+            anyhow::ensure!(
+                !directory.as_os_str().is_empty(),
+                "current session directory is empty"
+            );
+            // A nonexistent directory has no physical identity. Materialize it under ordinary OS
+            // permissions rather than inferring future alias/case behavior from its spelling.
+            std::fs::create_dir_all(&directory).with_context(|| {
+                format!("prepare current session directory {}", directory.display())
+            })?;
+            let directory = dunce::canonicalize(&directory).with_context(|| {
+                format!("resolve current session directory {}", directory.display())
+            })?;
+            let metadata = std::fs::metadata(&directory).with_context(|| {
+                format!("inspect current session directory {}", directory.display())
+            })?;
+            anyhow::ensure!(
+                metadata.is_dir(),
+                "current session path is not a directory: {}",
+                directory.display()
+            );
+            let key = crate::studio::instance::directory_key(&directory).with_context(|| {
+                format!("identify current session directory {}", directory.display())
+            })?;
+            Ok::<_, anyhow::Error>((directory, key))
+        })
+        .await
+        .context("join current session directory preparation")??;
+        let mut threads = self
+            .0
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Physical identity catches filesystem aliases even when their canonical strings differ.
+        // Reserving the canonical spelling too rejects replacing a live owner's directory in place.
+        if let Some((owner, registered)) = threads
+            .iter()
+            .filter_map(|(owner, status)| {
+                status
+                    .current
+                    .as_ref()
+                    .map(|registered| (owner, registered))
+            })
+            .find(|(_, registered)| {
+                registered.directory_key == directory_key
+                    || registered.writer.directory() == directory
+            })
+        {
+            anyhow::ensure!(
+                owner == thread_id,
+                "current session directory {} is already registered for another Thread {owner}",
+                directory.display()
+            );
+            anyhow::ensure!(
+                registered.directory_key == directory_key,
+                "current Thread physical directory changed while registered: {}",
+                directory.display()
+            );
+            return Ok(registered.writer.clone());
+        }
+        anyhow::ensure!(
+            threads
+                .get(thread_id)
+                .is_none_or(|status| status.current.is_none()),
+            "current Thread registered under another session directory"
+        );
+        let status = threads
+            .entry(thread_id.to_owned())
+            .or_insert_with(|| ThreadStatus {
+                incarnations: BTreeMap::new(),
+                channel: Arc::new(HistoryChannel::with_capacity(
+                    self.0.queued_bytes.clone(),
+                    self.0.capacity.clone(),
+                )),
+                current: None,
+            });
+        let writer = super::current_writer::CurrentWriter::new(
+            super::current_file::CurrentFile::new(directory, thread_id.to_owned()),
+        );
+        status.current = Some(RegisteredCurrentWriter {
+            directory_key,
+            writer: writer.clone(),
+        });
+        Ok(writer)
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "current-only API is intentionally not wired to production before #470"
+        )
+    )]
+    pub(crate) fn release_current_writer(
+        &self,
+        thread_id: &str,
+        writer: &Arc<super::current_writer::CurrentWriter>,
+    ) {
+        if !writer.is_joined() {
+            return;
+        }
+        let channel = {
+            let mut threads = self
+                .0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(status) = threads.get_mut(thread_id) else {
+                return;
+            };
+            if !status
+                .current
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(&current.writer, writer))
+            {
+                return;
+            }
+            status.current = None;
+            status.channel.clone()
+        };
+        self.release_delivery_channel(thread_id, &channel);
+    }
+
     pub(in crate::studio) fn forget_deleted(&self, thread_id: &str) -> anyhow::Result<()> {
         {
             let mut threads = self
@@ -279,13 +435,16 @@ impl ThreadPersistenceCoordinator {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             anyhow::ensure!(
-                threads.get(thread_id).is_none_or(|status| status
-                    .incarnations
-                    .values()
-                    .all(|incarnation| !incarnation.is_live()
-                        && (incarnation.settled() || status.channel.deletion_joined()))
-                    && (status.channel.is_clean() || status.channel.deletion_joined())
-                    && !status.channel.has_delivery_bytes()),
+                threads
+                    .get(thread_id)
+                    .is_none_or(|status| status.current.is_none()
+                        && status
+                            .incarnations
+                            .values()
+                            .all(|incarnation| !incarnation.is_live()
+                                && (incarnation.settled() || status.channel.deletion_joined()))
+                        && (status.channel.is_clean() || status.channel.deletion_joined())
+                        && !status.channel.has_delivery_bytes()),
                 "deleted Thread still has a live writer or reliable delivery responsibility"
             );
             threads.remove(thread_id);
@@ -334,6 +493,7 @@ impl ThreadPersistenceCoordinator {
                 .or_insert_with(|| ThreadStatus {
                     incarnations: BTreeMap::new(),
                     channel: channel.clone(),
+                    current: None,
                 });
             anyhow::ensure!(
                 status.channel.shares_delivery_budget(channel),
@@ -431,6 +591,7 @@ impl ThreadPersistenceCoordinator {
             .entry(thread_id.to_owned())
             .or_insert_with(|| ThreadStatus {
                 incarnations: BTreeMap::new(),
+                current: None,
                 channel: Arc::new(HistoryChannel::with_capacity(
                     self.0.queued_bytes.clone(),
                     self.0.capacity.clone(),
@@ -459,6 +620,7 @@ impl ThreadPersistenceCoordinator {
                 .entry(thread_id.to_owned())
                 .or_insert_with(|| ThreadStatus {
                     incarnations: BTreeMap::new(),
+                    current: None,
                     channel: Arc::new(HistoryChannel::with_capacity(
                         self.0.queued_bytes.clone(),
                         self.0.capacity.clone(),
@@ -500,6 +662,7 @@ impl ThreadPersistenceCoordinator {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if threads.get(thread_id).is_some_and(|status| {
             status.incarnations.is_empty()
+                && status.current.is_none()
                 && Arc::ptr_eq(&status.channel, &current)
                 && !status.channel.has_delivery_bytes()
         }) {
@@ -736,6 +899,7 @@ impl ThreadPersistenceCoordinator {
                 .entry(thread_id.to_owned())
                 .or_insert_with(|| ThreadStatus {
                     incarnations: BTreeMap::new(),
+                    current: None,
                     channel: Arc::new(HistoryChannel::with_capacity(
                         self.0.queued_bytes.clone(),
                         self.0.capacity.clone(),
@@ -849,7 +1013,7 @@ impl ThreadPersistenceCoordinator {
                 .values()
                 .any(|incarnation| incarnation.owed() > 0)
                 && !status.incarnations.values().any(IncarnationStatus::is_live);
-            empty = status.incarnations.is_empty();
+            empty = status.incarnations.is_empty() && status.current.is_none();
         }
         if empty && clean && !channel.has_delivery_bytes() {
             threads.remove(thread_id);

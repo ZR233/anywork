@@ -2,6 +2,8 @@
 
 本文是命令查询分离（CQS）边界、公共快照、按需激活、应用关闭、自动标题生命周期与产品投影的唯一权威源；存储与检查点契约见 [17](./17-studio-storage.md)，界面呈现契约见 [19](./19-studio-ui.md)。
 
+Native current 解耦后的目标是：运行态查询从 RAM current 读取，冷态查询从独立 current 文件读取，历史查询独立于 current；历史首屏不等待完整 current 解析，current 不可恢复也不阻止独立浏览历史。恢复状态须明确显示上次保存时间及 paused，current 保存故障单独可观察，不能用 history 确认或 UI ACK 代替。详见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)。生产入口统一切换前，本文仍描述基于 SQLite checkpoint 的现状，不能据此增加新 current 与历史的恢复耦合。
+
 ## 18.1 命令查询分离（CQS）
 
 Studio 遵循命令查询分离原则：查询只读取所有者已发布的权威快照；初始化、激活、扫描技能或配置模板（Profile）、故障修复、重连与关闭只能由显式类型化命令触发。组件重建（rebuild）、事件流重同步与 `read*` 查询不得写入 SQLite 或配置文件、访问网络或创建运行时所有者。进程运行期间，项目（`Project`）、会话（`Thread`）、智能体（`Agent`）、工作流（`Workflow`）、恢复（`Recovery`）及服务目录的内存所有者是活动事实源；会话 SQLite 的最新检查点提供按需激活基线，历史记录与累计计量在同一事务中保存，调用日志独立用于调试分析。

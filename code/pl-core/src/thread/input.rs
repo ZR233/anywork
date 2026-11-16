@@ -417,6 +417,9 @@ impl InputDriver {
 
 impl Owner {
     pub(super) fn resume_inputs(&mut self, options: InputDriverOptions) -> Result<(), ThreadError> {
+        if self.current_saved_lifecycle.is_some() {
+            return Err(ThreadError::CurrentPaused);
+        }
         if self.state.lifecycle != ThreadLifecycle::Open || self.interrupt.is_closing() {
             return Err(ThreadError::Closed);
         }
@@ -700,31 +703,9 @@ impl Owner {
         &mut self,
         request: QueuedTurn,
     ) -> Result<Option<TurnCompletion>, ThreadError> {
-        let Some(record) = self
-            .state
-            .inputs
-            .iter()
-            .find(|record| self.driveable(record))
-            .cloned()
-        else {
+        let Some(content) = self.freeze_next_input_batch() else {
             return Ok(None);
         };
-        let through = self.input_batch_through.take().unwrap_or(record.ordinal);
-        // The frozen batch is one commit's worth of work: every input it covers is consumed by the
-        // admission that also advances the message watermark, so the next Turn never re-delivers an
-        // already admitted input and a body-less control never starts a Turn of its own.
-        let batch: Vec<_> = self
-            .state
-            .inputs
-            .iter()
-            .filter(|input| input.ordinal <= through && self.driveable(input))
-            .cloned()
-            .collect();
-        self.active_inputs = batch.iter().map(|input| input.input.id.clone()).collect();
-        let content = batch
-            .into_iter()
-            .flat_map(|input| input.input.context)
-            .collect();
         let active = self
             .interrupt
             .activate(&request.cancellation, self.authorized_stops.take());
@@ -744,6 +725,34 @@ impl Owner {
         self.active_inputs.clear();
         self.publish_snapshot();
         result.map(Some)
+    }
+
+    /// Freeze a batch without consuming it; ordinary admission later confirms consumption.
+    pub(super) fn freeze_next_input_batch(&mut self) -> Option<Vec<ContextContent>> {
+        let record = self
+            .state
+            .inputs
+            .iter()
+            .find(|record| self.driveable(record))
+            .cloned()?;
+        let through = self.input_batch_through.take().unwrap_or(record.ordinal);
+        // The frozen batch is one commit's worth of work: every input it covers is consumed by the
+        // admission that also advances the message watermark, so the next Turn never re-delivers an
+        // already admitted input and a body-less control never starts a Turn of its own.
+        let batch: Vec<_> = self
+            .state
+            .inputs
+            .iter()
+            .filter(|input| input.ordinal <= through && self.driveable(input))
+            .cloned()
+            .collect();
+        self.active_inputs = batch.iter().map(|input| input.input.id.clone()).collect();
+        Some(
+            batch
+                .into_iter()
+                .flat_map(|input| input.input.context)
+                .collect(),
+        )
     }
 
     /// Stages consumption just before request publication; no independently published watermark.

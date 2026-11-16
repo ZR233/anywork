@@ -42,9 +42,14 @@ pub struct ModelInvocationContext {
     prompt_cache_scope: Option<super::PromptCacheScope>,
     progress: Option<pl_core::model::ModelProgressSender>,
     members: Option<pl_core::model::ModelMemberSender>,
+    current: Option<super::current::CurrentInvocation>,
 }
 
 impl ModelInvocationContext {
+    pub(super) fn with_current(mut self, current: super::current::CurrentInvocation) -> Self {
+        self.current = Some(current);
+        self
+    }
     pub(super) fn with_members(
         mut self,
         members: Option<pl_core::model::ModelMemberSender>,
@@ -92,6 +97,7 @@ impl ModelInvocationContext {
             prompt_cache_scope: None,
             progress: None,
             members: None,
+            current: None,
         }
     }
 
@@ -390,18 +396,48 @@ impl InvocationRunner {
         // Session close may cancel this child without cancelling the caller's parent token.
         let cancellation = caller_cancellation.child_token();
         context.cancellation = Some(cancellation.clone());
-        let invocation = self.complete_inner(request, context);
-        tokio::pin!(invocation);
-        // Cancellation is cooperative: await the same invocation so its partial
-        // accounting and transport guards finish before releasing admission.
-        let mut result = tokio::select! {
-            biased;
-            _ = closing.cancelled() => {
-                cancellation.cancel();
-                invocation.await
+        let current_link = context.current.clone();
+        let mut current = current_link.as_ref().and_then(|link| link.take_producer());
+        if current_link.is_some() && current.is_none() {
+            return Err(CompletionFailure::new(
+                PureError::Protocol("current invocation endpoint was already consumed".into()),
+                Box::default(),
+            ));
+        }
+        let mut result = {
+            let invocation = self.complete_inner(request, context, current.as_mut());
+            tokio::pin!(invocation);
+            // Cancellation is cooperative: await the same invocation so its partial
+            // accounting and transport guards finish before releasing admission.
+            tokio::select! {
+                biased;
+                _ = closing.cancelled() => {
+                    cancellation.cancel();
+                    invocation.await
+                }
+                result = &mut invocation => result,
             }
-            result = &mut invocation => result,
         };
+        if let Some(current) = current.as_mut() {
+            match current.finish(result.as_ref().err().map(ToString::to_string)) {
+                Ok(payload) => current_link
+                    .as_ref()
+                    .expect("current invocation")
+                    .handoff(payload),
+                Err(error) if result.is_ok() => {
+                    let accounting = result
+                        .as_ref()
+                        .expect("successful result")
+                        .accounting
+                        .clone();
+                    result = Err(CompletionFailure::new(
+                        PureError::Protocol(error.to_string()),
+                        Box::new(accounting),
+                    ));
+                }
+                Err(_) => {} // Core rejects an exit without a complete final current payload.
+            }
+        }
         match &mut result {
             Ok(response) => {
                 progress.finish_recovery(pl_core::model::ModelRecoveryPhase::Recovered);
@@ -434,19 +470,31 @@ impl InvocationRunner {
         &self,
         request: CompletionRequest,
         context: ModelInvocationContext,
+        mut current: Option<&mut super::current::CurrentProducer>,
     ) -> std::result::Result<CompletionResponse, CompletionFailure> {
         super::context::validate(self.model.binding.transport.protocol, &request.input)?;
-        let _session_lease = if let Some(cancellation) = &context.cancellation {
-            tokio::select! {
-                biased;
-                _ = cancellation.cancelled() => return Err(CompletionFailure::cancelled(
-                    PureError::LlmError("model invocation cancelled before admission".into()),
-                    Box::default(),
-                )),
-                lease = context.session.admit() => lease?,
+        let admission = async {
+            if let Some(cancellation) = &context.cancellation {
+                tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => Err(CompletionFailure::cancelled(
+                        PureError::LlmError("model invocation cancelled before admission".into()),
+                        Box::default(),
+                    )),
+                    lease = context.session.admit() => lease.map_err(CompletionFailure::from),
+                }
+            } else {
+                context
+                    .session
+                    .admit()
+                    .await
+                    .map_err(CompletionFailure::from)
             }
+        };
+        let _session_lease = if let Some(current) = current.as_deref_mut() {
+            current.wait(admission, None).await?
         } else {
-            context.session.admit().await?
+            admission.await?
         };
         let mut request = super::context::project_request(
             &self.endpoint,
@@ -495,7 +543,12 @@ impl InvocationRunner {
             let preparation = if attachments_prepared {
                 Ok(())
             } else {
-                self.prepare_attachments(&mut request, &context).await
+                let preparation = self.prepare_attachments(&mut request, &context);
+                if let Some(current) = current.as_deref_mut() {
+                    current.wait(preparation, None).await
+                } else {
+                    preparation.await
+                }
             };
             let attempted_stream = preparation.is_ok();
             let mut attempt_request = request.clone();
@@ -529,7 +582,14 @@ impl InvocationRunner {
                     transport_attempts += 1;
                     let inference_timer = InferenceTimer::start();
                     let (result, retry_allowed) = self
-                        .run_stream_attempt(attempt_request, &context, trace, &inference_timer)
+                        .run_stream_attempt(
+                            attempt_request,
+                            &context,
+                            trace,
+                            &inference_timer,
+                            current.as_deref_mut(),
+                            (transport_attempts - 1) as u32,
+                        )
                         .await;
                     (result, retry_allowed, Some(inference_timer))
                 }
@@ -589,10 +649,14 @@ impl InvocationRunner {
                     && self.supports_http_fallback()
                 {
                     let connection_key = self.connection_fingerprint();
-                    let activated = context
+                    let activation = context
                         .session
-                        .activate_responses_http_fallback(connection_key)
-                        .await;
+                        .activate_responses_http_fallback(connection_key);
+                    let activated = if let Some(current) = current.as_deref_mut() {
+                        current.wait(activation, None).await
+                    } else {
+                        activation.await
+                    };
                     let (provider_code, http_status) =
                         error.transient_model_metadata().unwrap_or((None, None));
                     tracing::warn!(
@@ -620,11 +684,15 @@ impl InvocationRunner {
                 && self.supports_http_fallback()
                 && attempt_number < max_retries
             {
-                if context
+                let activation = context
                     .session
-                    .activate_responses_http_fallback(self.connection_fingerprint())
-                    .await
-                {
+                    .activate_responses_http_fallback(self.connection_fingerprint());
+                let activated = if let Some(current) = current.as_deref_mut() {
+                    current.wait(activation, None).await
+                } else {
+                    activation.await
+                };
+                if activated {
                     http_fallbacks += 1;
                 }
                 attempt_number += 1;
@@ -650,12 +718,14 @@ impl InvocationRunner {
                 if let Err(cause) = context.begin_retry(&mut error) {
                     return Err(error.with_source(cause));
                 }
-                context
-                    .session
-                    .uploaded_files
-                    .lock()
-                    .await
-                    .retain(|(fingerprint, _), _| *fingerprint != self.connection_fingerprint());
+                let locking = context.session.uploaded_files.lock();
+                let mut files = if let Some(current) = current.as_deref_mut() {
+                    current.wait(locking, None).await
+                } else {
+                    locking.await
+                };
+                files.retain(|(fingerprint, _), _| *fingerprint != self.connection_fingerprint());
+                drop(files);
                 attachments_prepared = false;
                 refreshed_attachments = true;
                 retry_failure = Some(error);
@@ -677,10 +747,14 @@ impl InvocationRunner {
                 && attempt_number >= RESPONSES_WEBSOCKET_MAX_RETRIES
                 && self.supports_http_fallback()
             {
-                let activated = context
+                let activation = context
                     .session
-                    .activate_responses_http_fallback(self.connection_fingerprint())
-                    .await;
+                    .activate_responses_http_fallback(self.connection_fingerprint());
+                let activated = if let Some(current) = current.as_deref_mut() {
+                    current.wait(activation, None).await
+                } else {
+                    activation.await
+                };
                 if activated {
                     http_fallbacks = http_fallbacks.saturating_add(1);
                 }
@@ -707,13 +781,20 @@ impl InvocationRunner {
                 error_bytes = error.to_string().len(),
                 "模型连接中断，将在统一预算内重试当前请求"
             );
-            if let Some(token) = &context.cancellation {
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {},
-                    _ = token.cancelled() => {},
+            let backoff = async {
+                if let Some(token) = &context.cancellation {
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {},
+                        _ = token.cancelled() => {},
+                    }
+                } else {
+                    tokio::time::sleep(delay).await;
                 }
+            };
+            if let Some(current) = current.as_deref_mut() {
+                current.wait(backoff, None).await;
             } else {
-                tokio::time::sleep(delay).await;
+                backoff.await;
             }
             retry_failure = Some(error);
         }
@@ -759,10 +840,15 @@ impl InvocationRunner {
         context: &ModelInvocationContext,
         trace: Option<CompletionTraceContext>,
         inference_timer: &InferenceTimer,
+        mut current: Option<&mut super::current::CurrentProducer>,
+        generation: u32,
     ) -> (
         std::result::Result<CompletionResponse, CompletionFailure>,
         bool,
     ) {
+        if let Some(current) = current.as_deref_mut() {
+            current.begin_generation(generation);
+        }
         let has_hosted_tools = request.tools.iter().any(|tool| match tool {
             pl_protocol::ToolSpec::Function { .. } | pl_protocol::ToolSpec::Custom { .. } => false,
             pl_protocol::ToolSpec::ProgrammaticToolCalling
@@ -778,22 +864,33 @@ impl InvocationRunner {
         };
         let opening = self.stream_events(body, context.session.clone(), trace.clone());
         tokio::pin!(opening);
-        let opened = match context.cancellation.as_ref() {
-            Some(token) => tokio::select! {
-                result = &mut opening => result,
-                _ = token.cancelled() => {
-                    inference_timer.mark_terminal();
-                    return (Err(CompletionFailure::cancelled(
-                        PureError::LlmError("model invocation cancelled".into()),
-                        Box::default(),
-                    ).with_model_observation(model_observation.clone())), false);
+        let mut accumulator =
+            crate::completion::stream::StreamCompletionAccumulator::with_model_observation(
+                trace.clone(),
+                context.trace_sink.clone(),
+                Some(model_observation.clone()),
+            );
+        let open = async {
+            match context.cancellation.as_ref() {
+                Some(token) => tokio::select! {
+                    result = &mut opening => (result, false),
+                    _ = token.cancelled() => {
+                        inference_timer.mark_terminal();
+                        (Err(PureError::LlmError("model invocation cancelled".into())), true)
+                    },
                 },
-            },
-            None => opening.await,
+                None => (opening.await, false),
+            }
+        };
+        let (opened, opening_cancelled) = if let Some(current) = current.as_deref_mut() {
+            current.wait(open, Some(&accumulator)).await
+        } else {
+            open.await
         };
         match opened {
             Ok(opened) => {
                 model_observation.sent_model = opened.sent_model;
+                accumulator.set_model_observation(model_observation.clone());
                 let replay_unsafe = Arc::new(AtomicBool::new(false));
                 let tracked_stream: CompletionEventStream = opened
                     .events
@@ -845,6 +942,8 @@ impl InvocationRunner {
                                 .map_or(0, |p| p.latest().observation().generation),
                         },
                         opened.idle_timeout,
+                        Some(accumulator),
+                        current.as_deref_mut(),
                     )
                     .await;
                 let retry_allowed = !replay_unsafe.load(Ordering::Acquire);
@@ -852,6 +951,17 @@ impl InvocationRunner {
             }
             Err(error) => {
                 inference_timer.mark_terminal();
+                accumulator.fail_attempt(&error, &context.event_tx);
+                if let Some(current) = current {
+                    current.freeze(&accumulator);
+                }
+                if opening_cancelled {
+                    return (
+                        Err(CompletionFailure::cancelled(error, Box::default())
+                            .with_model_observation(model_observation)),
+                        false,
+                    );
+                }
                 (
                     Err(CompletionFailure::from(error).with_model_observation(model_observation)),
                     true,
@@ -1715,6 +1825,10 @@ mod chatgpt_tests {
         let metadata: serde_json::Value =
             serde_json::from_str(prepared.request_metadata().unwrap().content()).unwrap();
         assert_eq!(metadata["maxTokens"], serde_json::Value::Null);
+        assert!(
+            metadata.get("sentModel").is_none(),
+            "the legacy production receipt stays unchanged"
+        );
         // Preparing must not poll the operation or access the protected storage.
         drop(prepared);
         session.close().await.unwrap();
@@ -1886,6 +2000,8 @@ mod timing_tests {
                     generation: 0,
                 },
                 Some(Duration::from_millis(1)),
+                None,
+                None,
             )
             .await
             .expect_err("the stream has no terminal event");
@@ -1967,6 +2083,7 @@ mod timing_tests {
             ModelInvocationContext::new(session.clone())
                 .with_progress(Some(progress.clone()))
                 .with_cancellation(Some(cancellation.clone())),
+            None,
         );
         tokio::pin!(invocation);
         tokio::time::timeout(

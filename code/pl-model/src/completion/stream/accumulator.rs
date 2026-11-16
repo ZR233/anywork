@@ -22,6 +22,10 @@ use crate::completion::{
     CompletionTraceContext, ToolCall,
 };
 
+use super::current::{
+    ModelCallIdentity, ModelStreamBlock, ModelStreamContentPart, ModelStreamCurrent,
+    ModelStreamCurrentState, ModelStreamMember,
+};
 use super::event::{
     ModelBlockContent, ModelBlockField, ModelBlockKind, ModelStreamEvent, ToolInputDeltaPayload,
     WebSearchAction,
@@ -30,15 +34,18 @@ use super::lifecycle::{self, StreamLifecycle};
 use super::state::{CompletedStream, FailedStream, StreamAccumulatorState};
 use super::tool_stream::{self, ToolStream};
 use super::trace_projection::TraceProjection;
+use crate::completion::CompletionPresentationPartKind;
 
 use super::MAX_COMPLETION_OUTPUT_BYTES as MAX_OUTPUT_BYTES;
 
 pub(crate) struct StreamCompletionAccumulator {
-    content_parts: Vec<ContentPart>,
+    content_parts: Vec<ModelStreamContentPart>,
     content_indexes: HashMap<String, usize>,
-    other_text_lengths: HashMap<(String, &'static str), usize>,
-    reasoning_summary_parts: Vec<String>,
-    raw_reasoning_parts: Vec<String>,
+    blocks: Vec<ModelStreamBlock>,
+    /// Derived lookup by block or provider item identity; the ordered blocks remain the source.
+    block_indexes: HashMap<String, Vec<usize>>,
+    /// Bounded shallow block relationships; native bodies remain owned/charged by replay.
+    block_bytes: usize,
     tool_calls: Vec<ToolCall>,
     tool_call_callers: HashMap<String, ToolCallCaller>,
     responses_context_items: Vec<ResponsesContextItem>,
@@ -79,6 +86,88 @@ struct StartedPart {
 }
 
 impl StreamCompletionAccumulator {
+    /// Capture at a normalized-event safe point, before any `finish`/`take_*` handoff.
+    /// The supplied attempt belongs to Core; the generation distinguishes transparent retries.
+    pub(crate) fn current(&self, attempt_id: &str, generation: u32) -> ModelStreamCurrent {
+        let tool_inputs = self.tool_stream.current(attempt_id);
+        let mut call_bindings = self
+            .tool_calls
+            .iter()
+            .map(|call| ModelCallIdentity::new(attempt_id, &call.call_id, &call.id))
+            .collect::<Vec<_>>();
+        for input in &tool_inputs {
+            let binding = ModelCallIdentity::new(
+                attempt_id,
+                input.provider_call_id.as_deref().unwrap_or(&input.item_id),
+                &input.item_id,
+            );
+            if !call_bindings.iter().any(|old| old == &binding) {
+                call_bindings.push(binding);
+            }
+        }
+        ModelStreamCurrent {
+            attempt_id: attempt_id.into(),
+            generation,
+            previous_generations: Vec::new(),
+            state: match &self.state {
+                StreamAccumulatorState::Open(_) => ModelStreamCurrentState::Open,
+                StreamAccumulatorState::Completed(_) => ModelStreamCurrentState::Completed,
+                StreamAccumulatorState::Failed(failed) => ModelStreamCurrentState::Failed {
+                    message: failed.message().into(),
+                },
+            },
+            response_id: self.response_id.clone(),
+            model_observation: self.model_observation.clone(),
+            reported_model_is_terminal: self.reported_model_is_terminal,
+            content_parts: self.content_parts.clone(),
+            blocks: self
+                .blocks
+                .iter()
+                .map(|block| {
+                    let mut saved = block.clone();
+                    if saved.provider_metadata.is_none() {
+                        saved.provider_metadata = block
+                            .provider_item_id
+                            .as_deref()
+                            .and_then(|id| self.replay.native_item(id))
+                            .cloned();
+                    }
+                    saved
+                })
+                .collect(),
+            reasoning_summary_parts: self
+                .reasoning_parts(CompletionPresentationPartKind::SummaryText),
+            raw_reasoning_parts: self
+                .reasoning_parts(CompletionPresentationPartKind::ReasoningText),
+            tool_inputs,
+            tool_calls: self.tool_calls.clone(),
+            tool_call_callers: self
+                .tool_call_callers
+                .iter()
+                .map(|(id, caller)| (id.clone(), caller.clone()))
+                .collect(),
+            call_bindings,
+            responses_context_items: self.responses_context_items.clone(),
+            replay: self.replay.current(),
+            presentation_items: self.presentation_items.clone(),
+            members: self
+                .started_members
+                .values()
+                .map(|part| ModelStreamMember {
+                    identity: part.identity.clone(),
+                    content_available: part.content_available,
+                })
+                .collect(),
+            presentation_states: self
+                .presentation_states
+                .iter()
+                .map(|(id, state)| (id.clone(), *state))
+                .collect(),
+            final_usage: self.final_usage.clone(),
+            usage_is_terminal: matches!(self.state, StreamAccumulatorState::Completed(_)),
+        }
+    }
+
     pub(crate) fn with_model_observation(
         trace: Option<CompletionTraceContext>,
         trace_sink: Option<Arc<dyn TraceEventSink>>,
@@ -87,9 +176,9 @@ impl StreamCompletionAccumulator {
         Self {
             content_parts: Vec::new(),
             content_indexes: HashMap::new(),
-            other_text_lengths: HashMap::new(),
-            reasoning_summary_parts: Vec::new(),
-            raw_reasoning_parts: Vec::new(),
+            blocks: Vec::new(),
+            block_indexes: HashMap::new(),
+            block_bytes: 0,
             tool_calls: Vec::new(),
             tool_call_callers: HashMap::new(),
             responses_context_items: Vec::new(),
@@ -114,6 +203,10 @@ impl StreamCompletionAccumulator {
             state: StreamAccumulatorState::open(),
             trace: trace.map(|trace| TraceProjection::with_sink(trace, trace_sink)),
         }
+    }
+
+    pub(crate) fn set_model_observation(&mut self, observation: InferenceModelObservation) {
+        self.model_observation = Some(observation);
     }
 
     #[cfg(test)]
@@ -156,6 +249,7 @@ impl StreamCompletionAccumulator {
     ) -> Result<()> {
         let starts = self.started_identities(&stream_event)?;
         let content_available = self.content_available_identities(&stream_event)?;
+        self.record_block_state(&stream_event)?;
         match stream_event {
             ModelStreamEvent::BlockOpened {
                 id,
@@ -176,17 +270,18 @@ impl StreamCompletionAccumulator {
                 kind: ModelBlockKind::Text { channel },
                 field: ModelBlockField::Text,
                 delta,
+                provider,
                 ..
             } => {
-                if channel == TraceTextChannel::Final {
-                    self.append_content_part(&id, &delta)?;
-                } else {
-                    self.charge_text_output(0, delta.len())?;
-                    *self
-                        .other_text_lengths
-                        .entry((id.clone(), channel.as_str()))
-                        .or_default() += delta.len();
-                }
+                let identity = observation(ModelBlockKind::Text { channel }, provider.as_ref())?.1;
+                self.append_content_part(
+                    &format!("text:{}:{id}", channel.as_str()),
+                    &id,
+                    CompletionPresentationPartKind::OutputText,
+                    identity,
+                    provider.as_ref().map_or(0, |part| part.content_index),
+                    &delta,
+                )?;
                 self.record_text_delta(&id, delta, event_tx, channel);
             }
             ModelStreamEvent::BlockDelta {
@@ -195,10 +290,23 @@ impl StreamCompletionAccumulator {
                 field: ModelBlockField::ReasoningSummary,
                 delta,
                 section_index,
+                provider,
                 ..
             } => {
-                self.charge_text_output(0, delta.len())?;
-                self.reasoning_summary_parts.push(delta.clone());
+                let identity = observation(ModelBlockKind::ReasoningSummary, provider.as_ref())?.1;
+                // The provider part identity is authoritative. `section_index` also serves trace
+                // grouping, and must not create a second, contradictory persisted identity.
+                let index = provider
+                    .as_ref()
+                    .map_or(section_index.unwrap_or_default(), |part| part.content_index);
+                self.append_content_part(
+                    &format!("summary:{id}:{index}"),
+                    &id,
+                    CompletionPresentationPartKind::SummaryText,
+                    identity,
+                    index,
+                    &delta,
+                )?;
                 self.record_thinking_delta(&id, section_index.unwrap_or_default(), delta, event_tx);
             }
             ModelStreamEvent::BlockDelta {
@@ -213,25 +321,24 @@ impl StreamCompletionAccumulator {
                 id,
                 kind: ModelBlockKind::Text { channel },
                 authoritative_content,
+                provider,
                 ..
             } => {
                 let authoritative_text = match authoritative_content {
                     Some(ModelBlockContent::Text(text)) => Some(text),
                     Some(ModelBlockContent::ReasoningSummary(_)) | None => None,
                 };
-                if channel == TraceTextChannel::Final
-                    && let Some(text) = authoritative_text.as_deref()
-                {
-                    self.complete_content_part(&id, text)?;
-                } else if let Some(text) = authoritative_text.as_deref() {
-                    let key = (id.clone(), channel.as_str());
-                    let old = self
-                        .other_text_lengths
-                        .get(&key)
-                        .copied()
-                        .unwrap_or_default();
-                    self.charge_text_output(old, text.len())?;
-                    self.other_text_lengths.insert(key, text.len());
+                if let Some(text) = authoritative_text.as_deref() {
+                    let identity =
+                        observation(ModelBlockKind::Text { channel }, provider.as_ref())?.1;
+                    self.complete_content_part(
+                        &format!("text:{}:{id}", channel.as_str()),
+                        &id,
+                        CompletionPresentationPartKind::OutputText,
+                        identity,
+                        provider.as_ref().map_or(0, |part| part.content_index),
+                        text,
+                    )?;
                 }
                 self.record_text_completed(&id, channel, authoritative_text, event_tx);
             }
@@ -239,16 +346,42 @@ impl StreamCompletionAccumulator {
                 id,
                 kind: ModelBlockKind::ReasoningSummary,
                 authoritative_content,
+                provider,
                 ..
             } => {
                 let authoritative_summary =
                     if let Some(ModelBlockContent::ReasoningSummary(summary)) =
                         authoritative_content
                     {
-                        let old = self.reasoning_summary_parts.iter().map(String::len).sum();
+                        let old = self
+                            .content_parts
+                            .iter()
+                            .filter(|part| {
+                                part.block_id == id
+                                    && part.kind == CompletionPresentationPartKind::SummaryText
+                            })
+                            .map(|part| part.text.len())
+                            .sum();
                         let new = summary.iter().map(String::len).sum();
                         self.charge_text_output(old, new)?;
-                        self.reasoning_summary_parts = summary.clone();
+                        // Replace only this reasoning member, never a previously completed member.
+                        self.remove_summary_parts(&id);
+                        for (index, text) in summary.iter().enumerate() {
+                            let mut identity =
+                                observation(ModelBlockKind::ReasoningSummary, provider.as_ref())?.1;
+                            if let ObservedPartIdentity::Provider(part) = &mut identity {
+                                part.content_index = index as u32;
+                            }
+                            let key = format!("summary:{id}:{index}");
+                            let slot = self.content_part_slot(
+                                &key,
+                                &id,
+                                CompletionPresentationPartKind::SummaryText,
+                                identity,
+                                index as u32,
+                            );
+                            self.content_parts[slot].text = text.clone();
+                        }
                         Some(summary)
                     } else {
                         None
@@ -259,10 +392,30 @@ impl StreamCompletionAccumulator {
                 id,
                 content_index,
                 delta,
-                ..
+                provider,
             } => {
-                self.charge_text_output(0, delta.len())?;
-                self.raw_reasoning_parts.push(delta.clone());
+                let identity = match provider.as_ref() {
+                    Some(part) => {
+                        provider_observation(
+                            &part.item_id,
+                            ObservedItemKind::Reasoning,
+                            ObservedPartKind::ReasoningText,
+                            part.content_index,
+                        )
+                        .1
+                    }
+                    None => ObservedPartIdentity::Aggregate {
+                        channel: AggregateChannel::Reasoning,
+                    },
+                };
+                self.append_content_part(
+                    &format!("raw:{id}:{content_index}"),
+                    &id,
+                    CompletionPresentationPartKind::ReasoningText,
+                    identity,
+                    content_index,
+                    &delta,
+                )?;
                 self.record_reasoning_content_delta(&id, content_index, delta, event_tx);
             }
             ModelStreamEvent::ToolInputStarted {
@@ -380,6 +533,14 @@ impl StreamCompletionAccumulator {
                 }
                 let duplicate = self.presentation_indexes.contains_key(&id);
                 self.record_presentation_item(item)?;
+                if let Some(indexes) = self.block_indexes.get(&id) {
+                    for &index in indexes {
+                        let block = &mut self.blocks[index];
+                        if block.provider_item_id.as_deref() == Some(id.as_str()) {
+                            block.closed = true;
+                        }
+                    }
+                }
                 self.presentation_states.insert(id.clone(), state);
                 if !duplicate {
                     self.completed_member = Some((
@@ -410,6 +571,9 @@ impl StreamCompletionAccumulator {
                 }
                 if response_id.is_some() {
                     self.response_id = response_id;
+                }
+                for block in &mut self.blocks {
+                    block.closed = true;
                 }
                 self.state = StreamAccumulatorState::Completed(CompletedStream::new());
             }
@@ -809,20 +973,39 @@ impl StreamCompletionAccumulator {
         }
         self.ensure_trace_sink()?;
 
-        let content = if self.content_parts.is_empty() {
+        let final_parts = self
+            .content_parts
+            .iter()
+            .filter(|part| {
+                part.kind == CompletionPresentationPartKind::OutputText
+                    && self
+                        .block_indexes
+                        .get(&part.block_id)
+                        .is_some_and(|indexes| {
+                            indexes.iter().any(|&index| {
+                                let block = &self.blocks[index];
+                                block.id == part.block_id
+                                    && block.channel == Some(TraceTextChannel::Final)
+                            })
+                        })
+            })
+            .collect::<Vec<_>>();
+        let content = if final_parts.is_empty() {
             None
         } else {
             Some(
-                self.content_parts
+                final_parts
                     .iter()
                     .map(|part| part.text.as_str())
                     .collect::<String>(),
             )
         };
-        let reasoning_content = if self.raw_reasoning_parts.is_empty() {
+        let raw_reasoning_parts =
+            self.reasoning_parts(CompletionPresentationPartKind::ReasoningText);
+        let reasoning_content = if raw_reasoning_parts.is_empty() {
             None
         } else {
-            Some(self.raw_reasoning_parts.join(""))
+            Some(raw_reasoning_parts.join(""))
         };
         let orchestration =
             stream_orchestration_metrics(&self.responses_context_items, &self.tool_calls);
@@ -922,12 +1105,13 @@ impl StreamCompletionAccumulator {
         }
     }
 
-    pub(super) fn fail_attempt(&mut self, error: &PureError, event_tx: &AgentEventSender) {
+    pub(crate) fn fail_attempt(&mut self, error: &PureError, event_tx: &AgentEventSender) {
         self.state = StreamAccumulatorState::Failed(FailedStream::new(error.to_string()));
         self.publish_trace(event_tx, |trace| trace.fail_attempt(&error.to_string()));
     }
 
     pub(super) fn cancel_attempt(&mut self, reason: &str, event_tx: &AgentEventSender) {
+        self.state = StreamAccumulatorState::Failed(FailedStream::new(reason));
         self.publish_trace(event_tx, |trace| trace.cancel_attempt(reason));
     }
 
@@ -997,32 +1181,204 @@ impl StreamCompletionAccumulator {
         });
     }
 
-    fn append_content_part(&mut self, item_id: &str, delta: &str) -> Result<()> {
-        let index = self.content_part_slot(item_id);
+    fn append_content_part(
+        &mut self,
+        key: &str,
+        id: &str,
+        kind: CompletionPresentationPartKind,
+        identity: ObservedPartIdentity,
+        content_index: u32,
+        delta: &str,
+    ) -> Result<()> {
         self.charge_text_output(0, delta.len())?;
+        let index = self.content_part_slot(key, id, kind, identity, content_index);
         self.content_parts[index].text.push_str(delta);
         Ok(())
     }
 
-    fn complete_content_part(&mut self, item_id: &str, text: &str) -> Result<()> {
-        let index = self.content_part_slot(item_id);
-        let old = self.content_parts[index].text.len();
+    fn complete_content_part(
+        &mut self,
+        key: &str,
+        id: &str,
+        kind: CompletionPresentationPartKind,
+        identity: ObservedPartIdentity,
+        content_index: u32,
+        text: &str,
+    ) -> Result<()> {
+        let old = self
+            .content_indexes
+            .get(key)
+            .map_or(0, |&index| self.content_parts[index].text.len());
         self.charge_text_output(old, text.len())?;
+        let index = self.content_part_slot(key, id, kind, identity, content_index);
         self.content_parts[index].text = text.to_string();
         Ok(())
     }
 
     /// 返回 item 对应的 content part 下标，缺失时追加空 part。
-    fn content_part_slot(&mut self, item_id: &str) -> usize {
+    fn content_part_slot(
+        &mut self,
+        key: &str,
+        id: &str,
+        kind: CompletionPresentationPartKind,
+        identity: ObservedPartIdentity,
+        content_index: u32,
+    ) -> usize {
         *self
             .content_indexes
-            .entry(item_id.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| {
-                self.content_parts.push(ContentPart {
+                self.content_parts.push(ModelStreamContentPart {
+                    block_id: id.into(),
+                    content_index,
+                    identity,
+                    kind,
                     text: String::new(),
                 });
                 self.content_parts.len() - 1
             })
+    }
+
+    fn remove_summary_parts(&mut self, id: &str) {
+        let mut positions = Vec::with_capacity(self.content_parts.len());
+        let mut next = 0;
+        self.content_parts.retain(|part| {
+            let keep =
+                part.block_id != id || part.kind != CompletionPresentationPartKind::SummaryText;
+            positions.push(keep.then_some(next));
+            next += usize::from(keep);
+            keep
+        });
+        self.content_indexes.retain(|_, index| {
+            if let Some(new) = positions[*index] {
+                *index = new;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    fn reasoning_parts(&self, kind: CompletionPresentationPartKind) -> Vec<String> {
+        self.content_parts
+            .iter()
+            .filter(|part| part.kind == kind)
+            .map(|part| part.text.clone())
+            .collect()
+    }
+
+    fn record_block_state(&mut self, event: &ModelStreamEvent) -> Result<()> {
+        let (id, kind, channel, provider, metadata, closed) = match event {
+            ModelStreamEvent::BlockOpened {
+                id,
+                kind,
+                provider,
+                provider_metadata,
+            }
+            | ModelStreamEvent::BlockClosed {
+                id,
+                kind,
+                provider,
+                provider_metadata,
+                ..
+            } => (
+                id,
+                match kind {
+                    ModelBlockKind::Text { .. } => CompletionPresentationPartKind::OutputText,
+                    ModelBlockKind::ReasoningSummary => CompletionPresentationPartKind::SummaryText,
+                },
+                match kind {
+                    ModelBlockKind::Text { channel } => Some(*channel),
+                    _ => None,
+                },
+                provider.as_ref(),
+                provider_metadata.as_ref(),
+                matches!(event, ModelStreamEvent::BlockClosed { .. }),
+            ),
+            ModelStreamEvent::ReasoningRawDelta { id, provider, .. } => (
+                id,
+                CompletionPresentationPartKind::ReasoningText,
+                None,
+                provider.as_ref(),
+                None,
+                false,
+            ),
+            ModelStreamEvent::PresentationItem { .. } => return Ok(()),
+            _ => return Ok(()),
+        };
+        // The decoder already admitted the raw item to replay before its normalized block. Do not
+        // clone or charge that same item again as presentation metadata. A canonical-only producer
+        // without a native item retains its metadata here under the same native-output quota.
+        let shared_metadata = provider
+            .and_then(|part| self.replay.native_item(&part.item_id))
+            .is_some_and(|item| Some(item) == metadata);
+        let owned_metadata = metadata.filter(|_| !shared_metadata);
+        let existing = self.block_indexes.get(id).and_then(|indexes| {
+            indexes.iter().copied().find(|&index| {
+                let block = &self.blocks[index];
+                block.id == *id && block.kind == kind && block.channel == channel
+            })
+        });
+        if let Some(index) = existing {
+            if metadata.is_some() {
+                self.replay.replace_block_metadata(
+                    self.blocks[index].provider_metadata.as_ref(),
+                    owned_metadata,
+                )?;
+            }
+            let block = &mut self.blocks[index];
+            block.closed |= closed;
+            if metadata.is_some() {
+                block.provider_metadata = owned_metadata.cloned();
+            }
+            return Ok(());
+        }
+        let index_bytes = |key: &str| {
+            std::mem::size_of::<usize>()
+                + if self.block_indexes.contains_key(key) {
+                    0
+                } else {
+                    std::mem::size_of::<(String, Vec<usize>)>() + key.len()
+                }
+        };
+        let bytes = std::mem::size_of::<ModelStreamBlock>()
+            + id.len()
+            + provider.map_or(0, |provider| provider.item_id.len())
+            + index_bytes(id)
+            + provider
+                .filter(|provider| provider.item_id != *id)
+                .map_or(0, |provider| index_bytes(&provider.item_id));
+        let next = self
+            .block_bytes
+            .checked_add(bytes)
+            .filter(|bytes| *bytes <= MAX_OUTPUT_BYTES)
+            .ok_or_else(|| {
+                PureError::MemoryError("provider block identities exceed 16 MiB".into())
+            })?;
+        self.replay.replace_block_metadata(None, owned_metadata)?;
+        let index = self.blocks.len();
+        self.blocks.push(ModelStreamBlock {
+            id: id.clone(),
+            kind,
+            channel,
+            provider_item_id: provider.map(|part| part.item_id.clone()),
+            provider_metadata: owned_metadata.cloned(),
+            closed,
+        });
+        self.block_indexes
+            .entry(id.clone())
+            .or_default()
+            .push(index);
+        if let Some(provider) = provider
+            && provider.item_id != *id
+        {
+            self.block_indexes
+                .entry(provider.item_id.clone())
+                .or_default()
+                .push(index);
+        }
+        self.block_bytes = next;
+        Ok(())
     }
 
     fn record_thinking_delta(
@@ -1143,8 +1499,393 @@ fn stream_orchestration_metrics(
     }
 }
 
-struct ContentPart {
-    text: String,
+#[cfg(test)]
+mod current_tests {
+    use super::*;
+    use crate::runtime::openai::{VisibleOutputProtocol, sse::OpenAiStreamDecoder};
+    use serde_json::json;
+
+    fn feed(
+        acc: &mut StreamCompletionAccumulator,
+        decoder: &mut OpenAiStreamDecoder,
+        wire: serde_json::Value,
+    ) {
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        for event in decoder.decode(&serde_json::from_value(wire).unwrap()) {
+            acc.apply(event, &events).unwrap();
+        }
+    }
+
+    fn round_trip(acc: &StreamCompletionAccumulator) -> ModelStreamCurrent {
+        let payload = acc.current("source-attempt", 2).encode().unwrap();
+        assert_eq!(payload.format(), "pl.model.stream-current");
+        assert_eq!(payload.version(), 1);
+        ModelStreamCurrent::decode(&payload).unwrap()
+    }
+
+    #[test]
+    fn current_summary_uses_provider_part_index_not_trace_section_number() {
+        use super::super::event::ProviderBlockIdentity;
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        let provider = Some(ProviderBlockIdentity {
+            item_id: "reasoning".into(),
+            content_index: 7,
+        });
+        acc.apply(
+            ModelStreamEvent::reasoning_summary_started("block".into(), None, provider.clone()),
+            &events,
+        )
+        .unwrap();
+        for (section, text) in [(0, "first"), (1, " second")] {
+            acc.apply(
+                ModelStreamEvent::reasoning_summary_delta(
+                    "block".into(),
+                    section,
+                    text.into(),
+                    provider.clone(),
+                ),
+                &events,
+            )
+            .unwrap();
+        }
+        let saved = round_trip(&acc);
+        assert_eq!(
+            saved.content_parts.len(),
+            1,
+            "trace numbering cannot split a real provider part"
+        );
+        assert_eq!(saved.content_parts[0].content_index, 7);
+        let ObservedPartIdentity::Provider(identity) = &saved.content_parts[0].identity else {
+            panic!("provider part");
+        };
+        assert_eq!(identity.content_index, 7);
+        assert_eq!(saved.content_parts[0].text, "first second");
+        assert_eq!(saved.members.len(), 1);
+        assert_eq!(saved.members[0].identity, saved.content_parts[0].identity);
+    }
+
+    #[test]
+    fn native_block_metadata_does_not_spend_presentation_budget_twice() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        // Native replay and completed presentation each already have their own 16 MiB ceiling.
+        // Charging this raw item again as block metadata used to reject this valid response.
+        let text = "s".repeat(MAX_OUTPUT_BYTES / 2 + 4096);
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.added","output_index":0,
+            "item":{"id":"reasoning","type":"reasoning","summary":[]}}),
+        );
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.done","output_index":0,
+            "item":{"id":"reasoning","type":"reasoning","status":"completed",
+                "summary":[{"type":"summary_text","text":text}],"signature":"unchanged"}}),
+        );
+        assert!(acc.presentation_bytes < MAX_OUTPUT_BYTES);
+        assert_eq!(acc.presentation_items[0].parts[0].text, text);
+        assert!(
+            acc.blocks
+                .iter()
+                .all(|block| block.provider_metadata.is_none()),
+            "native body has only one resident metadata owner"
+        );
+        let saved = round_trip(&acc);
+        assert_eq!(
+            saved.blocks[0].provider_metadata.as_ref().unwrap()["signature"],
+            "unchanged"
+        );
+        assert_eq!(saved.replay.items[0].item["summary"][0]["text"], text);
+        let oversized = ModelStreamEvent::PresentationItem {
+            item: CompletionPresentationItem {
+                provider_item_id: "over-budget".into(),
+                output_index: Some(1),
+                kind: crate::completion::CompletionPresentationItemKind::Reasoning,
+                parts: vec![CompletionPresentationPart {
+                    content_index: 0,
+                    provider_part_id: None,
+                    kind: CompletionPresentationPartKind::SummaryText,
+                    text: "s".repeat(MAX_OUTPUT_BYTES),
+                }],
+            },
+            state: Some(crate::runtime::ModelMemberState::Completed),
+        };
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        assert!(
+            acc.apply(oversized, &events).is_err(),
+            "the existing presentation ceiling must still reject oversized output"
+        );
+        assert_eq!(acc.presentation_items.len(), 1);
+    }
+
+    #[test]
+    fn current_tool_aliases_retain_only_actual_local_identity_upgrades() {
+        use super::super::event::ToolInputPayloadKind;
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::ToolInputStarted {
+                stream_id: Some("stream".into()),
+                item_id: "real-item".into(),
+                call_id: Some("real-item".into()),
+                name: Some("lookup".into()),
+                payload_kind: ToolInputPayloadKind::FunctionArguments,
+            },
+            &events,
+        )
+        .unwrap();
+        acc.apply(
+            ModelStreamEvent::ToolInputDelta {
+                stream_id: Some("stream".into()),
+                item_id: "real-item".into(),
+                call_id: Some("real-call".into()),
+                name: None,
+                payload_delta: ToolInputDeltaPayload::FunctionArguments("{\"q\":".into()),
+            },
+            &events,
+        )
+        .unwrap();
+        for index in 0..2048 {
+            acc.apply(
+                ModelStreamEvent::ToolInputDelta {
+                    stream_id: Some("stream".into()),
+                    item_id: format!("unused-item-{index}"),
+                    call_id: Some(format!("unused-call-{index}")),
+                    name: None,
+                    payload_delta: ToolInputDeltaPayload::FunctionArguments(String::new()),
+                },
+                &events,
+            )
+            .unwrap();
+        }
+        let saved = round_trip(&acc);
+        let input = &saved.tool_inputs[0];
+        assert_eq!(input.input, "{\"q\":");
+        assert_eq!(input.stream_aliases, ["stream"]);
+        assert_eq!(input.item_aliases, ["real-item"]);
+        assert_eq!(input.call_aliases, ["real-item", "real-call"]);
+        assert_eq!(input.provider_call_id.as_deref(), Some("real-call"));
+        assert!(saved.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn producer_current_keeps_open_commentary_reasoning_and_inert_partial_input() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        let commentary = "untrimmed commentary ".repeat(1024);
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.created","response":{"id":"response-1"}}),
+        );
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.added","output_index":0,
+            "item":{"id":"commentary","type":"message","role":"assistant","phase":"commentary","content":[]}}),
+        );
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_text.delta","item_id":"commentary","content_index":0,"delta":commentary}),
+        );
+        let open = round_trip(&acc);
+        assert_eq!(open.state, ModelStreamCurrentState::Open);
+        assert_eq!(open.content_parts[0].text, commentary);
+        assert!(
+            open.blocks
+                .iter()
+                .any(|block| block.channel == Some(TraceTextChannel::Commentary) && !block.closed)
+        );
+        assert!(
+            open.presentation_items.is_empty(),
+            "an open item must not masquerade as a completed member"
+        );
+
+        for (index, id, summary, raw) in [
+            (1, "reasoning-1", "first summary", "first raw"),
+            (2, "reasoning-2", "second summary", "second raw"),
+        ] {
+            feed(
+                &mut acc,
+                &mut decoder,
+                json!({"type":"response.output_item.added","output_index":index,
+                "item":{"id":id,"type":"reasoning","summary":[],"encrypted_content":"cipher","signature":"opaque-signature"}}),
+            );
+            feed(
+                &mut acc,
+                &mut decoder,
+                json!({"type":"response.reasoning_text.delta","item_id":id,"content_index":0,"delta":raw}),
+            );
+            feed(
+                &mut acc,
+                &mut decoder,
+                json!({"type":"response.reasoning_summary_text.delta","item_id":id,"summary_index":0,"delta":"prefix"}),
+            );
+            feed(
+                &mut acc,
+                &mut decoder,
+                json!({"type":"response.output_item.done","output_index":index,
+                "item":{"id":id,"type":"reasoning","status":"completed",
+                    "content":[{"type":"reasoning_text","text":raw}],
+                    "summary":[{"type":"summary_text","text":summary}],
+                    "encrypted_content":"cipher","signature":"opaque-signature","unknown":{"nested":[1,"untouched"]}}}),
+            );
+        }
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.added","output_index":3,
+            "item":{"id":"tool-item","call_id":"call_0","type":"function_call","name":"read_file","arguments":"","signature":"native-tool-signature","unknown":{"x":true}}}),
+        );
+        let partial = "{\"path\":\"src/ma";
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.function_call_arguments.delta","item_id":"tool-item","call_id":"call_0","delta":partial}),
+        );
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::Usage(UsageReport {
+                output_tokens: Some(17),
+                ..Default::default()
+            }),
+            &events,
+        )
+        .unwrap();
+
+        let saved = round_trip(&acc);
+        assert_eq!(saved.response_id.as_deref(), Some("response-1"));
+        assert_eq!(saved.attempt_id, "source-attempt");
+        assert_eq!(saved.generation, 2);
+        assert_eq!(
+            saved.reasoning_summary_parts,
+            ["first summary", "second summary"]
+        );
+        assert_eq!(saved.raw_reasoning_parts, ["first raw", "second raw"]);
+        assert_eq!(saved.presentation_items.len(), 2);
+        assert_eq!(saved.presentation_states.len(), 2);
+        assert_eq!(
+            saved
+                .content_parts
+                .iter()
+                .find(|part| part.text == commentary)
+                .unwrap()
+                .text,
+            commentary
+        );
+        assert_eq!(saved.tool_inputs.len(), 1);
+        assert_eq!(saved.tool_inputs[0].input, partial);
+        assert_eq!(
+            saved.tool_inputs[0].provider_call_id.as_deref(),
+            Some("call_0")
+        );
+        assert_eq!(saved.tool_inputs[0].item_id, "tool-item");
+        assert_eq!(saved.tool_inputs[0].call_aliases, ["call_0"]);
+        assert_eq!(
+            saved.tool_inputs[0].phase,
+            super::super::current::ModelStreamToolInputPhase::Streaming
+        );
+        assert!(
+            saved.tool_calls.is_empty(),
+            "capturing partial JSON must never construct a tool call"
+        );
+        assert_eq!(
+            saved.replay.items[0].item["unknown"],
+            json!({"nested":[1,"untouched"]})
+        );
+        assert_eq!(saved.replay.items[0].item["signature"], "opaque-signature");
+        assert_eq!(
+            saved.replay.pending_items.last().unwrap().item["signature"],
+            "native-tool-signature"
+        );
+        assert_eq!(saved.final_usage.as_ref().unwrap().output_tokens, Some(17));
+        assert!(!saved.usage_is_terminal);
+        acc.cancel_attempt("cancelled while input incomplete", &events);
+        let cancelled = round_trip(&acc);
+        assert!(matches!(
+            cancelled.state,
+            ModelStreamCurrentState::Failed { .. }
+        ));
+        assert_eq!(cancelled.tool_inputs[0].input, partial);
+        assert!(cancelled.tool_calls.is_empty());
+
+        // Retry transport generations and new attempts each start with a fresh producer.
+        let fresh = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        for (attempt, generation) in [("source-attempt", 3), ("next-attempt", 0)] {
+            let view = fresh.current(attempt, generation);
+            assert!(view.content_parts.is_empty());
+            assert!(view.tool_inputs.is_empty());
+            assert_ne!(
+                (view.attempt_id.as_str(), view.generation),
+                (saved.attempt_id.as_str(), saved.generation)
+            );
+        }
+    }
+
+    #[test]
+    fn producer_current_preserves_late_tool_aliases_and_completed_native_replay() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let mut decoder = OpenAiStreamDecoder::new(VisibleOutputProtocol::NativePhases);
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.added","output_index":0,
+            "item":{"id":"late-item","type":"function_call","name":"lookup"}}),
+        );
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.function_call_arguments.delta","item_id":"late-item","call_id":"call_0","delta":"{\"q\":"}),
+        );
+        let pending = round_trip(&acc);
+        assert_eq!(pending.tool_inputs.len(), 1);
+        assert_eq!(
+            pending.tool_inputs[0].provider_call_id.as_deref(),
+            Some("call_0")
+        );
+        assert!(
+            pending.tool_inputs[0]
+                .call_aliases
+                .contains(&"late-item".into())
+        );
+        assert!(
+            pending.tool_inputs[0]
+                .call_aliases
+                .contains(&"call_0".into())
+        );
+        let item = json!({"id":"late-item","call_id":"call_0","type":"function_call","name":"lookup",
+            "arguments":"{\"q\":1}","status":"completed","signature":"signed","future":{"flag":true}});
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        );
+        feed(
+            &mut acc,
+            &mut decoder,
+            json!({"type":"response.completed","response":{"id":"response-done","output":[item],"usage":{"output_tokens":3}}}),
+        );
+        let saved = round_trip(&acc);
+        assert_eq!(saved.state, ModelStreamCurrentState::Completed);
+        assert!(saved.usage_is_terminal);
+        assert!(saved.tool_inputs.is_empty());
+        assert_eq!(saved.tool_calls[0].call_id, "call_0");
+        assert_eq!(saved.call_bindings[0].provider_item_id, "late-item");
+        assert_ne!(saved.call_bindings[0].call_id, "call_0");
+        assert_eq!(saved.replay.terminal.as_ref().unwrap()[0], item);
+        let before = serde_json::to_value(acc.replay.current()).unwrap();
+        acc.replay.finish().unwrap();
+        acc.replay.finish().unwrap();
+        assert_eq!(
+            serde_json::to_value(acc.replay.current()).unwrap(),
+            before,
+            "completion validation must not consume the final handoff's native material"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1165,6 +1906,38 @@ mod member_tests {
                 text: "authoritative summary".into(),
             }],
         }
+    }
+
+    #[test]
+    fn rejected_member_status_does_not_close_an_accepted_open_block() {
+        let mut acc = StreamCompletionAccumulator::with_model_observation(None, None, None);
+        let (events, _) = tokio::sync::broadcast::channel(16);
+        acc.apply(
+            ModelStreamEvent::reasoning_summary_started(
+                "open-reasoning".into(),
+                None,
+                Some(super::super::event::ProviderBlockIdentity {
+                    item_id: member().provider_item_id,
+                    content_index: 2,
+                }),
+            ),
+            &events,
+        )
+        .unwrap();
+        assert!(
+            acc.apply(
+                ModelStreamEvent::PresentationItem {
+                    item: member(),
+                    state: None
+                },
+                &events
+            )
+            .is_err()
+        );
+        let saved = acc.current("source", 0);
+        assert!(!saved.blocks[0].closed);
+        assert!(saved.presentation_items.is_empty());
+        assert!(saved.presentation_states.is_empty());
     }
 
     fn apply(
@@ -1291,7 +2064,10 @@ mod member_tests {
             }
             assert!(acc.take_started_members().is_empty());
             assert!(acc.take_completed_member().is_none());
-            assert!(acc.reasoning_summary_parts.is_empty());
+            assert!(
+                acc.reasoning_parts(CompletionPresentationPartKind::SummaryText)
+                    .is_empty()
+            );
         }
     }
 

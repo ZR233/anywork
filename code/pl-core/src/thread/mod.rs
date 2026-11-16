@@ -10,6 +10,7 @@ pub(crate) mod checkpoint_usage;
 pub mod cold;
 pub mod context_preparation;
 mod continuation;
+pub mod current;
 pub mod extensions;
 mod facts;
 pub mod inbox;
@@ -25,7 +26,6 @@ mod task_access;
 pub use task_access::{NestedToolDeclaration, TaskAccess, TaskWaitSnapshot};
 mod nested;
 mod turn;
-#[cfg(feature = "sqlite")]
 pub(crate) mod usage;
 pub use checkpoint::{
     CHECKPOINT_BODY_THRESHOLD_BYTES, CheckpointBodyError, CheckpointBodyKind,

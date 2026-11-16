@@ -64,7 +64,8 @@ fn identity_error(error: std::io::Error) -> StudioError {
     StudioError::storage()
 }
 
-fn directory_key(path: &Path) -> std::io::Result<String> {
+/// Physical identity for an existing runtime-owned directory; this does not grant a lease.
+pub(super) fn directory_key(path: &Path) -> std::io::Result<String> {
     let mut hash = Sha256::new();
     hash.update(b"anywork-studio-instance-v1\0");
     #[cfg(unix)]
