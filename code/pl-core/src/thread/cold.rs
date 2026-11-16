@@ -244,8 +244,9 @@ pub struct OutputObligationState {
 /// `flush`: a batch the backend already holds durably is answerable from history, so its resident
 /// body is no longer needed. The byte counts are the retained memory that really exists at the
 /// report, not just what is still unwritten: a backend also counts the product bodies its live
-/// projection keeps after their batch became durable, so a Thread cannot claim to be drained while
-/// it still holds its Turn. Completed but unsaved work may exceed the byte limits.
+/// projection keeps after their batch became durable. A separately identified reconstructible subset
+/// may be released at idle close without pretending those bytes disappeared from the memory budget.
+/// Completed but unsaved work may exceed the byte limits.
 #[derive(Debug, Clone, Default)]
 pub struct StoragePressure {
     /// Retained bytes of this one Thread: the effects its writer queue still holds, the batches still
@@ -288,6 +289,19 @@ pub struct StoragePressure {
     /// accepting an older generation's success as proof for a newer fault.
     pub recovered_generation: Option<u64>,
     pub error: Option<Arc<ColdStoreError>>,
+}
+
+/// One atomic storage report for deciding whether an idle owner can be released.
+#[derive(Debug, Clone)]
+pub struct StorageIdleStatus {
+    pub pressure: StoragePressure,
+    /// Subset of `pressure.thread_bytes` that is a settled, reconstructible resident projection.
+    ///
+    /// A backend may count these bytes only after their source facts are durable and no producer,
+    /// pending handoff or delivery still owns them. They remain charged to the memory budget. The
+    /// value must never exceed `pressure.thread_bytes`. `None` means a producer or other unsettled
+    /// obligation prevents idle release even if it has not charged any bytes yet.
+    pub reclaimable_thread_bytes: Option<u64>,
 }
 
 /// Typed storage fault categories a backend can report to its owner.
@@ -401,6 +415,16 @@ pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
         StoragePressure::default()
     }
+    /// Reports which retained bytes can be released with a fully settled idle owner.
+    ///
+    /// Backends that cannot prove a reconstructible subset report zero. This is a conservative
+    /// statement of their capability, not evidence that other retained bytes have been saved.
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: Some(0),
+        }
+    }
     /// Optional notification for a change in durable progress or fault state.
     ///
     /// A Thread waits for this signal at a storage safety point while still servicing its
@@ -450,6 +474,7 @@ trait ErasedColdStore: Send + Sync + fmt::Debug {
     ) -> Result<(), ColdStoreError>;
     fn release_operation_output(&self, thread_id: &str, operation_id: &str);
     fn pressure(&self, thread_id: &str) -> StoragePressure;
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
     fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError>;
     fn flush<'a>(
@@ -496,6 +521,9 @@ impl<T: ColdStore> ErasedColdStore for T {
     }
     fn pressure(&self, thread_id: &str) -> StoragePressure {
         ColdStore::pressure(self, thread_id)
+    }
+    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        ColdStore::idle_status(self, thread_id)
     }
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
         ColdStore::subscribe_pressure(self, thread_id)
@@ -577,6 +605,10 @@ impl ColdStoreHandle {
 
     pub(crate) fn pressure(&self, thread_id: &str) -> StoragePressure {
         self.0.pressure(thread_id)
+    }
+
+    pub(crate) fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
+        self.0.idle_status(thread_id)
     }
 
     /// Waits for the fixed effect fence, without transferring store ownership to a tool.

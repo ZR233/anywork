@@ -14,7 +14,7 @@ mod tool_support;
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use pl_core::context::{AgentMessageKind, ContextSnapshot, ContextSource, OpaquePayload};
@@ -183,6 +183,9 @@ impl ModelSession for OneToolCall {
 struct ManualStore {
     admitted: Arc<AtomicU64>,
     durable: Arc<AtomicU64>,
+    retained: Arc<AtomicU64>,
+    reclaimable: Arc<AtomicU64>,
+    unfinished: Arc<AtomicBool>,
     changed: watch::Sender<()>,
 }
 
@@ -192,6 +195,9 @@ impl ManualStore {
         Self {
             admitted: Arc::new(AtomicU64::new(0)),
             durable: Arc::new(AtomicU64::new(0)),
+            retained: Arc::new(AtomicU64::new(0)),
+            reclaimable: Arc::new(AtomicU64::new(0)),
+            unfinished: Arc::new(AtomicBool::new(false)),
             changed,
         }
     }
@@ -213,8 +219,17 @@ impl ColdStore for ManualStore {
 
     fn pressure(&self, _thread_id: &str) -> StoragePressure {
         StoragePressure {
+            thread_bytes: self.retained.load(Ordering::SeqCst),
             durable_sequence: self.durable.load(Ordering::SeqCst),
             ..Default::default()
+        }
+    }
+
+    fn idle_status(&self, thread_id: &str) -> pl_core::thread::cold::StorageIdleStatus {
+        pl_core::thread::cold::StorageIdleStatus {
+            pressure: self.pressure(thread_id),
+            reclaimable_thread_bytes: (!self.unfinished.load(Ordering::SeqCst))
+                .then(|| self.reclaimable.load(Ordering::SeqCst)),
         }
     }
 
@@ -227,6 +242,61 @@ impl ColdStore for ManualStore {
         let _ = self.changed.send(());
         Ok(())
     }
+}
+
+#[tokio::test]
+async fn idle_close_requires_durable_facts_and_only_reclaims_proven_residents() {
+    use pl_core::thread::extensions::ExtensionMutation;
+
+    let store = ManualStore::new();
+    let (model, _) = support::ScriptedModel::new(&[]);
+    let thread = ThreadHandle::start("idle-retention".into(), DynModelSession::new(model)).unwrap();
+    thread
+        .attach_storage(ColdStoreHandle::new(store.clone()))
+        .await
+        .unwrap();
+    thread
+        .mutate_extensions(vec![ExtensionMutation::Put {
+            id: "durable-fact".into(),
+            expected_revision: None,
+            payload: OpaquePayload::text("preserve this fact"),
+        }])
+        .await
+        .unwrap();
+    let committed = thread.snapshot().commit_sequence;
+    store.retained.store(128, Ordering::SeqCst);
+    store.reclaimable.store(128, Ordering::SeqCst);
+    assert!(
+        !thread.close_if_idle().await.unwrap(),
+        "undurable facts must block eviction"
+    );
+    store.commit_durable();
+    assert!(store.durable.load(Ordering::SeqCst) >= committed);
+    store.retained.store(0, Ordering::SeqCst);
+    store.unfinished.store(true, Ordering::SeqCst);
+    assert!(
+        !thread.close_if_idle().await.unwrap(),
+        "a zero-byte in-flight obligation must block eviction"
+    );
+    store.unfinished.store(false, Ordering::SeqCst);
+    store.retained.store(128, Ordering::SeqCst);
+    store.reclaimable.store(0, Ordering::SeqCst);
+    assert!(
+        !thread.close_if_idle().await.unwrap(),
+        "unsettled retained bytes must block eviction"
+    );
+    store.reclaimable.store(129, Ordering::SeqCst);
+    assert!(
+        !thread.close_if_idle().await.unwrap(),
+        "an invalid reclaimable count must fail closed"
+    );
+    store.reclaimable.store(128, Ordering::SeqCst);
+    assert!(
+        thread.close_if_idle().await.unwrap(),
+        "durable reconstructible residents may be released"
+    );
+    assert_eq!(thread.snapshot().lifecycle, ThreadLifecycle::Closed);
+    assert!(store.durable.load(Ordering::SeqCst) >= thread.snapshot().commit_sequence);
 }
 
 /// Starts a Turn, stops it with the exact execution identity and returns the formed point.

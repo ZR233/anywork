@@ -141,22 +141,9 @@ impl StudioRuntime {
             validate_prompt_content(&input)?;
             ensure_thread_not_archived(&thread_record, UserThreadAction::Submit)?;
             let started = std::time::Instant::now();
-            let thread = self.ensure_thread_owner(&thread_id).await?;
-            let operation_started = std::time::Instant::now();
-            let _agent_operation = self
-                .require_session(&thread_id)?
-                .agent_operation(&thread_id)
-                .await;
-            tracing::debug!(
-                target: "prompt_submission",
-                thread_id,
-                input_id = input.input_id,
-                owner_ready_us = operation_started.duration_since(started).as_micros() as u64,
-                operation_wait_us = operation_started.elapsed().as_micros() as u64,
-                "prompt thread admission acquired"
-            );
-            self.require_session(&thread_id)?
-                .ensure_agent_admission_open(&thread_id)?;
+            let (thread_record, thread, _agent_operation) = self
+                .prepare_prompt_admission(&thread_id, UserThreadAction::Submit, &input.input_id)
+                .await?;
             // Look up the canonical receipt before resolving drafts, which admission may already have consumed.
             let snapshot = thread.snapshot();
             if let Some(previous) = snapshot
@@ -273,7 +260,6 @@ impl StudioRuntime {
                 thread_record.id == thread_id,
                 "prompt Thread does not match its canonical owner"
             );
-            self.ensure_prompt_runtime_ready().await?;
             let drafts = self
                 .attachment_drafts
                 .resolve(&attachment_draft_ids)
