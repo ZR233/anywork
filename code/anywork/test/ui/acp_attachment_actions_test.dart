@@ -1,7 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_composer_view_model.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -12,7 +12,7 @@ void main() {
     final harness = await AcpComponentHarness.create();
     addTearDown(() => harness.close(tester));
     final container = ProviderContainer(
-      overrides: [anyworkClientProvider.overrideWithValue(harness.client)],
+      overrides: [appGraphProvider.overrideWithValue(harness.graph)],
     );
 
     final original = harness.client.drafts.composer('thread');

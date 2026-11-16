@@ -1,7 +1,7 @@
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_session_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/views/acp_conversation_composer_view.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -84,7 +84,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          anyworkClientProvider.overrideWithValue(harness.client),
+          appGraphProvider.overrideWithValue(harness.graph),
           acpChildReadOnlyViewModelProvider('thread')
               .overrideWith((ref) => null),
         ],

@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_permission_connector.dart';
@@ -8,7 +9,6 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_c
 import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_plan_card_view_model.dart';
 import 'package:anywork/src/platform/clipboard_image_reader.dart';
-import 'package:anywork/src/presentation/providers/client_provider.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -123,7 +123,7 @@ void main() {
     );
     Widget host(String threadId) => ProviderScope(
       overrides: [
-        anyworkClientProvider.overrideWithValue(harness.client),
+        appGraphProvider.overrideWithValue(harness.graph),
         clipboardImageReaderProvider.overrideWithValue(reader),
       ],
       child: acpTestApp(AcpComposerConnector(threadId: threadId)),
