@@ -5826,6 +5826,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let fixture = observation_fixture().await?;
         let thread = bound_thread("state-observation-lag");
         register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
         let channel = fixture
             .store
@@ -5833,6 +5834,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .history_channel(&thread.id);
         let (handle, feed, mut live) =
             state_observation_owner(&fixture, &thread, &channel, None).await?;
+        assert!(live.native_directory.is_some());
         let result = async {
             let database_id = fixture
                 .store
@@ -6125,6 +6127,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let fixture = observation_fixture().await?;
         let thread = bound_thread("state-pending-registration");
         register_test_thread(&fixture.store, &thread).await?;
+        publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
         let channel = fixture
             .store
@@ -6132,6 +6135,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .history_channel(&thread.id);
         let (handle, feed, mut live) =
             state_observation_owner(&fixture, &thread, &channel, None).await?;
+        assert!(live.native_directory.is_some());
         let result = async {
             let call_id = "state-pending-question";
             // The tool's existing body is fixture input; the question itself is introduced only by
