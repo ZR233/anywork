@@ -1,6 +1,6 @@
 use super::{
     OwnedProcess, history_lock_database, history_owner_thread, observe_capture_exit,
-    require_native_exit, sanitize_driver_line, sanitize_requests, start_timeline_history_gui,
+    require_native_exit, sanitize_driver_line, sanitize_requests, start_profile_gui,
     wait_for_gui_exit, wait_for_vm, write_fixture_log, write_sanitized_log,
 };
 use anyhow::{Context, Result, ensure};
@@ -442,7 +442,7 @@ fn run_phase(
     let mut gui = None;
     let mut gui_exit = None;
     let phase_result = (|| -> Result<PhaseOutcome> {
-        gui = Some(start_timeline_history_gui(
+        gui = Some(start_profile_gui(
             context.workspace,
             context.home,
             &gui_log,

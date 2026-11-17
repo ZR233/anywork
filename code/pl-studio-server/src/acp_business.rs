@@ -619,7 +619,7 @@ mod tests {
                     gate.cancel();
                 }
                 self.state.shutdown.cancel();
-                self.state.conversations.shutdown().await;
+                let readers = self.state.timelines.shutdown().await;
                 let shutdown = fixture.runtime.shutdown_runtime().await;
                 let joined = timeout(Duration::from_secs(20), &mut self.task).await;
                 if joined.is_err() {
@@ -638,6 +638,7 @@ mod tests {
                 }
                 release?;
                 joined???;
+                readers?;
                 ensure!(shutdown?.state.is_stopped());
                 Ok(())
             }

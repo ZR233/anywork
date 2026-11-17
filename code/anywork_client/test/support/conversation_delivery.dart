@@ -8,12 +8,24 @@ import 'timeline_transport.dart';
 // the Current owner to admit the frame before the caller makes its assertion.
 final Map<String, TestCurrentReader> _currentReaders = {};
 final Map<String, Completer<TestCurrentReader>> _currentWaiting = {};
-void registerScriptedCurrentReader(TestCurrentReader feed) {
+final Map<String, int> _currentGenerations = {};
+int beginScriptedCurrentReaderOpen(String threadId) {
+  final generation = (_currentGenerations[threadId] ?? 0) + 1;
+  _currentGenerations[threadId] = generation;
+  _currentReaders.remove(threadId);
+  _currentWaiting.putIfAbsent(threadId, Completer.new);
+  return generation;
+}
+
+void registerScriptedCurrentReader(TestCurrentReader feed, int generation) {
+  if (_currentGenerations[feed.threadId] != generation) return;
   _currentReaders[feed.threadId] = feed;
   _currentWaiting.remove(feed.threadId)?.complete(feed);
 }
 
 Future<TestCurrentReader> scriptedCurrentReader(String threadId) {
+  final waiting = _currentWaiting[threadId];
+  if (waiting != null) return waiting.future;
   final current = _currentReaders[threadId];
   return current != null && !current.requestCloseStarted.isCompleted
       ? Future.value(current)
@@ -47,7 +59,9 @@ class ScriptedCurrentReader extends TestCurrentReader {
     Stream<ThreadStreamFrame>? states,
     CurrentView? initialView,
   }) : states = states,
+       _registrationGeneration = beginScriptedCurrentReaderOpen(threadId),
        super(threadId: threadId, initialView: initialView);
+  final int _registrationGeneration;
   final Stream<ThreadStreamFrame>? states;
   StreamIterator<ThreadStreamFrame>? _states;
   Future<void>? _pump;
@@ -58,7 +72,7 @@ class ScriptedCurrentReader extends TestCurrentReader {
     required ReadDemand demand,
   }) async {
     final watch = await super.watch(after: after, demand: demand);
-    registerScriptedCurrentReader(this);
+    registerScriptedCurrentReader(this, _registrationGeneration);
     _pump ??= () {
       final done = Completer<void>();
       scheduleMicrotask(() => done.complete(_pumpEvents()));

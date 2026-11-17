@@ -116,12 +116,6 @@ impl StateReceiver {
         Self { receiver, closed }
     }
 
-    /// Captures the queued observation prefix without consuming it or reserving capacity.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.receiver.len()
-    }
-
     pub(super) fn is_closed(&self) -> bool {
         self.closed.is_cancelled() || (self.receiver.is_closed() && self.receiver.is_empty())
     }
@@ -175,8 +169,6 @@ pub(in crate::studio) struct ThreadLiveFeed {
     conversation: Mutex<Arc<publication::ConversationPublication>>,
     /// Borrowed from this owner's original retained progress, including failures before publication.
     owner_progress: watch::Receiver<Progress>,
-    #[cfg(test)]
-    first_open_wait: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     latest_runtime: Mutex<Option<RuntimeStateCut>>,
     /// Original State activity event retained for subscribers opening after its broadcast.
     latest_activity: Mutex<Option<StateActivityCut>>,
@@ -214,28 +206,6 @@ impl ThreadLiveFeed {
 
     pub(super) async fn delivery_closed(&self) {
         self.delivery_closed.cancelled().await;
-    }
-
-    #[cfg(test)]
-    pub(super) fn arm_first_open_wait(&self) -> tokio::sync::oneshot::Receiver<()> {
-        let (entered, receiver) = tokio::sync::oneshot::channel();
-        *self.first_open_wait.lock().unwrap() = Some(entered);
-        receiver
-    }
-
-    #[cfg(test)]
-    pub(super) fn notify_first_open_wait(&self) {
-        if let Some(entered) = self.first_open_wait.lock().unwrap().take() {
-            let _ = entered.send(());
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn publish_test_conversation(
-        &self,
-        current: Arc<crate::studio::thread_projection::CurrentState>,
-    ) -> Result<()> {
-        self.publish_conversation(current)
     }
 
     #[cfg(test)]
@@ -291,8 +261,6 @@ impl ThreadLiveFeed {
             storage,
             last_turn,
             owner_progress,
-            #[cfg(test)]
-            first_open_wait: Default::default(),
             latest_runtime: Default::default(),
             latest_activity: Default::default(),
             latest_business_refs: Default::default(),
@@ -499,15 +467,6 @@ struct WorkerState {
     /// Explicit reconciliation is observation only, even when it catches a newly committed Turn.
     reconciliation_through: Arc<std::sync::atomic::AtomicU64>,
     observed_before_execution: bool,
-    #[cfg(test)]
-    pending_hook: Option<Arc<PendingPhaseHook>>,
-}
-impl WorkerState {
-    /// The pending-boundary phase hook of this owner, or the empty production slot.
-    #[cfg(test)]
-    fn pending_hook_slot(&self) -> PendingHookSlot {
-        self.pending_hook.clone()
-    }
 }
 pub(crate) struct Observation {
     owner: std::sync::Weak<crate::session::NativeResources>,
@@ -609,8 +568,6 @@ struct Shared {
     observations: Mutex<BTreeMap<String, Vec<std::sync::Weak<Observation>>>>,
     /// Stable passive slots survive absent → live → absent transitions.
     live: Mutex<BTreeMap<String, Arc<ObservationSlot>>>,
-    #[cfg(test)]
-    pending_hooks: Mutex<BTreeMap<String, Arc<PendingPhaseHook>>>,
 }
 #[derive(Clone)]
 pub(super) struct ThreadObservations(Arc<Shared>);
@@ -638,29 +595,7 @@ impl ThreadObservations {
             projector,
             observations: Mutex::new(BTreeMap::new()),
             live: Mutex::new(BTreeMap::new()),
-            #[cfg(test)]
-            pending_hooks: Mutex::new(BTreeMap::new()),
         }))
-    }
-
-    /// Installs the per-owner pending-boundary phase hook of one Thread's fault test.
-    #[cfg(test)]
-    fn install_pending_hook(&self, id: &str, hook: Arc<PendingPhaseHook>) {
-        self.0
-            .pending_hooks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_owned(), hook);
-    }
-
-    #[cfg(test)]
-    fn pending_hook(&self, id: &str) -> Option<Arc<PendingPhaseHook>> {
-        self.0
-            .pending_hooks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
-            .cloned()
     }
 
     /// The live feed of one observed Thread, if its projection owner was installed.
@@ -845,18 +780,6 @@ impl ThreadObservations {
         Ok(())
     }
 
-    /// Releases the retained observation for a drained or evicted Thread.
-    ///
-    /// The observation worker owns a strong `ThreadHandle`; keeping its entry after the assembly
-    /// registry released the owner would keep every session that was ever activated resident. The
-    /// entry is removed once its final projection is durable, so a later re-activation installs a
-    /// fresh observation instead of reusing the released handle.
-    #[cfg(test)]
-    async fn drain(&self, id: &str) -> Result<()> {
-        self.drain_for_purpose(id, crate::thread_assembler::ClosePurpose::Preserve)
-            .await
-    }
-
     fn cancel_for_deletion(&self, id: &str) {
         for (_, observation) in self.observations(Some(id)) {
             observation.state.deletion.cancel();
@@ -965,8 +888,6 @@ impl ThreadObservations {
             channel,
             reconciliation_through: Arc::new(std::sync::atomic::AtomicU64::new(recovered_through)),
             observed_before_execution,
-            #[cfg(test)]
-            pending_hook: self.pending_hook(&id),
         });
         // Seed the feed with the newest typed storage state the coordinator already reports, so a
         // subscriber that opens before this owner's first pass mirrors a real fact instead of an
@@ -1266,10 +1187,6 @@ struct LiveOwner {
     channel: Arc<HistoryChannel>,
     thread: crate::Thread,
     feed: Arc<ThreadLiveFeed>,
-    /// The one committed batch this owner prepared but has not handed to the writer yet; see
-    /// [`PendingHandoff`].
-    #[cfg(test)]
-    pending_hook: PendingHookSlot,
 }
 
 /// Which path a retained handoff batch came from; a retry never re-decides it.
@@ -1304,18 +1221,6 @@ pub(in crate::studio) struct PendingHandoff {
 }
 
 impl PendingHandoff {
-    /// Retained size of the prepared content while its owner still owes the handoff.
-    ///
-    /// The same measurement the reliable channel charges when it takes the batch over, so the
-    /// Thread's existing budget covers the batch under exactly one owner at a time — never twice
-    /// outside the one synchronous handoff boundary, and never unbounded while a report awaits.
-    #[cfg(test)]
-    fn retained_bytes(&self) -> u64 {
-        self.prepared
-            .retained_bytes()
-            .saturating_add(self.extra_retained_bytes())
-    }
-
     /// Delivery changes owned here in addition to the shared prepared batch.
     pub(in crate::studio) fn extra_retained_bytes(&self) -> u64 {
         // The prepared batch is measured by its owning projection (`PreparedEffect::retained_bytes`,
@@ -1369,51 +1274,6 @@ impl PendingHandoff {
             });
         }
         Ok(self.prepared.parent_report.clone())
-    }
-}
-
-/// The pending-boundary phase hook a fault test may install on exactly one owner; production code
-/// always passes the empty slot and no test-less build contains the control type.
-#[cfg(test)]
-type PendingHookSlot = Option<Arc<PendingPhaseHook>>;
-
-/// Test-only, per-owner one-shot control at the pending→report boundary of one `LiveOwner`.
-///
-/// `entered` fires for every batch that reaches the boundary (event semantics, so a retry of the
-/// same sequence is visible too); `control` parks the owner until the owning test releases it once
-/// with `Ok(())` or a failure message, after which the hook re-arms itself for the next entry. It
-/// only controls timing and injects one error; the real projection, report preparation, writer and
-/// synchronize keep running.
-#[cfg(test)]
-struct PendingPhaseHook {
-    entered: tokio::sync::mpsc::UnboundedSender<u64>,
-    control: watch::Sender<Option<Result<(), String>>>,
-}
-
-#[cfg(test)]
-type PendingPhaseControl = (
-    Arc<PendingPhaseHook>,
-    tokio::sync::mpsc::UnboundedReceiver<u64>,
-    watch::Sender<Option<Result<(), String>>>,
-);
-
-#[cfg(test)]
-impl PendingPhaseHook {
-    /// Returns the hook plus the test-owned entry stream and release control.
-    fn new() -> PendingPhaseControl {
-        let (entered, entered_rx) = tokio::sync::mpsc::unbounded_channel();
-        // The sender is the release control: cloning it back to the test keeps
-        // one authoritative channel, so a parked owner and its test observe the
-        // same release sequence instead of two disconnected watch ends.
-        let (control, _receiver) = watch::channel(None);
-        (
-            Arc::new(Self {
-                entered,
-                control: control.clone(),
-            }),
-            entered_rx,
-            control,
-        )
     }
 }
 
@@ -1558,8 +1418,6 @@ impl LiveOwner {
             channel,
             thread,
             feed,
-            #[cfg(test)]
-            pending_hook: state.pending_hook_slot(),
         };
         // The seeded facts are already resident, so the Thread's budget covers them from the moment
         // the owner is installed instead of only after its first commit.
@@ -1756,43 +1614,6 @@ impl LiveOwner {
             }
         }
         self.publish_retained()?;
-        // Test-only fault boundary: a fault test that installed a hook parks the real batch right
-        // after its validated publication and before outward handover, and may fail it once. Production
-        // builds (and owners without a hook) pass straight through.
-        #[cfg(test)]
-        if let Some((hook, sequence)) = self.pending_hook.as_ref().zip(
-            self.retained
-                .pending
-                .as_ref()
-                .map(|pending| pending.write.effect.sequence),
-        ) {
-            let _ = hook.entered.send(sequence);
-            let mut release = hook.control.subscribe();
-            loop {
-                // The watch guard is a read lock on the same channel the arms
-                // below write through `send_replace`; cloning the decision in
-                // its own scope drops the guard before the match, so a parked
-                // owner never synchronously deadlocks its own release.
-                let decision = {
-                    let guard = release.borrow_and_update();
-                    guard.clone()
-                };
-                match decision {
-                    Some(Ok(())) => {
-                        hook.control.send_replace(None);
-                        break;
-                    }
-                    Some(Err(message)) => {
-                        hook.control.send_replace(None);
-                        return Err(anyhow::anyhow!(message));
-                    }
-                    None => {}
-                }
-                if release.changed().await.is_err() {
-                    break;
-                }
-            }
-        }
         if let (Some(exporter), Some(pending)) = (&services.run_export, &self.retained.pending)
             && (pending.mode == HandoffMode::Live
                 || exporter.should_admit_behind_effect(&self.thread.id, pending.prepared.sequence))

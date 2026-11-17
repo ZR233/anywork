@@ -38,15 +38,6 @@ pub(crate) struct ConversationStore {
     database_id: std::sync::OnceLock<String>,
     execution: Mutex<(usize, Option<usize>)>,
     channel: Mutex<std::sync::Weak<HistoryChannel>>,
-    #[cfg(test)]
-    last_locked_us: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    before_meta: tokio::sync::Mutex<
-        Option<(
-            tokio::sync::oneshot::Sender<()>,
-            tokio::sync::oneshot::Receiver<()>,
-        )>,
-    >,
 }
 
 impl std::fmt::Debug for ConversationStore {
@@ -155,10 +146,6 @@ impl ConversationStore {
             database_id: std::sync::OnceLock::new(),
             execution: Mutex::new((0, None)),
             channel: Mutex::new(std::sync::Weak::new()),
-            #[cfg(test)]
-            last_locked_us: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            before_meta: tokio::sync::Mutex::new(None),
         }))
     }
 
@@ -375,11 +362,6 @@ impl ConversationStore {
         }
         pending.prepared = prepared.clone();
         pending.admitted = true;
-        #[cfg(test)]
-        self.last_locked_us.store(
-            locked.elapsed().as_micros() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
         tracing::debug!(target: "conversation_work", current_revision = prepared.sequence,
             admission_wait_us = locked.duration_since(admission_started).as_micros() as u64,
             admission_locked_us = locked.elapsed().as_micros() as u64,
@@ -388,12 +370,6 @@ impl ConversationStore {
             queued_bytes = channel.subscribe().borrow().queued_bytes,
             "conversation memory admission");
         Ok(prepared)
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn last_admission_locked_us(&self) -> u64 {
-        self.last_locked_us
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) async fn attach_execution(
@@ -446,15 +422,6 @@ impl ConversationStore {
             execution.1 = None;
             self.publication.retire_execution();
         }
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn retire_test_execution(&self) {
-        let _mutation = self
-            .mutation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.publication.retire_execution();
     }
 
     pub(in crate::studio) fn confirm_committed(

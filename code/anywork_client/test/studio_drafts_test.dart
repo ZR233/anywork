@@ -95,7 +95,13 @@ final class _DraftTransport extends AccountsTestTransport
     required int currentProtocolVersion,
     required ReadDemand demand,
   }) => Future.value(
-    ScriptedCurrentReader(threadId: threadId, states: frames.stream),
+    ScriptedCurrentReader(
+      threadId: threadId,
+      states: frames.stream,
+      initialView: currentViewForWorkspace(
+        _workspace(thread: _thread(threadId)),
+      ),
+    ),
   );
 
   /// State turns enter through the production Current reader.

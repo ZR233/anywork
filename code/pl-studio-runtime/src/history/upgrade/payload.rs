@@ -645,10 +645,12 @@ pub(super) async fn render_rewritten_atom<C: ConnectionTrait>(
     connection: &C,
     atom: &super::ChatAtom,
     database_id: &str,
+    fallback_owner: &str,
 ) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(atom)?;
     for (index, content) in atom.contents.iter().enumerate() {
-        let plan = reference_plan(connection, &content.reference, database_id).await?;
+        let plan =
+            reference_plan(connection, &content.reference, database_id, fallback_owner).await?;
         *value
             .get_mut("contents")
             .and_then(serde_json::Value::as_array_mut)
@@ -659,7 +661,7 @@ pub(super) async fn render_rewritten_atom<C: ConnectionTrait>(
             })? = serde_json::to_value(plan)?;
     }
     if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
-        let plan = reference_plan(connection, reference, database_id).await?;
+        let plan = reference_plan(connection, reference, database_id, fallback_owner).await?;
         let payload = value
             .get_mut("payload")
             .and_then(serde_json::Value::as_object_mut)
@@ -676,14 +678,19 @@ pub(super) async fn reference_plan<C: ConnectionTrait>(
     connection: &C,
     reference: &ContentRef,
     database_id: &str,
+    fallback_owner: &str,
 ) -> Result<HistoryEventBodyRef> {
     validate_typed_reference(reference, database_id)?;
     let source_ref = serde_json::to_string(reference)?;
+    // An inline producer declaration and its typed metadata name the same
+    // owner/key with different source encodings. Resolve that shared identity
+    // before bytes are copied; do not require a second copy of the body.
+    let (owner_event_id, body_key, _) = plan_identity(&reference.target, fallback_owner)?;
     let row = connection
         .query_one_raw(statement(
             "SELECT owner_event_id,body_key,byte_length FROM legacy_body_plans \
-             WHERE source_ref=?",
-            vec![source_ref.into()],
+             WHERE source_ref=? OR (owner_event_id=? AND body_key=?)",
+            vec![source_ref.into(), owner_event_id.into(), body_key.into()],
         ))
         .await?
         .ok_or_else(|| {
@@ -708,11 +715,11 @@ async fn next_body_ordinal<C: ConnectionTrait>(
 ) -> Result<u64> {
     let row = connection
         .query_one_raw(statement(
-            "SELECT COALESCE(MAX(value),-1)+1 AS ordinal FROM (\
-                 SELECT ordinal FROM history_bodies WHERE owner=? AND ordinal IS NOT NULL\
-                 UNION ALL\
-                 SELECT ordinal FROM legacy_body_plans \
-                 WHERE owner_event_id=? AND copied=1 AND ordinal IS NOT NULL\
+            "SELECT COALESCE(MAX(ordinal),-1)+1 AS ordinal FROM (
+                 SELECT ordinal FROM history_bodies WHERE owner_event_id=? AND ordinal IS NOT NULL
+                 UNION ALL
+                 SELECT ordinal FROM legacy_body_plans
+                 WHERE owner_event_id=? AND copied=1 AND ordinal IS NOT NULL
              )",
             vec![owner_event_id.into(), owner_event_id.into()],
         ))

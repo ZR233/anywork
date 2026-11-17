@@ -306,9 +306,12 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
         'Native root submission requires a Native backend and mode',
       );
     }
+    final workspaceId =
+        session.directoryRow?.workspaceId ??
+        session.workspace!.thread.workspaceId;
     final recoveryIssue = recoveryIssueBlockingExecution(
       _dependencies.recovery.value.value?.values ?? const [],
-      workspaceId: session.workspace!.thread.workspaceId,
+      workspaceId: workspaceId,
       threadId: threadId,
     );
     if (recoveryIssue != null) throw recoveryIssue.blockedFailure();
@@ -351,7 +354,7 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       operation: operation,
       input: input,
       attachments: frozenAttachmentViews,
-      workspaceId: session.workspace!.thread.workspaceId,
+      workspaceId: workspaceId,
       mode: session.workspace!.thread.mode!,
       route: route,
     );

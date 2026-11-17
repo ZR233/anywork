@@ -2674,7 +2674,7 @@ mod control_tests {
                 .await
                 .map_err(|source| ThreadAssemblyError::Resource {
                     operation: "commit fixture child directory",
-                    source,
+                    source: source.into_boxed_dyn_error(),
                 })?;
                 self.physical.prepare(request, ()).await
             }

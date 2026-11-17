@@ -718,22 +718,18 @@ pub(in crate::studio) mod record_read_tests {
             #[default]
             CompletionHeads,
             AllStatements,
-            DisplayHeads,
-            DisplayMembers,
         }
 
         #[derive(Default)]
         struct State {
             scope: Scope,
             candidates: AtomicU64,
-            member_rows: AtomicU64,
             reference_rows: AtomicU64,
             statements: AtomicU64,
             vm_steps: AtomicU64,
             head_vm_steps: AtomicU64,
             fullscan_steps: AtomicU64,
             head_fullscan_steps: AtomicU64,
-            payload_column_authorizations: AtomicU64,
             denied_reads: AtomicU64,
             unexpected_statements: AtomicU64,
             invalid_counter: AtomicBool,
@@ -745,14 +741,12 @@ pub(in crate::studio) mod record_read_tests {
         #[derive(Debug)]
         pub(in crate::studio) struct Work {
             pub candidates: u64,
-            pub member_rows: u64,
             pub reference_rows: u64,
             pub statements: u64,
             pub vm_steps: u64,
             pub head_vm_steps: u64,
             pub fullscan_steps: u64,
             pub head_fullscan_steps: u64,
-            pub payload_column_authorizations: u64,
             pub denied_reads: u64,
         }
 
@@ -820,14 +814,6 @@ pub(in crate::studio) mod record_read_tests {
                 Self::install_scope(db, Scope::CompletionHeads).await
             }
 
-            pub async fn display_heads(db: &sea_orm::DatabaseConnection) -> Result<Self> {
-                Self::install_scope(db, Scope::DisplayHeads).await
-            }
-
-            pub async fn display_members(db: &sea_orm::DatabaseConnection) -> Result<Self> {
-                Self::install_scope(db, Scope::DisplayMembers).await
-            }
-
             async fn install_scope(db: &sea_orm::DatabaseConnection, scope: Scope) -> Result<Self> {
                 let pool = db.get_sqlite_connection_pool();
                 ensure!(
@@ -847,21 +833,15 @@ pub(in crate::studio) mod record_read_tests {
                 if matches!(scope, Scope::AllStatements) {
                     return Ok(sampler);
                 }
-                // Prove the column guard is active before the measured request. Preparing this forbidden
+                // Prove the body guard is active before the measured request. Preparing this forbidden
                 // read fails even though the fixture's content table is empty. Exclude the probe from Main.
-                let mut probes = vec!["SELECT data FROM conversation_content_chunks LIMIT 1"];
-                if !matches!(scope, Scope::CompletionHeads) {
-                    probes.push("SELECT payload FROM conversation_items LIMIT 1");
-                }
-                if matches!(scope, Scope::DisplayHeads) {
-                    probes.push("SELECT metadata FROM conversation_display_members LIMIT 1");
-                }
+                let probes = ["SELECT data FROM conversation_content_chunks LIMIT 1"];
                 for (index, sql) in probes.iter().enumerate() {
                     let probe = db.query_all_raw(statement(sql, vec![])).await;
                     if probe.is_ok() || sampler.state.denied_reads.load(Relaxed) != index as u64 + 1
                     {
                         sampler.finish(db).await?;
-                        anyhow::bail!("body/original/member authorizer probe was not denied");
+                        anyhow::bail!("body authorizer probe was not denied");
                     }
                 }
                 sampler.state.denied_reads.store(0, Relaxed);
@@ -970,14 +950,12 @@ pub(in crate::studio) mod record_read_tests {
                 );
                 Ok(Work {
                     candidates: s.candidates.load(Relaxed),
-                    member_rows: s.member_rows.load(Relaxed),
                     reference_rows: s.reference_rows.load(Relaxed),
                     statements: s.statements.load(Relaxed),
                     vm_steps: s.vm_steps.load(Relaxed),
                     head_vm_steps: s.head_vm_steps.load(Relaxed),
                     fullscan_steps: s.fullscan_steps.load(Relaxed),
                     head_fullscan_steps: s.head_fullscan_steps.load(Relaxed),
-                    payload_column_authorizations: s.payload_column_authorizations.load(Relaxed),
                     denied_reads: s.denied_reads.load(Relaxed),
                 })
             }
@@ -989,7 +967,6 @@ pub(in crate::studio) mod record_read_tests {
 
         enum Kind {
             Heads,
-            Members,
             Reference,
             Unexpected,
         }
@@ -999,19 +976,6 @@ pub(in crate::studio) mod record_read_tests {
                 return Kind::Unexpected;
             }
             let sql = sql.trim_ascii();
-            if !matches!(scope, Scope::CompletionHeads) {
-                if sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order ASC LIMIT ?"
-                    || sql == b"SELECT block_id,source_key,block_order,sealed,updated_effect,header FROM conversation_display_blocks WHERE block_order>? AND block_order<=? ORDER BY block_order DESC LIMIT ?"
-                {
-                    return Kind::Heads;
-                }
-                if matches!(scope, Scope::DisplayMembers)
-                    && sql == b"SELECT block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata FROM conversation_display_members WHERE block_id=? AND member_order<=? ORDER BY member_order DESC LIMIT ?"
-                {
-                    return Kind::Members;
-                }
-                return Kind::Unexpected;
-            }
             if sql.starts_with(
                 b"SELECT seq,item_id,query_class,parent_id,metadata,length(payload) AS byte_length",
             ) && contains(sql, b"FROM conversation_items WHERE seq<=? AND seq>?")
@@ -1136,9 +1100,6 @@ pub(in crate::studio) mod record_read_tests {
                     Kind::Reference => {
                         state.reference_rows.fetch_add(1, Relaxed);
                     }
-                    Kind::Members => {
-                        state.member_rows.fetch_add(1, Relaxed);
-                    }
                     Kind::Unexpected => {}
                 }
             } else if event == libsqlite3_sys::SQLITE_TRACE_PROFILE as c_uint {
@@ -1172,7 +1133,7 @@ pub(in crate::studio) mod record_read_tests {
                             .head_fullscan_steps
                             .fetch_add(fullscan as u64, Relaxed);
                     }
-                    Kind::Reference | Kind::Members => {}
+                    Kind::Reference => {}
                     Kind::Unexpected => {
                         state.unexpected_statements.fetch_add(1, Relaxed);
                     }
@@ -1186,7 +1147,7 @@ pub(in crate::studio) mod record_read_tests {
             context: *mut c_void,
             action: c_int,
             table: *const c_char,
-            column: *const c_char,
+            _column: *const c_char,
             _: *const c_char,
             _: *const c_char,
         ) -> c_int {
@@ -1200,28 +1161,9 @@ pub(in crate::studio) mod record_read_tests {
             if matches!(state.scope, Scope::AllStatements) {
                 return libsqlite3_sys::SQLITE_OK;
             }
-            if !matches!(state.scope, Scope::CompletionHeads) {
-                let allowed = table == b"conversation_display_blocks"
-                    || (matches!(state.scope, Scope::DisplayMembers)
-                        && table == b"conversation_display_members");
-                if !allowed {
-                    state.denied_reads.fetch_add(1, Relaxed);
-                    return libsqlite3_sys::SQLITE_DENY;
-                }
-            }
             if table == b"conversation_contents" || table == b"conversation_content_chunks" {
                 state.denied_reads.fetch_add(1, Relaxed);
                 return libsqlite3_sys::SQLITE_DENY;
-            }
-            // SAFETY: short-circuit evaluation proves column is non-null before this conversion;
-            // SQLite's column argument has the same synchronous callback lifetime as table.
-            if table == b"conversation_items"
-                && !column.is_null()
-                && unsafe { CStr::from_ptr(column) }.to_bytes() == b"payload"
-            {
-                // SQLite authorizers cannot distinguish length(payload) from payload. Permit the
-                // header length access, and separately reject any non-header SQL in the trace audit.
-                state.payload_column_authorizations.fetch_add(1, Relaxed);
             }
             libsqlite3_sys::SQLITE_OK
         }

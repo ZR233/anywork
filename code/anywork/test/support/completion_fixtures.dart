@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:anywork_client/models.dart' show ThreadTextChannel;
+import 'package:anywork_client/models.dart';
 
 import 'chat_fixtures.dart';
 

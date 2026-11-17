@@ -179,12 +179,6 @@ struct RegisteredCurrentWriter {
 }
 
 #[cfg(test)]
-type RetryGate = (
-    tokio::sync::oneshot::Sender<()>,
-    tokio::sync::oneshot::Receiver<()>,
-);
-
-#[cfg(test)]
 type CallsSampleGate = (
     tokio::sync::oneshot::Sender<()>,
     std::sync::mpsc::Receiver<()>,
@@ -201,8 +195,6 @@ struct Inner {
             std::sync::mpsc::Receiver<()>,
         )>,
     >,
-    #[cfg(test)]
-    retry_gate: Mutex<Option<RetryGate>>,
     #[cfg(test)]
     calls_sample_gate: Mutex<Option<CallsSampleGate>>,
     threads: Mutex<BTreeMap<String, ThreadStatus>>,
@@ -255,8 +247,6 @@ impl Default for ThreadPersistenceCoordinator {
             aggregate_count: AtomicU64::new(0),
             #[cfg(test)]
             release_gate: Mutex::new(None),
-            #[cfg(test)]
-            retry_gate: Mutex::new(None),
             #[cfg(test)]
             calls_sample_gate: Mutex::new(None),
             threads: Mutex::new(BTreeMap::new()),
@@ -707,14 +697,6 @@ impl ThreadPersistenceCoordinator {
                 );
             }
             if status.fault.is_none() {
-                #[cfg(test)]
-                {
-                    let gate = self.0.retry_gate.lock().unwrap().take();
-                    if let Some((entered, released)) = gate {
-                        let _ = entered.send(());
-                        released.await?;
-                    }
-                }
                 let pending_reports = self
                     .0
                     .threads
@@ -755,24 +737,6 @@ impl ThreadPersistenceCoordinator {
                 () = channel.stopping.cancelled() => bail!("history writer is stopping"),
             }
         }
-    }
-    #[cfg(test)]
-    pub(crate) fn pause_retry_before_reports(
-        &self,
-    ) -> (
-        tokio::sync::oneshot::Receiver<()>,
-        tokio::sync::oneshot::Sender<()>,
-    ) {
-        let (entered, observed) = tokio::sync::oneshot::channel();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let previous = self
-            .0
-            .retry_gate
-            .lock()
-            .unwrap()
-            .replace((entered, released));
-        assert!(previous.is_none());
-        (observed, release)
     }
     pub(crate) fn subscribe(&self) -> watch::Receiver<ThreadPersistenceSnapshot> {
         self.0.state.subscribe()

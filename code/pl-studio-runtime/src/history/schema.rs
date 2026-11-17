@@ -276,7 +276,9 @@ pub(super) async fn identity(db: &DatabaseConnection, thread_id: &str) -> Result
         ));
     }
     let database_id: String = row.try_get("", "database_id")?;
-    if uuid::Uuid::parse_str(&database_id).is_err() {
+    // Database identity is an opaque capability qualifier. Upgrading a published
+    // history-db-* identity preserves its bytes; only new databases mint UUIDs.
+    if database_id.is_empty() {
         return Err(HistoryError::Integrity(
             "invalid history database identity".into(),
         ));

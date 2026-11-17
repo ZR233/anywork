@@ -835,7 +835,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                 contents_manifest,
                 ..
             } => {
-                let contents = read_contents_manifest(export_dir, contents_manifest)?;
+                let contents = read_contents_manifest(&export_dir, contents_manifest)?;
                 if ev.thread_id.as_ref() == Some(child_thread)
                     && matches!(
                         atom.source,

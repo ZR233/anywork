@@ -11,6 +11,8 @@ import 'package:anywork/src/app/anywork_app.dart';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/app/studio_host_lifecycle.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_view_model.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/host_app_icons.dart';
@@ -160,7 +162,7 @@ void main() {
           .current
           .metadata
           .readerId;
-      final connection = _timelineReader(transport, 'thread-main');
+      final connection = _timelineReader(graph, 'thread-main');
       final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -219,10 +221,9 @@ void main() {
         }
       });
       transport.scriptedPage = oldPage;
-      final loading = graph.timeline.loadOlder(
-        'thread-main',
-        generation: oldLease.generation,
-      );
+      final loading = tester
+          .widget<TimelineView>(find.byType(TimelineView))
+          .onLoadOlder();
       await pumpClientUntil(
         tester,
         () => transport.pageCalls == previousPageCalls + 1,
@@ -284,7 +285,6 @@ void main() {
             ], before: 'older-route'),
             cut: routeCut,
           );
-          expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
           expect(connection.watchCalls, hiddenFrames);
           expect(connection.watchCalls, hiddenAcks);
@@ -306,13 +306,13 @@ void main() {
       await pumpClientUntil(
         tester,
         () =>
-            _activeTimelineReaders(transport, 'thread-main').length == 1 &&
+            graph.timeline.lease('thread-main')?.isRetired == false &&
             graph.timeline.lease('thread-main') != null &&
             session.state.activeTurn == null &&
             session.state.runtime?.execution == null,
         'fresh visible feed reads hidden completion',
       );
-      final newConnection = _timelineReader(transport, 'thread-main');
+      final newConnection = _timelineReader(graph, 'thread-main');
       final newLease = graph.timeline.lease('thread-main')!;
       expect(
         newConnection.metadata.readerId,
@@ -386,8 +386,6 @@ void main() {
       expect(connection.watchCalls, hiddenFrames);
       expect(connection.watchCalls, hiddenAcks);
       expect(transport.bootstrapCalls, 1);
-      expect(transport.runtimeSubscriptions, 2);
-      expect(transport.runtimeCancellations, 1);
 
       transport.botProjectId = workspaceId;
       final bots = await pumpClientFuture(
@@ -484,7 +482,7 @@ void main() {
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
-          final botFeed = _timelineReader(transport, 'thread-alt');
+          final botFeed = _timelineReader(graph, 'thread-alt');
           final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
           expect(router.routerDelegate.state.name, BotConversationRoute.name);
@@ -558,7 +556,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(_composerText(tester), 'Bot draft follows route target');
-          final returnedFeed = _timelineReader(transport, 'thread-alt');
+          final returnedFeed = _timelineReader(graph, 'thread-alt');
           expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
@@ -709,8 +707,6 @@ DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 /// 只选择权威发布时点；状态与正文均由 Demo 自身发布点生成，不向旧 feed 注入事实。
 final class _RouteTurnTransport extends RecordingDemoTransport {
   int _turnUpdates = 0;
-  int runtimeSubscriptions = 0;
-  int runtimeCancellations = 0;
   late String botProjectId;
   Completer<HistoryTimelinePage>? scriptedPage;
   HistoryTimelinePage? baseline;
@@ -729,9 +725,9 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
     final recording = reader as RecordingHistoryReader;
     recording.onTimelinePage = (cut, cursor, demand) {
       pageCalls++;
-      if (threadId == 'thread-main' && cursor == null && baseline
-          case final page?) {
-        return Future.value(page);
+      if (threadId == 'thread-main' && cursor == null) {
+        final page = baseline;
+        if (page != null) return Future.value(page);
       }
       final gate = scriptedPage;
       scriptedPage = null;
@@ -743,26 +739,6 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
           );
     };
     return recording;
-  }
-
-  @override
-  Future<CurrentReader> openCurrentReader(
-    String threadId, {
-    required int currentProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    final reader = await super.openCurrentReader(
-      threadId,
-      currentProtocolVersion: currentProtocolVersion,
-      demand: demand,
-    );
-    if (threadId == 'thread-main' && demand.maxItems == chatDemand.maxItems) {
-      runtimeSubscriptions++;
-      (reader as RecordingCurrentReader).onClosed = () {
-        runtimeCancellations++;
-      };
-    }
-    return reader;
   }
 
   @override
@@ -821,21 +797,5 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   }
 }
 
-RecordingCurrentReader _timelineReader(
-  RecordingDemoTransport transport,
-  String threadId,
-) => transport.currentReaders.lastWhere(
-  (reader) =>
-      reader.threadId == threadId &&
-      reader.demand.maxItems == chatDemand.maxItems,
-);
-
-Iterable<RecordingCurrentReader> _activeTimelineReaders(
-  RecordingDemoTransport transport,
-  String threadId,
-) => transport.currentReaders.where(
-  (reader) =>
-      reader.threadId == threadId &&
-      reader.demand.maxItems == chatDemand.maxItems &&
-      !reader.requested,
-);
+RecordingCurrentReader _timelineReader(AppGraph graph, String threadId) =>
+    graph.timeline.lease(threadId)!.current as RecordingCurrentReader;

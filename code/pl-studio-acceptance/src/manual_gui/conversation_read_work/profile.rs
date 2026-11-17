@@ -305,7 +305,7 @@ fn run_app(
     let Some(mut gui) = record(
         &mut evidence.errors,
         "start fresh native Profile application",
-        start_timeline_history_gui(
+        start_profile_gui(
             context.workspace,
             context.home,
             &gui_log,

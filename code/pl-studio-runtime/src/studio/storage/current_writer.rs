@@ -78,11 +78,18 @@ impl CurrentSource {
                 let handle = finish.clone();
                 Box::pin(async move {
                     validate_owner(&handle, epoch)?;
-                    handle.close().await.context("close Core current owner")?;
+                    match handle.close().await {
+                        Ok(()) => {}
+                        Err(pl_core::thread::ThreadError::Closed)
+                            if handle.snapshot().lifecycle
+                                == pl_core::thread::ThreadLifecycle::Closed => {}
+                        Err(error) => return Err(error).context("close Core current owner"),
+                    }
                     let cancellation = CancellationToken::new();
                     let _cancel = cancellation.clone().drop_guard();
-                    // close has published final_current before acknowledging. This is not another
-                    // producer capture, and a missing handoff cannot leave close waiting for a frame.
+                    // The Session may already have joined this physical owner. In either case,
+                    // only Core's actual final_current proves a successful handoff; a closed
+                    // mailbox or lifecycle snapshot alone cannot stand in for it.
                     tokio::time::timeout(CAPTURE_TIMEOUT, handle.capture_current(cancellation))
                         .await
                         .context("final Core current handoff exceeded one second")?
@@ -795,6 +802,47 @@ mod tests {
         let mut current = ThreadCurrent::new("current-test".into(), epoch);
         current.snapshot_revision = revision;
         current
+    }
+
+    #[tokio::test]
+    async fn already_closed_core_still_saves_its_original_final_current() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let core = ThreadHandle::restore_current(
+            ThreadCurrent::new("current-test".into(), RuntimeEpoch::new()),
+            None,
+        )?;
+        let epoch = core.runtime_epoch();
+        let coordinator = ThreadPersistenceCoordinator::default();
+        let mut store = StateStore::new(directory.path().into(), "current-test");
+        store
+            .attach_current(
+                coordinator.clone(),
+                None,
+                epoch,
+                CurrentSource::from_thread(core.clone()),
+            )
+            .await?;
+        let writer = coordinator
+            .current_writer("current-test", directory.path().into())
+            .await?;
+
+        // The Session owner can finish physical shutdown before the independent JSON owner.
+        core.close().await?;
+        let final_current = core.capture_current(CancellationToken::new()).await?;
+        store.close_current(epoch).await?;
+        let saved = store
+            .load_current()
+            .await?
+            .context("final current was not saved")?;
+        assert_eq!(saved.saved_runtime_epoch, epoch);
+        assert_eq!(saved.snapshot_revision, final_current.snapshot_revision);
+        assert_eq!(
+            serde_json::to_value(&saved.state)?,
+            serde_json::to_value(&final_current.state)?
+        );
+        assert_eq!(core.snapshot().lifecycle, ThreadLifecycle::Closed);
+        assert!(writer.is_joined());
+        Ok(())
     }
 
     fn source(

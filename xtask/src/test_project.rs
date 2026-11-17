@@ -233,10 +233,7 @@ fn desktop_harness_preset(id: &str) -> Option<&'static str> {
         "wait_events" => Some("wait-events"),
         "conversation_read_work" => Some("conversation-read-work"),
         "question_history" => Some("question-history"),
-        "realtime_presentation" => Some("realtime-presentation"),
         "message_submission" => Some("message-submission"),
-        "timeline_presentation" => Some("timeline-history"),
-        "timeline_concept" => Some("timeline-concept"),
         "sidebar" => Some("sidebar-query"),
         "thread_lsp_status" => Some("thread-lsp-status"),
         _ => None,
@@ -255,26 +252,11 @@ fn desktop_env_ready(id: &str) -> bool {
             env_present("ANYWORK_QUESTION_HISTORY_PROJECT")
                 && env_present("ANYWORK_QUESTION_HISTORY_OUTPUT")
         }
-        "realtime_presentation" => {
-            env_present("ANYWORK_REALTIME_PROJECT") && env_present("ANYWORK_REALTIME_OUTPUT")
-        }
         "message_submission" => {
             env_present("ANYWORK_HOME")
                 && env_present("ANYWORK_SUBMISSION_PROJECT")
                 && env_present("ANYWORK_SUBMISSION_OUTPUT")
                 && env_present("ANYWORK_SUBMISSION_PROVIDER")
-        }
-        "timeline_presentation" => {
-            env_present("ANYWORK_TIMELINE_PHASE")
-                && env_present("ANYWORK_TIMELINE_PROJECT")
-                && env_present("ANYWORK_TIMELINE_OUTPUT")
-        }
-        "timeline_concept" => {
-            env_present("ANYWORK_HOME")
-                && env_present("ANYWORK_TIMELINE_CONCEPT_PROJECT")
-                && env_present("ANYWORK_TIMELINE_CONCEPT_OUTPUT")
-                && env_present("ANYWORK_TIMELINE_CONCEPT_PROVIDER")
-                && env_present("ANYWORK_TIMELINE_CONCEPT_EMPTY_THREAD")
         }
         "sidebar" => {
             env_present("ANYWORK_HOME")

@@ -9,7 +9,7 @@ import 'package:anywork/src/domain/models/timeline_commands.dart';
 
 /// Lifecycle instrumentation around the real Demo transport; it does not reduce content.
 class RecordingDemoTransport extends TestDemoStudioTransport {
-  RecordingDemoTransport({super.lifecycleRoot});
+  RecordingDemoTransport({super.lifecycleRoot, super.lspActivityLoop});
   final Map<String, Completer<RecordingCurrentReader>> _currentWaiters = {};
   final bootstrapDelivered = Completer<void>();
   int bootstrapCalls = 0;
@@ -254,6 +254,16 @@ final class RecordingCurrentReader implements CurrentReader {
   int initialViewReads = 0;
   int pageCalls = 0;
   int bodyCalls = 0;
+  Future<ContentWindow> Function(
+    CurrentContentRef reference,
+    ContentRange range,
+  )?
+  onReadBody;
+  Stream<ContentWindow> Function(
+    CurrentContentRef reference,
+    ContentRange range,
+  )?
+  onWatchBody;
   int requestCloseCalls = 0;
   int closeCalls = 0;
   final joined = Completer<void>();
@@ -275,13 +285,37 @@ final class RecordingCurrentReader implements CurrentReader {
   CurrentView get initialView {
     initialViewReads++;
     if (initialFailure case final failure?) throw failure;
-    return inner.initialView;
+    return _mapView(inner.initialView);
   }
+
+  CurrentView _mapView(CurrentView view) {
+    final state = mapState?.call(view.state) ?? view.state;
+    if (state is! ThreadSnapshotFrame) {
+      throw StateError('A scripted Current baseline must remain a snapshot');
+    }
+    return CurrentView(
+      revision: view.revision,
+      state: state,
+      projection: view.projection,
+    );
+  }
+
+  CurrentFrame _mapFrame(CurrentFrame frame) => switch (frame) {
+    ResetCurrentFrame(:final view) => ResetCurrentFrame(_mapView(view)),
+    NotificationCurrentFrame(:final revision, :final notification) =>
+      NotificationCurrentFrame(
+        revision: revision,
+        notification:
+            mapState?.call(notification) as ThreadNotificationFrame? ??
+            notification,
+      ),
+    ProjectionCurrentFrame() => frame,
+  };
 
   @override
   Future<CurrentView> snapshot(ReadDemand demand) {
     snapshotCalls++;
-    return inner.snapshot(demand);
+    return inner.snapshot(demand).then(_mapView);
   }
 
   @override
@@ -292,7 +326,7 @@ final class RecordingCurrentReader implements CurrentReader {
     watchCalls++;
     return inner.watch(after: after, demand: demand).then((watch) {
       if (!watchEntered.isCompleted) watchEntered.complete();
-      return _RecordingCurrentWatch(watch, _injected.stream);
+      return _RecordingCurrentWatch(watch, _injected.stream, _mapFrame);
     });
   }
 
@@ -363,14 +397,21 @@ final class RecordingCurrentReader implements CurrentReader {
     required ContentRange range,
   }) {
     bodyCalls++;
-    return inner.readBody(reference: reference, range: range);
+    return onReadBody?.call(reference, range) ??
+        inner.readBody(reference: reference, range: range);
   }
 
   @override
   Future<CurrentBodyWatch> watchBody({
     required CurrentContentRef reference,
     required ContentRange range,
-  }) => inner.watchBody(reference: reference, range: range);
+  }) {
+    final source = onWatchBody;
+    if (source == null) {
+      return inner.watchBody(reference: reference, range: range);
+    }
+    return Future.value(_FixtureCurrentBodyWatch(source(reference, range)));
+  }
 
   @override
   void requestClose() {
@@ -398,14 +439,25 @@ final class RecordingCurrentReader implements CurrentReader {
   }
 }
 
+final class _FixtureCurrentBodyWatch implements CurrentBodyWatch {
+  const _FixtureCurrentBodyWatch(this.windows);
+  @override
+  final Stream<ContentWindow> windows;
+  @override
+  void requestClose() {}
+  @override
+  Future<void> close() async {}
+}
+
 final class _RecordingCurrentWatch implements CurrentWatch {
-  _RecordingCurrentWatch(this.inner, Stream<CurrentFrame> injected)
-    : _output = StreamController<CurrentFrame>(sync: true) {
-    _innerSubscription = inner.frames.listen(
-      _output.add,
-      onError: _output.addError,
-      onDone: _endFromInner,
-    );
+  _RecordingCurrentWatch(
+    this.inner,
+    Stream<CurrentFrame> injected,
+    CurrentFrame Function(CurrentFrame) mapFrame,
+  ) : _output = StreamController<CurrentFrame>(sync: true) {
+    _innerSubscription = inner.frames
+        .map(mapFrame)
+        .listen(_output.add, onError: _output.addError, onDone: _endFromInner);
     _injectedSubscription = injected.listen(
       _output.add,
       onError: _output.addError,
@@ -419,7 +471,7 @@ final class _RecordingCurrentWatch implements CurrentWatch {
   StreamSubscription<CurrentFrame>? _injectedSubscription;
   Future<void>? _closing;
   bool _innerDone = false;
-  bool _injectedDone = false;
+  Future<void>? _outputClosing;
 
   @override
   Stream<CurrentFrame> get frames => _output.stream;
@@ -430,17 +482,25 @@ final class _RecordingCurrentWatch implements CurrentWatch {
   }
 
   void _endFromInjected() {
-    _injectedDone = true;
     if (!_innerDone) unawaited(_innerSubscription?.cancel());
     _innerDone = true;
-    if (!_output.isClosed) unawaited(_output.close());
+    _closeOutput();
+  }
+
+  void _closeOutput() {
+    if (_output.isClosed) return;
+    final listened = _output.hasListener;
+    final closed = _output.close();
+    // A late watch can be retired before its output is ever transferred to
+    // the SDK. Such a controller has no listener that could acknowledge done.
+    _outputClosing = listened ? closed : Future<void>.value();
   }
 
   @override
   void requestClose() {
     inner.requestClose();
     unawaited(_injectedSubscription?.cancel());
-    if (!_output.isClosed) unawaited(_output.close());
+    _closeOutput();
   }
 
   @override
@@ -454,7 +514,7 @@ final class _RecordingCurrentWatch implements CurrentWatch {
     }
     await _innerSubscription?.cancel();
     await _injectedSubscription?.cancel();
-    await _output.done;
+    await _outputClosing;
     if (error != null) throw error;
   }();
 }

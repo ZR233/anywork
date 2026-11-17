@@ -8,12 +8,10 @@ mod message_submission;
 mod mode_editor;
 mod model_catalog;
 mod question_history;
-mod realtime_presentation;
 mod shutdown;
 mod sidebar_query;
 mod skill_activity;
 mod thread_lsp_status;
-mod timeline_concept;
 mod timeline_history_20k;
 mod wait_events;
 mod web_search;
@@ -62,7 +60,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub(crate) struct ManualGuiOptions {
     /// Isolated environment preset. Manual presets keep a human verdict;
     /// `wait-events`, `conversation-read-work`, `question-history`,
-    /// `realtime-presentation`, `sidebar-query` and `thread-lsp-status` are automatic desktop runners;
+    /// `sidebar-query` and `thread-lsp-status` are automatic desktop runners;
     /// `shutdown` checks normal native exit and remaining child processes.
     /// ACP native acceptance uses the official Flutter integration_test
     /// suites directly; see design/28-acp.md.
@@ -74,9 +72,6 @@ pub(crate) struct ManualGuiOptions {
     /// resident hot-reload session.
     #[arg(long)]
     pub(crate) inspect: bool,
-    /// Run only stop/background evidence; omission keeps the complete realtime journey.
-    #[arg(long, value_parser = ["stop-background"])]
-    pub(crate) realtime_focus: Option<String>,
     /// Measure native Profile first-content layout with the conversation-read-work preset.
     #[arg(long)]
     pub(crate) profile_read_samples: bool,
@@ -130,13 +125,6 @@ pub(crate) struct ManualGuiOptions {
     /// Label the reusable web-search probe as a fixture or real account run.
     #[arg(long, value_parser = ["fixture", "real"])]
     pub(crate) web_search_probe: Option<String>,
-    /// Run the native visible-displacement matrix after the `timeline-history`
-    /// cold restart: six sizes × 96 fixed ±60 pointer inputs, plus 600 continuous
-    /// inputs with direction reversal for each of the three primary sizes
-    /// (1800 in total). The GUI runs in profile mode, so the numbers are input
-    /// evidence, not an AOT/release performance measurement.
-    #[arg(long)]
-    pub(crate) timeline_displacement: bool,
     /// Opt-in isolated Feishu platform peer for native bot GUI observation.
     /// Requires `--preset gui` and a Linux debug native environment.
     #[arg(long)]
@@ -159,19 +147,19 @@ fn validate_inspect_options(options: &ManualGuiOptions) -> Result<()> {
     Ok(())
 }
 
-fn validate_realtime_focus(options: &ManualGuiOptions) -> Result<()> {
-    ensure!(
-        options.realtime_focus.is_none() || options.preset == "realtime-presentation",
-        "--realtime-focus requires --preset realtime-presentation"
-    );
-    Ok(())
-}
-
 fn parse_manual_gui_scenario(value: &str) -> std::result::Result<String, String> {
     if matches!(
         value,
-        "realtime-presentation" | "sidebar-query" | "thread-lsp-status"
-    ) || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
+        "realtime-presentation"
+            | "timeline-concept"
+            | "timeline-boundary"
+            | "media-handoff"
+            | "timeline-history"
+    ) {
+        return Err(format!("unknown manual GUI scenario: {value}"));
+    }
+    if matches!(value, "sidebar-query" | "thread-lsp-status")
+        || pl_provider_fixture::GUI_SCENARIOS.contains(&value)
     {
         Ok(value.to_owned())
     } else {
@@ -323,33 +311,6 @@ struct HistoryLockScenario<'a> {
     fixture_log: &'a Path,
     requests_file: &'a Path,
     interrupt: &'a mpsc::Receiver<()>,
-}
-
-/// Persisted long-history scenario: one driver-driven turn, a cold restart on the
-/// same isolated home, and (opt-in) the native visible-displacement matrix.
-struct TimelineHistoryScenario<'a> {
-    workspace: &'a Path,
-    app_dir: &'a Path,
-    home: &'a Path,
-    working: &'a Path,
-    output: &'a Path,
-    fixture_log: &'a Path,
-    requests_file: &'a Path,
-    /// 严格脚本的实时计数（同时证明 required 步骤全部消费且无拒绝请求）。
-    status_file: &'a Path,
-    interrupt: &'a mpsc::Receiver<()>,
-    run_displacement: bool,
-    capture_presentation: bool,
-}
-
-/// live 阶段从真实 snapshot 记录、其余生命周期必须复现的持久化目标身份。
-///
-/// 项目 id 与会话 id 是 canonical 身份，项目路径是同一数据根上的真实目录；三者
-/// 一起排除“同名不同库”或“选到第一个项目/会话”的误通过。
-struct PersistedTargetIdentity {
-    workspace_id: String,
-    project_path: String,
-    thread_id: String,
 }
 
 struct HistoryFaultScenario<'a> {
@@ -822,7 +783,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         "--profile-read-samples requires --preset conversation-read-work"
     );
     validate_inspect_options(&options)?;
-    validate_realtime_focus(&options)?;
     let capture_presentation = presentation_capture_requested()?;
     delegation::validate(&options)?;
     ensure!(
@@ -835,14 +795,9 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 options.preset.as_str(),
                 "gui"
                     | "tool-scroll"
-                    | "timeline-history"
                     | "timeline-history-20k"
                     | "question-history"
-                    | "realtime-presentation"
                     | "message-submission"
-                    | "timeline-concept"
-                    | "timeline-boundary"
-                    | "media-handoff"
                     | "stress-body-large"
                     | "wait-events"
                     | "conversation-read-work"
@@ -851,13 +806,8 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             )
             || pl_provider_fixture::delegation::Scenario::parse(&options.preset).is_some(),
         "--retain-environment is supported by --preset gui, tool-scroll, \
-         timeline-history, timeline-history-20k, question-history, realtime-presentation, \
-         timeline-concept, timeline-boundary, media-handoff, message-submission, stress-body-large, wait-events, conversation-read-work, \
+         timeline-history-20k, question-history, message-submission, stress-body-large, wait-events, conversation-read-work, \
          sidebar-query, thread-lsp-status and the delegation scenes"
-    );
-    ensure!(
-        !options.timeline_displacement || options.preset == "timeline-history",
-        "--timeline-displacement requires --preset timeline-history"
     );
     ensure!(
         options.preset != "timeline-history-20k" || cfg!(target_os = "linux"),
@@ -950,7 +900,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         && options.web_search_accounts.is_none()
         && options.web_search_models.is_none()
         && options.web_search_probe.is_none()
-        && !options.timeline_displacement
         && !options.bots_fixture
         && options.delegation_driver.is_none();
     let output = options.output.clone().unwrap_or_else(|| {
@@ -1114,9 +1063,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         .arg(&stress_report_file)
         .stdout(Stdio::from(fixture_log.try_clone()?))
         .stderr(Stdio::from(fixture_log));
-    if let Some(focus) = options.realtime_focus.as_deref() {
-        fixture_command.args(["--realtime-focus", focus]);
-    }
     if options.ssh_target.is_some() {
         fixture_command.arg("--posix-exec");
     }
@@ -1139,7 +1085,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             | "context-replay-recovery"
             | "websocket-recovery"
             | "call-lifecycle-recovery"
-            | "timeline-history"
             | "timeline-history-20k"
             | "question-history"
             | "skill-activity"
@@ -1373,44 +1318,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
         );
     }
 
-    if matches!(
-        options.preset.as_str(),
-        "timeline-concept" | "timeline-boundary" | "media-handoff"
-    ) {
-        let project = working.path().join("timeline-concept-project");
-        let result = timeline_concept::run(
-            &timeline_concept::TimelineConceptScenario {
-                workspace: &workspace,
-                app_dir: &app_dir,
-                home: &home,
-                working: working.path(),
-                output: &output,
-                fixture_log: &fixture_log_path,
-                requests_file: &requests_file,
-                interrupt: &interrupt_rx,
-                capture_presentation: capture_presentation || options.preset != "timeline-concept",
-                provider_url: &ready.base_url,
-                mode: match options.preset.as_str() {
-                    "timeline-boundary" => timeline_concept::TimelineConceptMode::Boundary,
-                    "media-handoff" => timeline_concept::TimelineConceptMode::MediaHandoff,
-                    _ => timeline_concept::TimelineConceptMode::Journey,
-                },
-            },
-            fixture,
-        );
-        if options.retain_environment || result.is_err() {
-            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
-            return match (result, retained) {
-                (Ok(()), retained) => retained,
-                (Err(error), Ok(())) => Err(error),
-                (Err(error), Err(retain_error)) => Err(error.context(format!(
-                    "retaining the failed timeline-concept environment also failed: {retain_error:#}"
-                ))),
-            };
-        }
-        return result;
-    }
-
     if options.preset == "message-submission" {
         let project = working.path().join("message-submission-project");
         let result = message_submission::run(
@@ -1433,38 +1340,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
                 (Err(error), Ok(())) => Err(error),
                 (Err(error), Err(retain_error)) => Err(error.context(format!(
                     "retaining the failed message-submission environment also failed: {retain_error:#}"
-                ))),
-            };
-        }
-        return result;
-    }
-
-    if options.preset == "realtime-presentation" {
-        let project = working.path().join("realtime-presentation-project");
-        let result = realtime_presentation::run(
-            &realtime_presentation::RealtimePresentationScenario {
-                workspace: &workspace,
-                app_dir: &app_dir,
-                home: &home,
-                working: working.path(),
-                output: &output,
-                fixture_log: &fixture_log_path,
-                requests_file: &requests_file,
-                interrupt: &interrupt_rx,
-                capture_presentation,
-                provider_url: &ready.base_url,
-                realtime_focus: options.realtime_focus.as_deref(),
-            },
-            fixture,
-        );
-        if options.retain_environment || result.is_err() {
-            let retained = keep_isolated_environment(working, &home, &output, Some(&project));
-            return match (result, retained) {
-                (Ok(()), retained) => retained,
-                (Err(error), Ok(())) => Err(error),
-                (Err(error), Err(retain_error)) => Err(error.context(format!(
-                    "retaining the failed realtime-presentation environment also failed: \
-                     {retain_error:#}"
                 ))),
             };
         }
@@ -1653,31 +1528,6 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
             },
             fixture,
         );
-    }
-
-    if options.preset == "timeline-history" {
-        let project = working.path().join("timeline-history-project");
-        let result = run_timeline_history_scenario(
-            &TimelineHistoryScenario {
-                workspace: &workspace,
-                app_dir: &app_dir,
-                home: &home,
-                working: working.path(),
-                output: &output,
-                fixture_log: &fixture_log_path,
-                requests_file: &requests_file,
-                status_file: &status_file,
-                interrupt: &interrupt_rx,
-                run_displacement: options.timeline_displacement,
-                capture_presentation,
-            },
-            fixture,
-        );
-        // Explicit retention also preserves failed runs for state/checkpoint diagnosis.
-        if options.retain_environment {
-            keep_isolated_environment(working, &home, &output, Some(&project))?;
-        }
-        return result;
     }
 
     if options.preset == "timeline-history-20k" {
@@ -2156,455 +2006,7 @@ pub(crate) fn run(options: ManualGuiOptions) -> Result<()> {
     )
 }
 
-/// timeline-history：官方 Flutter 集成测试的真实提交、同 home 重启与可选位移矩阵。
-///
-/// live/restart 由官方 `integration_test` 持有，应用资源仍经 production
-/// `runStudioShutdown`/`AppGraph.close` 收束。可选位移矩阵仍用独立 GUI 进程，
-/// 正常关闭由 `ext.anywork.requestExit` 协调，并以真实 OS waitpid 退出码 0 判定。
-/// 人工截图复查保持 pending。
-fn run_timeline_history_scenario(
-    context: &TimelineHistoryScenario<'_>,
-    mut fixture: OwnedProcess,
-) -> Result<()> {
-    let TimelineHistoryScenario {
-        workspace,
-        app_dir,
-        home,
-        working,
-        output,
-        fixture_log,
-        requests_file,
-        status_file,
-        interrupt,
-        run_displacement,
-        capture_presentation,
-    } = context;
-    let project = working.join("timeline-history-project");
-    let mut phases: Vec<(&str, Option<std::process::ExitStatus>)> = Vec::new();
-    let mut persisted_identity: Option<PersistedTargetIdentity> = None;
-    let journey = (|| -> Result<()> {
-        fs::create_dir(&project)?;
-        ensure!(
-            Command::new("git")
-                .args(["init", "-q"])
-                .arg(&project)
-                .status()?
-                .success(),
-            "failed to initialize isolated timeline-history project"
-        );
-        for phase in ["live", "restart"] {
-            let phase_index = phases.len();
-            phases.push((phase, None));
-            let integration_log = working.join(format!("timeline-history-{phase}-integration.log"));
-            let integration_output = File::create(&integration_log)?;
-            let mut command = desktop_test_command(workspace)?;
-            command
-                .args(["--suite", "desktop", "--case", "timeline_presentation"])
-                .env("ANYWORK_HOME", home)
-                .env("ANYWORK_TIMELINE_PHASE", phase)
-                .env("ANYWORK_TIMELINE_PROJECT", &project)
-                .env("ANYWORK_TIMELINE_OUTPUT", output)
-                .stdout(Stdio::from(integration_output.try_clone()?))
-                .stderr(Stdio::from(integration_output));
-            configure_presentation_capture(&mut command, output, *capture_presentation);
-            let mut runner = OwnedProcess::start(&mut command, false)?;
-            let deadline = Instant::now() + Duration::from_secs(3_600);
-            let runner_exit = loop {
-                if let Some(status) = runner.child.try_wait()? {
-                    runner.stopped = true;
-                    break status;
-                }
-                ensure!(
-                    !fixture.exited()?,
-                    "account fixture exited during timeline-history {phase}"
-                );
-                ensure!(
-                    interrupt.try_recv().is_err(),
-                    "timeline-history {phase} cancelled"
-                );
-                ensure!(
-                    Instant::now() < deadline,
-                    "timeline-history {phase} integration test timed out"
-                );
-                thread::sleep(Duration::from_millis(200));
-            };
-            phases[phase_index].1 = Some(runner_exit);
-            ensure!(
-                runner_exit.success(),
-                "timeline-history {phase} integration test failed: {runner_exit}"
-            );
-            let report: serde_json::Value = serde_json::from_slice(
-                &fs::read(output.join(format!("timeline-history-{phase}.json")))
-                    .with_context(|| format!("timeline-history {phase} wrote no report"))?,
-            )?;
-            ensure!(
-                report.get("pass") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} did not pass: {}",
-                serde_json::to_string_pretty(&report)?
-            );
-            ensure!(
-                report.get("shutdown") == Some(&serde_json::Value::String("completed".into())),
-                "timeline-history {phase} AppGraph shutdown was not clean"
-            );
-            // 报告键与 Dart 实际产出逐个核对：20k 条必须保持真实 40 页深度、仍有更早
-            // 内容、没有重复/错序/停滞游标，冷启动与最新小页符合 tail 基线契约。
-            let latest_page = report
-                .get("latestPage")
-                .and_then(serde_json::Value::as_object)
-                .with_context(|| format!("timeline-history {phase} report has no latest page"))?;
-            ensure!(
-                report.get("latestPageOk") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("firstContentLaidOut")
-                        == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("atLiveEdge") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true))
-                    && latest_page.get("hasOlder") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} latest display has no first content layout: \
-                 {latest_page:?}"
-            );
-            let cold_start = report
-                .get("coldStartLatest")
-                .and_then(serde_json::Value::as_object)
-                .with_context(|| {
-                    format!("timeline-history {phase} report has no cold-start observation")
-                })?;
-            ensure!(
-                cold_start.get("live") == Some(&serde_json::Value::Bool(true))
-                    && cold_start
-                        .get("loadedItems")
-                        .and_then(serde_json::Value::as_u64)
-                        .is_some_and(|items| items > 0)
-                    && cold_start.get("firstContentLaidOut")
-                        == Some(&serde_json::Value::Bool(true))
-                    && cold_start.get("pixelsAtTop") == Some(&serde_json::Value::Bool(true)),
-                "timeline-history {phase} cold start has no first content layout: \
-                 {cold_start:?}"
-            );
-            let paging = report
-                .get("paging")
-                .and_then(serde_json::Value::as_object)
-                .with_context(|| {
-                    format!("timeline-history {phase} report has no paging evidence")
-                })?;
-            let page_count = paging
-                .get("pageCount")
-                .and_then(serde_json::Value::as_u64)
-                .context("timeline-history paging page count missing")?;
-            let pages = paging
-                .get("pages")
-                .and_then(serde_json::Value::as_array)
-                .context("timeline-history paging pages missing")?;
-            let partial_depth = paging
-                .get("partialDepthPages")
-                .and_then(serde_json::Value::as_u64)
-                .context("timeline-history partial depth missing")?;
-            ensure!(
-                page_count == 40
-                    && partial_depth == 40
-                    && pages.len() as u64 == page_count
-                    && paging.get("reachedEnd") == Some(&serde_json::Value::Bool(false))
-                    && paging.get("hasOlder") == Some(&serde_json::Value::Bool(true))
-                    && paging.get("duplicateIdentity") == Some(&serde_json::Value::Bool(false))
-                    && paging.get("orderViolation") == Some(&serde_json::Value::Bool(false))
-                    && paging.get("cursorStalled") == Some(&serde_json::Value::Bool(false))
-                    && paging
-                        .get("growthViolations")
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(Vec::is_empty),
-                "timeline-history {phase} paging did not prove 40 real partial pages over the \
-                 seeded history: {}",
-                serde_json::json!({
-                    "pageCount": page_count,
-                    "partialDepthPages": partial_depth,
-                    "pages": pages.len(),
-                    "reachedEnd": paging.get("reachedEnd"),
-                    "hasOlder": paging.get("hasOlder"),
-                })
-            );
-            if phase == "live" {
-                ensure!(
-                    report
-                        .get("streamingHistory")
-                        .and_then(|value| value.get("pass"))
-                        == Some(&serde_json::Value::Bool(true)),
-                    "timeline-history did not prove live-output growth during independent paging \
-                     and completed-atom immutability"
-                );
-                // 首轮真实 snapshot 是冷启动目标身份的**唯一**来源；baseline 与报告必须
-                // 指向同一身份，否则后续冷启动可能打开别的东西却仍然“通过”。
-                let identity = report
-                    .get("identity")
-                    .and_then(serde_json::Value::as_object)
-                    .with_context(|| "timeline-history live report has no persisted identity")?;
-                ensure!(
-                    identity.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true)),
-                    "timeline-history live identity is not consistent across \
-                     selection/workspace/project/timeline: {identity:?}"
-                );
-                let workspace_id = identity
-                    .get("workspaceId")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .context("timeline-history live identity has no workspaceId")?
-                    .to_owned();
-                let thread_id = identity
-                    .get("threadId")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty())
-                    .context("timeline-history live identity has no threadId")?
-                    .to_owned();
-                let project_path = identity
-                    .get("projectPath")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|path| !path.is_empty())
-                    .context("timeline-history live identity has no projectPath")?
-                    .to_owned();
-                let baseline: serde_json::Value = serde_json::from_slice(
-                    &fs::read(output.join("timeline-history-baseline.json"))
-                        .context("timeline-history live wrote no restart baseline")?,
-                )?;
-                ensure!(
-                    baseline
-                        .get("workspaceId")
-                        .and_then(serde_json::Value::as_str)
-                        == Some(workspace_id.as_str())
-                        && baseline
-                            .get("projectPath")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(project_path.as_str())
-                        && baseline.get("threadId").and_then(serde_json::Value::as_str)
-                            == Some(thread_id.as_str()),
-                    "timeline-history baseline identity does not match the live report: \
-                     {baseline:?}"
-                );
-                persisted_identity = Some(PersistedTargetIdentity {
-                    workspace_id,
-                    project_path,
-                    thread_id,
-                });
-            }
-            if phase == "restart" {
-                let comparison = report
-                    .get("restartComparison")
-                    .and_then(serde_json::Value::as_object)
-                    .with_context(|| "timeline-history restart has no comparison evidence")?;
-                ensure!(
-                    comparison.get("sameOrder") == Some(&serde_json::Value::Bool(true))
-                        && comparison.get("identityMatches")
-                            == Some(&serde_json::Value::Bool(true))
-                        && comparison.get("latestMatches") == Some(&serde_json::Value::Bool(true))
-                        && comparison.get("pageCountMatches")
-                            == Some(&serde_json::Value::Bool(true))
-                        && comparison.get("oldestMatches") == Some(&serde_json::Value::Bool(true))
-                        && comparison.get("loadedItemsMatch")
-                            == Some(&serde_json::Value::Bool(true)),
-                    "timeline-history cold start did not reproduce the same ordered pages: \
-                     {comparison:?}"
-                );
-                // 冷启动是在**同一持久化身份**上重建的：正常侧栏选择/打开的真实证据
-                // 必须与 live 记录的项目、会话一致，且不得把“没点过”写成自动打开。
-                let restore = report
-                    .get("restore")
-                    .and_then(serde_json::Value::as_object)
-                    .with_context(
-                        || "timeline-history restart has no cold-start restoration evidence",
-                    )?;
-                let target = persisted_identity
-                    .as_ref()
-                    .context("timeline-history restart ran without the live identity")?;
-                ensure!(
-                    restore.get("evidenceConsistent") == Some(&serde_json::Value::Bool(true))
-                        && restore.get("workspaceIdMatches")
-                            == Some(&serde_json::Value::Bool(true))
-                        && restore.get("threadIdMatches") == Some(&serde_json::Value::Bool(true))
-                        && restore
-                            .get("workspaceId")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(target.workspace_id.as_str())
-                        && restore
-                            .get("projectPath")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(target.project_path.as_str())
-                        && restore.get("threadId").and_then(serde_json::Value::as_str)
-                            == Some(target.thread_id.as_str()),
-                    "timeline-history cold start did not restore the same persisted \
-                     project/thread: {restore:?}"
-                );
-                let auto_opened = restore
-                    .get("autoOpened")
-                    .and_then(serde_json::Value::as_bool)
-                    .context("timeline-history cold start has no auto-opened fact")?;
-                let tap_attempts = restore
-                    .get("tapAttempts")
-                    .and_then(serde_json::Value::as_u64)
-                    .context("timeline-history cold start has no tap count")?;
-                ensure!(
-                    auto_opened == (tap_attempts == 0),
-                    "timeline-history cold start mislabels auto-opened vs selected: {restore:?}"
-                );
-            }
-        }
-        if *run_displacement {
-            let gui_log = working.join("timeline-history-displacement-gui.log");
-            let native_exit = output.join("timeline-history-displacement-native-exit.json");
-            let mut gui =
-                start_timeline_history_gui(workspace, home, &gui_log, &native_exit, false)?;
-            let vm_url = wait_for_vm(&gui_log, &mut gui, &mut fixture, interrupt)?;
-            observe_capture_exit(
-                app_dir,
-                &vm_url,
-                output,
-                interrupt,
-                &mut gui,
-                Some(&mut fixture),
-                "timeline-history displacement: restore the same persisted thread, run pointer inputs, then type done.",
-            )?;
-            let gui_exit = wait_for_gui_exit(&mut gui, Duration::from_secs(120), "displacement")?;
-            ensure!(
-                gui_exit.success(),
-                "displacement GUI did not exit cleanly: {gui_exit}"
-            );
-            require_native_exit(&native_exit, None)?;
-            phases.push(("displacement", Some(gui_exit)));
-        }
-        Ok(())
-    })();
-
-    // Record observed exits before assertions and retain failed-phase evidence.
-    // live/restart store the official integration runner log; displacement keeps
-    // independent capture/native-exit evidence.
-    let redactions = [
-        (home.to_string_lossy().into_owned(), "<home>"),
-        (working.to_string_lossy().into_owned(), "<coord>"),
-        (output.to_string_lossy().into_owned(), "<output>"),
-        (app_dir.to_string_lossy().into_owned(), "<app>"),
-        (workspace.to_string_lossy().into_owned(), "<workspace>"),
-    ];
-    let continuity_result = (|| -> Result<()> {
-        let continuity_source = home.join("studio/logs/studio.log");
-        let mut continuity_evidence = File::create(output.join("timeline-history-continuity.log"))?;
-        writeln!(
-            continuity_evidence,
-            "source_scope=current studio.log only; rolling archives not included"
-        )?;
-        if continuity_source.is_file() {
-            for line in fs::read_to_string(&continuity_source)?.lines() {
-                if line.split_once(": ").is_some_and(|(header, _)| {
-                    header.split_whitespace().last() == Some("conversation_continuity")
-                }) {
-                    writeln!(
-                        continuity_evidence,
-                        "{}",
-                        sanitize_driver_line(line, &redactions)
-                    )?;
-                }
-            }
-        } else {
-            writeln!(continuity_evidence, "source_status=missing")?;
-        }
-        Ok(())
-    })();
-    for (phase, gui_exit) in &phases {
-        let gui_log = working.join(format!("timeline-history-{phase}-gui.log"));
-        if gui_log.is_file() {
-            write_sanitized_log(
-                &gui_log,
-                &output.join(format!("timeline-history-{phase}-gui.log")),
-            )?;
-        }
-        if *phase != "displacement" {
-            let runner_log = working.join(format!("timeline-history-{phase}-integration.log"));
-            write_realtime_driver_evidence(
-                &runner_log,
-                output,
-                &format!("timeline-history-{phase}"),
-                *gui_exit,
-                journey.as_ref().err(),
-                &redactions,
-            )?;
-            let stem = format!("timeline-history-{phase}");
-            let driver_log = output.join(format!("{stem}-driver.log"));
-            if driver_log.is_file() {
-                fs::rename(driver_log, output.join(format!("{stem}-integration.log")))?;
-            }
-            fs::rename(
-                output.join(format!("{stem}-driver-errors.txt")),
-                output.join(format!("{stem}-integration-errors.txt")),
-            )?;
-        }
-        fs::write(
-            output.join(format!("timeline-history-{phase}-exit.json")),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "phase": phase,
-                "guiExit": gui_exit.map(|status| status.code()),
-            }))?,
-        )?;
-    }
-    let fixture_result = fixture.stop(requests_file);
-    drop(fixture);
-    write_fixture_log(fixture_log, &output.join("fixture.log"))?;
-    let requests = if requests_file.is_file() {
-        sanitize_requests(requests_file, &output.join("requests.json"))?;
-        serde_json::from_slice::<Vec<serde_json::Value>>(&fs::read(requests_file)?)?
-    } else {
-        Vec::new()
-    };
-    let accepted = requests
-        .iter()
-        .filter(|row| row["accepted"] == true)
-        .count();
-    let rejected = requests
-        .iter()
-        .filter(|row| row["accepted"] == false)
-        .count();
-    let live_status: Option<pl_provider_fixture::FixtureLiveStatus> = if status_file.is_file() {
-        Some(serde_json::from_slice(&fs::read(status_file)?)?)
-    } else {
-        None
-    };
-    fs::write(
-        output.join("fixture-status.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "scenario": "timeline-history",
-            "acceptedRequests": accepted,
-            "rejectedRequests": rejected,
-            "completed": fixture_result.as_ref().is_ok_and(|status| status.success()),
-            "requiredStepsConsumed": live_status.map(|status| status.remaining_optional),
-            "humanVerdict": "pending",
-        }))?,
-    )?;
-    require_timeline_history_completion(journey, fixture_result)?;
-    continuity_result?;
-    ensure!(
-        rejected == 0,
-        "timeline-history fixture rejected {rejected} account request(s)"
-    );
-    if *run_displacement {
-        fs::write(
-            output.join("timeline-displacement-verdict.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "humanVerdict": "pending",
-                "note": "operator observation; capture never replaces the human screenshot review",
-            }))?,
-        )?;
-    }
-    Ok(())
-}
-
-fn require_timeline_history_completion(
-    journey: Result<()>,
-    fixture_result: Result<ExitStatus>,
-) -> Result<()> {
-    journey?;
-    let fixture_status = fixture_result.context("timeline-history provider fixture stop failed")?;
-    ensure!(
-        fixture_status.success(),
-        "timeline-history provider fixture exited with {fixture_status}"
-    );
-    Ok(())
-}
-
-fn start_timeline_history_gui(
+fn start_profile_gui(
     workspace: &Path,
     home: &Path,
     log_path: &Path,
@@ -2876,7 +2278,7 @@ fn wait_for_gui_exit(
         }
         ensure!(
             Instant::now() < deadline,
-            "GUI did not exit after the coordinated timeline-history {phase} shutdown"
+            "GUI did not exit after the coordinated {phase} shutdown"
         );
         thread::sleep(Duration::from_millis(100));
     }
@@ -3373,10 +2775,7 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
         field: pl_model::model::ReasoningInterleavedField::ReasoningContent,
     });
     model.display_name = "Local GUI fixture".into();
-    if matches!(
-        ready.scenario.as_str(),
-        "timeline-history" | "timeline-history-20k"
-    ) {
+    if ready.scenario == "timeline-history-20k" {
         model.context_window = Some(1_050_000);
         model.max_context_window = Some(1_050_000);
         model.max_output_tokens = Some(128_000);
@@ -3391,10 +2790,7 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     model.binding.set_transport(profile);
     model.binding.request.api_model = None;
-    if matches!(
-        ready.scenario.as_str(),
-        "tool-scroll" | "timeline-concept" | "media-handoff"
-    ) {
+    if ready.scenario == "tool-scroll" {
         model.capabilities.input.push(ModelInputCapability::media(
             ModelModality::Image,
             vec![ModelInputSource::Local],
@@ -3408,10 +2804,8 @@ fn fixture_config(ready: &FixtureReady, profile: ModelTransportProfile) -> Resul
     }
     let provider_id = AccountId::new(format!("gui-fixture-{}", std::process::id()))?;
     let mut endpoint = ProtocolEndpoint::compatible("Local GUI fixture", &ready.base_url);
-    endpoint.service_capabilities.remote_compaction = matches!(
-        ready.scenario.as_str(),
-        "call-lifecycle-recovery" | "timeline-concept"
-    );
+    endpoint.service_capabilities.remote_compaction =
+        matches!(ready.scenario.as_str(), "call-lifecycle-recovery");
     let mut models = vec![model];
     if ready.scenario == "gui" {
         // Distinct metadata in the same isolated account exercises the real
@@ -7697,18 +7091,18 @@ mod desktop_test_command_tests {
 
 #[cfg(test)]
 mod scenario_cli_tests {
-    use super::{ManualGuiOptions, validate_inspect_options, validate_realtime_focus};
+    use super::{ManualGuiOptions, validate_inspect_options};
     use clap::Parser;
 
     #[test]
-    fn keeps_presentation_scenarios_without_restoring_removed_acp_journey() {
+    fn keeps_current_scenarios_without_restoring_removed_presentation_entries() {
         for scenario in [
             "gui",
-            "timeline-history",
+            "timeline-history-20k",
             "question-history",
-            "realtime-presentation",
-            "timeline-concept",
-            "timeline-boundary",
+            "realtime",
+            "wait-events",
+            "conversation-read-work",
             "sidebar-query",
             "thread-lsp-status",
         ] {
@@ -7716,11 +7110,32 @@ mod scenario_cli_tests {
                 .expect("supported native presentation scenario");
             assert_eq!(options.preset, scenario);
         }
-        for scenario in ["acp-auto-install", "unknown-scenario"] {
+        for scenario in [
+            "realtime-presentation",
+            "timeline-concept",
+            "timeline-boundary",
+            "media-handoff",
+            "timeline-history",
+            "acp-auto-install",
+            "unknown-scenario",
+        ] {
+            let error = ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario])
+                .expect_err("removed or unknown scenario must fail");
             assert!(
-                ManualGuiOptions::try_parse_from(["acceptance", "--preset", scenario]).is_err()
+                error.to_string().contains("unknown manual GUI scenario"),
+                "{scenario}: {error}"
             );
         }
+        assert!(
+            ManualGuiOptions::try_parse_from([
+                "acceptance",
+                "--preset",
+                "realtime",
+                "--realtime-focus",
+                "stop-background",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -7748,106 +7163,16 @@ mod scenario_cli_tests {
                 "--inspect",
                 "--bots-fixture",
             ],
-            vec!["acceptance", "--preset", "timeline-history", "--inspect"],
+            vec![
+                "acceptance",
+                "--preset",
+                "timeline-history-20k",
+                "--inspect",
+            ],
         ] {
             let options = ManualGuiOptions::try_parse_from(args).expect("syntactically valid args");
             assert!(validate_inspect_options(&options).is_err());
         }
-    }
-
-    #[test]
-    fn realtime_focus_rejects_unknown_or_unrelated_presets() {
-        let focused = ManualGuiOptions::try_parse_from([
-            "acceptance",
-            "--preset",
-            "realtime-presentation",
-            "--realtime-focus",
-            "stop-background",
-        ])
-        .expect("supported focus");
-        validate_realtime_focus(&focused).expect("focus belongs to realtime-presentation");
-        let full =
-            ManualGuiOptions::try_parse_from(["acceptance", "--preset", "realtime-presentation"])
-                .expect("complete default journey");
-        assert!(full.realtime_focus.is_none());
-        validate_realtime_focus(&full).expect("default journey");
-        for preset in ["gui", "realtime", "history-fault", "timeline-boundary"] {
-            let options = ManualGuiOptions::try_parse_from([
-                "acceptance",
-                "--preset",
-                preset,
-                "--realtime-focus",
-                "stop-background",
-            ])
-            .expect("syntactically valid");
-            assert!(validate_realtime_focus(&options).is_err());
-        }
-        assert!(
-            ManualGuiOptions::try_parse_from([
-                "acceptance",
-                "--preset",
-                "realtime-presentation",
-                "--realtime-focus",
-                "unknown",
-            ])
-            .is_err()
-        );
-    }
-}
-
-#[cfg(test)]
-mod timeline_history_completion_tests {
-    use super::require_timeline_history_completion;
-    use anyhow::anyhow;
-    use std::process::{Command, ExitStatus};
-
-    #[test]
-    fn preserves_journey_failure_before_fixture_cleanup_failure() {
-        let error = require_timeline_history_completion(
-            Err(anyhow!("journey sentinel")),
-            Err(anyhow!("fixture sentinel")),
-        )
-        .expect_err("journey failure must be preserved");
-        let message = format!("{error:#}");
-        assert!(message.contains("journey sentinel"));
-        assert!(!message.contains("fixture sentinel"));
-    }
-
-    #[test]
-    fn rejects_fixture_stop_error_and_nonzero_exit() {
-        let stop_error =
-            require_timeline_history_completion(Ok(()), Err(anyhow!("fixture sentinel")))
-                .expect_err("fixture stop error must fail the scenario");
-        let stop_message = format!("{stop_error:#}");
-        assert!(stop_message.contains("timeline-history provider fixture stop failed"));
-        assert!(stop_message.contains("fixture sentinel"));
-
-        let status = platform_exit_status(7);
-        let exit_error = require_timeline_history_completion(Ok(()), Ok(status))
-            .expect_err("nonzero fixture exit must fail the scenario");
-        assert!(
-            exit_error
-                .to_string()
-                .contains("timeline-history provider fixture exited with")
-        );
-    }
-
-    #[test]
-    fn accepts_successful_fixture_exit_after_successful_journey() {
-        require_timeline_history_completion(Ok(()), Ok(platform_exit_status(0)))
-            .expect("successful journey and fixture exit must pass");
-    }
-
-    fn platform_exit_status(code: i32) -> ExitStatus {
-        #[cfg(unix)]
-        let status = Command::new("sh")
-            .args(["-c", &format!("exit {code}")])
-            .status();
-        #[cfg(windows)]
-        let status = Command::new("cmd")
-            .args(["/C", &format!("exit /B {code}")])
-            .status();
-        status.expect("platform shell must produce an exit status")
     }
 }
 

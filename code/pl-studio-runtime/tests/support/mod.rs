@@ -404,23 +404,23 @@ pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
                     "SELECT thread_id FROM history_store_meta WHERE singleton=1",
                 ))
                 .await?;
-            if let Some(row) = row {
-                if row.try_get::<String>("", "thread_id")?.as_str() == id {
-                    db.close().await?;
-                    let root = path
-                        .parent()
-                        .context("history database has no parent")?
-                        .to_path_buf();
-                    let current_path = root.join("current.json");
-                    let current: pl_core::thread::current::ThreadCurrent =
-                        serde_json::from_slice(&std::fs::read(&current_path)?)?;
-                    current.validate(id)?;
-                    return Ok(Saved {
-                        path,
-                        root,
-                        current,
-                    });
-                }
+            if let Some(row) = row
+                && row.try_get::<String>("", "thread_id")?.as_str() == id
+            {
+                db.close().await?;
+                let root = path
+                    .parent()
+                    .context("history database has no parent")?
+                    .to_path_buf();
+                let current_path = root.join("current.json");
+                let current: pl_core::thread::current::ThreadCurrent =
+                    serde_json::from_slice(&std::fs::read(&current_path)?)?;
+                current.validate(id)?;
+                return Ok(Saved {
+                    path,
+                    root,
+                    current,
+                });
             }
             db.close().await?;
         }

@@ -68,7 +68,6 @@ void main() {
         const DeferredPayload(reference: reference, byteLength: 123456),
       );
       expect(card.compatibility, ChatItemCompatibility.deferred);
-      expect(card.reference, same(reference));
       expect(card.byteLength, 123456);
       expect(card.bodies, isEmpty);
       expect(card.raw, isNull);

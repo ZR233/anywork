@@ -1,11 +1,10 @@
 import '../support/test_app_lifecycle.dart';
-import '../support/recording_demo_transport.dart' show timelineReady;
+import '../support/recording_demo_transport.dart'
+    show timelineReady, RecordingDemoTransport;
 import '../support/chat_fixtures.dart';
 
 import 'dart:async';
 import 'dart:convert';
-
-import 'package:anywork_client/conversation_ports.dart';
 
 import '../support/test_statistics_feed.dart';
 
@@ -49,7 +48,10 @@ import 'package:anywork_client/studio_client.dart'
         ThreadDirectoryPage,
         ThreadMetadataFrame,
         ThreadObservationHandle,
-        ThreadRuntimeUpdate;
+        ThreadRuntimeUpdate,
+        ThreadStreamFrame,
+        ThreadSnapshotFrame,
+        ThreadNotificationFrame;
 
 /// 用户可见症状的回归证据：主界面（起始页）的会话模式与思考强度选择器必须在不发生
 /// 任何页面跳转的情况下显示新值，菜单行的选中态也必须随同一事实移动。
@@ -1967,7 +1969,7 @@ Future<void> _waitForModelDirectory(AppGraph graph) async {
 /// 提交推进 Thread 目录 status；这里只在 canonical 帧上补齐这两类环境事实（active
 /// workflow run 与目录 status），命令、CAS 与帧收敛全部走真实 Demo transport 与
 /// Client，不在测试内复刻任何业务判定。
-class _WorkflowScenarioTransport extends TestDemoStudioTransport {
+class _WorkflowScenarioTransport extends RecordingDemoTransport {
   _WorkflowScenarioTransport({this.threadStatus = ThreadStatusView.idle})
     : super(lspActivityLoop: false);
 
@@ -2062,7 +2064,6 @@ class _WorkflowScenarioTransport extends TestDemoStudioTransport {
             ),
           _ => frame,
         },
-        _ => frame,
       };
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(

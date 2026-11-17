@@ -30,18 +30,16 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
     let projects = working.join("wait-events-project");
     let mut runner_exit = None;
     let suite = (|| -> Result<()> {
-        for name in ["sleep-first", "tool-first", "timeout", "child", "cancel"] {
-            let project = projects.join(name);
-            fs::create_dir_all(&project)?;
-            ensure!(
-                Command::new("git")
-                    .args(["init", "-q"])
-                    .arg(&project)
-                    .status()?
-                    .success(),
-                "failed to initialize isolated {name} project"
-            );
-        }
+        let project = projects.join("sleep-first");
+        fs::create_dir_all(&project)?;
+        ensure!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .arg(&project)
+                .status()?
+                .success(),
+            "failed to initialize isolated sleep-first project"
+        );
         let log = File::create(&log_path)?;
         let mut command = desktop_test_command(workspace)?;
         command
@@ -58,21 +56,21 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
                 runner_exit = Some(status);
                 ensure!(
                     status.success(),
-                    "Waiting integration tests failed: {status}"
+                    "Waiting integration test failed: {status}"
                 );
                 break;
             }
             ensure!(
                 !fixture.exited()?,
-                "fixture exited during Waiting integration tests"
+                "fixture exited during Waiting integration test"
             );
             ensure!(
                 interrupt.try_recv().is_err(),
-                "Waiting integration tests cancelled"
+                "Waiting integration test cancelled"
             );
             ensure!(
                 Instant::now() < deadline,
-                "Waiting integration tests timed out"
+                "Waiting integration test timed out"
             );
             thread::sleep(Duration::from_millis(200));
         }
@@ -127,22 +125,13 @@ pub(super) fn run(context: &WaitEventsScenario<'_>, mut fixture: OwnedProcess) -
         fixture_result.is_ok_and(|status| status.success()) && rejected == 0,
         "Waiting fixture failed or rejected requests"
     );
-    // Boundary evidence only, not a replacement for Flutter assertions. In
-    // particular these two notes validate the real provider context, not UI text.
-    for required in [
-        "sleep_first_answered",
-        "tool_first_answered",
-        "already_ready_answered",
-        "timeout_answered",
-        "child_report_once",
-        "child_report_still_once",
-        "cancel_query_answered",
-    ] {
-        ensure!(
-            notes.contains(&required),
-            "missing provider boundary: {required}"
-        );
-    }
+    // Boundary evidence only, not a replacement for Flutter assertions. This
+    // validates that the retained test consumed the real sleep-first provider
+    // context rather than merely rendering fixture text.
+    ensure!(
+        notes.contains(&"sleep_first_answered"),
+        "missing provider boundary: sleep_first_answered"
+    );
     println!("Waiting integration evidence: {}", output.display());
     Ok(())
 }

@@ -532,6 +532,11 @@ final class _DemoFrozen {
   final ChatScope scope;
 }
 
+final class _DemoChange {
+  const _DemoChange(this.update);
+  final ThreadWorkspaceUpdate? update;
+}
+
 final class _DemoHistory {
   final List<DisplayBlock> displayBlocks = [];
   final Map<String, _DemoDisplayScript> displayScripts = {};
@@ -561,7 +566,7 @@ final class _DemoHistory {
   int? planRevision;
   int interactionRevision = 0;
   String? _interactionSignature;
-  final Set<void Function()> changes = {};
+  final Set<void Function(_DemoChange)> changes = {};
   int revision = 0;
   int get head => items.lastOrNull?.order ?? 0;
   void prepareCurrent(ThreadWorkspace workspace) {
@@ -591,11 +596,12 @@ final class _DemoHistory {
     }
   }
 
-  void changed(ThreadWorkspace workspace) {
+  void changed(ThreadWorkspace workspace, {ThreadWorkspaceUpdate? update}) {
     revision++;
     prepareCurrent(workspace);
+    final change = _DemoChange(update);
     for (final wake in changes.toList()) {
-      wake();
+      wake(change);
     }
   }
 

@@ -65,14 +65,13 @@ impl core::ChatBudget for JsonBudget {
         }
     }
     fn manifest_bytes(&self, descriptor: &core::ContentDescriptor) -> usize {
-        let entry = manifest_entry(
+        manifest_entry(
             &self.database_id,
             self.manifest_item.as_deref().unwrap_or("item"),
             descriptor.clone(),
         )
         .and_then(|entry| Ok(serde_json::to_vec(&entry)?.len().saturating_add(1)))
-        .unwrap_or(usize::MAX);
-        entry
+        .unwrap_or(usize::MAX)
     }
 }
 pub(crate) fn completed_entry(
@@ -100,32 +99,6 @@ pub(crate) fn completed_entry(
         completion_seq: header.append_seq,
         atom,
     })
-}
-pub(crate) fn entries(
-    items: Vec<core::ChatPageItem>,
-    database_id: &str,
-) -> Result<Vec<CompletedEntry>> {
-    items
-        .into_iter()
-        .map(|item| {
-            let payload = match item.payload {
-                core::PayloadData::Inline(bytes) => PayloadData::Inline {
-                    bytes: bytes.to_vec(),
-                },
-                core::PayloadData::Deferred {
-                    item_id,
-                    byte_length,
-                } => PayloadData::Deferred {
-                    reference: ContentRef {
-                        database_id: database_id.into(),
-                        target: ContentTarget::ItemPayload { item_id },
-                    },
-                    byte_length,
-                },
-            };
-            completed_entry(&item.header, payload)
-        })
-        .collect()
 }
 fn manifest_entry(
     database: &str,

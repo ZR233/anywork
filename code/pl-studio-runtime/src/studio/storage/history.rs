@@ -49,16 +49,7 @@ pub(crate) fn frozen_v24_migrations(
     schema::migrations_for_upgrade(thread_id)
 }
 
-/// 单页返回的总 payload 字节预算；达到预算即停止装入更多条目。
-#[cfg(test)]
-const PAGE_BYTE_BUDGET: usize = 2 * 1024 * 1024;
-/// 一页 Turn 最多返回的 Turn 行数（调用方 `limit` 的上限）。
-#[cfg(test)]
-const TURN_PAGE_ROW_LIMIT: usize = 200;
-/// 一条 Turn 在一个 Turn 页里最多返回的条目行数。
-///
-/// 整页字节预算已经限制返回字节，但 SQL 读取本身也必须先有行上限，否则一条巨型 Turn 会在
-/// 裁剪之前被整条读进内存。达到行上限的剩余条目由 `next_cursor` 在同一 Turn 内继续取回。
+/// One item-page worth of entries for the large-Turn history fixture.
 #[cfg(test)]
 const TURN_PAGE_ITEM_LIMIT: usize = 500;
 
@@ -73,8 +64,6 @@ pub(crate) struct HistoryStore {
 }
 
 struct HistoryStoreState {
-    #[cfg(test)]
-    reader_calls: std::sync::atomic::AtomicU64,
     closed: std::sync::atomic::AtomicBool,
     path: PathBuf,
     thread_id: String,
@@ -149,13 +138,6 @@ pub(crate) struct InputIdentityWrite {
     pub presentation: crate::MessagePresentation,
 }
 
-/// 持久化幂等命中：保存的最小身份加上保存的 host 提交摘要。
-#[cfg(test)]
-pub(crate) struct InputIdentityReceipt {
-    pub entry: crate::studio::storage::state::InputIdentityEntry,
-    pub request_digest: Option<String>,
-}
-
 /// One durable receipt of a terminal interaction/permission fact.
 ///
 /// `payload` is the canonical record the effect committed, so a repeated command can be answered
@@ -185,13 +167,6 @@ pub(crate) struct MessageIdentityWrite {
     pub message_id: String,
     /// 该消息在时间线上的条目身份，便于与 `history_items` 对齐排查。
     pub item_id: String,
-    pub sequence: u64,
-    pub digest: Option<String>,
-}
-
-/// 持久化消息身份命中：原始受理序号与保存的正文摘要。
-#[cfg(test)]
-pub(crate) struct MessageIdentityReceipt {
     pub sequence: u64,
     pub digest: Option<String>,
 }
@@ -260,8 +235,6 @@ impl HistoryStore {
         );
         Ok(Self {
             state: std::sync::Arc::new(HistoryStoreState {
-                #[cfg(test)]
-                reader_calls: std::sync::atomic::AtomicU64::new(0),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 path: path.to_owned(),
                 thread_id: thread_id.to_owned(),
@@ -415,10 +388,6 @@ impl HistoryStore {
     /// writer initialization waits behind it instead of validating the half-initialized database
     /// that `connect(mode=rwc)` just created.
     async fn reader(&self) -> Result<Option<&HistoryConnection>> {
-        #[cfg(test)]
-        self.state
-            .reader_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // The first writer may have created the file with `connect(mode=rwc)` while its schema and
         // identity are still uncommitted. Take the read side of the initialization lock before
         // touching the file, so we either run before the file exists or after it is fully
@@ -435,13 +404,6 @@ impl HistoryStore {
             );
         }
         self.read_only_connection().await
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) fn reader_calls(&self) -> u64 {
-        self.state
-            .reader_calls
-            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Caller holds the initialization read guard. Never returns the writer, even when another
@@ -476,21 +438,6 @@ impl HistoryStore {
             );
         }
         Ok(Some(reader))
-    }
-
-    #[cfg(test)]
-    pub(in crate::studio) async fn measurement_connections(
-        &self,
-    ) -> Result<(sea_orm::DatabaseConnection, sea_orm::DatabaseConnection)> {
-        self.prepare_conversation_read().await?;
-        let writer = self.writer().await?.db.clone();
-        let reader = self
-            .reader()
-            .await?
-            .context("missing measurement reader")?
-            .db
-            .clone();
-        Ok((writer, reader))
     }
 
     /// The single writer connection, created and upgraded on first use.
@@ -939,7 +886,6 @@ impl HistoryStore {
         {
             Some(SessionAccounting {
                 revision: checkpoint.state_revision,
-                has_unpriced_usage: checkpoint.state.usage_summary.pricing.incomplete,
                 purpose_costs: checkpoint::read_purpose_costs(tx).await?,
             })
         } else {
@@ -978,10 +924,6 @@ impl HistoryStore {
         }))
     }
 
-    /// Reads the minimal identity of a previously admitted input, if the durable index knows it.
-    ///
-    /// This is the cross-restart idempotency lookup for `submitPrompt`: the returned record lets
-    /// the runtime rebuild the original receipt without re-admitting the input or replaying history.
     /// Reads the newest durable receipt of one interaction/permission identity.
     ///
     /// This is the cross-window/cross-restart authority for a repeated terminal interaction
@@ -1013,28 +955,20 @@ impl HistoryStore {
         }))
     }
 
+    /// Checks whether the durable input identity index contains one admitted input.
     #[cfg(test)]
-    pub(crate) async fn input_identity(
-        &self,
-        input_id: &str,
-    ) -> Result<Option<InputIdentityReceipt>> {
+    pub(crate) async fn input_identity(&self, input_id: &str) -> Result<Option<()>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT payload,request_digest FROM history_input_identities WHERE item_id=?",
+                "SELECT 1 AS present FROM history_input_identities WHERE item_id=?",
                 vec![input_id.into()],
             ))
             .await?;
-        match row {
-            Some(row) => Ok(Some(InputIdentityReceipt {
-                entry: serde_json::from_str(&row.try_get::<String>("", "payload")?)?,
-                request_digest: row.try_get::<Option<String>>("", "request_digest")?,
-            })),
-            None => Ok(None),
-        }
+        Ok(row.map(|_| ()))
     }
 
     /// Upgrades existing history before an active owner seeds its canonical projection.
@@ -1110,18 +1044,11 @@ impl HistoryStore {
         Ok(hidden)
     }
 
-    /// Reads the minimal durable identity of one accepted message, if the index knows it.
+    /// Checks whether the durable message identity index contains one accepted message.
     ///
-    /// This is the cross-window/cross-restart idempotency lookup for message delivery: the returned
-    /// sequence is the original admission receipt and the digest is the proof of the accepted body.
-    /// A row without a digest can only come from a migration backfill, and the caller must treat it
-    /// as unverifiable instead of re-delivering. A missing store or unknown identity returns `None`,
-    /// while a damaged store fails so the caller can fail closed rather than admit a duplicate.
+    /// A missing store or unknown identity returns `None`, while a damaged store fails.
     #[cfg(test)]
-    pub(crate) async fn message_identity(
-        &self,
-        message_id: &str,
-    ) -> Result<Option<MessageIdentityReceipt>> {
+    pub(crate) async fn message_identity(&self, message_id: &str) -> Result<Option<()>> {
         if message_id.is_empty() {
             return Ok(None);
         }
@@ -1131,21 +1058,11 @@ impl HistoryStore {
         let row = connection
             .db
             .query_one_raw(statement(
-                "SELECT sequence,digest FROM history_message_identities WHERE message_id=?",
+                "SELECT 1 AS present FROM history_message_identities WHERE message_id=?",
                 vec![message_id.into()],
             ))
             .await?;
-        match row {
-            Some(row) => {
-                let sequence = u64::try_from(row.try_get::<i64>("", "sequence")?)
-                    .context("durable message identity has an invalid admission sequence")?;
-                Ok(Some(MessageIdentityReceipt {
-                    sequence,
-                    digest: row.try_get::<Option<String>>("", "digest")?,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(row.map(|_| ()))
     }
 
     /// 只解析 checkpoint／保留 effect 明确引用的身份，不扫描整个 Turn。
@@ -1494,38 +1411,6 @@ impl HistoryStore {
         Ok(states)
     }
 
-    /// Reads the newest terminal Turn this Thread already committed, without a body read.
-    ///
-    /// The realtime contract carries a finished Turn exactly once — the authoritative snapshot only
-    /// ever holds the *active* Turn and `turnCompleted` is broadcast only to the subscribers that
-    /// exist at that moment — so a projection owner that is installed (or a subscription that opens)
-    /// after the finishing commit has no live frame left to learn it from. This cold read closes that
-    /// gap from the durable facts the writer already committed, never from item bodies and never by
-    /// scanning: "finished" is a stored column (`history_items.lifecycle='terminal'`) and its partial
-    /// index is therefore able to return the single newest finished Turn by execution order.
-    ///
-    /// The two durable tables are one fact, chosen deliberately: `history_items` carries the
-    /// `lifecycle`/`last_write_seq` columns the partial index orders on, while `history_turns.payload`
-    /// carries the typed `Turn` the realtime frame and the client use. `commit_effect` writes both in
-    /// the same transaction from the same turn item, and `upsert_item` freezes a terminal Turn item's
-    /// `last_write_seq` (a later sequence is rejected), so an item row can name the newest finished
-    /// Turn in execution order and that identity's Turn payload is the very fact the item projected —
-    /// identity and revision are the writer's own, not a re-derivation, and no body is read.
-    ///
-    /// 冷读缺失历史库时返回 `None`，且绝不创建它。
-    #[cfg(test)]
-    pub(crate) async fn newest_terminal_turn(&self) -> Result<Option<crate::Turn>> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(None);
-        };
-        Self::newest_terminal_turn_in(&connection.db).await
-    }
-
-    #[cfg(test)]
-    async fn newest_terminal_turn_in(db: &impl ConnectionTrait) -> Result<Option<crate::Turn>> {
-        turns::terminal(db).await
-    }
-
     /// Latest real terminal effect, using the same partial index as terminal paging.
     #[cfg(test)]
     pub(crate) async fn latest_terminal_report_sequence(&self) -> Result<Option<u64>> {
@@ -1611,22 +1496,6 @@ impl HistoryStore {
         Ok(reports)
     }
 
-    /// Reads the latest admitted Turn at exactly the caller's proven durable fence, without bodies.
-    /// Unlike the retained-terminal seed, this query must not skip a newer unfinished Turn. The
-    /// existing `(kind, ordinal)` item index orders admissions, not later items of an older Turn;
-    /// its matching typed Turn and the watermark are read in the same SQLite snapshot.
-    #[cfg(test)]
-    pub(crate) async fn latest_turn_at(&self, history_fence: u64) -> Result<Option<crate::Turn>> {
-        let Some(connection) = self.reader().await? else {
-            ensure!(history_fence == 0, "child durable history is missing");
-            return Ok(None);
-        };
-        let tx = connection.db.begin().await?;
-        let turn = read_latest_turn_at(&tx, &self.state.thread_id, history_fence).await?;
-        tx.commit().await?;
-        Ok(turn)
-    }
-
     /// Reads one committed timeline item by its durable identity.
     ///
     /// The projection owner needs the canonical committed body of an identity whose live preview already
@@ -1659,50 +1528,6 @@ impl HistoryStore {
                     ),
                 )));
             }
-        }
-        if let Some(record) = self.read_chat_item(item_id).await?
-            && serde_json::from_slice::<serde_json::Value>(&record.payload)?["type"] == "plan"
-        {
-            return Ok(None);
-        }
-        if let Some(reader) = self.reader().await?
-            && let Some(detail) = reader
-                .original_for_entity(
-                    item_id.to_owned(),
-                    crate::history::HistoryDemand {
-                        max_rows: 1,
-                        max_bytes: 1024 * 1024,
-                    },
-                )
-                .await?
-        {
-            let connection = self
-                .reader()
-                .await?
-                .context("execution history connection")?;
-            let life = execution_lifecycle::read(&connection.db, item_id).await?;
-            let placement = life.as_ref().and_then(|life| {
-                life.execution_order
-                    .map(|order| (order, life.last_write_seq))
-            });
-            let mut item = crate::studio::runtime::chat_item::read_execution_item(
-                &reader,
-                detail,
-                &self.state.thread_id,
-            )
-            .await?;
-            if let Some((order, _)) = placement {
-                item.ordinal = order;
-            }
-            if let Some(life) = life {
-                if let Some(turn) = life.turn_id {
-                    item.turn_id = turn;
-                }
-                if let Some(order) = life.execution_order {
-                    item.ordinal = order;
-                }
-            }
-            return self.restore_tool_receipt(item).await.map(Some);
         }
         if let Some(call_id) = crate::studio::thread_projection::order::business_id("tool", item_id)
             && let Some(saved) = self.tool_task(call_id).await?
@@ -3922,7 +3747,7 @@ mod storage_fault_tests {
             drop(cold);
             let prepared = HistoryStore::open(&path, "supported-v2").await?;
             let restored = prepared
-                .execution_seeds([item.id.clone()])
+                .legacy_fixture_seeds([item.id.clone()])
                 .await?
                 .remove(&item.id)
                 .context("restored original")?;
@@ -4475,7 +4300,7 @@ mod storage_fault_tests {
             0,
             "publication must not reserve SQLite sequence rows"
         );
-        persist_completed(&store, 1, &[item]).await?;
+        persist_completed(&store, 1, std::slice::from_ref(&item)).await?;
         let row = store
             .reader()
             .await?
@@ -4504,10 +4329,7 @@ mod storage_fault_tests {
                 .is_err()
         );
         assert_eq!(store.watermark().await?, 1);
-        let mut changed_order = store
-            .execution_item("input-1")
-            .await?
-            .context("committed input")?;
+        let mut changed_order = item.clone();
         changed_order.ordinal = 42;
         changed_order.revision = 2;
         assert!(
@@ -5748,7 +5570,7 @@ mod storage_fault_tests {
         );
         assert!(checkpoint.state.last_attempt_usage_origin.is_none());
         let original = restored
-            .execution_seeds([item.id.clone()])
+            .legacy_fixture_seeds([item.id.clone()])
             .await?
             .remove(&item.id)
             .context("restored source")?;
@@ -7691,14 +7513,6 @@ mod storage_fault_tests {
         .await?;
         assert_eq!(window.bytes.as_bytes(), long_answer.as_bytes());
         assert!(window.sealed);
-        let restored = store
-            .execution_item(&item.id)
-            .await?
-            .context("restored original")?;
-        assert_eq!(
-            (restored.id.as_str(), restored.ordinal, restored.state()),
-            (item.id.as_str(), item.ordinal, item.state())
-        );
         let mut changed = complete.clone();
         changed.payload = std::sync::Arc::from(b"{\"changed\":true}".as_slice());
         changed.header.byte_length = changed.payload.len() as u64;

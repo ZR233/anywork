@@ -2,8 +2,6 @@
 use super::super::conversation;
 use super::legacy_timeline_store as timeline;
 use super::*;
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct CompletionBoundary;
 impl MigrationName for CompletionBoundary {

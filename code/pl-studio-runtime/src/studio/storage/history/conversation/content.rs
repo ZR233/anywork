@@ -52,7 +52,7 @@ pub(in super::super) async fn write_contents(
     let owner = ChatKey::new("item", id)?;
     for (key, content) in contents {
         ensure!(
-            &key.owner == &owner && *key == content.descriptor.key && !key.key.is_empty(),
+            key.owner == owner && *key == content.descriptor.key && !key.key.is_empty(),
             "completion content manifest has a foreign or inconsistent owner"
         );
         write_content(db, content, true).await?;

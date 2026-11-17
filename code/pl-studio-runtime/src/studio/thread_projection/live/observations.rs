@@ -205,7 +205,7 @@ impl LiveProjection {
             // The reliable member-start owns its actual empty body before the producer publishes
             // a first part. Older nonempty previews never substitute for a missing producer cut.
             for (key, body) in &start.fields {
-                if body.len() == 0 {
+                if body.is_empty() {
                     bodies.entry(key.clone()).or_insert_with(|| body.clone());
                 }
             }

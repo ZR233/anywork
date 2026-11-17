@@ -61,7 +61,7 @@ void main() {
       } finally {
         observation.cancel();
         if (!lease.isReleased) await lease.unbind();
-        await graph.timeline.close(budget: testBudgetUntil(_deadline()));
+        await graph.close(budget: testBudgetUntil(_deadline()));
         await graph.client.retryCleanup(budget: testBudgetUntil(_deadline()));
       }
     },

@@ -687,7 +687,6 @@ mod storage_fault_tests {
         },
     };
     use pl_tool::collaboration::thread::WorkspaceRelease;
-    use sea_orm::ConnectionTrait;
     use std::{
         collections::BTreeMap,
         sync::{
@@ -1373,10 +1372,7 @@ mod storage_fault_tests {
             digest,
         } = current_message_identity(&store, "parent", &message_id)
             .await?
-            .context("exact durable parent report")?
-        else {
-            unreachable!("helper only returns proven identities")
-        };
+            .context("exact durable parent report")?;
         assert_eq!(receipt_sequence, sequence);
         assert_eq!(digest, original.digest());
         let child_history = store.history("child").await?;
@@ -1724,10 +1720,7 @@ mod storage_fault_tests {
                     digest: receipt_digest,
                 } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
-                    .context("original report durable receipt")?
-                else {
-                    unreachable!("helper only returns proven identities")
-                };
+                    .context("original report durable receipt")?;
                 assert_eq!(receipt_digest, saved.message.digest());
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
@@ -1737,10 +1730,7 @@ mod storage_fault_tests {
                     digest: repeated_digest,
                 } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
-                    .context("idempotent original report receipt")?
-                else {
-                    unreachable!("helper only returns proven identities")
-                };
+                    .context("idempotent original report receipt")?;
                 assert_eq!(repeated_sequence, receipt_sequence);
                 assert_eq!(repeated_digest, receipt_digest);
                 {
@@ -1838,10 +1828,7 @@ mod storage_fault_tests {
                     digest: first_digest,
                 } = current_message_identity(&store, "parent", &message.id)
                     .await?
-                    .context("original report was durably received even when cleanup failed")?
-                else {
-                    unreachable!("helper only returns proven identities")
-                };
+                    .context("original report was durably received even when cleanup failed")?;
                 assert_eq!(first_digest, message.digest());
                 if inject_failure {
                     let failure = first.expect_err("both delivery ACK and receiver drain fail");
@@ -1918,10 +1905,7 @@ mod storage_fault_tests {
                     digest: receipt_digest,
                 } = current_message_identity(&store, "parent", &message.id)
                     .await?
-                    .context("same durable parent ACK")?
-                else {
-                    unreachable!("helper only returns proven identities")
-                };
+                    .context("same durable parent ACK")?;
                 assert_eq!(receipt_sequence, first_sequence);
                 assert_eq!(receipt_digest, first_digest);
                 assert_eq!(
@@ -2012,12 +1996,9 @@ mod storage_fault_tests {
                 saved.message.digest()
             );
             let DurableMessageIdentity::Proven { digest, .. } =
-                current_message_identity(&store, "parent", &saved.message.id)
+                current_message_identity(store, "parent", &saved.message.id)
                     .await?
-                    .context("durable original ID")?
-            else {
-                unreachable!("helper only returns proven identities")
-            };
+                    .context("durable original ID")?;
             assert_eq!(digest, saved.message.digest());
             assert!(
                 store
@@ -2048,12 +2029,9 @@ mod storage_fault_tests {
             active.send_message(followup.clone()).await?;
             fixture.owner.synchronize_observation("parent").await?;
             let DurableMessageIdentity::Proven { digest, .. } =
-                current_message_identity(&store, "parent", &followup.id)
+                current_message_identity(store, "parent", &followup.id)
                     .await?
-                    .context("real followup history write")?
-            else {
-                unreachable!("helper only returns proven identities")
-            };
+                    .context("real followup history write")?;
             assert_eq!(digest, followup.digest());
             assert!(fixture.owner.close_session().await.is_empty());
             fixture.stop_writers().await
@@ -2116,10 +2094,7 @@ mod storage_fault_tests {
                 digest: first_digest,
             } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
-                .context("original durable receipt before cleanup retry")?
-            else {
-                unreachable!("helper only returns proven identities")
-            };
+                .context("original durable receipt before cleanup retry")?;
             fixture
                 .fail_drain_after_writer
                 .store(false, Ordering::SeqCst);
@@ -2133,10 +2108,7 @@ mod storage_fault_tests {
                 digest: receipt_digest,
             } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
-                .context("same receipt after exact-binding cleanup")?
-            else {
-                unreachable!("helper only returns proven identities")
-            };
+                .context("same receipt after exact-binding cleanup")?;
             assert_eq!(receipt_sequence, first_sequence);
             assert_eq!(receipt_digest, first_digest);
             assert!(

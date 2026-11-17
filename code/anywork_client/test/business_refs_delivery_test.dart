@@ -204,26 +204,20 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       addTearDown(fixture.close);
-      final feed = await fixture.open(demand: _demand);
+      final current = TestCurrentReader(protocolVersion: 0);
+      fixture.transport.currentReaderFactory = (_, _) => current;
       final failed = fixture.session().source.waitFor(
         (value) =>
             value.sync.phase == DomainSyncPhase.failed &&
             value.sync.retryExhausted,
       );
-      final current = fixture.currentReader();
-      final before = fixture.session().state.businessRefs;
-      final view = _view(1, _refs());
-      current.sendError(
-        const ProtocolVersionMismatch(
-          received: 0,
-          supported: currentProtocolVersion,
-          field: 'currentProtocolVersion',
-        ),
-      );
+      fixture.repository.setVisibleThread('thread');
       await failed;
-      expect(fixture.session().state.businessRefs, same(before));
-      expect(feed.requestCloseCalls, 0);
-      expect(view.state.schemaVersion, threadSchemaVersion);
+      expect(fixture.session().state.hasSnapshot, isFalse);
+      expect(fixture.session().state.businessRefs, isNull);
+      expect(fixture.transport.currentOpens, hasLength(1));
+      expect(current.requestCloseCalls, greaterThanOrEqualTo(1));
+      expect(current.closeCalls, 1);
     },
   );
 }

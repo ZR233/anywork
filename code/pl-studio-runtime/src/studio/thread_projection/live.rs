@@ -115,7 +115,7 @@ impl LiveEvent {
     /// pointer included) plus the independently owned variable-length bodies it carries: a Turn's
     /// identities and its state's diagnostics, an interaction's scope, purpose, questions,
     /// accepted answers, approval request, continuation and lifecycle reasons. It follows the same
-    /// style as the free `retained_bytes` item estimate below: every body is walked in place,
+    /// style as the `charged_item_bytes` item estimate below: every body is walked in place,
     /// nothing is serialized or cloned into a `ExecutionItem`, every keyed entry pays a fixed
     /// [`RETAINED_ENTRY_OVERHEAD`] shell, and all arithmetic saturates. Content bodies are
     /// deliberately absent from this vocabulary (see [`LiveEvent`]), so no event charges bytes the
@@ -568,7 +568,7 @@ impl PreparedEffect {
     /// charged at handoff — moved next to the content it sizes, so the projection owner that
     /// builds a batch and the writer that budgets it can never drift into two formulas for one
     /// fact. It stays the established conservative estimate rather than a claim of exact physical
-    /// memory: the items are summed by the free `retained_bytes` item estimate below (every
+    /// memory: resident item bodies use `charged_item_bytes` below (every
     /// variable-length body plus each item's fixed shell), and each report-like message is charged as
     /// `content * 2 + id + 256` — its context carries a second copy of the same content text, and the
     /// fixed term covers the message shell and short identity fields. A parent report already held by
@@ -620,20 +620,6 @@ impl PreparedEffect {
                     .sum::<u64>(),
             )
     }
-}
-
-/// Cheap retained-memory estimate of one prepared batch.
-///
-/// Every variable-length body a retained item can carry is summed — text, reasoning, tool
-/// arguments and streamed output and results, attachment metadata, opaque JSON payloads, agent and
-/// inference diagnostics, Skill and file facts — and every identity is charged a fixed overhead for
-/// its ordinals and payload shell. Nothing is serialized, so the estimate can be taken before the
-/// reliable queue's lock. An attachment's blob is not resident, so only its metadata is charged.
-#[cfg(test)]
-pub(in crate::studio) fn retained_bytes(items: &[ExecutionItem]) -> u64 {
-    items.iter().fold(0_u64, |total, item| {
-        total.saturating_add(charged_item_bytes(item))
-    })
 }
 
 /// Resident bytes one retained item holds, its fixed identity overhead included.
@@ -1265,16 +1251,6 @@ impl TurnResult {
                 .saturating_add(RETAINED_ENTRY_OVERHEAD);
         }
     }
-
-    /// Result facts of one durable Turn slice, used by the cold recovery paths.
-    #[cfg(test)]
-    pub(in crate::studio) fn from_items(items: &[ExecutionItem]) -> Self {
-        let mut result = Self::default();
-        for item in items {
-            result.observe(item);
-        }
-        result
-    }
 }
 
 /// Ordinal, revision and creation stamp of one identity the projection has already published.
@@ -1493,18 +1469,6 @@ impl LiveProjection {
         self.current.snapshot()
     }
 
-    /// Controlled producer progress for cross-module delivery tests; uses the real current owner.
-    #[cfg(test)]
-    pub(in crate::studio) fn observe_test_current(
-        &mut self,
-        thread: &crate::Thread,
-        active: Vec<super::current::ActiveText>,
-    ) -> Result<(), ProjectionError> {
-        self.current
-            .observe(thread, &ThreadSnapshot::default(), 0, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Ok(())
-    }
     pub(in crate::studio) fn current_activity(&self) -> Option<crate::ThreadActivity> {
         self.current.activity()
     }
@@ -1575,15 +1539,6 @@ impl LiveProjection {
     /// answer.
     pub(in crate::studio) fn holds_tool_body(&self, id: &str) -> bool {
         self.items.get(id).is_some_and(|item| item.tool().is_some())
-    }
-
-    /// The actual resident preview blocks inspected by storage fault regressions.
-    #[cfg(test)]
-    pub(in crate::studio) fn preview_fields(
-        &self,
-        id: &str,
-    ) -> Option<&BTreeMap<BodyKey, Arc<ContentBlock>>> {
-        self.previews.get(id).map(|entry| &entry.fields)
     }
 
     /// Bytes this projection currently retains in its own tables.
@@ -2371,11 +2326,11 @@ impl LiveProjection {
         // The producer retires the whole-channel aggregate observation the moment it itemizes the
         // response, yet the aggregate preview rows it published before still have to leave the window
         // and this projection, otherwise the same text would show up twice.
-        if progress.parts().iter().any(|part| {
-            #[cfg(test)]
-            super::activity::part_cost::model();
-            matches!(part.identity(), ObservedPartIdentity::Provider(_))
-        }) {
+        if progress
+            .parts()
+            .iter()
+            .any(|part| matches!(part.identity(), ObservedPartIdentity::Provider(_)))
+        {
             for channel in [AggregateChannel::Text, AggregateChannel::Reasoning] {
                 let id = aggregate_id(
                     &attempt.attempt_id,
@@ -2478,8 +2433,6 @@ impl LiveProjection {
         let first = retired;
         for index in first..parts.len() {
             let part = parts.get(index).expect("model part index is in range");
-            #[cfg(test)]
-            super::activity::part_cost::model();
             // An observation with no body yet is not a displayable preview; wait for its first byte.
             if part.is_empty() {
                 continue;

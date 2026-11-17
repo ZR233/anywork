@@ -62,6 +62,7 @@ static FAIL_NEXT_REPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
 
 const LEGACY_SOURCE_TABLES: &[&str] = &[
     "history_meta",
+    "timeline_records",
     "conversation_items",
     "conversation_contents",
     "conversation_content_chunks",
@@ -310,10 +311,7 @@ async fn legacy_identity(db: &DatabaseConnection, thread_id: &str) -> Result<(St
         .await?
         .ok_or_else(|| HistoryError::Integrity("schema 24 identity is missing".into()))?;
     let database_id: String = row.try_get("", "database_id")?;
-    if database_id.is_empty()
-        || uuid::Uuid::parse_str(&database_id).is_err()
-        || row.try_get::<String>("", "thread_id")? != thread_id
-    {
+    if database_id.is_empty() || row.try_get::<String>("", "thread_id")? != thread_id {
         return Err(HistoryError::Integrity(
             "schema 24 database identity differs".into(),
         ));
@@ -1011,6 +1009,28 @@ async fn import_database_with_staging(
         &mut counts,
     )
     .await?;
+    // Published schema 24 retains the earlier completed-record container too.
+    // Its identities were adopted by conversation_items in schema 12; preserve
+    // the old container verbatim in the backup without importing originals twice.
+    let orphan = source.query_one(
+        "SELECT old.record_id FROM timeline_records old LEFT JOIN conversation_items current ON current.item_id=old.record_id WHERE current.item_id IS NULL LIMIT 1",
+        Vec::new(),
+    ).await?;
+    if orphan.is_some() {
+        return Err(HistoryError::Integrity(
+            "schema 24 timeline_records contains an original absent from conversation_items".into(),
+        ));
+    }
+    let old_records = source
+        .query_one("SELECT count(*) AS count FROM timeline_records", Vec::new())
+        .await?
+        .ok_or_else(|| {
+            HistoryError::Integrity("legacy completed record count is missing".into())
+        })?;
+    counts.backup_only(
+        "timeline_records",
+        db_u64(old_records.try_get("", "count")?, "timeline_records count")?,
+    );
     import_supplements(
         &mut import,
         source,
@@ -1366,7 +1386,7 @@ async fn plan_and_rewrite_atom_references(
     connection: &impl ConnectionTrait,
     atom: &mut ChatAtom,
     database_id: &str,
-    _fallback_owner: &str,
+    fallback_owner: &str,
 ) -> Result<serde_json::Value> {
     for content in &atom.contents {
         validate_typed_reference(&content.reference, database_id)?;
@@ -1374,7 +1394,7 @@ async fn plan_and_rewrite_atom_references(
     if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
         validate_typed_reference(reference, database_id)?;
     }
-    render_rewritten_atom(connection, atom, database_id).await
+    render_rewritten_atom(connection, atom, database_id, fallback_owner).await
 }
 
 fn validate_typed_reference(reference: &ContentRef, database_id: &str) -> Result<()> {
@@ -2863,7 +2883,7 @@ async fn import_entity_anchor<C: ConnectionTrait>(
             .await?;
         for content in &atom.contents {
             validate_typed_reference(&content.reference, database_id)?;
-            payload_reference(connection, &content.reference, database_id).await?;
+            payload_reference(connection, &content.reference, database_id, event_id).await?;
         }
         import
             .copy_body(
@@ -2959,11 +2979,12 @@ async fn import_entity_anchor<C: ConnectionTrait>(
     }
     if owns_payload {
         for content in &atom.contents {
-            let plan = payload_reference(connection, &content.reference, database_id).await?;
+            let plan =
+                payload_reference(connection, &content.reference, database_id, event_id).await?;
             import.validate_body_reference(&plan).await?;
         }
         if !frozen_payload && let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
-            let plan = payload_reference(connection, reference, database_id).await?;
+            let plan = payload_reference(connection, reference, database_id, event_id).await?;
             import.validate_body_reference(&plan).await?;
         }
     }
@@ -3554,6 +3575,8 @@ async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Resul
         "conversation_display_blocks",
         "conversation_content_chunks",
         "conversation_contents",
+        "conversation_items",
+        "timeline_records",
         "completion_boundary_archive_content_chunks",
         "completion_boundary_archive_contents",
         "completion_boundary_archive_view_entries",
@@ -3770,6 +3793,21 @@ mod migration_tests {
             ));
         }
         let database_id: String = metadata.try_get("", "database_id")?;
+        // The published format keeps its pre-schema-12 container alongside
+        // adopted canonical originals. This is independent frozen input data.
+        let old_payload = serde_json::to_string(&serde_json::json!({
+            "itemId":"original-large", "appendSeq":1, "turnId":"turn-1",
+            "sourceEffectSeq":null, "sealedAt":null,
+            "meta":serde_json::to_vec(&serde_json::json!({
+                "id":"original-large", "threadId":thread_id, "turnId":"turn-1",
+                "descriptor":{"kind":"text","data":{"legacyOpaque":"保留原容器"}}
+            }))?,
+            "fields":[{"identity":{"kind":"body"},"text":large_text}]
+        }))?;
+        db.execute_raw(statement(
+            "INSERT INTO timeline_records(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload) VALUES(1,'original-large','turn-1',NULL,NULL,'text',?)",
+            vec![old_payload.into()],
+        )).await?;
         let applied = db_u64(
             metadata.try_get::<i64>("", "applied_write_seq")?,
             "history_meta.applied_write_seq",
@@ -4078,11 +4116,13 @@ mod migration_tests {
                 }],
                 tool_calls: Vec::new(),
             };
-            let mut state = ThreadSnapshot::default();
-            state.commit_sequence = applied;
-            state.context = ContextSnapshot {
-                revision: 1,
-                records: Vec::<ContextRecord>::new().into(),
+            let mut state = ThreadSnapshot {
+                commit_sequence: applied,
+                context: ContextSnapshot {
+                    revision: 1,
+                    records: Vec::<ContextRecord>::new().into(),
+                },
+                ..Default::default()
             };
             if let Some(fact) = &pending_review {
                 state.extensions.insert(
@@ -4383,6 +4423,8 @@ mod migration_tests {
 
         let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
         assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(report.database_id, fixture.database_id);
+        assert_eq!(report.backup_only_categories["timeline_records"], 1);
         assert!(report.backup.as_ref().is_some_and(|path| path.is_file()));
         assert_eq!(report.imported_categories["canonical_originals"], 2);
         assert_eq!(report.imported_categories["turns"], 1);
@@ -4591,7 +4633,7 @@ mod migration_tests {
             .group_page("work-1".into(), None, None, HistoryDemand::default())
             .await?;
         assert_eq!(members.members.len(), 2);
-        let boundary = members
+        let _boundary = members
             .members
             .iter()
             .find(|entry| {

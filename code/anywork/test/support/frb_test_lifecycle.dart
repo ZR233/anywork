@@ -1,6 +1,5 @@
 import 'package:anywork/src/infrastructure/frb/studio_api.dart';
 import 'package:anywork/src/rust/frb_generated.dart';
-import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'test_app_lifecycle.dart';

@@ -1282,11 +1282,6 @@ mod tests {
     use pl_studio_runtime::{StudioRuntime, StudioRuntimeOptions};
     use tokio_util::sync::CancellationToken;
 
-    #[test]
-    fn body_window_limit_matches_history_owner() {
-        assert!(pl_studio_runtime::history::BODY_CHUNK_BYTES > 0);
-    }
-
     #[tokio::test]
     async fn http_open_handlers_reject_unknown_protocol_before_thread_lookup() {
         let home = tempfile::tempdir().expect("isolated Studio home");

@@ -12,15 +12,17 @@ final class _DemoHistoryReader implements HistoryReader {
   }
 
   final DemoStudioTransport _api;
+  final String _readerId = newStudioCorrelationId();
   @override
   final String threadId;
   final _DemoHistory _history;
   final _DemoReadSource reader;
+  final Set<Completer<void>> _waiters = {};
   bool _closed = false;
 
   @override
   OpenHistory get metadata => OpenHistory(
-    readerId: 'demo-history:${_history.epoch}',
+    readerId: 'demo-history:$_readerId',
     historyProtocolVersion: historyProtocolVersion,
   );
 
@@ -335,19 +337,21 @@ final class _DemoHistoryReader implements HistoryReader {
     _checkOpen();
     final afterFrontier = _cutFrontier(after);
     final completer = Completer<void>();
-    void wake() {
+    void wake(_DemoChange _) {
       if (_history.displayHead > afterFrontier && !completer.isCompleted) {
         completer.complete();
       }
     }
 
+    _waiters.add(completer);
     _history.changes.add(wake);
-    wake();
+    wake(const _DemoChange(null));
     try {
       await completer.future;
       _checkOpen();
       return _cut();
     } finally {
+      _waiters.remove(completer);
       _history.changes.remove(wake);
     }
   }
@@ -356,6 +360,10 @@ final class _DemoHistoryReader implements HistoryReader {
   void requestClose() {
     if (_closed) return;
     _closed = true;
+    for (final waiter in _waiters.toList()) {
+      if (!waiter.isCompleted) waiter.complete();
+    }
+    _waiters.clear();
     reader.requestClose();
   }
 
@@ -467,16 +475,20 @@ final class _DemoCurrentReader implements CurrentReader {
   }
 
   final DemoStudioTransport _api;
+  final String _readerId = newStudioCorrelationId();
   @override
   final String threadId;
   final _DemoHistory _history;
   final _DemoReadSource reader;
   final Map<CurrentContentRef, ContentRef> _content = {};
+  final Set<_DemoCurrentWatch> _watches = {};
+  final Set<_DemoCurrentBodyWatch> _bodyWatches = {};
+  Future<void>? _closing;
   bool _closed = false;
 
   @override
   OpenCurrent get metadata => OpenCurrent(
-    readerId: 'demo-current:${_history.epoch}',
+    readerId: 'demo-current:$_readerId',
     currentProtocolVersion: currentProtocolVersion,
     currentOwnerId: _history.epoch,
   );
@@ -493,6 +505,7 @@ final class _DemoCurrentReader implements CurrentReader {
 
   CurrentView _snapshot() {
     var workspace = _api._demoWorkspace(threadId);
+    _history.prepareCurrent(workspace);
     final deferred = <CurrentStateField>[];
     final collections = <CurrentCollectionRef>[];
     CurrentCollectionRef? deferCollection(String name, List<Object?> values) {
@@ -533,13 +546,45 @@ final class _DemoCurrentReader implements CurrentReader {
       'activeLspServers',
       runtime.activeLspServers.cast<Object?>(),
     );
+    final interactions = workspace.interactions.isEmpty
+        ? null
+        : CurrentCollectionRef(
+            ownerId: _history.epoch,
+            collection: 'interactions',
+            revision: _history.interactionRevision,
+          );
+    final boundedPlan = runtime.plan?.document == null
+        ? runtime.plan
+        : runtime.plan!.copyWith(document: null);
+    final plan = runtime.plan;
+    final planHead = plan == null
+        ? null
+        : CurrentPlanHead(
+            revision: plan.revision,
+            phase: plan.state,
+            document: plan.document == null
+                ? null
+                : CurrentContentRef(
+                    ownerId: _history.epoch,
+                    domain: 'plan',
+                    entityId: threadId,
+                    contentKey: 'plan.document',
+                    generation: '${plan.revision}',
+                  ),
+          );
+    final references = ThreadBusinessRefs(
+      plan: planHead,
+      interactions: interactions,
+    );
     workspace = workspace.copyWith(
       interactions: const [],
+      businessRefs: references,
       runtime: runtime.copyWith(
         activeSkills: skills == null ? runtime.activeSkills : const [],
         activeMcpServers: mcp == null ? runtime.activeMcpServers : const [],
         activeLspServers: lsp == null ? runtime.activeLspServers : const [],
         deferred: deferred,
+        plan: boundedPlan,
       ),
     );
     final atoms = [
@@ -569,14 +614,6 @@ final class _DemoCurrentReader implements CurrentReader {
           ],
         ),
     ];
-    final plan = workspace.runtime.plan;
-    final interactions = workspace.interactions.isEmpty
-        ? null
-        : CurrentCollectionRef(
-            ownerId: _history.epoch,
-            collection: 'interactions',
-            revision: _history.interactionRevision,
-          );
     final activity = workspace.activity;
     return CurrentView(
       revision: _revision,
@@ -634,21 +671,7 @@ final class _DemoCurrentReader implements CurrentReader {
         },
         sources: _history.sourceStates.values.toList(),
         atoms: atoms,
-        plan: plan == null
-            ? null
-            : CurrentPlanHead(
-                revision: plan.revision,
-                phase: plan.state,
-                document: plan.document == null
-                    ? null
-                    : CurrentContentRef(
-                        ownerId: _history.epoch,
-                        domain: 'plan',
-                        entityId: threadId,
-                        contentKey: 'plan.document',
-                        generation: '${plan.revision}',
-                      ),
-              ),
+        plan: planHead,
         interactions: interactions,
         previews: const [],
         collections: [...collections, ?interactions],
@@ -683,7 +706,9 @@ final class _DemoCurrentReader implements CurrentReader {
     required ReadDemand demand,
   }) async {
     _checkOpen();
-    return _DemoCurrentWatch(this);
+    final watch = _DemoCurrentWatch(this);
+    _watches.add(watch);
+    return watch;
   }
 
   @override
@@ -889,20 +914,67 @@ final class _DemoCurrentReader implements CurrentReader {
     required ContentRange range,
   }) {
     _checkOpen();
-    return Future.value(_DemoCurrentBodyWatch(this, reference, range));
+    final watch = _DemoCurrentBodyWatch(this, reference, range);
+    _bodyWatches.add(watch);
+    return Future.value(watch);
+  }
+
+  void _watchClosed(_DemoCurrentWatch watch) {
+    _watches.remove(watch);
+  }
+
+  void _bodyWatchClosed(_DemoCurrentBodyWatch watch) {
+    _bodyWatches.remove(watch);
   }
 
   @override
   void requestClose() {
+    if (_closed) return;
     _closed = true;
+    for (final watch in _watches.toList()) {
+      watch.requestClose();
+    }
+    for (final watch in _bodyWatches.toList()) {
+      watch.requestClose();
+    }
     reader.requestClose();
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => _closing ??= () async {
+    final watches = _watches.toList();
+    final bodyWatches = _bodyWatches.toList();
     requestClose();
-    await reader.close();
-  }
+    Object? error;
+    StackTrace? stackTrace;
+    void remember(Object failure, StackTrace stack) {
+      error ??= failure;
+      stackTrace ??= stack;
+    }
+
+    for (final watch in watches) {
+      try {
+        await watch.close();
+      } catch (failure, stack) {
+        remember(failure, stack);
+      }
+    }
+    for (final watch in bodyWatches) {
+      try {
+        await watch.close();
+      } catch (failure, stack) {
+        remember(failure, stack);
+      }
+    }
+    try {
+      await reader.close();
+    } catch (failure, stack) {
+      remember(failure, stack);
+    }
+    if (error case final failure?) {
+      Error.throwWithStackTrace(failure, stackTrace!);
+    }
+  }();
 }
 
 final class _DemoCurrentWatch implements CurrentWatch {
@@ -914,28 +986,73 @@ final class _DemoCurrentWatch implements CurrentWatch {
   late final StreamController<CurrentFrame> _output;
   var _revision = -1;
   bool _closed = false;
+  Future<void>? _closing;
 
-  void _publish({required bool reset}) {
+  void _publish(_DemoChange change, {required bool reset}) {
     if (_closed) return;
     final view = reader._snapshot();
     if (!reset && view.revision.revision == _revision) return;
     _revision = view.revision.revision;
-    _output.add(
-      reset
-          ? ResetCurrentFrame(view)
-          : ProjectionCurrentFrame(
-              revision: view.revision,
-              projection: view.projection,
-            ),
-    );
+    final frame = reset ? ResetCurrentFrame(view) : _frame(view, change);
+    if (!_output.isClosed) _output.add(frame);
+    if (!reset && change.update != null && !_output.isClosed) {
+      // State notifications and query metadata are separate consumers of the
+      // same Current cut. Timeline observes Projection, while the SDK applies
+      // the typed State notification.
+      _output.add(
+        ProjectionCurrentFrame(
+          revision: view.revision,
+          projection: view.projection,
+        ),
+      );
+    }
   }
 
   void _start() {
+    if (_closed) return;
     reader._history.changes.add(_changed);
-    _publish(reset: true);
+    _publish(const _DemoChange(null), reset: true);
   }
 
-  void _changed() => _publish(reset: false);
+  void _changed(_DemoChange change) => _publish(change, reset: false);
+
+  CurrentFrame _frame(CurrentView view, _DemoChange change) {
+    final update = change.update;
+    if (update == null) {
+      return ProjectionCurrentFrame(
+        revision: view.revision,
+        projection: view.projection,
+      );
+    }
+    final state = view.state.workspace;
+    return NotificationCurrentFrame(
+      revision: view.revision,
+      notification: ThreadNotificationFrame(
+        threadId: reader.threadId,
+        revision: state.revision,
+        baseRevision: state.revision - 1,
+        update: switch (update) {
+          ThreadTurnUpdate(:final turn) => ThreadTurnUpdate(turn),
+          ThreadActivityUpdate(:final activity) => ThreadActivityUpdate(
+            activity: activity,
+          ),
+          ThreadInteractionUpdate(:final interaction, :final pending) =>
+            ThreadInteractionUpdate(interaction: interaction, pending: pending),
+          ThreadRuntimeUpdate() => ThreadRuntimeUpdate(
+            runtime: state.runtime,
+            todo: state.todo,
+            modelRoute: state.modelRoute,
+          ),
+          ThreadStorageUpdate(:final storage) => ThreadStorageUpdate(
+            storage: storage,
+          ),
+          ThreadBusinessRefsUpdate() => ThreadBusinessRefsUpdate(
+            references: state.businessRefs,
+          ),
+        },
+      ),
+    );
+  }
 
   @override
   Stream<CurrentFrame> get frames => _output.stream;
@@ -945,14 +1062,14 @@ final class _DemoCurrentWatch implements CurrentWatch {
     if (_closed) return;
     _closed = true;
     reader._history.changes.remove(_changed);
-    unawaited(_output.close());
+    if (!_output.isClosed) unawaited(_output.close());
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => _closing ??= Future<void>.sync(() {
     requestClose();
-    await _output.done;
-  }
+    reader._watchClosed(this);
+  });
 }
 
 final class _DemoCurrentBodyWatch implements CurrentBodyWatch {
@@ -966,33 +1083,44 @@ final class _DemoCurrentBodyWatch implements CurrentBodyWatch {
   late final StreamController<ContentWindow> _output;
   bool _closed = false;
   String? _last;
+  final Set<Future<void>> _reads = {};
+  Future<void>? _closing;
 
   void _start() {
+    if (_closed) return;
     reader._history.changes.add(_wake);
-    _wake();
+    _wake(const _DemoChange(null));
   }
 
-  void _wake() {
+  void _wake(_DemoChange _) {
     if (_closed) return;
-    unawaited(() async {
+    late final Future<void> read;
+    read = () async {
       try {
         final window = await reader.readBody(
           reference: reference,
           range: range,
         );
+        if (_closed) return;
         final stamp =
             '${window.generation}:${window.availableThrough}:${window.sealed}';
         if (stamp == _last) return;
         _last = stamp;
-        _output.add(window);
+        if (!_output.isClosed) _output.add(window);
         if (window.sealed) requestClose();
       } catch (error, stack) {
         if (!_closed) {
-          _output.addError(error, stack);
+          if (!_output.isClosed) _output.addError(error, stack);
           requestClose();
         }
       }
-    }());
+    }();
+    _reads.add(read);
+    unawaited(
+      read.whenComplete(() {
+        _reads.remove(read);
+      }),
+    );
   }
 
   @override
@@ -1003,12 +1131,15 @@ final class _DemoCurrentBodyWatch implements CurrentBodyWatch {
     if (_closed) return;
     _closed = true;
     reader._history.changes.remove(_wake);
-    unawaited(_output.close());
+    if (!_output.isClosed) unawaited(_output.close());
   }
 
   @override
-  Future<void> close() async {
+  Future<void> close() => _closing ??= () async {
     requestClose();
-    await _output.done;
-  }
+    while (_reads.isNotEmpty) {
+      await Future.wait(_reads.toList());
+    }
+    reader._bodyWatchClosed(this);
+  }();
 }

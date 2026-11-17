@@ -57,15 +57,10 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         lease.renderedCurrentAtoms.removeListener(changed);
         final scope = _activityToolsScope;
         _activityToolsScope = null;
-        if (scope != null) {
-          scope.retire();
-          unawaited(
-            scope.close().then<void>(
-              (_) {},
-              onError: (Object _, StackTrace _) {},
-            ),
-          );
-        }
+        // The original load task and display lease retain asynchronous cleanup.
+        // Provider disposal only revokes this view's demand; it cannot detach a
+        // second close attempt or swallow that owner's cleanup failure.
+        scope?.retire();
       });
     }
     return _project();

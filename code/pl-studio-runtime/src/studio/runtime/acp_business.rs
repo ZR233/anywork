@@ -100,7 +100,7 @@ mod mixed_tests {
     }
 
     async fn native_inbox_report(
-        runtime: &crate::studio::StudioRuntime,
+        _runtime: &crate::studio::StudioRuntime,
         owner: &SessionRuntime,
         caller: &crate::AgentThreadIdentity,
         child: &crate::AgentThreadIdentity,

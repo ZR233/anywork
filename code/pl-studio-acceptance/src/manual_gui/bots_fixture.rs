@@ -287,10 +287,6 @@ pub(super) fn validate(options: &ManualGuiOptions) -> Result<()> {
             && options.web_search_probe.is_none(),
         "--bots-fixture cannot be combined with web-search flags"
     );
-    ensure!(
-        !options.timeline_displacement,
-        "--bots-fixture cannot be combined with --timeline-displacement"
-    );
     require_linux_tools()
 }
 

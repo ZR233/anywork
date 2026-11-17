@@ -5180,8 +5180,6 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
-    // Turn 结束：清空当前活动。
-    _clearActivity(threadId);
   }
 
   @override
@@ -5588,8 +5586,6 @@ class DemoStudioTransport extends StudioTransport
         ),
       ),
     );
-    // 打断结束 Turn：清空当前活动。
-    _clearActivity(threadId);
     return true;
   }
 
@@ -6979,7 +6975,7 @@ class DemoStudioTransport extends StudioTransport
         _demoUpdateInteraction(workspace, revision, interaction, pending),
     };
     _workspaces[threadId] = updated;
-    _historyOf(threadId).changed(updated);
+    _historyOf(threadId).changed(updated, update: update);
     // 子会话的交互事实变化同时刷新宿主主会话的待决集合投影。
     if (update is ThreadInteractionUpdate) {
       final host = updated.thread.parentThreadId;
@@ -7002,10 +6998,9 @@ class DemoStudioTransport extends StudioTransport
         ),
       );
       _retirePendingItems(threadId);
-      _workspaces[threadId] = updated.copyWith(activity: null);
       // Completion and Activity are independent deliveries at the same cut;
       // the feed orders completion admission before publishing the live exit.
-      _publishContent(threadId);
+      _clearActivity(threadId);
     }
     // The stop target is an execution identity and the continue target is a
     // continuation point, so the runtime projection carries both: derive them
@@ -7431,8 +7426,6 @@ class DriverDemoStudioTransport extends DemoStudioTransport {
         ),
       ),
     );
-    // 注入的 Turn 失败也是终态：清空当前活动。
-    _clearActivity(threadId);
   }
 
   @override

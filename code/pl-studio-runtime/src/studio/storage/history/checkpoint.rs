@@ -775,7 +775,6 @@ async fn add_cost(
 #[cfg(test)]
 pub(crate) struct SessionAccounting {
     pub revision: u64,
-    pub has_unpriced_usage: bool,
     pub purpose_costs: Vec<(Option<String>, Vec<crate::RuntimeCostAmount>)>,
 }
 
@@ -819,7 +818,6 @@ pub(super) async fn read_accounting(
     );
     Ok(Some(SessionAccounting {
         revision: checkpoint.state_revision,
-        has_unpriced_usage: checkpoint.state.usage_summary.pricing.incomplete,
         purpose_costs: read_purpose_costs(tx).await?,
     }))
 }

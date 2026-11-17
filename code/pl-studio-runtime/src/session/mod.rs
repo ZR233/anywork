@@ -70,7 +70,6 @@ pub(crate) mod session_close_tests {
     //! and are not duplicated.
     use super::*;
     use crate::thread_assembler::{ThreadActivation, archive_test_spec};
-    use std::time::Duration;
 
     /// Explicit typed identity for the owning session: Session, Agent and Thread ids all come from
     /// real fixture values and the session's own id, so no fixture assumes a fixed test session.

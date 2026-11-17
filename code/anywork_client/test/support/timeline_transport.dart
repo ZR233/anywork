@@ -336,6 +336,8 @@ class TestHistoryReader implements HistoryReader {
   Future<HistoryCut> Function(HistoryCut)? onWaitChanged;
   int requestCloseCalls = 0;
   int closeCalls = 0;
+  final Set<Completer<HistoryCut>> _pendingWaits = {};
+  bool _closed = false;
   bool get requested => requestCloseCalls > 0;
 
   @override
@@ -419,13 +421,41 @@ class TestHistoryReader implements HistoryReader {
   }) => throw UnsupportedError('Unscripted history costsPage');
 
   @override
-  Future<HistoryCut> waitChanged(HistoryCut after) =>
-      onWaitChanged?.call(after) ??
-      Future.error(UnsupportedError('Unscripted history waitChanged'));
+  Future<HistoryCut> waitChanged(HistoryCut after) {
+    if (_closed) return Future.error(const ClientResourceClosed());
+    final waiter = Completer<HistoryCut>();
+    _pendingWaits.add(waiter);
+    final source =
+        onWaitChanged?.call(after) ??
+        Future<HistoryCut>.error(
+          UnsupportedError('Unscripted history waitChanged'),
+        );
+    unawaited(
+      source.then<void>(
+        (cut) {
+          if (!waiter.isCompleted) waiter.complete(cut);
+        },
+        onError: (Object error, StackTrace stack) {
+          if (!waiter.isCompleted) waiter.completeError(error, stack);
+        },
+      ),
+    );
+    return waiter.future.whenComplete(() {
+      _pendingWaits.remove(waiter);
+    });
+  }
 
   @override
   void requestClose() {
     requestCloseCalls++;
+    if (_closed) return;
+    _closed = true;
+    for (final waiter in _pendingWaits.toList()) {
+      if (!waiter.isCompleted) {
+        waiter.completeError(const ClientResourceClosed());
+      }
+    }
+    _pendingWaits.clear();
   }
 
   @override
@@ -589,7 +619,12 @@ class ConversationFixture {
   }) async {
     repository.setVisibleThread(threadId);
     await transport.currentOpened(index);
-    final reader = currentReader(threadId);
+    final opened = await transport.currentOpens[index].result.future;
+    if (opened is! TestCurrentReader) {
+      throw StateError('Conversation fixture opened an unsupported reader');
+    }
+    final reader = opened;
+    currentReaders[threadId] = reader;
     reader.onReadBody ??= (_, _) async => ContentWindow(
       offset: 0,
       bytes: const [],

@@ -151,8 +151,6 @@ impl StudioRuntime {
                 if source.is_some() {
                     break;
                 }
-                #[cfg(test)]
-                feed.notify_first_open_wait();
                 tokio::select! { biased;
                     _ = cancellation.cancelled() => return Err(core::ChatError::Cancelled.into()),
                     _ = self.shutdown_latch.committed() => return Err(resync()),
@@ -789,7 +787,6 @@ pub(in crate::studio::runtime) fn same_live_runtime_identity(
 
 #[cfg(test)]
 mod storage_fault_tests {
-    use super::*;
     use anyhow::Result;
 
     #[test]

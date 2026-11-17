@@ -3,8 +3,6 @@
 //! atomic facts and the saved current cut; no original fact is rewritten.
 use super::legacy_timeline_store as timeline;
 use super::*;
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 
 pub(super) struct TimelineItems;
 impl MigrationName for TimelineItems {

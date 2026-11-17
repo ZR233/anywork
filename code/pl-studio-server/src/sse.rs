@@ -297,7 +297,7 @@ fn encode_event(
 
 #[cfg(test)]
 mod tests {
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use axum::{extract::FromRequestParts, http::Request};
     use pl_studio_runtime::StudioErrorCode;
 

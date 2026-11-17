@@ -53,13 +53,6 @@ impl StateStore {
         writer.activate(previous_epoch, epoch, source).await
     }
 
-    #[cfg(test)]
-    pub(crate) fn current_runtime_epoch(&self) -> Option<RuntimeEpoch> {
-        self.current
-            .as_ref()
-            .and_then(|current| current.writer.snapshot().runtime_epoch)
-    }
-
     pub(crate) async fn flush_current(&self, epoch: RuntimeEpoch) -> Result<CurrentSaveReceipt> {
         self.current
             .as_ref()

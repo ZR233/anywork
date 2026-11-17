@@ -324,11 +324,6 @@ impl RuntimeOrderIndex {
             .map(|entry| entry.ordinal)
     }
 
-    #[cfg(test)]
-    pub(in crate::studio) fn assign(&self, item_id: &str) -> Result<u64> {
-        self.allocate(item_id, None, None)
-    }
-
     pub(in crate::studio) fn reserve_observed(
         &self,
         attempt_id: &str,
@@ -1164,6 +1159,12 @@ enum Step {
     Coalescing(Instant),
 }
 
+#[cfg(test)]
+struct MaterializeGate {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
 pub(crate) struct HistoryChannel {
     order_index: Arc<RuntimeOrderIndex>,
@@ -1261,10 +1262,6 @@ impl Drop for ReviewDeliveryRetention {
 }
 
 impl HistoryChannel {
-    #[cfg(test)]
-    pub(in crate::studio) async fn hold_writer(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.step_lock.lock().await
-    }
     /// Called under the registry lock; this only pins an atomic logical source,
     /// and never acquires progress or index.
     pub(crate) fn pin_review_delivery(
@@ -3812,10 +3809,10 @@ pub(crate) mod storage_fault_tests {
         thread: &crate::Thread,
     ) -> Result<Option<pl_core::thread::current::ThreadCurrent>> {
         let paths = store.registered_session_paths(&thread.id)?;
-        Ok(store
+        store
             .state_for(paths.workspace_id(), &thread.id)?
             .load_current()
-            .await?)
+            .await
     }
 
     pub(super) async fn live_projection(
@@ -3934,7 +3931,6 @@ mod writer_tests {
     };
     use super::*;
     use crate::history::{HistoryDemand, HistoryEventsQuery};
-    use pl_core::thread::current::RuntimeEpoch;
     use pl_core::thread::history_sink::HistorySink;
     use sea_orm::{ConnectionTrait, Database};
 
@@ -3997,6 +3993,50 @@ mod writer_tests {
 
     fn sqlite_literal(value: &str) -> String {
         format!("'{}'", value.replace('\'', "''"))
+    }
+
+    #[tokio::test]
+    async fn rejecting_one_prepared_event_exposes_no_prefix_of_its_effect() -> Result<()> {
+        let mut fixture = Fixture::new("whole-effect-admission").await?;
+        let channel = fixture.sink.0.channel.clone();
+        let lease = channel.step_lock.lock().await;
+        let write = visible_input_ticket("whole-effect-admission", 1, "input")?;
+        fixture
+            .sink
+            .admit(&fixture.sink.0.thread.id, write.clone())?;
+        let prepared = fixture
+            .projection
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
+            .await?;
+        let mut rejected = (*prepared).clone();
+        let first = Arc::make_mut(&mut rejected.history_changes)
+            .first_mut()
+            .context("input completion")?;
+        // Basic run/source candidates are valid. A later canonical candidate is rejected.
+        first.event.header.event_id.clear();
+        assert!(channel.prepare(Arc::new(rejected)));
+        channel.request_flush(1);
+        let selected = ready(fixture.select(Instant::now()));
+        let history = history_store(&fixture.sink.0).await?;
+        let reader = history.reader();
+        assert_eq!(reader.capture_position().await?.1, 0);
+
+        assert!(batch::persist(&fixture.sink.0, &selected).await.is_err());
+        assert_eq!(
+            reader.capture_position().await?.1,
+            0,
+            "a rejected effect leaked its run/source prefix"
+        );
+        assert!(channel.history_classifier.lock().unwrap().is_none());
+        assert_eq!(
+            channel.subscribe().borrow().queued_records,
+            1,
+            "rejection discarded the reliable effect"
+        );
+        reader.close().await;
+        drop(lease);
+        channel.stop_and_join_for_deletion().await?;
+        Ok(())
     }
 
     #[tokio::test]
@@ -4362,7 +4402,6 @@ mod batch_window_tests {
 
     struct Fixture {
         _temp: tempfile::TempDir,
-        store: StudioStore,
         sink: ThreadStorageSink,
         projection: crate::studio::thread_projection::LiveProjection,
     }
@@ -4376,7 +4415,6 @@ mod batch_window_tests {
             let projection = live_projection(&sink).await?;
             Ok(Self {
                 _temp: temp,
-                store,
                 sink,
                 projection,
             })

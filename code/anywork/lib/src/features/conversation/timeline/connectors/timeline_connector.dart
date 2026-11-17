@@ -216,7 +216,13 @@ class _TimelineConnectorBodyState
                   dimension: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              Text(error?.toString() ?? context.l10n.workspaceLoading),
+              Flexible(
+                child: SingleChildScrollView(
+                  child: Text(
+                    error?.toString() ?? context.l10n.workspaceLoading,
+                  ),
+                ),
+              ),
               Flexible(
                 child: SingleChildScrollView(
                   child: ComposerSubmissionList(

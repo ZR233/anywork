@@ -36,14 +36,6 @@ pub(in crate::studio) use live::{
     seed_repaired_targets,
 };
 pub(crate) use presentation::{hidden, work};
-// The free item estimate is only read outside its own module by the storage
-// fault test that asserts the budget covers real bodies, so it stays test-only.
-#[cfg(test)]
-pub(in crate::studio) use live::retained_bytes;
-// The retained-window bound is only read outside its own module by the storage fault test that has
-// to commit more parts than the window holds, so it stays a test-only re-export.
-#[cfg(test)]
-pub(in crate::studio) use live::LIVE_ITEM_WINDOW;
 mod runtime;
 mod usage_projection;
 pub(in crate::studio) use runtime::{project_cold_runtime, project_runtime};

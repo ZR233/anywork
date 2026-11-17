@@ -1,10 +1,14 @@
 //! 执行开始与结束的最小持久化事实；没有正文、展示分组或进度快照。
 use super::{integer, statement};
+#[cfg(test)]
+use crate::ChatActiveStatus;
 use crate::{
-    ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
-    ChatFactPosition, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, ThreadTextChannel,
+    ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId,
+    ChatTerminalOutcome, ChatToolIdentity, ThreadTextChannel,
 };
-use anyhow::{Context, Result, ensure};
+#[cfg(test)]
+use anyhow::Context;
+use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, QueryResult};
 
 pub(super) const CREATE: &str = "

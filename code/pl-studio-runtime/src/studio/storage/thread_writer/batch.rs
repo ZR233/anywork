@@ -851,23 +851,3 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
     );
     Ok(())
 }
-
-#[cfg(test)]
-pub(super) async fn persist_one(
-    inner: &Inner,
-    sequence: u64,
-    write: &HistoryExport,
-    prepared: &PreparedEffect,
-    bytes: u64,
-) -> Result<()> {
-    persist(
-        inner,
-        &[Effect {
-            sequence,
-            write: Arc::new(write.clone()),
-            prepared: Arc::new(prepared.clone()),
-            bytes,
-        }],
-    )
-    .await
-}
