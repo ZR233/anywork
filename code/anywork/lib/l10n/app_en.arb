@@ -1,4 +1,5 @@
 {
+  "acpConnectionReconnecting": "Reconnecting",
   "studioFailureConversationResyncRequired": "Conversation content needs to be synchronized again. Please retry.",
   "studioFailureConcurrentNext": "Conversation content is being read. Wait for the current read to finish.",
   "conversationDirectoryUnavailable": "Session information is unavailable. Please retry.",

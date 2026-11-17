@@ -13,6 +13,9 @@ This main document is an index: load the selected support file through the skill
 reader, not a guessed installation path.
 
 ACP programs and authentication remain on the Studio host for SSH projects too.
+Enabled ACP accounts prepare one shared background instance and check existing
+authentication without interactive login. Disabling or deleting an account stops
+its sessions and pending reconnects; see the ACP account lifecycle in the reference.
 Remote workspace tools use the ordinary session execution binding through Host MCP;
 see the ACP section in the main configuration reference, not remote agent setup.
 

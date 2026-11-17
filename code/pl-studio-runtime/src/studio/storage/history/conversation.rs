@@ -1,4 +1,4 @@
-//! Current completed-history model. Payloads are opaque; only indexed headers drive reads.
+//! Frozen schema-24 conversation decoding for the explicit legacy migration boundary.
 
 use super::{integer, statement};
 use anyhow::{Context, Result, ensure};
@@ -8,9 +8,9 @@ use pl_core::chat::{
     PayloadData, PayloadMode, select_payload,
 };
 use pl_core::chat::{ChatItem, ChatItemHeader, ChatKey};
-#[cfg(test)]
-use sea_orm::Value;
 use sea_orm::{ConnectionTrait, QueryResult};
+#[cfg(test)]
+use sea_orm::{Value, sqlx};
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::Arc;

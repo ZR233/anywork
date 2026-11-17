@@ -4,7 +4,7 @@
 //! 协议步骤并返回类型化结果。物理进程、stderr 消费与最终回收不属于这里。
 //!
 //! 本阶段只实现 ACP v1 中已落地的能力：`initialize`、`session/new`、`authenticate`、
-//! 固定 `/usage` 与 `session/close`。文件系统、终端、MCP 与 elicitation 能力一律不声明，
+//! 宿主显式提供的受限文本探测与 `session/close`。文件系统、终端、MCP 与 elicitation 能力一律不声明，
 //! 因此不存在被对端反向请求驱动的执行路径。
 
 use std::fmt;
@@ -18,7 +18,6 @@ use agent_client_protocol::{Error as RpcError, ErrorCode, is_incoming_transport_
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod flow;
-mod limits;
 pub(crate) use flow::declared_methods;
 
 /// 宿主提供的字节流读端。
@@ -37,8 +36,15 @@ pub use tokio_util::sync::CancellationToken;
 pub enum AuthAction {
     /// 只协商并探测，不触发任何登录流程。
     Check,
-    /// 已由宿主核实版本的 server 原生处理 `/usage`，不进入模型执行。
-    QueryUsage,
+    /// 宿主策略提供的受限文本探测；协议层不解释供应商命令。
+    Probe(ProbeRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeRequest {
+    pub prompt: String,
+    pub budget: Duration,
+    pub max_bytes: usize,
 }
 
 /// 在原连接上继续认证；不重新协商或启动第二条连接。
@@ -116,20 +122,20 @@ pub enum AuthOutcome {
     Verified {
         /// 协商出的服务端身份。
         server: Option<ServerInfo>,
-        /// 仅显式额度动作返回报告；普通检查、登录不发送 prompt。
-        usage: Option<UsageReport>,
+        /// 仅显式探测动作返回报告；普通检查、登录不发送 prompt。
+        report: Option<ProbeReport>,
     },
 }
 
-/// 固定额度命令的文本报告或安全失败类别；由产品供应商边界解析文本。
+/// 宿主探测请求的文本报告或安全失败类别；由宿主策略解释文本。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UsageReport {
+pub enum ProbeReport {
     Text(String),
-    Failed(UsageFailure),
+    Failed(ProbeFailure),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageFailure {
+pub enum ProbeFailure {
     Query,
     Timeout,
     Transport,
@@ -836,7 +842,7 @@ mod tests {
         .await;
         assert!(matches!(
             outcome,
-            Ok(AuthOutcome::Verified { usage: None, .. })
+            Ok(AuthOutcome::Verified { report: None, .. })
         ));
         assert_eq!(
             (
@@ -978,7 +984,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn usage_prompt_error_remains_nested_and_the_probe_is_closed() {
         let (outcome, observed) = run(
-            AuthAction::QueryUsage,
+            AuthAction::Probe(crate::auth::ProbeRequest {
+                prompt: "/usage".into(),
+                budget: std::time::Duration::from_secs(60),
+                max_bytes: 256 * 1024,
+            }),
             Scenario {
                 prompt_failure: true,
                 ..Scenario::default()
@@ -988,7 +998,7 @@ mod tests {
         assert!(matches!(
             outcome,
             Ok(AuthOutcome::Verified {
-                usage: Some(UsageReport::Failed(UsageFailure::Query)),
+                report: Some(ProbeReport::Failed(ProbeFailure::Query)),
                 ..
             })
         ));
@@ -1003,11 +1013,15 @@ mod tests {
         let (outcome, observed) = run(AuthAction::Check, Scenario::default()).await;
         assert!(matches!(
             outcome,
-            Ok(AuthOutcome::Verified { usage: None, .. })
+            Ok(AuthOutcome::Verified { report: None, .. })
         ));
         assert!(observed.prompts.is_empty());
         let (outcome, observed) = run(
-            AuthAction::QueryUsage,
+            AuthAction::Probe(crate::auth::ProbeRequest {
+                prompt: "/usage".into(),
+                budget: std::time::Duration::from_secs(60),
+                max_bytes: 256 * 1024,
+            }),
             Scenario {
                 requires_login: true,
                 ..Scenario::default()
@@ -1015,7 +1029,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(outcome, Ok(AuthOutcome::Verified { usage: Some(UsageReport::Text(ref text)), .. }) if text == REPORT),
+            matches!(outcome, Ok(AuthOutcome::Verified { report: Some(ProbeReport::Text(ref text)), .. }) if text == REPORT),
             "actual outcome: {outcome:?}"
         );
         assert_eq!(

@@ -12997,15 +12997,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   BridgeAcpAuthAccount dco_decode_bridge_acp_auth_account(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
     return BridgeAcpAuthAccount(
       accountId: dco_decode_String(arr[0]),
       connectionRevision: dco_decode_u_64(arr[1]),
-      state: dco_decode_bridge_acp_auth_state(arr[2]),
-      usage: dco_decode_opt_box_autoadd_bridge_acp_usage_observation(arr[3]),
+      connection: dco_decode_bridge_acp_connection_state(arr[2]),
+      state: dco_decode_bridge_acp_auth_state(arr[3]),
+      usage: dco_decode_opt_box_autoadd_bridge_acp_usage_observation(arr[4]),
       activeOperation:
-          dco_decode_opt_box_autoadd_bridge_acp_auth_active_operation(arr[4]),
+          dco_decode_opt_box_autoadd_bridge_acp_auth_active_operation(arr[5]),
     );
   }
 
@@ -13420,6 +13421,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       configId: dco_decode_bridge_acp_config_id(arr[1]),
       value: dco_decode_bridge_acp_config_value(arr[2]),
     );
+  }
+
+  @protected
+  BridgeAcpConnectionState dco_decode_bridge_acp_connection_state(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    switch (raw[0]) {
+      case 0:
+        return BridgeAcpConnectionState_Stopped();
+      case 1:
+        return BridgeAcpConnectionState_Starting();
+      case 2:
+        return BridgeAcpConnectionState_Ready();
+      case 3:
+        return BridgeAcpConnectionState_Retrying(
+          attempt: dco_decode_u_32(raw[1]),
+          nextRetryAt: dco_decode_i_64(raw[2]),
+          failure: dco_decode_box_autoadd_bridge_acp_auth_failure(raw[3]),
+        );
+      case 4:
+        return BridgeAcpConnectionState_Blocked(
+          failure: dco_decode_box_autoadd_bridge_acp_auth_failure(raw[1]),
+        );
+      case 5:
+        return BridgeAcpConnectionState_Stopping();
+      default:
+        throw Exception("unreachable");
+    }
   }
 
   @protected
@@ -29093,6 +29121,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_accountId = sse_decode_String(deserializer);
     var var_connectionRevision = sse_decode_u_64(deserializer);
+    var var_connection = sse_decode_bridge_acp_connection_state(deserializer);
     var var_state = sse_decode_bridge_acp_auth_state(deserializer);
     var var_usage = sse_decode_opt_box_autoadd_bridge_acp_usage_observation(
       deserializer,
@@ -29104,6 +29133,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     return BridgeAcpAuthAccount(
       accountId: var_accountId,
       connectionRevision: var_connectionRevision,
+      connection: var_connection,
       state: var_state,
       usage: var_usage,
       activeOperation: var_activeOperation,
@@ -29628,6 +29658,43 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       configId: var_configId,
       value: var_value,
     );
+  }
+
+  @protected
+  BridgeAcpConnectionState sse_decode_bridge_acp_connection_state(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var tag_ = sse_decode_i_32(deserializer);
+    switch (tag_) {
+      case 0:
+        return BridgeAcpConnectionState_Stopped();
+      case 1:
+        return BridgeAcpConnectionState_Starting();
+      case 2:
+        return BridgeAcpConnectionState_Ready();
+      case 3:
+        var var_attempt = sse_decode_u_32(deserializer);
+        var var_nextRetryAt = sse_decode_i_64(deserializer);
+        var var_failure = sse_decode_box_autoadd_bridge_acp_auth_failure(
+          deserializer,
+        );
+        return BridgeAcpConnectionState_Retrying(
+          attempt: var_attempt,
+          nextRetryAt: var_nextRetryAt,
+          failure: var_failure,
+        );
+      case 4:
+        var var_failure = sse_decode_box_autoadd_bridge_acp_auth_failure(
+          deserializer,
+        );
+        return BridgeAcpConnectionState_Blocked(failure: var_failure);
+      case 5:
+        return BridgeAcpConnectionState_Stopping();
+      default:
+        throw UnimplementedError('');
+    }
   }
 
   @protected
@@ -49102,6 +49169,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.accountId, serializer);
     sse_encode_u_64(self.connectionRevision, serializer);
+    sse_encode_bridge_acp_connection_state(self.connection, serializer);
     sse_encode_bridge_acp_auth_state(self.state, serializer);
     sse_encode_opt_box_autoadd_bridge_acp_usage_observation(
       self.usage,
@@ -49527,6 +49595,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_bridge_acp_session_target(self.target, serializer);
     sse_encode_bridge_acp_config_id(self.configId, serializer);
     sse_encode_bridge_acp_config_value(self.value, serializer);
+  }
+
+  @protected
+  void sse_encode_bridge_acp_connection_state(
+    BridgeAcpConnectionState self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    switch (self) {
+      case BridgeAcpConnectionState_Stopped():
+        sse_encode_i_32(0, serializer);
+      case BridgeAcpConnectionState_Starting():
+        sse_encode_i_32(1, serializer);
+      case BridgeAcpConnectionState_Ready():
+        sse_encode_i_32(2, serializer);
+      case BridgeAcpConnectionState_Retrying(
+        attempt: final attempt,
+        nextRetryAt: final nextRetryAt,
+        failure: final failure,
+      ):
+        sse_encode_i_32(3, serializer);
+        sse_encode_u_32(attempt, serializer);
+        sse_encode_i_64(nextRetryAt, serializer);
+        sse_encode_box_autoadd_bridge_acp_auth_failure(failure, serializer);
+      case BridgeAcpConnectionState_Blocked(failure: final failure):
+        sse_encode_i_32(4, serializer);
+        sse_encode_box_autoadd_bridge_acp_auth_failure(failure, serializer);
+      case BridgeAcpConnectionState_Stopping():
+        sse_encode_i_32(5, serializer);
+    }
   }
 
   @protected

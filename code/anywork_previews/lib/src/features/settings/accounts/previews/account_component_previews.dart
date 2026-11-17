@@ -1214,6 +1214,50 @@ Widget accountMenuButtonTriggersPreview() => accountPreviewHost(
 );
 
 @Preview(
+  name: 'ACP account / background reconnecting',
+  group: components,
+  size: Size(720, 340),
+)
+Widget accountAcpReconnectingPreview() => accountPreviewHost(
+  (record) => Padding(
+    padding: const EdgeInsets.all(20),
+    child: AcpAccountPanel(
+      value: const AcpAccountPresentation(
+        phase: AcpPresentationPhase.reconnecting,
+        status: '重连中',
+        availableActions: [AcpAccountAction.check],
+        primaryAction: AcpAccountAction.check,
+      ),
+      onAction: (action) => record('ACP intent: ${action.name}'),
+      onLoginMethodChanged: (_) {},
+    ),
+  ),
+  scenarioIdentity: 'acp-background-reconnecting',
+);
+
+@Preview(
+  name: 'ACP account / background ready',
+  group: components,
+  size: Size(720, 340),
+)
+Widget accountAcpBackgroundReadyPreview() => accountPreviewHost(
+  (record) => Padding(
+    padding: const EdgeInsets.all(20),
+    child: AcpAccountPanel(
+      value: const AcpAccountPresentation(
+        phase: AcpPresentationPhase.connected,
+        status: '已连接',
+        availableActions: [AcpAccountAction.check],
+        primaryAction: AcpAccountAction.check,
+      ),
+      onAction: (action) => record('ACP intent: ${action.name}'),
+      onLoginMethodChanged: (_) {},
+    ),
+  ),
+  scenarioIdentity: 'acp-background-ready',
+);
+
+@Preview(
   name: 'ACP panel / login + actions',
   group: components,
   size: Size(720, 700),

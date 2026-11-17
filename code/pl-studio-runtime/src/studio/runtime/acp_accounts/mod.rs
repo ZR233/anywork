@@ -1,4 +1,4 @@
-//! ACP 认证 owner 的目录页。
+//! ACP 账户所有者：配置期望、连接实例、认证操作与物理回收的统一入口。
 //!
 //! 子模块职责（唯一 canonical 路径，不复制第二套事实）：
 //! - `registry`：owner 内唯一可变事实——独立 revision、已观察的 Settings 水位、关闭闸门、
@@ -11,19 +11,23 @@
 //! - `operation`：单次操作的 supervisor（IO 装配、进展、取消、收尾、终态）。
 //! - `connection`：账户级连接代次、共享准备、SDK 与进程监督、物理回收。
 //!
-//! 只读查询和订阅不启动程序。启动/配置提交后台检查已安装模板，普通 command 按需准备；
+//! - `lifecycle`：所有启用账户的后台准备、可恢复故障退避、实例资格与退役协调。
+//! - `strategy`：Generic/Antigravity 的封闭策略，保留专有额度命令、预算与解析。
+//!
+//! 只读查询和订阅不启动程序。启动/配置提交后台检查所有启用账户；
 //! 操作结束只关闭自身探测会话，账户撤代/退出才回收进程。迟到结果、已退役接入与旧代次结果丢弃
 //! （见 design/28 §28.2–28.4、design/18 §18.2）。
 
 mod admission;
 mod connection;
 mod continuation;
+mod lifecycle;
 mod mapping;
 mod operation;
 mod projection;
 mod registry;
-mod usage;
+mod strategy;
 
-pub(crate) use admission::AcpAuthRuntime;
+pub(crate) use admission::AcpAccountRuntime;
 pub(crate) use connection::AccountConnection;
 pub(crate) use projection::acp_account_catalog;

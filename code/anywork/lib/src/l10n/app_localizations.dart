@@ -101,6 +101,12 @@ abstract class AppLocalizations {
     Locale('zh'),
   ];
 
+  /// No description provided for @acpConnectionReconnecting.
+  ///
+  /// In en, this message translates to:
+  /// **'Reconnecting'**
+  String get acpConnectionReconnecting;
+
   /// No description provided for @studioFailureConversationResyncRequired.
   ///
   /// In en, this message translates to:

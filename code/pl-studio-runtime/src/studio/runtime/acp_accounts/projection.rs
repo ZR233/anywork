@@ -1,7 +1,7 @@
 //! ACP 的只读投影：官方模板目录与 Settings 中的接入视图。
 //!
 //! 这里**不创建、也不退役**接入记录：唯一的创建/退役路径是 Settings 提交观察者驱动的
-//! [`super::registry::AcpAuthInner::observe_committed`]。Settings 投影必须与同一 Settings revision
+//! [`super::registry::AcpAccountInner::observe_committed`]。Settings 投影必须与同一 Settings revision
 //! 的已观察事实完全匹配；缺失、退役或身份不符一律是陈旧快照，返回类型化 `StaleRevision` 由调用
 //! 方在 Settings command 边界内重读，而不是由投影补造或借用另一个身份的 revision。
 
@@ -11,7 +11,7 @@ use crate::{
 };
 use anyhow::Result;
 
-use super::admission::AcpAuthRuntime;
+use super::admission::AcpAccountRuntime;
 use super::mapping::acp_error;
 use super::registry::ConnectionIdentity;
 use crate::config::{AcpDefinitionsSnapshot, AcpLaunch, AcpProvider};
@@ -36,7 +36,7 @@ pub(crate) fn acp_account_catalog() -> AcpAccountCatalog {
     }
 }
 
-impl AcpAuthRuntime {
+impl AcpAccountRuntime {
     /// canonical Settings 中的 ACP 接入投影。
     ///
     /// 只能在 [`crate::config::ConfigRuntime`] 的 Settings command 边界内调用：`settings_revision`

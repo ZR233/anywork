@@ -40,9 +40,10 @@ impl AcpInstallRuntime {
     pub(crate) fn new(
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
+        accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
     ) -> Self {
         Self {
-            inner: Arc::new(AcpInstallInner::new(store, events)),
+            inner: Arc::new(AcpInstallInner::new(store, events, accounts)),
         }
     }
 

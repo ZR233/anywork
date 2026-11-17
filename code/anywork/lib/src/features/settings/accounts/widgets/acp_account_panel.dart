@@ -86,6 +86,7 @@ class AcpAccountPanel extends StatelessWidget {
       ),
       AcpPresentationPhase.preparing ||
       AcpPresentationPhase.checking ||
+      AcpPresentationPhase.reconnecting ||
       AcpPresentationPhase.authenticating ||
       AcpPresentationPhase.verifying => (
         scheme.primary,

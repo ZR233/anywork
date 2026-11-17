@@ -30,7 +30,7 @@ impl StudioRuntime {
             .config_runtime
             .with_consistent_snapshot(|settings, catalog| {
                 let acp_accounts = self
-                    .acp_auth
+                    .acp_accounts
                     .settings_view(settings.revision, &settings.acp)?;
                 Ok::<_, anyhow::Error>((
                     super::settings_api::settings_config_snapshot(settings, acp_accounts)?,

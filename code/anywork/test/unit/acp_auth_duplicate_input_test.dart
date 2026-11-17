@@ -104,11 +104,13 @@ void main() {
           updatedAt: 2,
           accounts: [
             AcpAuthAccountView(
+              connection: AcpConnectionStoppedState(),
               accountId: 'acp',
               connectionRevision: 1,
               state: AcpCheckingState(operationId: 'current'),
             ),
             AcpAuthAccountView(
+              connection: AcpConnectionStoppedState(),
               accountId: 'another-account',
               connectionRevision: 2,
               state: AcpCheckingState(operationId: 'unrelated'),

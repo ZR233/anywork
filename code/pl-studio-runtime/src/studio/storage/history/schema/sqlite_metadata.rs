@@ -4,8 +4,8 @@
 //! acquiring it from a transaction would wait on that transaction's own lease.
 
 use anyhow::{Context, Result, bail, ensure};
+use sea_orm::sqlx::sqlite::SqliteConnection;
 use sea_orm::{DatabaseConnection, DatabaseConnectionType};
-use sqlx::sqlite::SqliteConnection;
 use std::ffi::{CStr, CString};
 use std::ptr;
 
@@ -34,7 +34,7 @@ pub(super) async fn column_collation(
     // live, NUL-terminated C strings; `main` selects only the trusted history schema.
     // The output points to an initialized local pointer, and omitted outputs may be
     // null by SQLite's contract. No pointer escapes or crosses an await. SQLx and
-    // libsqlite3-sys are pinned to the same binding identity in the Cargo manifests.
+    // libsqlite3-sys resolve to one binding identity through Cargo's `links` constraint.
     let status = unsafe {
         libsqlite3_sys::sqlite3_table_column_metadata(
             raw,

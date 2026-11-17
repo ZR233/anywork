@@ -1862,6 +1862,7 @@ AcpAuthSnapshotView _immutableAuth(AcpAuthSnapshotView snapshot) =>
           AcpAuthAccountView(
             accountId: account.accountId,
             connectionRevision: account.connectionRevision,
+            connection: account.connection,
             usage: _immutableUsage(account.usage),
             activeOperation: account.activeOperation,
             state: account.state is AcpRequiredState

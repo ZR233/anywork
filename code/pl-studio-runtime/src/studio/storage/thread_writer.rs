@@ -3030,7 +3030,7 @@ fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
                 }
             } else if cause.is::<sea_orm::DbErr>() {
                 "database_error"
-            } else if cause.is::<sqlx::Error>() {
+            } else if cause.is::<sea_orm::sqlx::Error>() {
                 "sql_driver_error"
             } else {
                 "redacted_error"

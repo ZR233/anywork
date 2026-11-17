@@ -91,6 +91,7 @@ void _auth(
 
 AcpAuthAccountView _authAccount(String id, {int revision = 1}) =>
     AcpAuthAccountView(
+      connection: const AcpConnectionReadyState(),
       accountId: id,
       connectionRevision: revision,
       state: const AcpVerifiedState(checkedAt: 1, server: null),
@@ -340,6 +341,8 @@ void main() {
       const AccountStrings({
         'acp.needsLogin': 'Login required',
         'acp.failed': 'Failed',
+        'acp.reconnecting': 'Reconnecting',
+        'acp.connected': 'Connected',
       }),
     );
     await h.container.pump();
@@ -352,6 +355,7 @@ void main() {
       h,
       accounts: [
         const AcpAuthAccountView(
+          connection: AcpConnectionStoppedState(),
           accountId: 'alpha',
           connectionRevision: 1,
           state: AcpRequiredState(operationId: 'auth', server: null),
@@ -382,6 +386,7 @@ void main() {
         h,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'alpha',
             connectionRevision: 1,
             state: AcpFailedState(failure: failure),
@@ -396,6 +401,36 @@ void main() {
       expect(_row(h, _alpha).operationError, failure.message);
       expect(_usage(h, _alpha)!.groups.single.quotas.single.remaining, '40%');
     }
+    _auth(
+      h,
+      accounts: [
+        const AcpAuthAccountView(
+          accountId: 'alpha',
+          connectionRevision: 1,
+          connection: AcpConnectionRetryingState(
+            attempt: 2,
+            nextRetryAt: 42,
+            failure: AcpAuthFailureView(
+              code: AcpAuthFailureCodeView.transport,
+              stage: AcpAuthStageView.initialize,
+              message: 'Disconnected',
+              retryable: true,
+            ),
+          ),
+          state: AcpUncheckedState(),
+        ),
+      ],
+    );
+    expect(
+      (_row(h, _alpha).content as AcpAccountRowContent).status,
+      'Reconnecting',
+    );
+    expect(_usage(h, _alpha), isNull);
+    _auth(h, accounts: [_authAccount('alpha')]);
+    expect(
+      (_row(h, _alpha).content as AcpAccountRowContent).status,
+      'Connected',
+    );
     expect(h.acp.usageRefreshRequests, hasLength(1));
     expect(h.acp.starts, isEmpty);
     expect(h.acp.authStarts, isEmpty);

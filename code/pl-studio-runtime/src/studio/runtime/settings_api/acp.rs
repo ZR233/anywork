@@ -22,7 +22,7 @@ use super::account_edit::invalid_settings_argument;
 impl StudioRuntime {
     /// 读取 ACP 接入模板目录；纯读取默认值，不启动程序、不检查凭据。
     pub fn load_acp_account_catalog(&self) -> AcpAccountCatalog {
-        super::super::acp_auth::acp_account_catalog()
+        super::super::acp_accounts::acp_account_catalog()
     }
 
     /// 保存（新增或更新）一条 ACP 接入。
@@ -107,7 +107,7 @@ impl StudioRuntime {
 
     /// 当前 canonical ACP 认证快照；纯读取，不启动程序。
     pub fn read_acp_auth_state(&self) -> AcpAuthSnapshot {
-        self.acp_auth.read_state()
+        self.acp_accounts.read_state()
     }
 
     /// 受理一次 ACP 认证操作（检查或登录）。
@@ -117,7 +117,7 @@ impl StudioRuntime {
     pub fn start_acp_auth(&self, request: StartAcpAuthRequest) -> Result<AcpAuthCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_auth.start(request)?;
+        let acceptance = self.acp_accounts.start(request)?;
         Ok(AcpAuthCommandReply {
             receipt: self.command_receipt(
                 operation_id,
@@ -140,7 +140,7 @@ impl StudioRuntime {
     ) -> Result<AcpAuthCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_auth.continue_auth(request)?;
+        let acceptance = self.acp_accounts.continue_auth(request)?;
         Ok(AcpAuthCommandReply {
             receipt: self.command_receipt(
                 operation_id,
@@ -157,7 +157,7 @@ impl StudioRuntime {
     pub fn cancel_acp_auth(&self, request: CancelAcpAuthRequest) -> Result<AcpAuthCommandReply> {
         Self::validate_operation_id(&request.operation_id)?;
         let operation_id = request.operation_id.clone();
-        let acceptance = self.acp_auth.cancel(request)?;
+        let acceptance = self.acp_accounts.cancel(request)?;
         Ok(AcpAuthCommandReply {
             receipt: self.command_receipt(
                 operation_id,

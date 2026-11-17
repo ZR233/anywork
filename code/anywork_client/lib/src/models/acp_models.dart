@@ -630,11 +630,78 @@ class AcpAuthActiveOperationView {
   int get hashCode => Object.hash(operationId, connectionRevision, action);
 }
 
+/// 后端账户所有者发布的连接状态；认证和当前操作保持独立。
+sealed class AcpConnectionStateView {
+  const AcpConnectionStateView();
+}
+
+final class AcpConnectionStoppedState extends AcpConnectionStateView {
+  const AcpConnectionStoppedState();
+  @override
+  bool operator ==(Object other) => other is AcpConnectionStoppedState;
+  @override
+  int get hashCode => runtimeType.hashCode;
+}
+
+final class AcpConnectionStartingState extends AcpConnectionStateView {
+  const AcpConnectionStartingState();
+  @override
+  bool operator ==(Object other) => other is AcpConnectionStartingState;
+  @override
+  int get hashCode => runtimeType.hashCode;
+}
+
+final class AcpConnectionReadyState extends AcpConnectionStateView {
+  const AcpConnectionReadyState();
+  @override
+  bool operator ==(Object other) => other is AcpConnectionReadyState;
+  @override
+  int get hashCode => runtimeType.hashCode;
+}
+
+final class AcpConnectionStoppingState extends AcpConnectionStateView {
+  const AcpConnectionStoppingState();
+  @override
+  bool operator ==(Object other) => other is AcpConnectionStoppingState;
+  @override
+  int get hashCode => runtimeType.hashCode;
+}
+
+final class AcpConnectionRetryingState extends AcpConnectionStateView {
+  const AcpConnectionRetryingState({
+    required this.attempt,
+    required this.nextRetryAt,
+    required this.failure,
+  });
+  final int attempt;
+  final int nextRetryAt;
+  final AcpAuthFailureView failure;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpConnectionRetryingState &&
+      attempt == other.attempt &&
+      nextRetryAt == other.nextRetryAt &&
+      failure == other.failure;
+  @override
+  int get hashCode => Object.hash(attempt, nextRetryAt, failure);
+}
+
+final class AcpConnectionBlockedState extends AcpConnectionStateView {
+  const AcpConnectionBlockedState({required this.failure});
+  final AcpAuthFailureView failure;
+  @override
+  bool operator ==(Object other) =>
+      other is AcpConnectionBlockedState && failure == other.failure;
+  @override
+  int get hashCode => failure.hashCode;
+}
+
 /// 单个接入在认证观察里的条目。
 class AcpAuthAccountView {
   const AcpAuthAccountView({
     required this.accountId,
     required this.connectionRevision,
+    required this.connection,
     required this.state,
     this.usage,
     this.activeOperation,
@@ -646,6 +713,7 @@ class AcpAuthAccountView {
   final int connectionRevision;
 
   final AcpAuthStateView state;
+  final AcpConnectionStateView connection;
   final AcpUsageObservationView? usage;
 
   /// 当前操作槽位上的进行中操作；无在途操作时为 null，不按 state 猜测。
@@ -665,13 +733,20 @@ class AcpAuthAccountView {
       other is AcpAuthAccountView &&
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
+          connection == other.connection &&
           state == other.state &&
           usage == other.usage &&
           activeOperation == other.activeOperation;
 
   @override
-  int get hashCode =>
-      Object.hash(accountId, connectionRevision, state, usage, activeOperation);
+  int get hashCode => Object.hash(
+    accountId,
+    connectionRevision,
+    connection,
+    state,
+    usage,
+    activeOperation,
+  );
 }
 
 /// 由 ACP 所有者发布的额度观察，独立于认证结论。

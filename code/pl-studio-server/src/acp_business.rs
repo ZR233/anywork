@@ -815,7 +815,8 @@ mod tests {
                 ensure!(snapshot.ready && snapshot.target == target);
                 ensure!(snapshot.acp_session_id.as_deref() == Some("remote-one"));
 
-                let calls_before = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+                let calls_before =
+                    std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
                 let mut resident = Sse::new(
                     server
                         .post("open", &request(&fixture, Some(target.thread_id.clone())))
@@ -829,7 +830,8 @@ mod tests {
                 ensure!(resident.next().await?.is_none());
                 drop(resident);
                 ensure!(
-                    std::fs::read_to_string(fixture.home.path().join("calls"))? == calls_before
+                    std::fs::read_to_string(fixture.home.path().join("business-calls"))?
+                        == calls_before
                 );
 
                 std::fs::remove_file(fixture.home.path().join("release"))?;
@@ -913,9 +915,10 @@ mod tests {
                 }
                 drop(reopened);
                 closed(&server, &current).await?;
-                let methods = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+                let methods = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
                 ensure!(!methods.lines().any(|method| method == "session/cancel"));
-                // A new supervised process was expected only for the explicit cold reopen.
+                // Cold reopen loads the original business session; background auth probes
+                // are separate and cannot be mistaken for a business New request.
                 ensure!(
                     methods
                         .lines()

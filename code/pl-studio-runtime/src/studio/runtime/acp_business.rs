@@ -1005,7 +1005,7 @@ mod tests {
     #[tokio::test]
     async fn public_launch_failures_distinguish_install_required_from_missing_executable()
     -> Result<()> {
-        let fixture = Fixture::new("replay").await?;
+        let fixture = Fixture::disabled("replay").await?;
         let missing = fixture.home.path().join("nonexistent-private-command");
         for (account_id, template, command) in [
             ("uninstalled-template", Some(AcpProvider::Antigravity), None),
@@ -1231,13 +1231,9 @@ mod tests {
                 .is_creating(&open.target.thread_id)
         );
         assert_ne!(lease.path, fixture.workspace.path);
-        let opened: serde_json::Value = serde_json::from_str(
-            std::fs::read_to_string(fixture.home.path().join("sessions"))?
-                .lines()
-                .next()
-                .context("peer cwd record")?,
-        )?;
-        assert_eq!(opened["cwd"], lease.path);
+        let opened = fixture.business_sessions()?;
+        assert_eq!(opened.len(), 1, "one actual business worktree open");
+        assert_eq!(opened[0]["cwd"], lease.path);
         let closed = fixture
             .runtime
             .close_acp_session(open.target.clone())
@@ -1457,7 +1453,7 @@ mod tests {
             1
         );
         assert_eq!(
-            methods
+            std::fs::read_to_string(fixture.home.path().join("business-calls"))?
                 .lines()
                 .filter(|method| *method == "session/new")
                 .count(),
@@ -1744,7 +1740,7 @@ mod tests {
             panic!("ACP reference");
         };
         assert_eq!(reference.acp_session_id, "remote-one");
-        let methods = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+        let methods = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
         assert_eq!(
             methods
                 .lines()
@@ -1859,7 +1855,7 @@ mod tests {
                         .local_complete
                 );
             }
-            let calls = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+            let calls = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
             assert_eq!(
                 calls.lines().filter(|line| *line == "session/new").count(),
                 1
@@ -2259,7 +2255,7 @@ mod tests {
             .store
             .session_paths(&fixture.workspace.id, &root.agent.thread_id)?;
         assert!(!acp_paths.session_manifest().exists());
-        let calls = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+        let calls = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
         assert_eq!(
             calls.lines().filter(|line| *line == "session/new").count(),
             1
@@ -2380,7 +2376,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let calls = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+        let calls = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
         assert_eq!(
             calls
                 .lines()

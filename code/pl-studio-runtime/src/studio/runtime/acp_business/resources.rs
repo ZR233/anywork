@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::studio::WorkspaceUsageLease;
-use crate::studio::runtime::acp_auth::AccountConnection;
+use crate::studio::runtime::acp_accounts::AccountConnection;
 use crate::studio::runtime::acp_host_mcp::HostMcp;
 
 /// A thin delivery into the original parent's inbox, bound by the Session owner.

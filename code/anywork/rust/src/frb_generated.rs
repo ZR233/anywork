@@ -10358,6 +10358,8 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         let mut var_accountId = <String>::sse_decode(deserializer);
         let mut var_connectionRevision = <u64>::sse_decode(deserializer);
+        let mut var_connection =
+            <crate::api::studio::types::acp::BridgeAcpConnectionState>::sse_decode(deserializer);
         let mut var_state =
             <crate::api::studio::types::acp::BridgeAcpAuthState>::sse_decode(deserializer);
         let mut var_usage =
@@ -10370,6 +10372,7 @@ impl SseDecode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
         return crate::api::studio::types::acp::BridgeAcpAuthAccount {
             account_id: var_accountId,
             connection_revision: var_connectionRevision,
+            connection: var_connection,
             state: var_state,
             usage: var_usage,
             active_operation: var_activeOperation,
@@ -11045,6 +11048,52 @@ impl SseDecode for crate::api::studio::types::acp_business::BridgeAcpConfigureRe
             config_id: var_configId,
             value: var_value,
         };
+    }
+}
+
+impl SseDecode for crate::api::studio::types::acp::BridgeAcpConnectionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut tag_ = <i32>::sse_decode(deserializer);
+        match tag_ {
+            0 => {
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Stopped;
+            }
+            1 => {
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Starting;
+            }
+            2 => {
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Ready;
+            }
+            3 => {
+                let mut var_attempt = <u32>::sse_decode(deserializer);
+                let mut var_nextRetryAt = <i64>::sse_decode(deserializer);
+                let mut var_failure =
+                    <crate::api::studio::types::acp::BridgeAcpAuthFailure>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Retrying {
+                    attempt: var_attempt,
+                    next_retry_at: var_nextRetryAt,
+                    failure: var_failure,
+                };
+            }
+            4 => {
+                let mut var_failure =
+                    <crate::api::studio::types::acp::BridgeAcpAuthFailure>::sse_decode(
+                        deserializer,
+                    );
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Blocked {
+                    failure: var_failure,
+                };
+            }
+            5 => {
+                return crate::api::studio::types::acp::BridgeAcpConnectionState::Stopping;
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 
@@ -30134,6 +30183,7 @@ impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcp
         [
             self.account_id.into_into_dart().into_dart(),
             self.connection_revision.into_into_dart().into_dart(),
+            self.connection.into_into_dart().into_dart(),
             self.state.into_into_dart().into_dart(),
             self.usage.into_into_dart().into_dart(),
             self.active_operation.into_into_dart().into_dart(),
@@ -30932,6 +30982,53 @@ impl
     > for crate::api::studio::types::acp_business::BridgeAcpConfigureRequest
 {
     fn into_into_dart(self) -> crate::api::studio::types::acp_business::BridgeAcpConfigureRequest {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart for crate::api::studio::types::acp::BridgeAcpConnectionState {
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Stopped => {
+                [0.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Starting => {
+                [1.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Ready => {
+                [2.into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Retrying {
+                attempt,
+                next_retry_at,
+                failure,
+            } => [
+                3.into_dart(),
+                attempt.into_into_dart().into_dart(),
+                next_retry_at.into_into_dart().into_dart(),
+                failure.into_into_dart().into_dart(),
+            ]
+            .into_dart(),
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Blocked { failure } => {
+                [4.into_dart(), failure.into_into_dart().into_dart()].into_dart()
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Stopping => {
+                [5.into_dart()].into_dart()
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::acp::BridgeAcpConnectionState
+{
+}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::studio::types::acp::BridgeAcpConnectionState>
+    for crate::api::studio::types::acp::BridgeAcpConnectionState
+{
+    fn into_into_dart(self) -> crate::api::studio::types::acp::BridgeAcpConnectionState {
         self
     }
 }
@@ -48860,6 +48957,10 @@ impl SseEncode for crate::api::studio::types::acp::BridgeAcpAuthAccount {
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <String>::sse_encode(self.account_id, serializer);
         <u64>::sse_encode(self.connection_revision, serializer);
+        <crate::api::studio::types::acp::BridgeAcpConnectionState>::sse_encode(
+            self.connection,
+            serializer,
+        );
         <crate::api::studio::types::acp::BridgeAcpAuthState>::sse_encode(self.state, serializer);
         <Option<crate::api::studio::types::acp::BridgeAcpUsageObservation>>::sse_encode(
             self.usage, serializer,
@@ -49426,6 +49527,47 @@ impl SseEncode for crate::api::studio::types::acp_business::BridgeAcpConfigureRe
         <crate::api::studio::types::acp_business::BridgeAcpConfigValue>::sse_encode(
             self.value, serializer,
         );
+    }
+}
+
+impl SseEncode for crate::api::studio::types::acp::BridgeAcpConnectionState {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        match self {
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Stopped => {
+                <i32>::sse_encode(0, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Starting => {
+                <i32>::sse_encode(1, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Ready => {
+                <i32>::sse_encode(2, serializer);
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Retrying {
+                attempt,
+                next_retry_at,
+                failure,
+            } => {
+                <i32>::sse_encode(3, serializer);
+                <u32>::sse_encode(attempt, serializer);
+                <i64>::sse_encode(next_retry_at, serializer);
+                <crate::api::studio::types::acp::BridgeAcpAuthFailure>::sse_encode(
+                    failure, serializer,
+                );
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Blocked { failure } => {
+                <i32>::sse_encode(4, serializer);
+                <crate::api::studio::types::acp::BridgeAcpAuthFailure>::sse_encode(
+                    failure, serializer,
+                );
+            }
+            crate::api::studio::types::acp::BridgeAcpConnectionState::Stopping => {
+                <i32>::sse_encode(5, serializer);
+            }
+            _ => {
+                unimplemented!("");
+            }
+        }
     }
 }
 

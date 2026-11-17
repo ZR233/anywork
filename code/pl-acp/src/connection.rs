@@ -614,7 +614,11 @@ mod tests {
                 auth::AuthRequest {
                     probe_cwd: "/probe".into(),
                     expected_server_version: None,
-                    action: auth::AuthAction::QueryUsage,
+                    action: auth::AuthAction::Probe(crate::auth::ProbeRequest {
+                        prompt: "/usage".into(),
+                        budget: std::time::Duration::from_secs(60),
+                        max_bytes: 256 * 1024,
+                    }),
                     commands,
                     cleanup: CleanupBudget::new(Duration::from_secs(2)),
                     cancellation: cancel.clone(),

@@ -13,6 +13,9 @@ class AppLocalizationsZh extends AppLocalizations {
   AppLocalizationsZh([String locale = 'zh']) : super(locale);
 
   @override
+  String get acpConnectionReconnecting => '重连中';
+
+  @override
   String get studioFailureConversationResyncRequired => '会话内容需要重新同步，请重试。';
 
   @override

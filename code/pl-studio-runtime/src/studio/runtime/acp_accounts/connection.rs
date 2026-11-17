@@ -9,16 +9,16 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::admission::AcpAuthRuntime;
+use super::admission::AcpAccountRuntime;
 use super::mapping::AcpFailure;
 use super::mapping::{prepare_failure, prepare_probe_dir};
-use super::registry::AcpAuthInner;
+use super::registry::AcpAccountInner;
 use crate::config::AcpServiceDefinition;
 use crate::studio::runtime::acp_business::AcpResources;
 use crate::studio::runtime::acp_worker::{
     AcpSpawnError, AcpSpawnRequest, AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim,
 };
-use crate::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, StartAcpAuthRequest};
+use crate::{AcpAuthFailureCode, AcpAuthStage, AcpConnectionState};
 
 #[derive(Clone)]
 pub(crate) struct PreparedConnection {
@@ -28,8 +28,8 @@ pub(crate) struct PreparedConnection {
 }
 
 pub(crate) struct AccountConnection {
-    account_id: String,
-    revision: u64,
+    pub(super) account_id: String,
+    pub(super) revision: u64,
     cancel: CancellationToken,
     pub(super) cleanup: pl_acp::auth::CleanupBudget,
     ready: watch::Receiver<Option<Result<PreparedConnection, AcpFailure>>>,
@@ -39,8 +39,11 @@ pub(crate) struct AccountConnection {
     mcp_source: crate::host_mcp_assets::HostMcpSource,
     frontend: tokio::sync::Mutex<Frontend>,
     join: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    settled: AtomicBool,
-    supervisor_finished: AtomicBool,
+    pub(super) settled: AtomicBool,
+    pub(super) supervisor_finished: AtomicBool,
+    pub(super) failure: Mutex<Option<AcpFailure>>,
+    pub(super) initialized_at: Mutex<Option<tokio::time::Instant>>,
+    pub(super) launch_now: tokio::sync::Notify,
     retirement_wake: Arc<tokio::sync::Notify>,
     issue: Mutex<Option<String>>,
     retry: tokio::sync::Notify,
@@ -224,91 +227,7 @@ fn closed_failure() -> AcpFailure {
     }
 }
 
-impl AcpAuthRuntime {
-    pub(super) fn start_retirement_driver(&self) {
-        let weak = Arc::downgrade(&self.inner);
-        let wake = self.inner.retirement_wake.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                let notified = wake.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                let Some(inner) = weak.upgrade() else {
-                    return;
-                };
-                let candidates: Vec<_> = inner
-                    .lock()
-                    .retiring
-                    .iter()
-                    .filter(|account| account.supervisor_finished.load(Ordering::Acquire))
-                    .cloned()
-                    .collect();
-                for account in candidates {
-                    let result = account.wait().await;
-                    // A supervisor panic is joined but does not prove physical reclamation.
-                    // Keep such an owner, and all still-pending cleanup, in the original registry.
-                    if account.settled.load(Ordering::Acquire) {
-                        let mut registry = inner.lock();
-                        registry
-                            .retiring
-                            .retain(|entry| !Arc::ptr_eq(entry, &account));
-                        if let Err(error) = result {
-                            registry.retirement_issue = Some(
-                                format!(
-                                    "ACP retired account {} cleanup failed: {error}",
-                                    account.account_id
-                                )
-                                .chars()
-                                .take(2048)
-                                .collect(),
-                            );
-                        }
-                    }
-                }
-                let done = {
-                    let registry = inner.lock();
-                    registry.closed
-                        && registry
-                            .retiring
-                            .iter()
-                            .all(|account| account.supervisor_finished.load(Ordering::Acquire))
-                };
-                drop(inner);
-                if done {
-                    return;
-                }
-                notified.await;
-            }
-        });
-        *self
-            .inner
-            .retirement_join
-            .try_lock()
-            .expect("new retirement owner") = Some(task);
-    }
-
-    pub(super) async fn join_retirement_driver(
-        &self,
-        deadline: tokio::time::Instant,
-    ) -> Result<()> {
-        self.inner.retirement_wake.notify_one();
-        tokio::time::timeout_at(deadline, async {
-            let mut join = self.inner.retirement_join.lock().await;
-            let result = match join.as_mut() {
-                Some(task) => task.await.map_err(anyhow::Error::from),
-                None => Ok(()),
-            };
-            join.take();
-            if result.is_err() {
-                self.inner.lock().retirement_issue =
-                    Some("ACP retirement driver join failed".into());
-            }
-            result
-        })
-        .await
-        .map_err(|_| anyhow::anyhow!("ACP retiring connections remain pending"))?
-    }
-
+impl AcpAccountRuntime {
     pub(crate) fn connection(
         &self,
         definition: &AcpServiceDefinition,
@@ -335,6 +254,7 @@ impl AcpAuthRuntime {
                 !slot.retired && slot.revision == entry.connection_revision,
                 "ACP account is stale"
             );
+            let start_at = slot.lifecycle.retry_at;
             if let Some(connection) = slot.connection.as_ref() {
                 if !connection.is_closing() && connection.revision == entry.connection_revision {
                     return Ok(connection.clone());
@@ -374,6 +294,9 @@ impl AcpAuthRuntime {
                 join: tokio::sync::Mutex::new(None),
                 settled: AtomicBool::new(false),
                 supervisor_finished: AtomicBool::new(false),
+                failure: Mutex::new(None),
+                initialized_at: Mutex::new(None),
+                launch_now: tokio::sync::Notify::new(),
                 retirement_wake: inner.retirement_wake.clone(),
                 issue: Mutex::new(None),
                 retry: tokio::sync::Notify::new(),
@@ -393,6 +316,7 @@ impl AcpAuthRuntime {
                     run_account.clone(),
                     run_definition,
                     previous,
+                    start_at,
                     publish,
                 ))
                 .catch_unwind()
@@ -425,51 +349,14 @@ impl AcpAuthRuntime {
             )
             .collect()
     }
-
-    pub(super) fn background_prepare(
-        &self,
-        revision: u64,
-        snapshot: &crate::config::AcpDefinitionsSnapshot,
-    ) {
-        let requests = {
-            let mut registry = self.inner.lock();
-            if registry.closed {
-                return;
-            }
-            snapshot
-                .definitions
-                .iter()
-                .filter_map(|(id, entry)| {
-                    let slot = registry.slots.get_mut(id)?;
-                    if !entry.definition.enabled
-                        || entry.definition.template_kind().is_none()
-                        || slot.background_scheduled
-                        || slot.operation.is_some()
-                    {
-                        return None;
-                    }
-                    slot.background_scheduled = true;
-                    Some(StartAcpAuthRequest {
-                        account_id: id.clone(),
-                        expected_connection_revision: entry.connection_revision,
-                        operation_id: format!("background-{}", uuid::Uuid::new_v4()),
-                        action: AcpAuthAction::Check,
-                    })
-                })
-                .collect::<Vec<_>>()
-        };
-        // start only registers the original operation; all filesystem and process work is async.
-        for request in requests {
-            let _ = AcpAuthInner::admit(self.inner.clone(), revision, snapshot, request);
-        }
-    }
 }
 
 async fn supervise(
-    inner: Arc<AcpAuthInner>,
+    inner: Arc<AcpAccountInner>,
     account: Arc<AccountConnection>,
     definition: AcpServiceDefinition,
     previous: Vec<Arc<AccountConnection>>,
+    start_at: Option<tokio::time::Instant>,
     publish: watch::Sender<Option<Result<PreparedConnection, AcpFailure>>>,
 ) {
     for predecessor in previous {
@@ -481,10 +368,28 @@ async fn supervise(
             return;
         }
     }
+    if let Some(start_at) = start_at {
+        tokio::select! {
+            biased;
+            () = account.cancel.cancelled() => {},
+            () = account.launch_now.notified() => {},
+            () = tokio::time::sleep_until(start_at) => {},
+        }
+    }
+    if account.cancel.is_cancelled() {
+        publish.send_replace(Some(Err(closed_failure())));
+        account.settled.store(true, Ordering::Release);
+        return;
+    }
+    inner.connection_state(&account, AcpConnectionState::Starting);
     let launched = spawn_process(&inner, &account.account_id, &definition, &account.cancel).await;
     let (mut worker, probe_dir, expected_version) = match launched {
         Ok(value) => value,
         Err(error) => {
+            *account
+                .failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(error.clone());
             publish.send_replace(Some(Err(error)));
             account.cancel.cancel();
             account.settled.store(true, Ordering::Release);
@@ -510,15 +415,38 @@ async fn supervise(
             probe_dir,
             expected_version,
         })));
-        let sdk_result = tokio::select! {
-            biased;
-            () = account.cancel.cancelled() => { protocol.cancel(); sdk.await }
-            result = &mut sdk => result,
-            exited = worker.observe_exit() => {
-                if let Err(error) = exited { *account.issue.lock().unwrap_or_else(PoisonError::into_inner) = Some(error); }
-                // Root exit is observable even if descendants still hold stdout/stderr open.
-                account.signal_cancel();
-                sdk.await
+        let mut initialized = false;
+        let sdk_result = loop {
+            tokio::select! {
+                biased;
+                () = account.cancel.cancelled() => {
+                    inner.connection_state(&account, AcpConnectionState::Stopping);
+                    protocol.cancel();
+                    break sdk.await;
+                }
+                result = protocol.initialized(), if !initialized => {
+                    initialized = true;
+                    match result {
+                        Ok(_) => {
+                            *account.initialized_at.lock().unwrap_or_else(PoisonError::into_inner) = Some(tokio::time::Instant::now());
+                            inner.connection_state(&account, AcpConnectionState::Ready);
+                        }
+                        Err(error) => {
+                            *account.failure.lock().unwrap_or_else(PoisonError::into_inner) = Some(super::mapping::map_auth_error(&pl_acp::auth::AuthError::from_connection(error)));
+                        }
+                    }
+                }
+                result = &mut sdk => {
+                    inner.connection_state(&account, AcpConnectionState::Stopping);
+                    break result;
+                }
+                _exited = worker.observe_exit() => {
+                    // Root exit is observable even when descendants keep stdio open. Reclaim
+                    // below remains the authority for process wait / cleanup errors.
+                    inner.connection_state(&account, AcpConnectionState::Stopping);
+                    account.signal_cancel();
+                    break sdk.await;
+                }
             }
         };
         match sdk_result {
@@ -527,8 +455,15 @@ async fn supervise(
                     *account.issue.lock().unwrap_or_else(PoisonError::into_inner) =
                         Some("ACP SDK cleanup exceeded its original budget".into());
                 } else if let Err(error) = exit.result {
-                    *account.issue.lock().unwrap_or_else(PoisonError::into_inner) =
-                        Some(error.to_string());
+                    account
+                        .failure
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .get_or_insert_with(|| {
+                            super::mapping::map_auth_error(
+                                &pl_acp::auth::AuthError::from_connection(error),
+                            )
+                        });
                 }
             }
             Err(error) => {
@@ -562,6 +497,17 @@ async fn supervise(
             }
             Reclaim::Pending(issue) => {
                 *account.issue.lock().unwrap_or_else(PoisonError::into_inner) = Some(issue);
+                inner.connection_state(
+                    &account,
+                    AcpConnectionState::Blocked {
+                        failure: AcpFailure {
+                            code: AcpAuthFailureCode::Cleanup,
+                            stage: AcpAuthStage::Cleanup,
+                            retryable: true,
+                        }
+                        .failure(),
+                    },
+                );
                 account.retry.notified().await;
             }
         }
@@ -584,6 +530,17 @@ async fn supervise(
         if !pending {
             break;
         }
+        inner.connection_state(
+            &account,
+            AcpConnectionState::Blocked {
+                failure: AcpFailure {
+                    code: AcpAuthFailureCode::Cleanup,
+                    stage: AcpAuthStage::Cleanup,
+                    retryable: true,
+                }
+                .failure(),
+            },
+        );
         account.retry.notified().await;
     }
     account
@@ -597,7 +554,7 @@ async fn supervise(
 
 /// 准备探测目录并启动已验证的官方程序；失败时映射为类型化阶段错误。
 pub(super) async fn spawn_process(
-    inner: &Arc<AcpAuthInner>,
+    inner: &Arc<AcpAccountInner>,
     account_id: &str,
     definition: &crate::config::AcpServiceDefinition,
     cancellation: &tokio_util::sync::CancellationToken,
@@ -753,7 +710,8 @@ mod tests {
     async fn retired(runtime: &StudioRuntime, old: &std::sync::Weak<AccountConnection>) {
         tokio::time::timeout(Duration::from_secs(15), async {
             loop {
-                if runtime.acp_auth.inner.lock().retiring.is_empty() && old.upgrade().is_none() {
+                if runtime.acp_accounts.inner.lock().retiring.is_empty() && old.upgrade().is_none()
+                {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -970,7 +928,7 @@ mod tests {
                     .read_acp_definitions()
                     .definitions["business-peer"]
                     .clone();
-                let account = fixture.runtime.acp_auth.connection(&entry.definition)?;
+                let account = fixture.runtime.acp_accounts.connection(&entry.definition)?;
                 let weak = Arc::downgrade(&account);
                 drop(account);
                 if generation == 4 {
@@ -1038,7 +996,10 @@ mod tests {
             // JoinHandle, never these flags alone, is proof that it is safe to deregister.
             settled: AtomicBool::new(true),
             supervisor_finished: AtomicBool::new(true),
-            retirement_wake: runtime.acp_auth.inner.retirement_wake.clone(),
+            failure: Mutex::new(None),
+            initialized_at: Mutex::new(None),
+            launch_now: tokio::sync::Notify::new(),
+            retirement_wake: runtime.acp_accounts.inner.retirement_wake.clone(),
             issue: Mutex::new(None),
             retry: tokio::sync::Notify::new(),
         });
@@ -1072,12 +1033,17 @@ mod tests {
             );
             fixture
                 .runtime
-                .acp_auth
+                .acp_accounts
                 .inner
                 .lock()
                 .retiring
                 .push(account.clone());
-            fixture.runtime.acp_auth.inner.retirement_wake.notify_one();
+            fixture
+                .runtime
+                .acp_accounts
+                .inner
+                .retirement_wake
+                .notify_one();
             tokio::time::timeout(Duration::from_secs(5), async {
                 while account.join.try_lock().is_ok() {
                     tokio::task::yield_now().await;
@@ -1085,7 +1051,7 @@ mod tests {
             })
             .await?;
             assert_eq!(
-                fixture.runtime.acp_auth.inner.lock().retiring.len(),
+                fixture.runtime.acp_accounts.inner.lock().retiring.len(),
                 1,
                 "even settled flags cannot discard a pending join"
             );
@@ -1108,11 +1074,22 @@ mod tests {
                 *account.issue.lock().unwrap() =
                     Some(format!("failure-{index}:{}", "x".repeat(8192)));
                 let weak = Arc::downgrade(&account);
-                fixture.runtime.acp_auth.inner.lock().retiring.push(account);
-                fixture.runtime.acp_auth.inner.retirement_wake.notify_one();
+                fixture
+                    .runtime
+                    .acp_accounts
+                    .inner
+                    .lock()
+                    .retiring
+                    .push(account);
+                fixture
+                    .runtime
+                    .acp_accounts
+                    .inner
+                    .retirement_wake
+                    .notify_one();
                 release.send(()).unwrap();
                 retired(&fixture.runtime, &weak).await;
-                let registry = fixture.runtime.acp_auth.inner.lock();
+                let registry = fixture.runtime.acp_accounts.inner.lock();
                 let issue = registry
                     .retirement_issue
                     .as_ref()
@@ -1141,7 +1118,7 @@ mod tests {
         assert!(
             fixture
                 .runtime
-                .acp_auth
+                .acp_accounts
                 .inner
                 .retirement_join
                 .lock()
@@ -1156,16 +1133,6 @@ mod tests {
     {
         let fixture = Fixture::new("replay").await?;
         with_cleanup(&fixture.runtime, async {
-            assert!(
-                !fixture.home.path().join("spawns").exists(),
-                "ordinary command is lazy"
-            );
-            fixture.runtime.start_acp_auth(StartAcpAuthRequest {
-                operation_id: "first-check".into(),
-                account_id: "business-peer".into(),
-                expected_connection_revision: fixture.revision,
-                action: AcpAuthAction::Check,
-            })?;
             auth_state(&fixture.runtime, "business-peer", |account| {
                 account.active_operation.is_none()
                     && matches!(account.state, AcpAuthState::Verified { .. })
@@ -1357,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn acp_template_background_prepare_is_shared_nonblocking_and_never_autoauthenticates()
     -> Result<()> {
-        let fixture = Fixture::new("initialize-hold").await?;
+        let fixture = Fixture::disabled("initialize-hold").await?;
         with_cleanup(&fixture.runtime, async {
             let script = format!("#!/usr/bin/python3\n{}", crate::acp_transport_fixture::PEER);
             crate::studio::runtime::acp_install::seed_synthetic_install(
@@ -1371,6 +1338,7 @@ mod tests {
                 .definitions["business-peer"]
                 .clone();
             let mut definition = entry.definition;
+            definition.enabled = true;
             definition.launch =
                 crate::config::AcpLaunch::Template(crate::config::AcpProvider::Antigravity);
             // Config returns while initialize is still deliberately held by the peer.
@@ -1380,8 +1348,8 @@ mod tests {
                 Some(entry.document_revision),
             )?;
             marker(&fixture.home.path().join("initializing")).await;
-            let one = fixture.runtime.acp_auth.connection(&definition)?;
-            let two = fixture.runtime.acp_auth.connection(&definition)?;
+            let one = fixture.runtime.acp_accounts.connection(&definition)?;
+            let two = fixture.runtime.acp_accounts.connection(&definition)?;
             assert!(Arc::ptr_eq(&one, &two));
             let waiter = tokio::spawn(async move { two.prepared().await });
             tokio::task::yield_now().await;
@@ -1518,7 +1486,7 @@ mod tests {
                 .read_acp_definitions()
                 .definitions["business-peer"]
                 .clone();
-            let first_owner = fixture.runtime.acp_auth.connection(&entry.definition)?;
+            let first_owner = fixture.runtime.acp_accounts.connection(&entry.definition)?;
             let other_root = fixture.home.path().join("other-peer");
             std::fs::create_dir(&other_root)?;
             std::fs::write(other_root.join("mode"), "replay")?;
@@ -1607,6 +1575,232 @@ mod tests {
         })
         .await
     }
+    #[tokio::test]
+    async fn generic_background_connection_restarts_without_replaying_sessions_or_prompts()
+    -> Result<()> {
+        let fixture = Fixture::new("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Ready)
+                    && matches!(account.state, AcpAuthState::Verified { .. })
+                    && account.active_operation.is_none()
+            })
+            .await;
+            assert!(
+                fixture
+                    .runtime
+                    .acp_accounts
+                    .inner
+                    .lock()
+                    .accepted
+                    .is_empty()
+            );
+            let first_pid = fixture.pid("pid")?;
+            let mut first = fixture.open().await?;
+            Fixture::ready(&mut first).await?;
+            first.completion.wait().await?;
+            let mut second = fixture.open().await?;
+            Fixture::ready(&mut second).await?;
+            second.completion.wait().await?;
+            assert_eq!(fixture.pid("pid")?, first_pid);
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                1
+            );
+            assert!(
+                std::process::Command::new("/bin/kill")
+                    .args(["-KILL", &first_pid.to_string()])
+                    .status()?
+                    .success()
+            );
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(
+                    account.connection,
+                    AcpConnectionState::Retrying { attempt: 1, .. }
+                )
+            })
+            .await;
+            assert!(
+                !std::path::Path::new(&format!("/proc/{first_pid}")).exists(),
+                "old process must be reaped before reconnect is scheduled"
+            );
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Ready)
+                    && matches!(account.state, AcpAuthState::Verified { .. })
+                    && account.active_operation.is_none()
+            })
+            .await;
+            let next_pid = fixture.pid("pid")?;
+            assert_ne!(next_pid, first_pid);
+            assert!(
+                fixture
+                    .runtime
+                    .acp_accounts
+                    .inner
+                    .lock()
+                    .accepted
+                    .is_empty(),
+                "background reconnects do not consume command dedup identities"
+            );
+            assert!(
+                fixture
+                    .runtime
+                    .prompt_acp_session(
+                        first.target,
+                        vec![pl_acp::session::schema::ContentBlock::Text(
+                            pl_acp::session::schema::TextContent::new("must not replay")
+                        )]
+                    )
+                    .await
+                    .is_err()
+            );
+            let mut next = fixture.open().await?;
+            Fixture::ready(&mut next).await?;
+            next.completion.wait().await?;
+            let calls = std::fs::read_to_string(fixture.home.path().join("calls"))?;
+            assert_eq!(
+                calls.lines().filter(|line| *line == "initialize").count(),
+                2
+            );
+            assert!(!calls.lines().any(|line| line == "session/prompt"));
+            assert_eq!(fixture.pid("pid")?, next_pid);
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                2
+            );
+            for (stable, expected_attempt) in [(false, 2), (true, 1)] {
+                let old_pid = fixture.pid("pid")?;
+                tokio::time::pause();
+                tokio::time::advance(Duration::from_secs(if stable { 60 } else { 59 })).await;
+                tokio::time::resume();
+                if !stable {
+                    // Inject the observed stop boundary before a delayed physical exit.
+                    // Cleanup crossing 60 seconds must not reset this short-lived instance.
+                    let account = fixture.runtime.acp_accounts.inner.lock().slots["business-peer"]
+                        .connection
+                        .as_ref()
+                        .expect("ready account")
+                        .clone();
+                    fixture
+                        .runtime
+                        .acp_accounts
+                        .inner
+                        .connection_state(&account, AcpConnectionState::Stopping);
+                    tokio::time::pause();
+                    tokio::time::advance(Duration::from_secs(10)).await;
+                    tokio::time::resume();
+                }
+                assert!(
+                    std::process::Command::new("/bin/kill")
+                        .args(["-KILL", &old_pid.to_string()])
+                        .status()?
+                        .success()
+                );
+                auth_state(&fixture.runtime, "business-peer", |account| {
+                    matches!(account.connection, AcpConnectionState::Retrying { attempt, .. }
+                        if attempt == expected_attempt)
+                })
+                .await;
+                assert!(!std::path::Path::new(&format!("/proc/{old_pid}")).exists());
+                auth_state(&fixture.runtime, "business-peer", |account| {
+                    matches!(account.connection, AcpConnectionState::Ready)
+                        && matches!(account.state, AcpAuthState::Verified { .. })
+                        && account.active_operation.is_none()
+                })
+                .await;
+                assert_ne!(fixture.pid("pid")?, old_pid);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn disabling_during_reconnect_cancels_the_original_deadline() -> Result<()> {
+        let fixture = Fixture::new("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.state, AcpAuthState::Verified { .. })
+                    && account.active_operation.is_none()
+            })
+            .await;
+            let pid = fixture.pid("pid")?;
+            assert!(
+                std::process::Command::new("/bin/kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status()?
+                    .success()
+            );
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Retrying { .. })
+            })
+            .await;
+            let entry = fixture
+                .runtime
+                .config_runtime
+                .read_acp_definitions()
+                .definitions["business-peer"]
+                .clone();
+            let mut disabled = entry.definition;
+            disabled.enabled = false;
+            tokio::time::pause();
+            let saved = fixture.runtime.config_runtime.save_acp_definition(
+                fixture.runtime.config_runtime.read()?.revision,
+                &disabled,
+                Some(entry.document_revision),
+            );
+            tokio::time::advance(Duration::from_secs(120)).await;
+            tokio::time::resume();
+            saved?;
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(account.connection, AcpConnectionState::Stopped)
+                    && account.active_operation.is_none()
+            })
+            .await;
+            assert_eq!(
+                std::fs::read_to_string(fixture.home.path().join("spawns"))?
+                    .lines()
+                    .count(),
+                1
+            );
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+            Ok(())
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn invalid_enabled_command_is_blocked_without_retry_or_command_ledger_growth()
+    -> Result<()> {
+        let fixture = Fixture::disabled("replay").await?;
+        with_cleanup(&fixture.runtime, async {
+            let entry = fixture.runtime.config_runtime.read_acp_definitions().definitions["business-peer"].clone();
+            let mut invalid = entry.definition;
+            invalid.enabled = true;
+            invalid.launch = crate::config::AcpLaunch::Command {
+                command: fixture.home.path().join("missing-executable").to_string_lossy().into_owned(), args: vec![],
+            };
+            fixture.runtime.config_runtime.save_acp_definition(
+                fixture.runtime.config_runtime.read()?.revision, &invalid, Some(entry.document_revision),
+            )?;
+            auth_state(&fixture.runtime, "business-peer", |account| {
+                matches!(&account.connection, AcpConnectionState::Blocked { failure } if failure.code == AcpAuthFailureCode::MissingExecutable)
+                    && account.active_operation.is_none()
+            }).await;
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(120)).await;
+            tokio::time::resume();
+            assert!(!fixture.home.path().join("spawns").exists());
+            assert!(fixture.runtime.acp_accounts.inner.lock().accepted.is_empty());
+            assert!(fixture.runtime.acp_accounts.inner.lock().slots["business-peer"].lifecycle.retry_at.is_none());
+            Ok(())
+        }).await
+    }
+
     #[tokio::test]
     async fn acp_business_observer_is_delivered_before_slow_shared_initialize() -> Result<()> {
         let fixture = Fixture::new("initialize-hold").await?;

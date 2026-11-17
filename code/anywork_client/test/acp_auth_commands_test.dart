@@ -161,6 +161,7 @@ final class _AcpTransport extends AccountsTestTransport {
     final failure = startFailure;
     if (failure != null) throw failure;
     authAccounts[accountId] = AcpAuthAccountView(
+      connection: const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: expectedConnectionRevision,
       state: AcpCheckingState(operationId: operationId.value),
@@ -210,6 +211,7 @@ final class _AcpTransport extends AccountsTestTransport {
     lastMethod = methodId;
     lastContinueTarget = targetOperationId;
     authAccounts[accountId] = AcpAuthAccountView(
+      connection: const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: expectedConnectionRevision,
       state: AcpAuthenticatingState(
@@ -249,6 +251,7 @@ final class _AcpTransport extends AccountsTestTransport {
     // revision 在真正完成时分配，模拟运行期按提交顺序发布。
     final revision = cancelRevision++;
     authAccounts[accountId] = AcpAuthAccountView(
+      connection: const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: cancelConnectionRevisions[accountId] ?? 7,
       state: const AcpCancelledState(),
@@ -743,6 +746,7 @@ void main() {
           updatedAt: 10,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpUncheckedState(),
@@ -763,6 +767,7 @@ void main() {
           updatedAt: 12,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpCheckingState(operationId: 'op-1'),
@@ -783,6 +788,7 @@ void main() {
           updatedAt: 11,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpUncheckedState(),
@@ -809,6 +815,7 @@ void main() {
           updatedAt: 10,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(
@@ -937,6 +944,7 @@ void main() {
         updatedAt: 2,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpVerifiedState(checkedAt: 2, server: null),
@@ -964,11 +972,13 @@ void main() {
         updatedAt: 4,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpVerifiedState(checkedAt: 4, server: null),
           ),
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-2',
             connectionRevision: 9,
             state: AcpClosingState(operationId: 'op-old', failure: null),
@@ -1009,6 +1019,7 @@ void main() {
           updatedAt: 2,
           accounts: const [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpRequiredState(
@@ -1087,6 +1098,7 @@ void main() {
           updatedAt: 2,
           accounts: const [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 2, server: null),
@@ -1117,6 +1129,7 @@ void main() {
           updatedAt: 300,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 6,
               state: AcpAuthenticatingState(
@@ -1160,6 +1173,7 @@ void main() {
           updatedAt: 200,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpCancelledState(),
@@ -1190,6 +1204,7 @@ void main() {
         updatedAt: 40,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpClosingState(
@@ -1233,6 +1248,7 @@ void main() {
           updatedAt: 2,
           accounts: const [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 2, server: null),
@@ -1246,6 +1262,7 @@ void main() {
         updatedAt: 50,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpAuthenticatingState(
@@ -1324,6 +1341,7 @@ void main() {
           updatedAt: 30,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 5,
               state: AcpAuthenticatingState(
@@ -1332,6 +1350,7 @@ void main() {
               ),
             ),
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-2',
               connectionRevision: 9,
               state: AcpAuthenticatingState(
@@ -1410,6 +1429,7 @@ void main() {
           updatedAt: 200,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpClosingState(operationId: 'op-old'),
@@ -1427,6 +1447,7 @@ void main() {
           updatedAt: 201,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpUncheckedState(),

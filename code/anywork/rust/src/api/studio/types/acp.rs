@@ -179,9 +179,26 @@ pub enum BridgeAcpAuthState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BridgeAcpConnectionState {
+    Stopped,
+    Starting,
+    Ready,
+    Retrying {
+        attempt: u32,
+        next_retry_at: i64,
+        failure: BridgeAcpAuthFailure,
+    },
+    Blocked {
+        failure: BridgeAcpAuthFailure,
+    },
+    Stopping,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BridgeAcpAuthAccount {
     pub account_id: String,
     pub connection_revision: u64,
+    pub connection: BridgeAcpConnectionState,
     pub state: BridgeAcpAuthState,
     pub usage: Option<BridgeAcpUsageObservation>,
     /// 当前操作槽位上的进行中操作；由 owner 与 state 同一提交边界投影。

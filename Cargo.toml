@@ -45,11 +45,10 @@ edition = "2024"
 license = "Apache-2.0"
 
 [workspace.dependencies]
-mlua = { version = "=0.12.2", features = ["lua54", "vendored", "async", "serde", "send"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "async", "serde", "send"] }
 pl-tool-lua = { path = "code/tools/lua" }
-criterion = { version = "=0.8.2", features = ["async_tokio"] }
-agent-client-protocol = { version = "=5.1.0", default-features = false }
-agent-client-protocol-schema = { version = "=1.16.0", default-features = false }
+criterion = { version = "0.8.2", features = ["async_tokio"] }
+agent-client-protocol = { version = "5.1.0", default-features = false }
 percent-encoding = "2.3.2"
 procfs = { version = "0.18.0", default-features = false }
 tokio = { version = "1.54.1", features = ["full"] }
@@ -68,9 +67,9 @@ proc-macro-crate = "3.5.0"
 encoding_rs = "0.8.44"
 prost = "0.14.4"
 flate2 = "1"
-schemars = "=1.2.3"
+schemars = "1.2.3"
 serde_norway = "0.9"
-rust-embed = { version = "=8.13.0", features = [
+rust-embed = { version = "8.13.0", features = [
     "compression",
     "debug-embed",
     "deterministic-timestamps",
@@ -94,7 +93,7 @@ dirs = "7"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 reqwest = { version = "0.13", features = ["json", "stream"] }
 downlowd = "0.1.6"
-rawzip = "=0.5.2"
+rawzip = "0.5.2"
 hyper = { version = "1.12.0", default-features = false }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio"] }
 h2 = "0.4.20"
@@ -102,22 +101,22 @@ http = "1.5"
 bytes = "1.12"
 getrandom = "0.4"
 sse-stream = "0.3.0"
-# rmcp 3.9 exposes 0.2 event/error types; decoding uses the current parser.
+# rmcp exposes 0.2 event/error types; decoding uses the current parser.
 sse-stream-rmcp = { package = "sse-stream", version = "0.2.6" }
 eventsource-stream = "0.2.3"
-enum_dispatch = "=0.3.13"
+enum_dispatch = "0.3.13"
 secrecy = "0.10"
 axum = "0.8"
-fs4 = "=1.1.0"
-utoipa = "=6.0.0"
-utoipa-axum = "=0.3.0"
-utoipa-swagger-ui = { version = "=10.0.2", features = ["axum", "vendored"] }
-rmcp = { version = "=3.9.0", default-features = false }
+fs4 = "1.1.0"
+utoipa = "6.0.0"
+utoipa-axum = "0.3.0"
+utoipa-swagger-ui = { version = "10.0.2", features = ["axum", "vendored"] }
+rmcp = { version = "3.9.0", default-features = false }
 process-wrap = { version = "10.0.1", features = ["tokio1"] }
 lsp-server = "0.10"
 lsp-types = "0.97.0"
 toml = "1.2.1"
-version-migrate = "=0.21.0"
+version-migrate = "0.21.0"
 pretty_assertions = "1.4.1"
 # SQLite does not need SQLx TLS; enabling it would add rustls ring beside reqwest's AWS-LC provider.
 sea-orm = { version = "2.0.4", default-features = false, features = [
@@ -125,14 +124,12 @@ sea-orm = { version = "2.0.4", default-features = false, features = [
     "runtime-tokio",
     "sqlx-sqlite",
 ] }
-sea-orm-migration = { version = "=2.0.4", default-features = false, features = [
+sea-orm-migration = { version = "2.0.4", default-features = false, features = [
     "runtime-tokio",
     "sqlx-sqlite",
 ] }
-# Native history metadata uses SQLx's locked handle and the same SQLite binding identity.
-sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite"] }
-# SQLx 0.9 requires >=0.30.1,<0.38; 0.37.0 is the newest compatible release.
-libsqlite3-sys = { version = "=0.37.0", default-features = false }
+# Match SQLx's SQLite binding range; Cargo's links constraint enforces one native library.
+libsqlite3-sys = { version = "0.37.0", default-features = false }
 sha2 = "0.11.1"
 hmac = "0.13.0"
 hex = "0.4.3"

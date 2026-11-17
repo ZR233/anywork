@@ -40,6 +40,12 @@ RC/手动构建沿用编译构件交接与预构建打包契约，并在无生�
 
 稳定版 Release 的资产集合由不可变发布源码的契约决定。当前版本提供十项公开资产：Windows 单用户（per-user）安装器及其 `.minisig`、`latest.json`、`latest-v2.json`、跨平台安装包 `SHA256SUMS.txt`，以及 `anywork-<version>-linux-x86_64.deb`、同名 `.deb.sha256` 与 `.deb.minisig`、`anywork-<version>-macos-arm64.zip` 和同名 `.zip.sha256`。平台构件先按各自检查点严格核验，最终汇合后签名 Linux 安装包并核验完整资产集合；保留已有 Windows 签名字节和清单时间戳，重试不能改变已上传资产。历史已发布版本按其原有资产契约验证，不补包、不覆盖；不提供 Windows 便携版压缩包，也不执行 Cargo crate 发布。
 
+### 开发依赖升级与确定性构建
+
+Rust 清单使用 Cargo 默认的兼容版本范围，不使用 `=x.y.z` 精确约束。开发期间建议主动运行 `cargo update`，由 Cargo 在清单范围内选择兼容版本；根工程和独立测试工程各自维护锁文件，受影响锁文件须验证、审查并随变更提交。不兼容版本升级须显式调整清单并迁移受影响消费者，不使用无限制版本要求。
+
+依赖只声明直接使用或承担必要功能启用职责的项。升级时核对官方变更说明和 API，若上游能力已满足项目手写实现的契约，迁移调用方并删除旧实现。开发升级与构建分开：本地构建、CI 和发布仍使用已提交锁文件，Cargo 使用 `--locked`，Flutter 使用 `pub get --enforce-lockfile`，不在构建入口自动更新。工具链与生成器的固定版本服务环境和生成协议一致性；桥接依赖升级须同步核对 Rust、Dart 和生成器配套关系。
+
 ### 工具链固定、构建缓存与 MSVC 环境排障
 
 Flutter 版本与 Rust 工具链版本在仓库中统一固定（以 `rust-toolchain.toml` 为唯一事实源，同时声明 `rustfmt`、`clippy`、`rust-analyzer` 组件以及两个 Linux musl 目标和 `aarch64-apple-darwin` 目标）。`cargo xtask` 在触发任何 Rust 命令前先于仓库根目录执行 `rustc --version` 以完成固定工具链同步预检。Linux CI 使用镜像内固定版本并校验摘要的 FRB 生成器和 `cargo-expand` 预编译包，不在每个作业安装或回退源码编译。构建缓存按宿主平台、实际工具链与产物集合隔离。
