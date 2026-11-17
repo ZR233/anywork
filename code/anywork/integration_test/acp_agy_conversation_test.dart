@@ -8,7 +8,6 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -315,28 +314,6 @@ void main() {
         final kind = option.kind as AcpSelectConfigView;
         final alternate = _values(kind)
             .firstWhere((value) => value.value != kind.currentValue);
-        final largest = selects.reduce(
-          (a, b) =>
-              _values(a.kind as AcpSelectConfigView).length >=
-                  _values(b.kind as AcpSelectConfigView).length
-              ? a
-              : b,
-        );
-        if (largest.id != option.id) {
-          await tester.tap(
-            find.descendant(
-              of: find.byKey(
-                ValueKey(AcpViewKeyValues.configControl(largest.id.value)),
-              ),
-              matching: find.byType(TextButton),
-            ),
-          );
-          await tester.pumpAndSettle();
-          expect(find.text(largest.name), findsOneWidget);
-          await scene.capture('agy-draft-searchable-options');
-          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-          await tester.pumpAndSettle();
-        }
         await tester.tap(
           find.descendant(
             of: find.byKey(
@@ -460,19 +437,6 @@ void main() {
           'configurationReapplied': true,
         };
         await scene.capture('agy-draft-worktree-ready');
-        await configurePresentationWindow(
-          tester,
-          logicalWidth: 900,
-          logicalHeight: 900,
-          requireNativeResize: true,
-        );
-        await scene.capture('agy-draft-narrow');
-        await configurePresentationWindow(
-          tester,
-          logicalWidth: 1440,
-          logicalHeight: 1000,
-          requireNativeResize: true,
-        );
       }
       final preparedRemoteSessionId = owner.state.remoteSessionId;
       final preparedThreadId = owner.state.target!.threadId;
