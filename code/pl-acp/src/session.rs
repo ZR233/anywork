@@ -428,6 +428,7 @@ impl State {
             return;
         }
         self.closing = true;
+        self.reason.get_or_insert(ExitReason::Closed);
         self.settle_open(Err(Error::Closed));
         self.cancel_permissions();
         if let Some((_, reply)) = self.replacement.take() {
@@ -835,8 +836,9 @@ impl Driver {
                         .as_ref()
                         .filter(|run| !run.cancelling)
                         .map(|run| run.id)
+                        && let Err(error) = cancel_owned_run(&connection, &mut owner, run)
                     {
-                        let _ = cancel(&connection, &mut owner, run);
+                        owner.close_error.get_or_insert(error);
                     }
                     if owner.ready && !owner.close_sent && owner.active.is_none() {
                         self.close_peer(&connection, &mut owner);
@@ -1189,7 +1191,17 @@ fn start_prompt(
 }
 
 fn cancel(connection: &ConnectionTo<Agent>, owner: &mut State, id: RunId) -> Result<(), Error> {
-    let session_id = owner.ready()?;
+    owner.ready()?;
+    cancel_owned_run(connection, owner, id)
+}
+
+/// Internal close control remains legal after business admission has been revoked.
+fn cancel_owned_run(
+    connection: &ConnectionTo<Agent>,
+    owner: &mut State,
+    id: RunId,
+) -> Result<(), Error> {
+    let session_id = owner.session_id.clone().ok_or(Error::NotReady)?;
     let active = owner
         .active
         .as_mut()

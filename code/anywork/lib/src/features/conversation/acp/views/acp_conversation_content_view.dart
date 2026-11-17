@@ -20,12 +20,14 @@ class AcpConversationContentView extends StatefulWidget {
     required this.header,
     required this.itemBuilder,
     this.planCard,
+    this.contentIdentity,
   });
 
   final String threadId;
   final AcpTimelineHeaderViewState header;
   final IndexedWidgetBuilder itemBuilder;
   final Widget? planCard;
+  final Object? contentIdentity;
 
   @override
   State<AcpConversationContentView> createState() =>
@@ -46,7 +48,8 @@ class _AcpConversationContentViewState
   @override
   void didUpdateWidget(covariant AcpConversationContentView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.header.itemCount > oldWidget.header.itemCount &&
+    if ((widget.header.itemCount > oldWidget.header.itemCount ||
+            !identical(widget.contentIdentity, oldWidget.contentIdentity)) &&
         !_showJumpToLatest) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || !_scrollController.hasClients) return;
@@ -319,12 +322,14 @@ class AcpTimelineEntryView extends StatelessWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.fullDetails = false,
   });
 
   final AcpTimelineItemPresentation item;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final bool fullDetails;
 
   @override
   Widget build(BuildContext context) {
@@ -348,18 +353,21 @@ class AcpTimelineEntryView extends StatelessWidget {
       ),
       final AcpTimelineThoughtItem thought => _ThoughtActivityBlock(
         item: thought,
+        fullDetails: fullDetails,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
       ),
       final AcpTimelineToolCallItem tool => AcpToolCard(
         item: tool,
+        fullDetails: fullDetails,
         isSafeLink: isSafeLink,
         onOpenLink: onOpenLink,
         imageBuilder: imageBuilder,
       ),
       final AcpTimelineSessionUpdateItem update => _SessionUpdateBlock(
         item: update,
+        fullDetails: fullDetails,
       ),
     };
     return Padding(padding: const EdgeInsets.only(bottom: 14), child: child);
@@ -462,12 +470,14 @@ class _ThoughtActivityBlock extends StatefulWidget {
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
+    this.fullDetails = false,
   });
 
   final AcpTimelineThoughtItem item;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
+  final bool fullDetails;
 
   @override
   State<_ThoughtActivityBlock> createState() => _ThoughtActivityBlockState();
@@ -491,7 +501,7 @@ class _ThoughtActivityBlockState extends State<_ThoughtActivityBlock> {
       children: [
         InkWell(
           borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: expandable
+          onTap: expandable && !widget.fullDetails
               ? () => setState(() => _expanded = !_expanded)
               : null,
           child: Padding(
@@ -500,13 +510,13 @@ class _ThoughtActivityBlockState extends State<_ThoughtActivityBlock> {
               icon: Icons.psychology_outlined,
               label: label,
               active: widget.item.active,
-              expanded: expandable && _expanded,
-              expandable: expandable,
+              expanded: expandable && (_expanded || widget.fullDetails),
+              expandable: expandable && !widget.fullDetails,
               tooltip: summary.isEmpty ? l10n.acpContentThoughtLabel : summary,
             ),
           ),
         ),
-        if (expandable && _expanded)
+        if (expandable && (_expanded || widget.fullDetails))
           Padding(
             padding: const EdgeInsets.only(
               left: TimelineActivityRow.contentIndent,
@@ -536,6 +546,7 @@ class _ThoughtActivityBlockState extends State<_ThoughtActivityBlock> {
                         isSafeLink: widget.isSafeLink ?? _defaultSafeLink,
                         onOpenLink: widget.onOpenLink,
                         imageBuilder: widget.imageBuilder,
+                        fullDetails: widget.fullDetails,
                         textStyle: context.text.bodySmall?.copyWith(
                           color: context.colors.onSurfaceVariant,
                           height: 1.55,
@@ -553,9 +564,10 @@ class _ThoughtActivityBlockState extends State<_ThoughtActivityBlock> {
 }
 
 class _SessionUpdateBlock extends StatelessWidget {
-  const _SessionUpdateBlock({required this.item});
+  const _SessionUpdateBlock({required this.item, this.fullDetails = false});
 
   final AcpTimelineSessionUpdateItem item;
+  final bool fullDetails;
 
   @override
   Widget build(BuildContext context) {
@@ -609,7 +621,10 @@ class _SessionUpdateBlock extends StatelessWidget {
           ],
         ),
       AcpCommandsUpdatePresentation(:final commands) =>
-        _AvailableCommandsActivityBlock(commands: commands),
+        _AvailableCommandsActivityBlock(
+          commands: commands,
+          fullDetails: fullDetails,
+        ),
       AcpSessionInfoUpdatePresentation() => TimelineActivityRow(
         icon: Icons.info_outline_rounded,
         label: l10n.acpUpdateSessionInfo,
@@ -626,9 +641,13 @@ class _SessionUpdateBlock extends StatelessWidget {
 }
 
 class _AvailableCommandsActivityBlock extends StatefulWidget {
-  const _AvailableCommandsActivityBlock({required this.commands});
+  const _AvailableCommandsActivityBlock({
+    required this.commands,
+    this.fullDetails = false,
+  });
 
   final List<({String name, String description})> commands;
+  final bool fullDetails;
 
   @override
   State<_AvailableCommandsActivityBlock> createState() =>
@@ -654,19 +673,21 @@ class _AvailableCommandsActivityBlockState
       children: [
         InkWell(
           borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: () => setState(() => _expanded = !_expanded),
+          onTap: widget.fullDetails
+              ? null
+              : () => setState(() => _expanded = !_expanded),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 3),
             child: TimelineActivityRow(
               icon: Icons.terminal_rounded,
               label: label,
-              expanded: _expanded,
-              expandable: true,
+              expanded: _expanded || widget.fullDetails,
+              expandable: !widget.fullDetails,
               tooltip: l10n.acpCommandsSummary(commands.length),
             ),
           ),
         ),
-        if (_expanded)
+        if (_expanded || widget.fullDetails)
           Padding(
             padding: const EdgeInsets.only(
               left: TimelineActivityRow.contentIndent,
@@ -689,10 +710,9 @@ class _AvailableCommandsActivityBlockState
                   runSpacing: 6,
                   children: [
                     for (final cmd in commands)
-                      StudioCompactChip(
-                        icon: Icons.terminal_rounded,
-                        label: '/${cmd.name}',
-                        tooltip: cmd.description,
+                      Text(
+                        '/${cmd.name} — ${cmd.description}',
+                        style: context.text.bodySmall,
                       ),
                   ],
                 ),

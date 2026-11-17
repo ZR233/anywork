@@ -12,6 +12,7 @@ import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
+import '../state/tool_display.dart';
 import '../state/tool_display_registry.dart';
 import '../views/plan_receipt_view.dart';
 import 'content_layout_witness.dart';
@@ -454,6 +455,7 @@ class _ChatItemViewState extends State<ChatItemView> {
                         ? onOutputRead
                         : null,
                     bodyBuilder: (text) => timelineToolWindowBody(
+                      context,
                       tool,
                       text,
                       input: content.role == ChatContentRole.toolArguments,
@@ -465,12 +467,12 @@ class _ChatItemViewState extends State<ChatItemView> {
                           item.id,
                           content.role.name,
                           content.role == ChatContentRole.toolArguments
-                              ? '工具内容'
-                              : '工具结果',
+                              ? context.l10n.timelineToolArguments
+                              : context.l10n.timelineToolOutput,
                           content.reference,
                           _contentWitness,
                         ) ??
-                        const Text('内容读取尚未就绪'),
+                        Text(context.l10n.timelineItemBodyUnavailable),
                   ),
               ],
       );

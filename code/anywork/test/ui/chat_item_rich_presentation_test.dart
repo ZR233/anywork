@@ -15,6 +15,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_lsp_
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
@@ -836,13 +837,29 @@ void main() {
         expect(row.icon, icon, reason: name);
         await tester.tap(_rowTap);
         await tester.pumpAndSettle();
-        expect(
-          find.textContaining(name == 'stat_path' ? 'file' : 'public result'),
-          const {'write_file', 'copy_path', 'send_message'}.contains(name)
-              ? findsNothing
-              : findsWidgets,
-          reason: name,
-        );
+        if (name == 'stat_path') {
+          final result = find.byType(TimelineToolSemanticBody).last;
+          expect(
+            find.descendant(of: result, matching: find.text('类型')),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: result, matching: find.text('文件')),
+            findsOneWidget,
+          );
+          expect(
+            find.descendant(of: result, matching: find.text('file')),
+            findsNothing,
+          );
+        } else {
+          expect(
+            find.textContaining('public result'),
+            const {'write_file', 'copy_path', 'send_message'}.contains(name)
+                ? findsNothing
+                : findsWidgets,
+            reason: name,
+          );
+        }
         expect(tester.takeException(), isNull, reason: name);
       }
       await _show(

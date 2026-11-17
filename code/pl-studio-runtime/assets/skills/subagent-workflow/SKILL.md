@@ -26,7 +26,7 @@ category: agents
 
 没有评价或速度样本时明确未知；少量样本和异类任务不能证明普遍能力，未评级不是低分。不能只按最高均分、最贵型号或厂商标签决定，也不能把订阅理解成无限额度。同次决策复用已读取的资料；目录、相关评价或任务要求变化后重新读取，不重复查询不同计费类别来拼完整目录。只有一个合适候选时读取其详情并说明限制，无需虚构对照。
 
-先识别 Profile 的 Native/ACP 后端。自动选模与 `modelSelection` 只服务 Native child；ACP child 引用实际用户级服务定义，使用其新会话默认配置，不填假的模型、effort 或持久输入序号。ACP 不承接 Native structured review、workflow 或 `writablePaths` 限制；声明与宿主校验均按实际支持范围裁剪。
+先识别 Profile 的 Native/ACP 后端。自动选模与 `modelSelection` 只服务 Native child；ACP child 引用实际用户级服务定义，省略 `acpConfig` 时使用其新会话默认配置，不继承父会话模型。需要指定模型等选项时，使用对端实际声明的有序 `acpConfig: [{id, value}]`，由宿主在首消息前设置并回读；失败回执可能保留已创建但未接受消息的成员，应按真实身份检查或关闭，不自动回退默认模型。不填假的 Native 模型、effort 或持久输入序号。ACP 不承接 Native structured review、workflow 或 `writablePaths` 限制；声明与宿主校验均按实际支持范围裁剪。
 
 ACP 调用宿主协作时使用实际暴露的 `anywork_` MCP 工具。其 `wait_agent` 读取源报告，续跑保留返回 cursor；最新报告可能早于刚发送的消息，取消或失败也可能属于被替换的旧轮，须核对真实身份。Native 继续使用原通用等待、收件箱与报告机制。前缀和提示词不能禁用外部 agent 自有工具，也不能替代宿主权限检查。
 

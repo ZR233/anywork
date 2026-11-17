@@ -12009,6 +12009,18 @@ abstract class AppLocalizations {
   /// **'Thinking'**
   String get acpContentThoughtLabel;
 
+  /// No description provided for @acpProcessGroupSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
+  String acpProcessGroupSummary(int count, int toolCount);
+
+  /// No description provided for @acpProcessGroupRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get acpProcessGroupRunning;
+
   /// No description provided for @acpContentAudioLabel.
   ///
   /// In en, this message translates to:
@@ -12452,6 +12464,1200 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Use current configuration'**
   String get acpDraftUseCurrentConfiguration;
+
+  /// No description provided for @timelineToolDetailProgram.
+  ///
+  /// In en, this message translates to:
+  /// **'Program'**
+  String get timelineToolDetailProgram;
+
+  /// No description provided for @timelineToolDetailStdin.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard input'**
+  String get timelineToolDetailStdin;
+
+  /// No description provided for @timelineToolDetailQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Query'**
+  String get timelineToolDetailQuery;
+
+  /// No description provided for @timelineToolDetailFile.
+  ///
+  /// In en, this message translates to:
+  /// **'File'**
+  String get timelineToolDetailFile;
+
+  /// No description provided for @timelineToolDetailContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Content'**
+  String get timelineToolDetailContent;
+
+  /// No description provided for @timelineToolDetailPatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Patch'**
+  String get timelineToolDetailPatch;
+
+  /// No description provided for @timelineToolDetailWriteMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Write mode'**
+  String get timelineToolDetailWriteMode;
+
+  /// No description provided for @timelineToolWriteCreate.
+  ///
+  /// In en, this message translates to:
+  /// **'Create file'**
+  String get timelineToolWriteCreate;
+
+  /// No description provided for @timelineToolWriteOverwrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Overwrite file'**
+  String get timelineToolWriteOverwrite;
+
+  /// No description provided for @timelineToolWriteAppend.
+  ///
+  /// In en, this message translates to:
+  /// **'Append content'**
+  String get timelineToolWriteAppend;
+
+  /// No description provided for @timelineToolDetailCollision.
+  ///
+  /// In en, this message translates to:
+  /// **'If the destination exists'**
+  String get timelineToolDetailCollision;
+
+  /// No description provided for @timelineToolCollisionReject.
+  ///
+  /// In en, this message translates to:
+  /// **'Do not overwrite'**
+  String get timelineToolCollisionReject;
+
+  /// No description provided for @timelineToolCollisionOverwrite.
+  ///
+  /// In en, this message translates to:
+  /// **'Overwrite'**
+  String get timelineToolCollisionOverwrite;
+
+  /// No description provided for @timelineToolDetailTask.
+  ///
+  /// In en, this message translates to:
+  /// **'Task'**
+  String get timelineToolDetailTask;
+
+  /// No description provided for @timelineToolDetailProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Collaboration profile'**
+  String get timelineToolDetailProfile;
+
+  /// No description provided for @timelineToolDetailTaskDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Task description'**
+  String get timelineToolDetailTaskDescription;
+
+  /// No description provided for @timelineToolDetailDeleteObject.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete target'**
+  String get timelineToolDetailDeleteObject;
+
+  /// No description provided for @timelineToolDeleteEmptyDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Empty directory'**
+  String get timelineToolDeleteEmptyDirectory;
+
+  /// No description provided for @timelineToolDeleteRecursiveDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Directory and its contents'**
+  String get timelineToolDeleteRecursiveDirectory;
+
+  /// No description provided for @timelineToolDetailMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Message'**
+  String get timelineToolDetailMessage;
+
+  /// No description provided for @timelineToolDetailDescription.
+  ///
+  /// In en, this message translates to:
+  /// **'Description'**
+  String get timelineToolDetailDescription;
+
+  /// No description provided for @timelineToolDetailReason.
+  ///
+  /// In en, this message translates to:
+  /// **'Reason'**
+  String get timelineToolDetailReason;
+
+  /// No description provided for @timelineToolDetailStageResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage result'**
+  String get timelineToolDetailStageResult;
+
+  /// No description provided for @timelineToolDetailEvidence.
+  ///
+  /// In en, this message translates to:
+  /// **'Evidence'**
+  String get timelineToolDetailEvidence;
+
+  /// No description provided for @timelineToolDetailPlanContent.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan content'**
+  String get timelineToolDetailPlanContent;
+
+  /// No description provided for @timelineToolDetailWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait'**
+  String get timelineToolDetailWait;
+
+  /// No description provided for @timelineToolDetailWebpage.
+  ///
+  /// In en, this message translates to:
+  /// **'Web page'**
+  String get timelineToolDetailWebpage;
+
+  /// No description provided for @timelineToolDetailFind.
+  ///
+  /// In en, this message translates to:
+  /// **'Find'**
+  String get timelineToolDetailFind;
+
+  /// No description provided for @timelineToolDetailWeather.
+  ///
+  /// In en, this message translates to:
+  /// **'Weather'**
+  String get timelineToolDetailWeather;
+
+  /// No description provided for @timelineToolDetailOpenPageLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Open page link'**
+  String get timelineToolDetailOpenPageLink;
+
+  /// No description provided for @timelineToolDetailFinance.
+  ///
+  /// In en, this message translates to:
+  /// **'Market data'**
+  String get timelineToolDetailFinance;
+
+  /// No description provided for @timelineToolDetailSports.
+  ///
+  /// In en, this message translates to:
+  /// **'Sports'**
+  String get timelineToolDetailSports;
+
+  /// No description provided for @timelineToolDetailTimezone.
+  ///
+  /// In en, this message translates to:
+  /// **'Time zone'**
+  String get timelineToolDetailTimezone;
+
+  /// No description provided for @timelineToolDetailScreenshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Page screenshot'**
+  String get timelineToolDetailScreenshot;
+
+  /// No description provided for @timelineToolDetailSource.
+  ///
+  /// In en, this message translates to:
+  /// **'Source'**
+  String get timelineToolDetailSource;
+
+  /// No description provided for @timelineToolDetailStdout.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard output'**
+  String get timelineToolDetailStdout;
+
+  /// No description provided for @timelineToolDetailStderr.
+  ///
+  /// In en, this message translates to:
+  /// **'Standard error'**
+  String get timelineToolDetailStderr;
+
+  /// No description provided for @timelineToolDetailAcceptedBytes.
+  ///
+  /// In en, this message translates to:
+  /// **'Accepted input bytes'**
+  String get timelineToolDetailAcceptedBytes;
+
+  /// No description provided for @timelineToolDetailInputCloseState.
+  ///
+  /// In en, this message translates to:
+  /// **'Input close state'**
+  String get timelineToolDetailInputCloseState;
+
+  /// No description provided for @timelineToolDetailInputOutcome.
+  ///
+  /// In en, this message translates to:
+  /// **'Input outcome'**
+  String get timelineToolDetailInputOutcome;
+
+  /// No description provided for @timelineToolDetailInputDiagnostic.
+  ///
+  /// In en, this message translates to:
+  /// **'Input diagnostic'**
+  String get timelineToolDetailInputDiagnostic;
+
+  /// No description provided for @timelineToolDetailExitCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Exit code'**
+  String get timelineToolDetailExitCode;
+
+  /// No description provided for @timelineToolDetailSignal.
+  ///
+  /// In en, this message translates to:
+  /// **'Signal'**
+  String get timelineToolDetailSignal;
+
+  /// No description provided for @timelineToolDetailStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get timelineToolDetailStatus;
+
+  /// No description provided for @timelineToolStatusTimedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Timed out'**
+  String get timelineToolStatusTimedOut;
+
+  /// No description provided for @timelineToolDetailStartLine.
+  ///
+  /// In en, this message translates to:
+  /// **'Start line'**
+  String get timelineToolDetailStartLine;
+
+  /// No description provided for @timelineToolDetailEndLine.
+  ///
+  /// In en, this message translates to:
+  /// **'End line'**
+  String get timelineToolDetailEndLine;
+
+  /// No description provided for @timelineToolDetailNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Note'**
+  String get timelineToolDetailNote;
+
+  /// No description provided for @timelineToolDetailLine.
+  ///
+  /// In en, this message translates to:
+  /// **'Line'**
+  String get timelineToolDetailLine;
+
+  /// No description provided for @timelineToolDetailSearchResults.
+  ///
+  /// In en, this message translates to:
+  /// **'Search results'**
+  String get timelineToolDetailSearchResults;
+
+  /// No description provided for @timelineToolDetailMatches.
+  ///
+  /// In en, this message translates to:
+  /// **'Matches'**
+  String get timelineToolDetailMatches;
+
+  /// No description provided for @timelineToolDetailResult.
+  ///
+  /// In en, this message translates to:
+  /// **'Result'**
+  String get timelineToolDetailResult;
+
+  /// No description provided for @timelineToolDetailTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Title'**
+  String get timelineToolDetailTitle;
+
+  /// No description provided for @timelineToolDetailLink.
+  ///
+  /// In en, this message translates to:
+  /// **'Link'**
+  String get timelineToolDetailLink;
+
+  /// No description provided for @timelineToolDetailSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Summary'**
+  String get timelineToolDetailSummary;
+
+  /// No description provided for @timelineToolDetailColumn.
+  ///
+  /// In en, this message translates to:
+  /// **'Column'**
+  String get timelineToolDetailColumn;
+
+  /// No description provided for @timelineToolDetailBefore.
+  ///
+  /// In en, this message translates to:
+  /// **'Before'**
+  String get timelineToolDetailBefore;
+
+  /// No description provided for @timelineToolDetailAfter.
+  ///
+  /// In en, this message translates to:
+  /// **'After'**
+  String get timelineToolDetailAfter;
+
+  /// No description provided for @timelineToolDetailExists.
+  ///
+  /// In en, this message translates to:
+  /// **'Exists'**
+  String get timelineToolDetailExists;
+
+  /// No description provided for @timelineToolDetailYes.
+  ///
+  /// In en, this message translates to:
+  /// **'Yes'**
+  String get timelineToolDetailYes;
+
+  /// No description provided for @timelineToolDetailNo.
+  ///
+  /// In en, this message translates to:
+  /// **'No'**
+  String get timelineToolDetailNo;
+
+  /// No description provided for @timelineToolDetailType.
+  ///
+  /// In en, this message translates to:
+  /// **'Type'**
+  String get timelineToolDetailType;
+
+  /// No description provided for @timelineToolDetailBytes.
+  ///
+  /// In en, this message translates to:
+  /// **'Bytes'**
+  String get timelineToolDetailBytes;
+
+  /// No description provided for @timelineToolDetailReadOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Read-only'**
+  String get timelineToolDetailReadOnly;
+
+  /// No description provided for @timelineToolDetailModifiedAt.
+  ///
+  /// In en, this message translates to:
+  /// **'Modified at'**
+  String get timelineToolDetailModifiedAt;
+
+  /// No description provided for @timelineToolDetailInputAccepted.
+  ///
+  /// In en, this message translates to:
+  /// **'Task input accepted'**
+  String get timelineToolDetailInputAccepted;
+
+  /// No description provided for @timelineToolDetailReport.
+  ///
+  /// In en, this message translates to:
+  /// **'Report'**
+  String get timelineToolDetailReport;
+
+  /// No description provided for @timelineToolDetailTaskStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Task status'**
+  String get timelineToolDetailTaskStatus;
+
+  /// No description provided for @timelineToolDetailWaitTimedOut.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait timed out'**
+  String get timelineToolDetailWaitTimedOut;
+
+  /// No description provided for @timelineToolDetailMessagesReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Messages ready'**
+  String get timelineToolDetailMessagesReady;
+
+  /// No description provided for @timelineToolDetailPlanPhase.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan phase'**
+  String get timelineToolDetailPlanPhase;
+
+  /// No description provided for @timelineToolDetailPlan.
+  ///
+  /// In en, this message translates to:
+  /// **'Plan'**
+  String get timelineToolDetailPlan;
+
+  /// No description provided for @timelineToolDetailRevisionFeedback.
+  ///
+  /// In en, this message translates to:
+  /// **'Revision feedback'**
+  String get timelineToolDetailRevisionFeedback;
+
+  /// No description provided for @timelineToolDetailAvailableOperations.
+  ///
+  /// In en, this message translates to:
+  /// **'Available operations'**
+  String get timelineToolDetailAvailableOperations;
+
+  /// No description provided for @timelineToolDetailOperation.
+  ///
+  /// In en, this message translates to:
+  /// **'Operation'**
+  String get timelineToolDetailOperation;
+
+  /// No description provided for @timelineToolDetailTargetPhase.
+  ///
+  /// In en, this message translates to:
+  /// **'Target phase'**
+  String get timelineToolDetailTargetPhase;
+
+  /// No description provided for @timelineToolDetailCondition.
+  ///
+  /// In en, this message translates to:
+  /// **'Condition'**
+  String get timelineToolDetailCondition;
+
+  /// No description provided for @timelineToolDetailAction.
+  ///
+  /// In en, this message translates to:
+  /// **'Action'**
+  String get timelineToolDetailAction;
+
+  /// No description provided for @timelineToolDetailHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'History'**
+  String get timelineToolDetailHistory;
+
+  /// No description provided for @timelineToolDetailCurrentPlan.
+  ///
+  /// In en, this message translates to:
+  /// **'Current plan'**
+  String get timelineToolDetailCurrentPlan;
+
+  /// No description provided for @timelineToolDetailWorkflow.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow'**
+  String get timelineToolDetailWorkflow;
+
+  /// No description provided for @timelineToolWorkflowNotStarted.
+  ///
+  /// In en, this message translates to:
+  /// **'Not started'**
+  String get timelineToolWorkflowNotStarted;
+
+  /// No description provided for @timelineToolDetailGoal.
+  ///
+  /// In en, this message translates to:
+  /// **'Goal'**
+  String get timelineToolDetailGoal;
+
+  /// No description provided for @timelineToolDetailCurrentPhase.
+  ///
+  /// In en, this message translates to:
+  /// **'Current phase'**
+  String get timelineToolDetailCurrentPhase;
+
+  /// No description provided for @timelineToolDetailStageInstructions.
+  ///
+  /// In en, this message translates to:
+  /// **'Stage instructions'**
+  String get timelineToolDetailStageInstructions;
+
+  /// No description provided for @timelineToolDetailCompletionCriteria.
+  ///
+  /// In en, this message translates to:
+  /// **'Completion criteria'**
+  String get timelineToolDetailCompletionCriteria;
+
+  /// No description provided for @timelineToolDetailAvailableTransitions.
+  ///
+  /// In en, this message translates to:
+  /// **'Available transitions'**
+  String get timelineToolDetailAvailableTransitions;
+
+  /// No description provided for @timelineToolDetailTransitionGuard.
+  ///
+  /// In en, this message translates to:
+  /// **'Transition guard'**
+  String get timelineToolDetailTransitionGuard;
+
+  /// No description provided for @timelineToolDetailStages.
+  ///
+  /// In en, this message translates to:
+  /// **'Stages'**
+  String get timelineToolDetailStages;
+
+  /// No description provided for @timelineToolDetailError.
+  ///
+  /// In en, this message translates to:
+  /// **'Error'**
+  String get timelineToolDetailError;
+
+  /// No description provided for @timelineToolDetailDiagnostic.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic'**
+  String get timelineToolDetailDiagnostic;
+
+  /// No description provided for @timelineToolDetailDiagnosticDetail.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic detail'**
+  String get timelineToolDetailDiagnosticDetail;
+
+  /// No description provided for @timelineToolDetailDiagnosticCode.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostic code'**
+  String get timelineToolDetailDiagnosticCode;
+
+  /// No description provided for @timelineToolDetailNone.
+  ///
+  /// In en, this message translates to:
+  /// **'None'**
+  String get timelineToolDetailNone;
+
+  /// No description provided for @timelineToolInvalidWriteMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing or invalid write mode'**
+  String get timelineToolInvalidWriteMode;
+
+  /// No description provided for @timelineToolInvalidCollision.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid destination collision policy'**
+  String get timelineToolInvalidCollision;
+
+  /// No description provided for @timelineToolMissingTransferPaths.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing source or destination file'**
+  String get timelineToolMissingTransferPaths;
+
+  /// No description provided for @timelineToolInvalidDeleteMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing or invalid delete target type'**
+  String get timelineToolInvalidDeleteMode;
+
+  /// No description provided for @timelineToolInvalidEvidence.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid stage completion evidence'**
+  String get timelineToolInvalidEvidence;
+
+  /// No description provided for @timelineToolMissingCompletion.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing stage completion description'**
+  String get timelineToolMissingCompletion;
+
+  /// No description provided for @timelineToolMissingDuration.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing wait duration'**
+  String get timelineToolMissingDuration;
+
+  /// No description provided for @timelineToolInvalidSearchQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Invalid search query'**
+  String get timelineToolInvalidSearchQuery;
+
+  /// No description provided for @timelineToolMissingSearchQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing search query'**
+  String get timelineToolMissingSearchQuery;
+
+  /// No description provided for @timelineToolMissingWebUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing web page URL'**
+  String get timelineToolMissingWebUrl;
+
+  /// No description provided for @timelineToolUnknownWebQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'Unrecognized web query'**
+  String get timelineToolUnknownWebQuery;
+
+  /// No description provided for @timelineToolNoWebQuery.
+  ///
+  /// In en, this message translates to:
+  /// **'No displayable web query provided'**
+  String get timelineToolNoWebQuery;
+
+  /// No description provided for @timelineToolStreamMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed program output stream'**
+  String get timelineToolStreamMalformed;
+
+  /// No description provided for @timelineToolExecutionMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed program result'**
+  String get timelineToolExecutionMalformed;
+
+  /// No description provided for @timelineToolStatMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed file metadata'**
+  String get timelineToolStatMalformed;
+
+  /// No description provided for @timelineToolOperationRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Operation not accepted'**
+  String get timelineToolOperationRejected;
+
+  /// No description provided for @timelineToolResultPending.
+  ///
+  /// In en, this message translates to:
+  /// **'Result pending confirmation'**
+  String get timelineToolResultPending;
+
+  /// No description provided for @timelineToolAcceptanceUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Acceptance receipt unavailable: incomplete window or invalid format'**
+  String get timelineToolAcceptanceUnavailable;
+
+  /// No description provided for @timelineToolNumberOutOfRange.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed tool content: number out of range'**
+  String get timelineToolNumberOutOfRange;
+
+  /// No description provided for @timelineToolStructuredUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Structured result unavailable: incomplete window or invalid format'**
+  String get timelineToolStructuredUnavailable;
+
+  /// No description provided for @timelineToolExpectedStructured.
+  ///
+  /// In en, this message translates to:
+  /// **'Structured result unavailable: expected a result object or list'**
+  String get timelineToolExpectedStructured;
+
+  /// No description provided for @timelineToolExpectedObject.
+  ///
+  /// In en, this message translates to:
+  /// **'Expected a tool input object'**
+  String get timelineToolExpectedObject;
+
+  /// No description provided for @timelineToolExpectedText.
+  ///
+  /// In en, this message translates to:
+  /// **'Expected a text result'**
+  String get timelineToolExpectedText;
+
+  /// No description provided for @timelineToolResultMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed result content'**
+  String get timelineToolResultMalformed;
+
+  /// No description provided for @timelineToolNoSemanticContent.
+  ///
+  /// In en, this message translates to:
+  /// **'This result has no displayable semantic content'**
+  String get timelineToolNoSemanticContent;
+
+  /// No description provided for @timelineToolUnknownFormat.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown tool display format'**
+  String get timelineToolUnknownFormat;
+
+  /// No description provided for @timelineToolArchivedUnfinished.
+  ///
+  /// In en, this message translates to:
+  /// **'Unfinished when archived'**
+  String get timelineToolArchivedUnfinished;
+
+  /// No description provided for @timelineToolNotResumed.
+  ///
+  /// In en, this message translates to:
+  /// **'Tool has not resumed'**
+  String get timelineToolNotResumed;
+
+  /// No description provided for @timelineToolSpawnRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Initial task input not accepted'**
+  String get timelineToolSpawnRejected;
+
+  /// No description provided for @timelineToolWorkflowRejected.
+  ///
+  /// In en, this message translates to:
+  /// **'Workflow change not accepted'**
+  String get timelineToolWorkflowRejected;
+
+  /// No description provided for @timelineToolContentMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed tool content: {reason}'**
+  String timelineToolContentMalformed(String reason);
+
+  /// No description provided for @timelineToolInvalidField.
+  ///
+  /// In en, this message translates to:
+  /// **'Missing or invalid {field}'**
+  String timelineToolInvalidField(String field);
+
+  /// No description provided for @timelineToolFieldMalformed.
+  ///
+  /// In en, this message translates to:
+  /// **'Malformed content for {field}'**
+  String timelineToolFieldMalformed(String field);
+
+  /// No description provided for @timelineToolSeconds.
+  ///
+  /// In en, this message translates to:
+  /// **'{seconds} seconds'**
+  String timelineToolSeconds(num seconds);
+
+  /// No description provided for @timelineToolWebLinkReference.
+  ///
+  /// In en, this message translates to:
+  /// **'{reference} · link {link}'**
+  String timelineToolWebLinkReference(String reference, int link);
+
+  /// No description provided for @timelineToolWebPageReference.
+  ///
+  /// In en, this message translates to:
+  /// **'{reference} · page {page}'**
+  String timelineToolWebPageReference(String reference, int page);
+
+  /// No description provided for @timelineToolStateQueued.
+  ///
+  /// In en, this message translates to:
+  /// **'Queued'**
+  String get timelineToolStateQueued;
+
+  /// No description provided for @timelineToolStateRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get timelineToolStateRunning;
+
+  /// No description provided for @timelineToolStateSucceeded.
+  ///
+  /// In en, this message translates to:
+  /// **'Succeeded'**
+  String get timelineToolStateSucceeded;
+
+  /// No description provided for @timelineToolStateCompleted.
+  ///
+  /// In en, this message translates to:
+  /// **'Completed'**
+  String get timelineToolStateCompleted;
+
+  /// No description provided for @timelineToolStateFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed'**
+  String get timelineToolStateFailed;
+
+  /// No description provided for @timelineToolStateCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get timelineToolStateCancelled;
+
+  /// No description provided for @timelineToolStateInterrupted.
+  ///
+  /// In en, this message translates to:
+  /// **'Interrupted'**
+  String get timelineToolStateInterrupted;
+
+  /// No description provided for @timelineToolStateIdle.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get timelineToolStateIdle;
+
+  /// No description provided for @timelineToolStateWaitingTool.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for a tool'**
+  String get timelineToolStateWaitingTool;
+
+  /// No description provided for @timelineToolStateWaitingInteraction.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for interaction'**
+  String get timelineToolStateWaitingInteraction;
+
+  /// No description provided for @timelineToolStateCancelling.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelling'**
+  String get timelineToolStateCancelling;
+
+  /// No description provided for @timelineToolStateClosing.
+  ///
+  /// In en, this message translates to:
+  /// **'Closing'**
+  String get timelineToolStateClosing;
+
+  /// No description provided for @timelineToolStateClosed.
+  ///
+  /// In en, this message translates to:
+  /// **'Closed'**
+  String get timelineToolStateClosed;
+
+  /// No description provided for @timelineToolStateFaulted.
+  ///
+  /// In en, this message translates to:
+  /// **'Faulted'**
+  String get timelineToolStateFaulted;
+
+  /// No description provided for @timelineToolStateBudgetLimited.
+  ///
+  /// In en, this message translates to:
+  /// **'Budget limit reached'**
+  String get timelineToolStateBudgetLimited;
+
+  /// No description provided for @timelineToolStateReady.
+  ///
+  /// In en, this message translates to:
+  /// **'Ready'**
+  String get timelineToolStateReady;
+
+  /// No description provided for @timelineToolInputOpen.
+  ///
+  /// In en, this message translates to:
+  /// **'Open'**
+  String get timelineToolInputOpen;
+
+  /// No description provided for @timelineToolInputClosing.
+  ///
+  /// In en, this message translates to:
+  /// **'Closing'**
+  String get timelineToolInputClosing;
+
+  /// No description provided for @timelineToolInputClosed.
+  ///
+  /// In en, this message translates to:
+  /// **'Closed'**
+  String get timelineToolInputClosed;
+
+  /// No description provided for @timelineToolInputComplete.
+  ///
+  /// In en, this message translates to:
+  /// **'Fully accepted'**
+  String get timelineToolInputComplete;
+
+  /// No description provided for @timelineToolInputCancelled.
+  ///
+  /// In en, this message translates to:
+  /// **'Cancelled'**
+  String get timelineToolInputCancelled;
+
+  /// No description provided for @timelineToolInputPartial.
+  ///
+  /// In en, this message translates to:
+  /// **'Partially accepted'**
+  String get timelineToolInputPartial;
+
+  /// No description provided for @timelineToolInputFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Acceptance failed'**
+  String get timelineToolInputFailed;
+
+  /// No description provided for @timelineToolPlanDrafting.
+  ///
+  /// In en, this message translates to:
+  /// **'Drafting'**
+  String get timelineToolPlanDrafting;
+
+  /// No description provided for @timelineToolPlanAwaitingConfirmation.
+  ///
+  /// In en, this message translates to:
+  /// **'Awaiting confirmation'**
+  String get timelineToolPlanAwaitingConfirmation;
+
+  /// No description provided for @timelineToolPlanRevisionRequested.
+  ///
+  /// In en, this message translates to:
+  /// **'Revision requested'**
+  String get timelineToolPlanRevisionRequested;
+
+  /// No description provided for @timelineToolPlanApproved.
+  ///
+  /// In en, this message translates to:
+  /// **'Approved'**
+  String get timelineToolPlanApproved;
+
+  /// No description provided for @timelineToolPlanSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit plan'**
+  String get timelineToolPlanSubmit;
+
+  /// No description provided for @timelineToolPlanApprove.
+  ///
+  /// In en, this message translates to:
+  /// **'Approve plan'**
+  String get timelineToolPlanApprove;
+
+  /// No description provided for @timelineToolPlanRequestRevision.
+  ///
+  /// In en, this message translates to:
+  /// **'Request revision'**
+  String get timelineToolPlanRequestRevision;
+
+  /// No description provided for @timelineToolPlanRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Restart planning'**
+  String get timelineToolPlanRestart;
+
+  /// No description provided for @timelineToolWorkflowActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active'**
+  String get timelineToolWorkflowActive;
+
+  /// No description provided for @timelineToolWorkflowTerminal.
+  ///
+  /// In en, this message translates to:
+  /// **'Finished'**
+  String get timelineToolWorkflowTerminal;
+
+  /// No description provided for @timelineToolFileTypeFile.
+  ///
+  /// In en, this message translates to:
+  /// **'File'**
+  String get timelineToolFileTypeFile;
+
+  /// No description provided for @timelineToolFileTypeDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Directory'**
+  String get timelineToolFileTypeDirectory;
+
+  /// No description provided for @timelineToolFileTypeOther.
+  ///
+  /// In en, this message translates to:
+  /// **'Other'**
+  String get timelineToolFileTypeOther;
+
+  /// No description provided for @timelineToolNameExec.
+  ///
+  /// In en, this message translates to:
+  /// **'Execute command'**
+  String get timelineToolNameExec;
+
+  /// No description provided for @timelineToolNameWriteStdin.
+  ///
+  /// In en, this message translates to:
+  /// **'Write standard input'**
+  String get timelineToolNameWriteStdin;
+
+  /// No description provided for @timelineToolNameReadSessionNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Read session note'**
+  String get timelineToolNameReadSessionNote;
+
+  /// No description provided for @timelineToolNameSearchSessionNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Search session note'**
+  String get timelineToolNameSearchSessionNote;
+
+  /// No description provided for @timelineToolNameWriteSessionNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Write session note'**
+  String get timelineToolNameWriteSessionNote;
+
+  /// No description provided for @timelineToolNameApplySessionNotePatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Patch session note'**
+  String get timelineToolNameApplySessionNotePatch;
+
+  /// No description provided for @timelineToolNameStatPath.
+  ///
+  /// In en, this message translates to:
+  /// **'Inspect file metadata'**
+  String get timelineToolNameStatPath;
+
+  /// No description provided for @timelineToolNameWriteFile.
+  ///
+  /// In en, this message translates to:
+  /// **'Write file'**
+  String get timelineToolNameWriteFile;
+
+  /// No description provided for @timelineToolNameApplyPatch.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply patch'**
+  String get timelineToolNameApplyPatch;
+
+  /// No description provided for @timelineToolNameCreateDirectory.
+  ///
+  /// In en, this message translates to:
+  /// **'Create directory'**
+  String get timelineToolNameCreateDirectory;
+
+  /// No description provided for @timelineToolNameDeletePath.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete path'**
+  String get timelineToolNameDeletePath;
+
+  /// No description provided for @timelineToolNameCopyPath.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy path'**
+  String get timelineToolNameCopyPath;
+
+  /// No description provided for @timelineToolNameMovePath.
+  ///
+  /// In en, this message translates to:
+  /// **'Move path'**
+  String get timelineToolNameMovePath;
+
+  /// No description provided for @timelineToolNameSpawnAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Delegate task'**
+  String get timelineToolNameSpawnAgent;
+
+  /// No description provided for @timelineToolNameSendMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Send message'**
+  String get timelineToolNameSendMessage;
+
+  /// No description provided for @timelineToolNameWait.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait for tasks'**
+  String get timelineToolNameWait;
+
+  /// No description provided for @timelineToolNameSleep.
+  ///
+  /// In en, this message translates to:
+  /// **'Wait for timer'**
+  String get timelineToolNameSleep;
+
+  /// No description provided for @timelineToolNameViewImage.
+  ///
+  /// In en, this message translates to:
+  /// **'View image'**
+  String get timelineToolNameViewImage;
+
+  /// No description provided for @timelineToolNameShowFiles.
+  ///
+  /// In en, this message translates to:
+  /// **'Show files'**
+  String get timelineToolNameShowFiles;
+
+  /// No description provided for @timelineToolNamePlanCurrent.
+  ///
+  /// In en, this message translates to:
+  /// **'Read current plan'**
+  String get timelineToolNamePlanCurrent;
+
+  /// No description provided for @timelineToolNamePlanNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Read available plan operations'**
+  String get timelineToolNamePlanNext;
+
+  /// No description provided for @timelineToolNamePlanHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Read plan history'**
+  String get timelineToolNamePlanHistory;
+
+  /// No description provided for @timelineToolNamePlanSubmit.
+  ///
+  /// In en, this message translates to:
+  /// **'Submit plan'**
+  String get timelineToolNamePlanSubmit;
+
+  /// No description provided for @timelineToolNamePlanRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Restart planning'**
+  String get timelineToolNamePlanRestart;
+
+  /// No description provided for @timelineToolNameWorkflowCurrent.
+  ///
+  /// In en, this message translates to:
+  /// **'Read current workflow'**
+  String get timelineToolNameWorkflowCurrent;
+
+  /// No description provided for @timelineToolNameWorkflowNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Read next workflow stages'**
+  String get timelineToolNameWorkflowNext;
+
+  /// No description provided for @timelineToolNameWorkflowGraph.
+  ///
+  /// In en, this message translates to:
+  /// **'Read workflow graph'**
+  String get timelineToolNameWorkflowGraph;
+
+  /// No description provided for @timelineToolNameWorkflowHistory.
+  ///
+  /// In en, this message translates to:
+  /// **'Read workflow history'**
+  String get timelineToolNameWorkflowHistory;
+
+  /// No description provided for @timelineToolNameWorkflowTransition.
+  ///
+  /// In en, this message translates to:
+  /// **'Advance workflow'**
+  String get timelineToolNameWorkflowTransition;
+
+  /// No description provided for @timelineToolNameWorkflowRestart.
+  ///
+  /// In en, this message translates to:
+  /// **'Restart workflow'**
+  String get timelineToolNameWorkflowRestart;
+
+  /// No description provided for @timelineToolNameWebSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'Web query'**
+  String get timelineToolNameWebSearch;
+
+  /// No description provided for @timelineToolNameDeepseekWebSearch.
+  ///
+  /// In en, this message translates to:
+  /// **'DeepSeek web search'**
+  String get timelineToolNameDeepseekWebSearch;
+
+  /// No description provided for @timelineToolNameDeepseekWebFetch.
+  ///
+  /// In en, this message translates to:
+  /// **'DeepSeek web fetch'**
+  String get timelineToolNameDeepseekWebFetch;
 }
 
 class _AppLocalizationsDelegate

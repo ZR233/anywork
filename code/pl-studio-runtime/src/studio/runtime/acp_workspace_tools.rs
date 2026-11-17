@@ -1,4 +1,4 @@
-//! SSH workspace tools over the ordinary authors, process manager and shared execution owner.
+//! Workspace and skill tools over ordinary authors and the original ACP execution owner.
 use super::acp_host_mcp::{HostBinding, bind};
 use crate::{studio::thread_factory::PreparedAcpWorkspace, thread_assembler::AgentHost};
 use anyhow::Result;
@@ -31,6 +31,16 @@ use tokio_util::sync::CancellationToken;
 type Operation = dyn Fn(OpaquePayload, WorkspaceInvocation) -> BoxFuture<'static, Result<ToolOutput, ToolError>>
     + Send
     + Sync;
+
+#[derive(Clone, Copy)]
+enum OperationDomain {
+    Workspace,
+    Skill,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("tool permission denied: {0}")]
+struct WorkspacePermissionDenied(&'static str);
 
 struct Completion {
     status: TaskStatus,
@@ -66,6 +76,13 @@ pub(super) struct PatchInput {
     pub patch: String,
 }
 
+/// A transport object around the original author's compound argument type, not a new schema.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SkillManageInput {
+    input: <pl_tool::skill::ThreadSkillManageTool as pl_agent_tool::typed::TypedTool>::Args,
+}
+
 impl WorkspaceTools {
     pub(super) fn new(
         thread_id: String,
@@ -94,6 +111,10 @@ impl WorkspaceTools {
     pub(super) async fn close(&self) -> Result<()> {
         self.stop();
         self.tasks.join().await;
+        let lsp_closed = match &self.binding.lsp {
+            Some(lsp) => lsp.lease.close().await,
+            None => Ok(()),
+        };
         let faults = self
             .faults
             .lock()
@@ -140,6 +161,7 @@ impl WorkspaceTools {
                 }
             }
         }
+        lsp_closed?;
         Ok(())
     }
 
@@ -149,12 +171,12 @@ impl WorkspaceTools {
             thread_catalog::ThreadBuiltin,
             workspace_file::*,
         };
-        let execution = &self.binding.remote.execution;
+        let execution = &self.binding.execution;
         let workspace = &self.binding.workspace;
         let files = Arc::new(execution.files().with_workspace(workspace.clone()));
         if self.capabilities.exec {
             let processes = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
-                self.binding.remote.commands(),
+                execution.commands(self.binding.environment.clone()),
             )));
             let definition = ThreadBuiltin::Exec.declaration();
             let tool = Arc::new(ThreadExecTool::from_process_manager(
@@ -164,10 +186,16 @@ impl WorkspaceTools {
                         .store
                         .command_archive(files.clone(), self.binding.host_scratch.clone()),
                 ),
-                CommandAccess::WorkspaceOnly,
+                if self.binding.remote.is_none()
+                    && workspace.workspace().boundary().allows_host_paths()
+                {
+                    CommandAccess::HostApproval
+                } else {
+                    CommandAccess::WorkspaceOnly
+                },
                 definition.clone(),
             ));
-            self.bind_operation(tools, mcp_description(&definition, "Execute a command on this member's frozen SSH workspace. After one second a running receipt may be returned; use anywork_wait and anywork_get_tool_task to observe its actual result. MCP cancellation ends observation, not accepted execution.")?, move |input, context| {
+            self.bind_operation(tools, mcp_description(&definition, "Execute a command on this member's frozen business workspace. After one second a running receipt may be returned; use anywork_wait and anywork_get_tool_task to observe its actual result. MCP cancellation ends observation, not accepted execution.")?, move |input, context| {
                 let tool = tool.clone(); Box::pin(async move { tool.execute_workspace(input, context).await })
             })?;
             let definition = ThreadBuiltin::WriteStdin.declaration();
@@ -255,6 +283,77 @@ impl WorkspaceTools {
                 })?;
             }
         }
+        if let Some((catalog, sources)) = &self.binding.skills {
+            for kind in [
+                pl_tool::skill::ThreadSkillKind::List,
+                pl_tool::skill::ThreadSkillKind::View,
+            ] {
+                let definition = kind.declaration();
+                let tool = Arc::new(pl_tool::skill::ThreadSkillTool::new(
+                    sources.clone(),
+                    kind,
+                    definition.clone(),
+                ));
+                self.bind_domain_operation(
+                    tools,
+                    definition,
+                    OperationDomain::Skill,
+                    move |input, context| {
+                        let tool = tool.clone();
+                        Box::pin(async move {
+                            tool.execute_discovery(input, context.cancellation)
+                                .await
+                                .map(|(output, _)| output)
+                        })
+                    },
+                )?;
+            }
+            // LocalSkillFiles is intentionally local, just as in ordinary conversations.
+            if self.binding.remote.is_none() {
+                let author = pl_tool::skill::ThreadSkillManageTool::declaration();
+                let definition = ToolDefinition::json(
+                    author.name(),
+                    author.description(),
+                    pl_agent_tool::typed::input_schema_for::<SkillManageInput>(),
+                )?;
+                let tool = Arc::new(pl_tool::skill::ThreadSkillManageTool::new(
+                    catalog.clone(),
+                    workspace.clone(),
+                ));
+                self.bind_domain_operation(
+                    tools,
+                    definition,
+                    OperationDomain::Skill,
+                    move |input, context| {
+                        let tool = tool.clone();
+                        Box::pin(async move {
+                            let input: SkillManageInput =
+                                decode_json(input.content()).map_err(ToolError::new)?;
+                            tool.execute_workspace(input.input, context).await
+                        })
+                    },
+                )?;
+            }
+        }
+        if let Some(lsp) = &self.binding.lsp {
+            for kind in [
+                pl_tool::lsp::LspToolKind::Status,
+                pl_tool::lsp::LspToolKind::Capabilities,
+                pl_tool::lsp::LspToolKind::Query,
+            ] {
+                let definition = kind.declaration();
+                let tool = Arc::new(pl_tool::lsp::ThreadLspTool::new(
+                    lsp.registry.clone(),
+                    lsp.paths.clone(),
+                    kind,
+                    definition.clone(),
+                ));
+                self.bind_operation(tools, definition, move |input, context| {
+                    let tool = tool.clone();
+                    Box::pin(async move { tool.execute_workspace(input, context).await })
+                })?;
+            }
+        }
         for (definition, operation) in [
             (ThreadBuiltin::ListTasks.declaration(), "list"),
             (pl_tool::task_control::wait_definition(), "wait"),
@@ -293,6 +392,22 @@ impl WorkspaceTools {
         + Sync
         + 'static,
     ) -> Result<()> {
+        self.bind_domain_operation(tools, definition, OperationDomain::Workspace, operation)
+    }
+
+    fn bind_domain_operation(
+        self: &Arc<Self>,
+        tools: &mut BTreeMap<String, HostBinding>,
+        definition: ToolDefinition,
+        domain: OperationDomain,
+        operation: impl Fn(
+            OpaquePayload,
+            WorkspaceInvocation,
+        ) -> BoxFuture<'static, Result<ToolOutput, ToolError>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Result<()> {
         let owner = self.clone();
         let name = definition.name().to_owned();
         let raw = !matches!(definition.input(), InputFormat::JsonSchema(_));
@@ -311,8 +426,79 @@ impl WorkspaceTools {
                     OpaquePayload::new("application/json", 1, value.to_string())
                         .map_err(ControlError::service)?
                 };
-                owner.invoke(host, context, name, input, operation).await
+                owner
+                    .invoke(host, context, name, input, domain, operation)
+                    .await
             })
+        })
+    }
+
+    async fn authorize(
+        &self,
+        name: &str,
+        input: &OpaquePayload,
+        domain: OperationDomain,
+    ) -> Result<pl_core::tool::execution_policy::ExecutionGrant, ToolError> {
+        use pl_core::tool::execution_policy::ExecutionGrant;
+        if matches!(domain, OperationDomain::Skill) {
+            // Skill sources and LocalSkillFiles enforce their own frozen domain boundaries.
+            return Ok(ExecutionGrant::default());
+        }
+        if self.binding.remote.is_some() {
+            return crate::thread_assembler::authorize_remote_workspace(
+                name,
+                input,
+                self.permission_mode,
+                self.binding.workspace.root(),
+            )
+            .await;
+        }
+        let exec = if name == pl_tool::exec::TOOL_EXEC {
+            Some(
+                pl_tool::exec::parse_and_validate_exec_input(input.content())
+                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?,
+            )
+        } else {
+            if name == pl_tool::exec::TOOL_WRITE_STDIN {
+                pl_tool::exec::parse_and_validate_stdin_input(input.content())
+                    .map_err(pl_tool::exec::ExecInputError::into_tool_error)?;
+            }
+            None
+        };
+        let may_escape = self
+            .binding
+            .workspace
+            .workspace()
+            .boundary()
+            .allows_host_paths();
+        if self.permission_mode == crate::approval::PermissionMode::FullAccess {
+            return Ok(if may_escape {
+                ExecutionGrant::default().with_capability(pl_tool::approval::HOST_WORKSPACE_ACCESS)
+            } else {
+                ExecutionGrant::default()
+            });
+        }
+        let root = self.binding.workspace.root().to_owned();
+        let tool_name = name.to_owned();
+        let raw = input.content().to_owned();
+        let assessment = tokio::task::spawn_blocking(move || match exec {
+            Some(input) => pl_tool::approval::assess_exec(&input, &root),
+            None => pl_tool::approval::assess(&tool_name, &raw, &root),
+        })
+        .await
+        .map_err(ToolError::new)?;
+        if !assessment.requested_access.allows_external() {
+            return Ok(ExecutionGrant::default());
+        }
+        let error = WorkspacePermissionDenied(if may_escape {
+            "ACP has no Native approval/review owner for external workspace access"
+        } else {
+            "the assigned workspace is confined"
+        });
+        Err(if name == pl_tool::exec::TOOL_EXEC {
+            pl_tool::exec::permission_denied(error)
+        } else {
+            ToolError::new(error)
         })
     }
 
@@ -322,6 +508,7 @@ impl WorkspaceTools {
         context: AgentCallContext,
         name: String,
         input: OpaquePayload,
+        domain: OperationDomain,
         operation: Arc<Operation>,
     ) -> Result<(serde_json::Value, bool), ControlError> {
         let identity = ExecutionIdentity::new(context.call_id.clone(), name.clone());
@@ -355,13 +542,7 @@ impl WorkspaceTools {
                         .await
                         .map_err(ToolError::new)?;
                     let mut invocation = invocation;
-                    invocation.grant = crate::thread_assembler::authorize_remote_workspace(
-                        &name,
-                        &input,
-                        owner.permission_mode,
-                        owner.binding.workspace.root(),
-                    )
-                    .await?;
+                    invocation.grant = owner.authorize(&name, &input, domain).await?;
                     operation(input, invocation).await
                 }
                 .await;

@@ -19,6 +19,10 @@ pub struct Cli {
 pub enum Command {
     /// 执行任务，清洁关闭后将最终助手文本写入标准输出。
     Exec(ExecArgs),
+    /// 打开真实 ACP 会话并读取对端能力与配置，不发送任务或登录。
+    AcpOptions(crate::acp::AcpOptionsArgs),
+    /// 使用对端声明的配置执行一个 ACP 任务。
+    ExecAcp(crate::acp::ExecAcpArgs),
 }
 
 #[derive(Args)]

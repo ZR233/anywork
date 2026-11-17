@@ -1,5 +1,6 @@
 //! Dynamic LSP invocation without a product session or mutable tool call context.
 use crate::workspace::ToolWorkspace;
+use pl_agent_tool::Tool as _;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     tool::{
@@ -147,23 +148,45 @@ impl pl_agent_tool::Tool for ThreadLspTool {
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
+        self.execute_bound(input, context.cancellation, context.grant)
+            .await
+    }
+}
+
+impl ThreadLspTool {
+    /// Executes against the same path binding without inventing a Native turn.
+    pub async fn execute_workspace(
+        &self,
+        input: OpaquePayload,
+        context: crate::invocation::WorkspaceInvocation,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_bound(input, context.cancellation, context.grant)
+            .await
+    }
+
+    async fn execute_bound(
+        &self,
+        input: OpaquePayload,
+        cancellation: tokio_util::sync::CancellationToken,
+        grant: pl_core::tool::execution_policy::ExecutionGrant,
+    ) -> Result<ToolOutput, ToolError> {
         if input.format() != "application/json" || input.version() != 1 {
             return Err(ToolError::new(crate::tool_error(
                 "lsp",
                 "unsupported argument encoding",
             )));
         }
-        if context.cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(ToolError::new(pl_core::thread::ThreadError::Cancelled));
         }
         let service = ThreadLspPort {
             registry: self.registry.clone(),
             paths: self.paths.clone(),
-            grant: context.grant,
+            grant,
         };
         let domain_context = LspContext {
             service,
-            cancellation: context.cancellation,
+            cancellation,
         };
         let (encoded, text) = match self.kind {
             LspToolKind::Status => {

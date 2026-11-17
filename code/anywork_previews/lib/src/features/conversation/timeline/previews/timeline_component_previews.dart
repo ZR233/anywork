@@ -731,7 +731,7 @@ Widget timelineApplyPatchPreview() => _timelinePreviewHost(
 @Preview(name: '工具 / 网页搜索', group: 'Timeline · 历史组件', size: Size(720, 320))
 Widget timelineWebSearchPreview() => _timelinePreviewHost(
   TimelineActivityTileTheme(
-    child: TimelineWebSearchToolCard(
+    child: TimelineToolDetails(
       item:
           (TimelinePreviewFixtures.webSearch.toolCard as DecodedToolCard).value,
     ),

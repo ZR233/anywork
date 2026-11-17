@@ -7,9 +7,8 @@ import 'package:anywork_client/models.dart';
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
-import '../../../../shared/typed_json.dart';
-import '../state/lsp_presentation.dart';
 import '../state/tool_presentation.dart';
+import '../state/tool_display.dart';
 import '../state/tool_display_registry.dart';
 import '../state/timeline_display_unit.dart';
 import 'timeline_activity_row.dart';
@@ -19,44 +18,23 @@ import 'timeline_lsp_tool_view.dart';
 import 'timeline_patch_diff_view.dart';
 import 'timeline_tool_detail_panel.dart';
 
-/// 保留调用入口，网页搜索与其他工具共用登记、活动行和详情面板。
-class TimelineWebSearchToolCard extends StatelessWidget {
-  const TimelineWebSearchToolCard({
-    required this.item,
-    this.initiallyExpanded = false,
-    this.onExpansionChanged,
-    super.key,
-  });
-  final TimelineToolPresentation item;
-  final bool initiallyExpanded;
-  final ValueChanged<bool>? onExpansionChanged;
-  @override
-  Widget build(BuildContext context) => TimelineToolDetails(
-    item: item,
-    initiallyExpanded: initiallyExpanded,
-    onExpansionChanged: onExpansionChanged,
-  );
-}
-
-bool timelineIsWebSearch(TimelineToolPresentation item) =>
-    toolDisplayRegistry[item.presentationContract]?.kind == ToolDetailKind.web;
-
 /// 内联正文和声明窗口都经过同一登记，不直接公开参数信封。
 Widget? timelineToolInlineBody(
+  BuildContext context,
   TimelineToolPresentation item, {
   TimelineLspMarkdownBuilder? markdownBuilder,
   ToolAcceptanceProjection? acceptance,
 }) {
   final spec = toolDisplayRegistry[item.presentationContract];
-  if (spec == null) return const Text('未知工具展示格式');
+  if (spec == null) return Text(context.l10n.timelineToolUnknownFormat);
   if (spec.isLsp) {
     return timelineLspInlineBody(item, markdownBuilder: markdownBuilder);
   }
-  final inputValues = spec.decodeInput(item.arguments);
+  final inputValues = spec.decodeInput(context.l10n, item.arguments);
   final outputValues = spec.readsOutput(item.statusString, output: item.output)
       ? acceptance != null && acceptance.state != ToolAcceptance.pending
-            ? spec.acceptanceDetails(acceptance)
-            : spec.decodeOutput(item.output)
+            ? spec.acceptanceDetails(context.l10n, acceptance)
+            : spec.decodeOutput(context.l10n, item.output)
       : const <ToolDetailValue>[];
   if (inputValues.isEmpty &&
       outputValues.isEmpty &&
@@ -77,6 +55,7 @@ Widget? timelineToolInlineBody(
 }
 
 Widget timelineToolWindowBody(
+  BuildContext context,
   TimelineToolPresentation item,
   String text, {
   required bool input,
@@ -84,7 +63,7 @@ Widget timelineToolWindowBody(
   ToolAcceptanceProjection? acceptance,
 }) {
   final spec = toolDisplayRegistry[item.presentationContract];
-  if (spec == null) return const Text('未知工具展示格式');
+  if (spec == null) return Text(context.l10n.timelineToolUnknownFormat);
   if (input && spec.inputBody == ToolInputBody.patch) {
     return timelineApplyPatchWindowBody(text);
   }
@@ -94,6 +73,7 @@ Widget timelineToolWindowBody(
   if (!input && spec.requiresAcceptance) {
     return TimelineToolSemanticBody(
       values: spec.acceptanceDetails(
+        context.l10n,
         acceptance ?? const ToolAcceptanceProjection(ToolAcceptance.pending),
       ),
     );
@@ -101,12 +81,16 @@ Widget timelineToolWindowBody(
   if (!input &&
       spec.outputFormat == ToolOutputFormat.structured &&
       text.trim().isEmpty) {
-    return const TimelineToolSemanticBody(
-      values: [ToolDetailUnavailable('结构化结果不可用：窗口不完整或格式错误')],
+    return TimelineToolSemanticBody(
+      values: [
+        ToolDetailUnavailable(context.l10n.timelineToolStructuredUnavailable),
+      ],
     );
   }
   return TimelineToolSemanticBody(
-    values: input ? spec.decodeInput(text) : spec.decodeOutput(text),
+    values: input
+        ? spec.decodeInput(context.l10n, text)
+        : spec.decodeOutput(context.l10n, text),
   );
 }
 
@@ -268,21 +252,23 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
         item.error!.trim() == item.output.trim() &&
         spec?.outputFormat == ToolOutputFormat.structured &&
         spec!
-            .decodeOutput(item.output)
+            .decodeOutput(context.l10n, item.output)
             .any((value) => value is ToolDetailUnavailable);
     final inputValues =
-        spec?.decodeInput(item.arguments) ?? const <ToolDetailValue>[];
+        spec?.decodeInput(context.l10n, item.arguments) ??
+        const <ToolDetailValue>[];
     final artifactValues = [
       if (spec != null)
         for (final artifact in item.outputArtifacts)
-          ...spec.artifacts(artifact),
+          ...spec.artifacts(context.l10n, artifact),
     ];
     final children = <Widget>[
       if (spec == null)
-        const Text('未知工具展示格式')
+        Text(context.l10n.timelineToolUnknownFormat)
       else ...[
         if (declaredContents == null)
           ?timelineToolInlineBody(
+            context,
             item,
             markdownBuilder: widget.markdownBuilder,
             acceptance: acceptance,
@@ -351,33 +337,37 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
     required bool expandable,
   }) {
     final item = widget.item;
-    final category = _toolCategory(item);
-    final targets = _toolRowTargets(context, item, category);
+    final spec = toolDisplayRegistry[item.presentationContract];
+    final targets =
+        spec?.rowTarget(context.l10n, item) ?? (label: null, tooltip: null);
     // 只有 exec 的终态行附加本次调用耗时；write_stdin 是写输入而不是进程运行。
     final elapsed =
         toolDisplayRegistry[item.presentationContract]?.elapsed == true
         ? _toolElapsed(item)
         : null;
-    final isExecCommand = category == ToolDisplayCategory.command;
     return TimelineActivityRow(
       icon: const {'cancelled', 'interrupted'}.contains(item.statusString)
           ? Icons.stop_circle_outlined
-          : _toolCategoryIcon(category),
-      indicatorStyle: isExecCommand
+          : spec?.icon ?? Icons.build_outlined,
+      indicatorStyle: spec?.circularProgress == true
           ? TimelineActivityIndicatorStyle.circularProgress
           : TimelineActivityIndicatorStyle.restingCat,
       label: item.frozenObservation
-          ? '封存时尚未结束'
+          ? context.l10n.timelineToolArchivedUnfinished
           : !item.executionPresent &&
                 _toolActiveStatuses.contains(item.statusString)
-          ? '工具尚未恢复'
-          : _toolRowLabel(
-              context,
-              item,
-              category,
-              targets.label,
-              acceptance: _acceptance,
-            ),
+          ? context.l10n.timelineToolNotResumed
+          : spec?.rowLabel(
+                  context.l10n,
+                  item,
+                  targets.label,
+                  acceptance: _acceptance,
+                ) ??
+                toolStatusTitle(
+                  context.l10n,
+                  item.statusString,
+                  _unknownToolName(context, item),
+                ),
       active:
           item.executionPresent &&
           _toolActiveStatuses.contains(item.statusString),
@@ -392,98 +382,6 @@ class _TimelineToolDetailsState extends State<TimelineToolDetails> {
       tooltip: targets.tooltip,
     );
   }
-}
-
-/// 行内目标与悬浮提示；补丁文件身份只由 diff 本身呈现。
-({String? label, String? tooltip}) _toolRowTargets(
-  BuildContext context,
-  TimelineToolPresentation item,
-  ToolDisplayCategory category,
-) {
-  // 会话笔记是 Thread 内的固定命名对象，按已知领域名显示，不虚构工作区路径。
-  if (toolDisplayRegistry[item.presentationContract]?.sessionNote == true) {
-    return (label: context.l10n.timelineSessionNoteName, tooltip: null);
-  }
-  if (category == ToolDisplayCategory.copy ||
-      category == ToolDisplayCategory.move) {
-    final arguments = _toolArguments(item);
-    final from = _firstLine(jsonStringValue(arguments['from']));
-    final to = _firstLine(jsonStringValue(arguments['to']));
-    if (from != null || to != null) {
-      final names = [
-        if (from != null) _lastPathSegment(from),
-        if (to != null) _lastPathSegment(to),
-      ].whereType<String>().join(' → ');
-      return (
-        label: names.isEmpty ? null : names,
-        tooltip: [?from, if (to != null) '→ $to'].join('\n'),
-      );
-    }
-  }
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspQuery) {
-    return _lspQueryRowTargets(item);
-  }
-  final target = timelineToolTarget(item);
-  if (target == null) return (label: null, tooltip: null);
-  return (
-    label: _showsFileName(category) ? _lastPathSegment(target) : target,
-    tooltip: target,
-  );
-}
-
-({String? label, String? tooltip}) _lspQueryRowTargets(
-  TimelineToolPresentation item,
-) {
-  final args = _toolArguments(item);
-  final filePath = _firstLine(jsonStringValue(args['filePath']));
-  final line = switch (args['line']) {
-    final int n => n,
-    final num n => n.toInt(),
-    final String s => int.tryParse(s.trim()),
-    _ => null,
-  };
-  final character = switch (args['character']) {
-    final int n => n,
-    final num n => n.toInt(),
-    final String s => int.tryParse(s.trim()),
-    _ => null,
-  };
-  if (filePath != null) {
-    final shortName = _lastPathSegment(filePath) ?? filePath;
-    final lineSuffix = (line != null && line > 0) ? ':$line' : '';
-    final fullCoord = (line != null && line > 0)
-        ? (character != null && character > 0 ? ':$line:$character' : ':$line')
-        : '';
-    return (label: '$shortName$lineSuffix', tooltip: '$filePath$fullCoord');
-  }
-  final query = _firstLine(jsonStringValue(args['query']));
-  if (query != null) {
-    return (label: query, tooltip: query);
-  }
-  final languageId = _firstLine(jsonStringValue(args['languageId']));
-  if (languageId != null) {
-    return (label: languageId, tooltip: languageId);
-  }
-  return (label: null, tooltip: null);
-}
-
-/// 文件对象类目的行只显示文件名；命令、搜索等保留原始摘要。
-bool _showsFileName(ToolDisplayCategory category) => switch (category) {
-  ToolDisplayCategory.read ||
-  ToolDisplayCategory.edit ||
-  ToolDisplayCategory.create ||
-  ToolDisplayCategory.delete ||
-  ToolDisplayCategory.copy ||
-  ToolDisplayCategory.move => true,
-  _ => false,
-};
-
-/// 路径的最后一段；没有路径分隔符时原样返回。
-String? _lastPathSegment(String? path) {
-  if (path == null) return null;
-  final segment = path.split(RegExp(r'[/\\]')).last.trim();
-  return segment.isEmpty ? path : segment;
 }
 
 /// 展开区只补充真实退出、超时与附件诊断，不重复目标和传输身份。
@@ -515,28 +413,6 @@ String? _attachmentDetail(
   return attachments
       .map((attachment) => timelineAttachmentDescription(context, attachment))
       .join('\n');
-}
-
-Map<String, Object?> _toolArguments(TimelineToolPresentation item) =>
-    decodeJsonObject(item.arguments);
-
-/// 目标字段的有界提取：copy/move 取 from→to 的对象，其余沿用既有字段顺序。
-String? timelineToolTarget(TimelineToolPresentation item) {
-  final keys =
-      toolDisplayRegistry[item.presentationContract]?.targetFields ??
-      const <String>[];
-  if (keys.isEmpty) return null;
-  final arguments = _toolArguments(item);
-  for (final key in keys) {
-    final value = _firstLine(jsonStringValue(arguments[key]));
-    if (value != null) return value;
-  }
-  return null;
-}
-
-String? _firstLine(String? value) {
-  final line = value?.split('\n').first.trim();
-  return line == null || line.isEmpty ? null : line;
 }
 
 /// 本次调用耗时：只取该调用的创建与 canonical 终态时间，不用保存或更新时间。
@@ -571,428 +447,18 @@ const _toolActiveStatuses = {
 /// 颜色。取消与中断是正常控制结果，保持中性图标与次级色，不算问题。
 const timelineIssueStatuses = {'failed', 'denied', 'budgetLimited'};
 
-/// 工具名到展示类目的有界映射；未知工具保留名称与真实状态，不猜测语义。
-///
-/// 只读的计划/工作流查询保留语义图标但沿用“名称＋真实状态”文案，避免把查询说成
-/// 变更；删除、复制、移动与新建各自独立，不笼统归入“已修改”。
-ToolDisplayCategory _toolCategory(TimelineToolPresentation item) =>
-    toolDisplayRegistry[item.presentationContract]?.category ??
-    ToolDisplayCategory.generic;
-
-IconData _toolCategoryIcon(ToolDisplayCategory category) => switch (category) {
-  ToolDisplayCategory.read => Icons.menu_book_outlined,
-  ToolDisplayCategory.edit => Icons.edit_outlined,
-  ToolDisplayCategory.create => Icons.create_new_folder_outlined,
-  ToolDisplayCategory.delete => Icons.delete_outline,
-  ToolDisplayCategory.copy => Icons.content_copy_outlined,
-  ToolDisplayCategory.move => Icons.drive_file_move_outline,
-  ToolDisplayCategory.command => Icons.terminal,
-  ToolDisplayCategory.stdin => Icons.terminal,
-  ToolDisplayCategory.search => Icons.search,
-  ToolDisplayCategory.fetch => Icons.public,
-  ToolDisplayCategory.agent => Icons.account_tree_outlined,
-  ToolDisplayCategory.message => Icons.send_outlined,
-  ToolDisplayCategory.plan => Icons.checklist_rtl,
-  ToolDisplayCategory.planRead => Icons.checklist_rtl,
-  ToolDisplayCategory.workflow => Icons.route_outlined,
-  ToolDisplayCategory.workflowRead => Icons.route_outlined,
-  ToolDisplayCategory.lsp => Icons.code,
-  ToolDisplayCategory.image => Icons.image_outlined,
-  ToolDisplayCategory.wait => Icons.hourglass_empty,
-  ToolDisplayCategory.generic => Icons.build_outlined,
-};
-
-/// 成功、失败与进行中的短动词；其它状态返回 null，由调用方保留真实状态文案。
-String? _toolVerb(
-  BuildContext context,
-  TimelineToolPresentation item,
-  ToolDisplayCategory category,
-  String status,
-) {
-  final l10n = context.l10n;
-  final running = _toolRunningStatuses.contains(status);
-  final failed = status == 'failed';
-  if (!running && !failed && status != 'succeeded') return null;
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.web) {
-    final action = timelineToolWebAction(item.arguments);
-    return switch (action) {
-      ToolWebAction.search || ToolWebAction.other =>
-        running
-            ? l10n.timelineWebSearchSearching
-            : failed
-            ? l10n.timelineWebSearchFailed
-            : l10n.timelineWebSearchSearched,
-      ToolWebAction.open =>
-        running
-            ? l10n.timelineWebSearchOpening
-            : failed
-            ? l10n.timelineWebSearchOpenFailed
-            : l10n.timelineWebSearchOpened,
-      ToolWebAction.find =>
-        running
-            ? l10n.timelineWebSearchFinding
-            : failed
-            ? l10n.timelineWebSearchFindFailed
-            : l10n.timelineWebSearchFound,
-    };
-  }
-  if (category == ToolDisplayCategory.lsp) {
-    return _lspToolVerb(context, item, running: running, failed: failed);
-  }
-  return switch (category) {
-    ToolDisplayCategory.read =>
-      running
-          ? l10n.timelineToolReadReading
-          : failed
-          ? l10n.timelineToolReadFailed
-          : l10n.timelineToolReadCompleted,
-    ToolDisplayCategory.edit =>
-      running
-          ? l10n.timelineToolEditRunning
-          : failed
-          ? l10n.timelineToolEditFailed
-          : l10n.timelineToolEditSucceeded,
-    ToolDisplayCategory.create =>
-      running
-          ? l10n.timelineToolCreateRunning
-          : failed
-          ? l10n.timelineToolCreateFailed
-          : l10n.timelineToolCreateSucceeded,
-    ToolDisplayCategory.delete =>
-      running
-          ? l10n.timelineToolDeleteRunning
-          : failed
-          ? l10n.timelineToolDeleteFailed
-          : l10n.timelineToolDeleteSucceeded,
-    ToolDisplayCategory.copy =>
-      running
-          ? l10n.timelineToolCopyRunning
-          : failed
-          ? l10n.timelineToolCopyFailed
-          : l10n.timelineToolCopySucceeded,
-    ToolDisplayCategory.move =>
-      running
-          ? l10n.timelineToolMoveRunning
-          : failed
-          ? l10n.timelineToolMoveFailed
-          : l10n.timelineToolMoveSucceeded,
-    ToolDisplayCategory.command =>
-      running
-          ? l10n.timelineToolCommandRunning
-          : failed
-          ? l10n.timelineToolCommandFailed
-          : l10n.timelineToolCommandSucceeded,
-    // 写标准输入不是执行新命令，独立文案也不附加调用耗时。
-    ToolDisplayCategory.stdin =>
-      running
-          ? l10n.timelineToolStdinRunning
-          : failed
-          ? l10n.timelineToolStdinFailed
-          : l10n.timelineToolStdinSucceeded,
-    ToolDisplayCategory.search =>
-      running
-          ? l10n.timelineToolSearchRunning
-          : failed
-          ? l10n.timelineToolSearchFailed
-          : l10n.timelineToolSearchSucceeded,
-    ToolDisplayCategory.fetch =>
-      running
-          ? l10n.timelineToolFetchRunning
-          : failed
-          ? l10n.timelineToolFetchFailed
-          : l10n.timelineToolFetchSucceeded,
-    ToolDisplayCategory.agent =>
-      running
-          ? l10n.timelineToolAgentRunning
-          : failed
-          ? l10n.timelineToolAgentFailed
-          : l10n.timelineToolAgentSucceeded,
-    ToolDisplayCategory.message =>
-      running
-          ? l10n.timelineToolMessageRunning
-          : failed
-          ? l10n.timelineToolMessageFailed
-          : l10n.timelineToolMessageSucceeded,
-    ToolDisplayCategory.plan =>
-      running
-          ? l10n.timelineToolPlanRunning
-          : failed
-          ? l10n.timelineToolPlanFailed
-          : l10n.timelineToolPlanSucceeded,
-    ToolDisplayCategory.workflow =>
-      running
-          ? l10n.timelineToolWorkflowRunning
-          : failed
-          ? l10n.timelineToolWorkflowFailed
-          : l10n.timelineToolWorkflowSucceeded,
-    ToolDisplayCategory.lsp =>
-      running
-          ? l10n.timelineToolLspRunning
-          : failed
-          ? l10n.timelineToolLspFailed
-          : l10n.timelineToolLspSucceeded,
-    ToolDisplayCategory.image =>
-      running
-          ? l10n.timelineViewImageReading
-          : failed
-          ? l10n.timelineViewImageFailed
-          : l10n.timelineViewImageRead,
-    ToolDisplayCategory.wait =>
-      running
-          ? l10n.timelineToolWaitRunning
-          : failed
-          ? l10n.timelineToolWaitFailed
-          : l10n.timelineToolWaitSucceeded,
-    // 只读的计划/工作流查询与未知工具沿用“名称＋真实状态”，不猜测成变更。
-    ToolDisplayCategory.planRead ||
-    ToolDisplayCategory.workflowRead ||
-    ToolDisplayCategory.generic => null,
-  };
-}
-
-String _lspToolVerb(
-  BuildContext context,
-  TimelineToolPresentation item, {
-  required bool running,
-  required bool failed,
-}) {
-  final l10n = context.l10n;
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspCapabilities) {
-    return running
-        ? l10n.timelineLspCapabilitiesRunning
-        : failed
-        ? l10n.timelineLspCapabilitiesFailed
-        : l10n.timelineLspCapabilitiesSucceeded;
-  }
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspStatus) {
-    return running
-        ? l10n.timelineLspStatusRunning
-        : failed
-        ? l10n.timelineLspStatusFailed
-        : l10n.timelineLspStatusSucceeded;
-  }
-  return switch (timelineLspQueryOperation(item)) {
-    TimelineLspOperation.goToDefinition =>
-      running
-          ? l10n.timelineLspOpDefinitionRunning
-          : failed
-          ? l10n.timelineLspOpDefinitionFailed
-          : l10n.timelineLspOpDefinitionSucceeded,
-    TimelineLspOperation.goToImplementation =>
-      running
-          ? l10n.timelineLspOpImplementationRunning
-          : failed
-          ? l10n.timelineLspOpImplementationFailed
-          : l10n.timelineLspOpImplementationSucceeded,
-    TimelineLspOperation.findReferences =>
-      running
-          ? l10n.timelineLspOpReferencesRunning
-          : failed
-          ? l10n.timelineLspOpReferencesFailed
-          : l10n.timelineLspOpReferencesSucceeded,
-    TimelineLspOperation.hover =>
-      running
-          ? l10n.timelineLspOpHoverRunning
-          : failed
-          ? l10n.timelineLspOpHoverFailed
-          : l10n.timelineLspOpHoverSucceeded,
-    TimelineLspOperation.documentSymbol =>
-      running
-          ? l10n.timelineLspOpDocumentSymbolRunning
-          : failed
-          ? l10n.timelineLspOpDocumentSymbolFailed
-          : l10n.timelineLspOpDocumentSymbolSucceeded,
-    TimelineLspOperation.workspaceSymbol =>
-      running
-          ? l10n.timelineLspOpWorkspaceSymbolRunning
-          : failed
-          ? l10n.timelineLspOpWorkspaceSymbolFailed
-          : l10n.timelineLspOpWorkspaceSymbolSucceeded,
-    TimelineLspOperation.prepareCallHierarchy ||
-    TimelineLspOperation.incomingCalls ||
-    TimelineLspOperation.outgoingCalls =>
-      running
-          ? l10n.timelineLspOpCallHierarchyRunning
-          : failed
-          ? l10n.timelineLspOpCallHierarchyFailed
-          : l10n.timelineLspOpCallHierarchySucceeded,
-    TimelineLspOperation.diagnostics =>
-      running
-          ? l10n.timelineLspOpDiagnosticsRunning
-          : failed
-          ? l10n.timelineLspOpDiagnosticsFailed
-          : l10n.timelineLspOpDiagnosticsSucceeded,
-    TimelineLspOperation.unknown =>
-      running
-          ? l10n.timelineToolLspRunning
-          : failed
-          ? l10n.timelineToolLspFailed
-          : l10n.timelineToolLspSucceeded,
-  };
-}
-
-/// 行的简短文案：动词＋可选耗时＋目标；没有动词时保留工具名与真实状态。
-///
-/// 耗时放在目标之前，长命令被行内省略时仍能读到本次调用耗时。
-String _toolRowLabel(
-  BuildContext context,
-  TimelineToolPresentation item,
-  ToolDisplayCategory category,
-  String? target, {
-  String? meta,
-  ToolAcceptanceProjection? acceptance,
-}) {
-  final spec = toolDisplayRegistry[item.presentationContract];
-  if (spec != null &&
-      spec.requiresAcceptance &&
-      item.statusString == 'succeeded') {
-    final projection = acceptance ?? spec.decodeAcceptance(item.output);
-    final label = switch (projection.state) {
-      ToolAcceptance.pending => '结果待确认',
-      ToolAcceptance.rejected => _toolRejectionLabel(spec),
-      ToolAcceptance.accepted => null,
-    };
-    if (label != null) return [label, ?target].join(' ');
-  }
-  final verb = _toolVerb(context, item, category, item.statusString);
-  if (verb == null) {
-    // 排队、取消、拒绝、中断、查询与未知工具都保留工具名，目标只作后缀，
-    // 不能用目标顶掉名称而丢掉工具身份与真实状态。
-    final base = _toolStatusTitle(
-      context,
+String timelineToolTitle(BuildContext context, TimelineToolPresentation item) =>
+    toolDisplayRegistry[item.presentationContract]?.title(context.l10n, item) ??
+    toolStatusTitle(
+      context.l10n,
       item.statusString,
-      _toolDisplayName(context, item),
+      _unknownToolName(context, item),
     );
-    return [
-      base,
-      ?meta,
-      if (target != null && target.isNotEmpty) target,
-    ].join(' · ');
-  }
-  if (meta != null) {
-    return [
-      verb,
-      meta,
-      if (target != null && target.isNotEmpty) target,
-    ].join(' · ');
-  }
-  if (target == null || target.isEmpty) return verb;
-  return '$verb $target';
-}
 
-String timelineToolTitle(BuildContext context, TimelineToolPresentation item) {
-  final spec = toolDisplayRegistry[item.presentationContract];
-  if (spec != null &&
-      spec.requiresAcceptance &&
-      item.statusString == 'succeeded') {
-    switch (spec.decodeAcceptance(item.output).state) {
-      case ToolAcceptance.pending:
-        return '结果待确认';
-      case ToolAcceptance.rejected:
-        return _toolRejectionLabel(spec);
-      case ToolAcceptance.accepted:
-        break;
-    }
-  }
-  final label = _toolDisplayName(context, item);
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.image) {
-    return switch (item.statusString) {
-      'succeeded' => context.l10n.timelineViewImageRead,
-      'failed' || 'denied' => context.l10n.timelineViewImageFailed,
-      'cancelled' || 'interrupted' => context.l10n.timelineViewImageStopped,
-      'queued' ||
-      'running' ||
-      'streaming' ||
-      'approved' ||
-      'started' => context.l10n.timelineViewImageReading,
-      _ => _unknownToolStatusLabel(context, label, item.statusString),
-    };
-  }
-  return _toolStatusTitle(context, item.statusString, label);
-}
-
-String _toolRejectionLabel(ToolDisplaySpec spec) => spec.rejectionLabel;
-
-String _toolStatusTitle(BuildContext context, String status, String name) {
-  return switch (status) {
-    'queued' => context.l10n.timelineToolQueued(name),
-    'cancelling' => context.l10n.timelineToolCancelling(name),
-    'interrupted' => context.l10n.timelineToolInterrupted(name),
-    'succeeded' => context.l10n.timelineToolCompleted(name),
-    'failed' => context.l10n.timelineToolFailed(name),
-    'denied' => context.l10n.timelineToolDenied(name),
-    'cancelled' => context.l10n.timelineToolCancelled(name),
-    'awaitingApproval' => context.l10n.timelineToolAwaitingApproval(name),
-    'running' ||
-    'streaming' ||
-    'approved' ||
-    'started' => context.l10n.timelineToolRunning(name),
-    _ => _unknownToolStatusLabel(context, name, status),
-  };
-}
-
-/// 未知工具状态保留原始值，并让缺失的工具名回退到统一 fallback；不把未知
-/// 状态伪装成某个已知阶段。
-String _unknownToolStatusLabel(
-  BuildContext context,
-  String name,
-  String status,
-) {
-  final resolvedName = name.trim().isEmpty
-      ? context.l10n.timelineToolFallback
-      : name;
-  if (status.trim().isEmpty) {
-    return resolvedName;
-  }
-  return context.l10n.timelineToolUnknownStatus(resolvedName, status);
-}
-
-/// 工具的展示名；LSP 工具使用本地化标题并附带参数摘要，其余保持原始领域名。
-String _toolDisplayName(BuildContext context, TimelineToolPresentation item) {
-  final name = item.name;
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspQuery) {
-    final detail = _lspQueryDetail(context, item.arguments);
-    return detail.isEmpty
-        ? context.l10n.timelineLspQueryTitle
-        : context.l10n.timelineLspQueryTitleWithDetail(detail);
-  }
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspCapabilities) {
-    return context.l10n.timelineLspCapabilitiesTitle;
-  }
-  if (toolDisplayRegistry[item.presentationContract]?.kind ==
-      ToolDetailKind.lspStatus) {
-    return context.l10n.timelineLspStatusTitle;
-  }
-  if (name.isEmpty || name == 'Tool') {
-    return context.l10n.timelineToolFallback;
-  }
-  return name;
-}
-
-/// 从 `lsp_query` 参数中提取本地化操作与查询目标摘要。
-String _lspQueryDetail(BuildContext context, String arguments) {
-  final json = decodeJsonObject(arguments);
-  final rawOp = jsonStringValue(json['operation']);
-  final op = TimelineLspOperation.fromWire(rawOp);
-  final opLabel = rawOp == null
-      ? ''
-      : timelineLspOperationLabel(context.l10n, op, raw: rawOp);
-  return [
-        opLabel,
-        jsonStringValue(json['languageId']),
-        jsonStringValue(json['filePath']),
-        jsonStringValue(json['query']),
-      ]
-      .map((value) => value?.trim() ?? '')
-      .where((value) => value.isNotEmpty)
-      .join(' · ');
-}
+String _unknownToolName(BuildContext context, TimelineToolPresentation item) =>
+    item.name.isEmpty || item.name == 'Tool'
+    ? context.l10n.timelineToolFallback
+    : item.name;
 
 String timelineFormatBytes(int bytes) {
   if (bytes < 1024) return '$bytes B';
