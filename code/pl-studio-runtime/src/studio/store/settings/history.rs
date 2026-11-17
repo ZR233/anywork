@@ -8,13 +8,13 @@
 //! DTOs; the explicit `TryFrom` conversions below are the only bridge from a frozen
 //! tree into current types, and they run at the fallible pre-validation boundary.
 
-use anyhow::{Error, Result, ensure};
-use pl_model::config::AccountId;
-use pl_protocol::studio::{
+use crate::{
     AccountMoneyBalance, AccountQuota, AccountQuotaDetail, AccountQuotaWindow, AccountUsageFailure,
     AccountUsageFailureCode, AccountUsageObservation, AccountUsagePhase, AccountUsageSuccess,
     AccountUsageValue,
 };
+use anyhow::{Error, Result, ensure};
+use pl_model::config::AccountId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 

@@ -24,7 +24,7 @@ use crate::studio::StudioStore;
 /// import stays invisible until an explicit recovery/activation entry migrates it.
 pub(crate) async fn load_checkpoint_read_only(
     store: &StudioStore,
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
 ) -> Result<Option<ThreadCheckpoint>> {
     let history = store.history_for(&thread.workspace_id, &thread.id).await?;
     store
@@ -42,7 +42,7 @@ pub(crate) async fn load_checkpoint_read_only(
 /// the old shape just because the Thread was not opened again by its previous owner.
 pub(crate) fn load_checkpoint_for_recovery<'a>(
     store: &'a StudioStore,
-    thread: &'a pl_protocol::Thread,
+    thread: &'a crate::Thread,
 ) -> impl std::future::Future<Output = Result<Option<ThreadCheckpoint>>> + Send + 'a {
     // Cold root/child recovery owns the import/model-preparation state on the heap. Every
     // activation, parent continuation and archive shares this boundary; polling and cancellation stay

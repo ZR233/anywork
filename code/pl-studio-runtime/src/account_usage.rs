@@ -8,10 +8,10 @@ pub use state::{
     UnsupportedAccountUsage,
 };
 
+use crate::{PureError, StateError};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::{PureError, StateError};
 use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use serde_json::Value;
 
@@ -535,25 +535,24 @@ pub(crate) async fn query_account_usage(
     provider: AccountConfig,
     operation_id: String,
 ) -> Result<AccountUsageRecord, AccountUsageTransitionError> {
-    let state =
-        if provider.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
-            query_chatgpt_usage(&provider).await
-        } else {
-            match account_template_kind(&provider).map(account_usage_query_kind) {
-                Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
-                    account_usage_data(provider, query_deepseek).await
-                }
-                Ok(Some(AccountUsageQueryKind::Subscription)) => {
-                    account_usage_data(provider, query_zhipu).await
-                }
-                Ok(None) => AccountUsageState::unsupported(),
-                Err(error) => AccountUsageState::failed(StateError {
-                    code: "accountUsageConfigurationFailed".to_string(),
-                    message: error.to_string(),
-                    retryable: false,
-                }),
+    let state = if provider.authentication == crate::AccountAuthenticationMethod::ChatGpt {
+        query_chatgpt_usage(&provider).await
+    } else {
+        match account_template_kind(&provider).map(account_usage_query_kind) {
+            Ok(Some(AccountUsageQueryKind::DeepSeek)) => {
+                account_usage_data(provider, query_deepseek).await
             }
-        };
+            Ok(Some(AccountUsageQueryKind::Subscription)) => {
+                account_usage_data(provider, query_zhipu).await
+            }
+            Ok(None) => AccountUsageState::unsupported(),
+            Err(error) => AccountUsageState::failed(StateError {
+                code: "accountUsageConfigurationFailed".to_string(),
+                message: error.to_string(),
+                retryable: false,
+            }),
+        }
+    };
     record
         .decide(AccountUsageCommand::Observe {
             expected_revision: record.revision(),

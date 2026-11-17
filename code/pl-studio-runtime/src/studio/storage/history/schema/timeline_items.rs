@@ -70,6 +70,7 @@ pub(super) async fn validate_source(db: &impl ConnectionTrait) -> Result<()> {
 mod tests {
     use super::super::super::HistoryStore;
     use super::*;
+    use crate::protocol::*;
     use crate::studio::storage::history::conversation;
     use crate::studio::storage::history::schema::legacy_timeline_types::{
         ChatEntry, CurrentProjection, TimelineItem, TimelineItemKind,
@@ -80,7 +81,6 @@ mod tests {
         context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
         thread::{ThreadCheckpoint, ThreadSnapshot},
     };
-    use pl_protocol::*;
     use sea_orm::DatabaseConnection;
     use serde_json::json;
     use std::sync::Arc;

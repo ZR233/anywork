@@ -4,16 +4,13 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    ThreadWorkspaceMode, TurnState,
-    studio::{StudioPromptInput, SubmitPromptRequest},
-};
 use pl_provider_fixture::{Protocol, Reply, Step};
 use pl_studio_runtime::{
     StudioLspServerState, StudioLspStateSnapshot, StudioProductBaselineState,
     StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicSubscription,
     StudioThreadLspStateSnapshot,
 };
+use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode, TurnState};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use support::{Environment, program_reply, prompt_step, receipt, text_reply, tool_reply};
@@ -466,7 +463,7 @@ async fn configuration_journey(shell: bool) -> Result<()> {
             .await?;
         let reset = env
             .runtime
-            .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+            .reset_thread_lsp_server(pl_studio_runtime::ThreadLspResetRequest {
                 thread_id: thread.clone(),
                 binding_id: binding.clone(),
                 server_id: "fixture".into(),

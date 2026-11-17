@@ -11,12 +11,12 @@ mod tool;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use pl_protocol::trace::{
-    AgentEvent, TraceEvent, TraceEventDraft, TraceEventKind, TraceEventSink, TracePart,
-    TracePartAction, TracePartCompletion, TracePartState, TraceToolFailureKind,
-};
-
 use crate::completion::CompletionTraceContext;
+use crate::trace::{
+    AgentEvent, InMemoryTraceEventSink, TraceEvent, TraceEventDraft, TraceEventKind,
+    TraceEventSink, TraceEventSinkError, TracePart, TracePartAction, TracePartCompletion,
+    TracePartSource, TracePartState, TraceToolFailureKind,
+};
 
 pub(crate) struct TraceProjection {
     turn_id: String,
@@ -28,7 +28,7 @@ pub(crate) struct TraceProjection {
     segment_occurrences: HashMap<String, u64>,
     events: Vec<TraceEvent>,
     sink: Arc<dyn TraceEventSink>,
-    trace_error: Option<pl_protocol::trace::TraceEventSinkError>,
+    trace_error: Option<TraceEventSinkError>,
 }
 
 impl TraceProjection {
@@ -37,10 +37,7 @@ impl TraceProjection {
         sink: Option<Arc<dyn TraceEventSink>>,
     ) -> Self {
         let sink = sink.unwrap_or_else(|| {
-            Arc::new(pl_protocol::trace::InMemoryTraceEventSink::new(
-                context.session_id.clone(),
-                0,
-            ))
+            Arc::new(InMemoryTraceEventSink::new(context.session_id.clone(), 0))
         });
         Self {
             turn_id: context.turn_id,
@@ -56,7 +53,7 @@ impl TraceProjection {
         }
     }
 
-    pub(crate) fn take_trace_error(&mut self) -> Option<pl_protocol::trace::TraceEventSinkError> {
+    pub(crate) fn take_trace_error(&mut self) -> Option<TraceEventSinkError> {
         self.trace_error.take()
     }
 
@@ -76,10 +73,7 @@ impl TraceProjection {
                 TracePartState::Thinking(_) => TracePartCompletion::Thinking {
                     authoritative_summary: None,
                 },
-                TracePartState::Tool(_)
-                | TracePartState::Agent(_)
-                | TracePartState::Turn(_)
-                | TracePartState::Inference(_) => continue,
+                TracePartState::Tool(_) => continue,
             };
             events.extend(self.apply_item(item.item_id(), TracePartAction::Complete(completion)));
         }
@@ -119,7 +113,7 @@ impl TraceProjection {
             unix_seconds(),
             self.turn_id.clone(),
             item_id,
-            pl_protocol::trace::TracePartSource::Model,
+            TracePartSource::Model,
             state,
         ))
         .into_iter()
@@ -165,22 +159,14 @@ impl TraceProjection {
                     event.updated_at,
                     TracePartAction::Append(event.delta.clone()),
                 )) {
-                    self.trace_error.get_or_insert_with(|| {
-                        pl_protocol::trace::TraceEventSinkError::new(error.to_string())
-                    });
+                    self.trace_error
+                        .get_or_insert_with(|| TraceEventSinkError::new(error.to_string()));
                     return None;
                 }
                 AgentEvent::TracePartDelta {
                     event: event.clone(),
                 }
             }
-            TraceEventKind::InteractionChanged { event } => AgentEvent::InteractionChanged {
-                event: event.clone(),
-            },
-            TraceEventKind::SkillActivated { activation } => AgentEvent::SkillActivated {
-                activation: activation.clone(),
-            },
-            TraceEventKind::EnabledToolsRecorded { .. } => return None,
         };
         self.events.push(event);
         Some(live)

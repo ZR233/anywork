@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 
-use pl_protocol::McpServerDescriptor;
+use crate::mcp::McpServerDescriptor;
 use rmcp::model::Tool;
 use serde_json::Value;
 

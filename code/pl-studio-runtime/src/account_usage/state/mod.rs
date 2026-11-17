@@ -36,7 +36,7 @@ impl AccountUsageState {
         Self::Ready(ReadyAccountUsage::new(data))
     }
 
-    pub fn failed(error: pl_protocol::StateError) -> Self {
+    pub fn failed(error: crate::StateError) -> Self {
         Self::Failed(FailedAccountUsage::new(error))
     }
 }

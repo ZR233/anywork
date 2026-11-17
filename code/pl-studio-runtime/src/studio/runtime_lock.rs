@@ -3,8 +3,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::{StudioError, StudioResult};
 use fs4::{FileExt, TryLockError};
-use pl_protocol::studio::{StudioError, StudioResult};
 use serde::Serialize;
 
 use crate::host_mcp_assets::HostMcpSource;

@@ -1,11 +1,11 @@
 use super::super::*;
 use super::record;
-use pl_protocol::{ChatAtomKind, ChatPlacement, ChatSourceId};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
+use pl_studio_runtime::{ChatAtomKind, ChatPlacement, ChatSourceId};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -205,7 +205,9 @@ async fn seed_batches(
                     text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().label().into(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple()
+                    .label()
+                    .into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -293,7 +295,7 @@ async fn completed(
                         "seed subscription repeated its initial State snapshot"
                     );
                     ensure!(
-                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
                         "unsupported completed history version {completed_history_version}"
                     );
                     *saw_snapshot = true;
@@ -307,7 +309,7 @@ async fn completed(
                         && turn.input_id.as_deref() == Some(input_id)
                     {
                         ensure!(
-                            matches!(turn.state, pl_protocol::TurnState::Completed(_)),
+                            matches!(turn.state, pl_studio_runtime::TurnState::Completed(_)),
                             "seed Turn failed: {:?}",
                             turn.state
                         );
@@ -331,7 +333,7 @@ async fn completed(
         let (target_sequence, revision) = {
             let snapshot = runtime.thread_snapshot(thread_id).await?;
             ensure!(
-                snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                     && snapshot.thread.id == thread_id,
                 "seed snapshot schema/Thread identity mismatch: schema={} thread={}",
                 snapshot.schema_version,

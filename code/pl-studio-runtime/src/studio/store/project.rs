@@ -270,7 +270,7 @@ fn studio_home_from_database(database: &Path) -> Result<PathBuf> {
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct ProjectRow {
     pub(in crate::studio) id: String,
-    pub(in crate::studio) kind: pl_protocol::studio::WorkspaceKind,
+    pub(in crate::studio) kind: crate::WorkspaceKind,
     pub(in crate::studio) name: String,
     pub(in crate::studio) created_at: i64,
 }

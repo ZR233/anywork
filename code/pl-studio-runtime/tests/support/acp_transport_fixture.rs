@@ -6,7 +6,7 @@
 #![cfg(test)]
 
 use anyhow::{Context, Result};
-use pl_protocol::studio::*;
+use pl_studio_runtime::*;
 use pl_studio_runtime::{
     AcpSessionOpen, StudioHostKind, StudioRuntime, StudioRuntimeOptions, WorkspaceRecord,
 };

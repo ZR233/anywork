@@ -2,14 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::{
+    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UnpricedReason,
+    UsageReport,
+};
 use anyhow::{Context, Result};
 use pl_core::chat::{Session, TimelineEpoch};
 use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
-use pl_protocol::{
-    InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount, UnpricedReason,
-    UsageReport,
-};
 use sha2::{Digest, Sha256};
 
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
@@ -70,9 +70,9 @@ fn build_and_reconcile_usage(
 
 fn test_current(sequence: u64) -> PreparedCurrent {
     PreparedCurrent::new(
-        FrozenCurrentProjection::new(pl_protocol::CurrentProjection::empty(
+        FrozenCurrentProjection::new(crate::CurrentProjection::empty(
             sequence,
-            pl_protocol::ThreadStatus::Idle,
+            crate::ThreadStatus::Idle,
         )),
         Arc::from([]),
     )
@@ -675,23 +675,23 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     non_billing.fold_into(&mut summary);
     billing.fold_into(&mut summary);
 
-    let mut atom = pl_protocol::ChatAtom {
+    let mut atom = crate::ChatAtom {
         id: "bodyless".into(),
         completion_item_id: None,
         completion_seq: None,
-        source: pl_protocol::ChatSourceId::Operation {
+        source: crate::ChatSourceId::Operation {
             operation_id: "bodyless".into(),
         },
         source_state: None,
         source_order: None,
-        kind: pl_protocol::ChatAtomKind::Compaction,
-        delivery: pl_protocol::ChatDeliveryKind::Independent,
-        lifecycle: pl_protocol::ChatAtomLifecycle::Active {
-            started: Some(pl_protocol::ChatFactPosition {
+        kind: crate::ChatAtomKind::Compaction,
+        delivery: crate::ChatDeliveryKind::Independent,
+        lifecycle: crate::ChatAtomLifecycle::Active {
+            started: Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             }),
-            status: pl_protocol::ChatActiveStatus::Running,
+            status: crate::ChatActiveStatus::Running,
         },
         turn_id: None,
         attempt_id: None,
@@ -708,16 +708,16 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
             &atom, 1,
         )?;
-    atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
-        started: Some(pl_protocol::ChatFactPosition {
+    atom.lifecycle = crate::ChatAtomLifecycle::Terminal {
+        started: Some(crate::ChatFactPosition {
             effect_seq: 1,
             suborder: 0,
         }),
-        ended: Some(pl_protocol::ChatFactPosition {
+        ended: Some(crate::ChatFactPosition {
             effect_seq: 2,
             suborder: 0,
         }),
-        outcome: pl_protocol::ChatTerminalOutcome::Cancelled,
+        outcome: crate::ChatTerminalOutcome::Cancelled,
     };
     let end = crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
         &atom, 2,
@@ -778,7 +778,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     );
     assert_eq!(
         facts[1][0].outcome,
-        Some(pl_protocol::ChatTerminalOutcome::Cancelled)
+        Some(crate::ChatTerminalOutcome::Cancelled)
     );
     // 2. Conflicting effect at same (threadId, effectSeq) triggers fatal failure + cancellation.
     let exp_conflict = RunExporter::start(RunExportOptions {
@@ -1054,7 +1054,7 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
     let mut delta =
         DirectoryDelta::upsert_project(crate::studio::store::directory::ProjectDirectoryRecord {
             id: "ws-closed".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name: "Closed Project".into(),
             path: workspace.to_string_lossy().into_owned(),
             ssh_alias: None,
@@ -1067,8 +1067,8 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
         child_thread_id.to_string(),
         "ws-closed",
         "closed child",
-        pl_protocol::ThreadModeId::simple(),
-        pl_protocol::ThreadWorkspaceMode::Local,
+        crate::mode::ThreadModeId::simple(),
+        crate::ThreadWorkspaceMode::Local,
         workspace.to_string_lossy().into_owned(),
         crate::config::ROOT_AGENT_ROUTE_KEY,
     );

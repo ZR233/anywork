@@ -31,8 +31,8 @@ use pl_model::runtime::{
     ModelInvocationContext, ModelRuntime, ModelSession, model_failure_receipt,
     thread_tool_declaration,
 };
+use pl_model::trace::TraceTextChannel;
 use pl_protocol::PureError;
-use pl_protocol::trace::TraceTextChannel;
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, ReplyStage, Step};
 use serde_json::{Value, json};
 
@@ -1816,7 +1816,7 @@ fn legacy_receipt(partial_progress: Value) -> ModelError {
     let payload = json!({
         "message": "provider failed mid stream",
         "binding": legacy_binding(),
-        "accounting": serde_json::to_value(pl_protocol::InferenceAccounting::default())
+        "accounting": serde_json::to_value(pl_model::model::InferenceAccounting::default())
             .expect("default accounting encodes"),
         "partialProgress": partial_progress,
     });

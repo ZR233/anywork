@@ -1,7 +1,7 @@
 //! Native member activity derived from the original Thread snapshot.
+use crate::AgentState;
 use anyhow::Result;
 use pl_core::thread::{ThreadLifecycle, ThreadSnapshot, TurnState};
-use pl_protocol::AgentState;
 
 /// Whether this member owes work nobody has claimed yet (stopped or interrupted, waiting for the
 /// main agent).
@@ -36,26 +36,20 @@ pub(in crate::studio) fn native_activity(
 ///
 /// Preparation, storage and admission phases are part of the identity, so a member that has not
 /// created a Turn yet still publishes what a stop would target.
-fn execution(snapshot: &ThreadSnapshot) -> Option<pl_protocol::AgentExecution> {
+fn execution(snapshot: &ThreadSnapshot) -> Option<crate::AgentExecution> {
     snapshot.execution.as_ref().map(|execution| {
-        pl_protocol::AgentExecution::new(
+        crate::AgentExecution::new(
             execution.id.clone(),
             match execution.phase {
-                pl_core::thread::ExecutionPhase::Preparing => {
-                    pl_protocol::AgentExecutionPhase::Preparing
-                }
+                pl_core::thread::ExecutionPhase::Preparing => crate::AgentExecutionPhase::Preparing,
                 pl_core::thread::ExecutionPhase::AwaitingStorage => {
-                    pl_protocol::AgentExecutionPhase::AwaitingStorage
+                    crate::AgentExecutionPhase::AwaitingStorage
                 }
                 pl_core::thread::ExecutionPhase::AwaitingAdmission => {
-                    pl_protocol::AgentExecutionPhase::AwaitingAdmission
+                    crate::AgentExecutionPhase::AwaitingAdmission
                 }
-                pl_core::thread::ExecutionPhase::Running => {
-                    pl_protocol::AgentExecutionPhase::Running
-                }
-                pl_core::thread::ExecutionPhase::Stopping => {
-                    pl_protocol::AgentExecutionPhase::Stopping
-                }
+                pl_core::thread::ExecutionPhase::Running => crate::AgentExecutionPhase::Running,
+                pl_core::thread::ExecutionPhase::Stopping => crate::AgentExecutionPhase::Stopping,
             },
             execution.turn_id.clone(),
         )
@@ -66,14 +60,14 @@ fn agent_state(snapshot: &ThreadSnapshot) -> Result<AgentState> {
     if crate::studio::agent_close::is_explicitly_closed(snapshot)?
         && snapshot.lifecycle == ThreadLifecycle::Open
     {
-        return Ok(AgentState::Closing(pl_protocol::ClosingAgentState::new()));
+        return Ok(AgentState::Closing(crate::ClosingAgentState::new()));
     }
     match snapshot.lifecycle {
         ThreadLifecycle::Closed => {
-            return Ok(AgentState::Closed(pl_protocol::ClosedAgentState::new()));
+            return Ok(AgentState::Closed(crate::ClosedAgentState::new()));
         }
         ThreadLifecycle::Closing => {
-            return Ok(AgentState::Closing(pl_protocol::ClosingAgentState::new()));
+            return Ok(AgentState::Closing(crate::ClosingAgentState::new()));
         }
         ThreadLifecycle::Open => {}
     }
@@ -81,8 +75,8 @@ fn agent_state(snapshot: &ThreadSnapshot) -> Result<AgentState> {
         interaction.state == pl_core::thread::interactions::InteractionState::Pending
     }) {
         return Ok(AgentState::WaitingInteraction(
-            pl_protocol::WaitingInteractionAgentState::new(
-                pl_protocol::TurnId::new(interaction.request.turn_id.clone())?,
+            crate::WaitingInteractionAgentState::new(
+                crate::TurnId::new(interaction.request.turn_id.clone())?,
                 interaction.request.id.clone(),
             ),
         ));
@@ -91,8 +85,8 @@ fn agent_state(snapshot: &ThreadSnapshot) -> Result<AgentState> {
         permission.state == pl_core::thread::permissions::PermissionState::Pending
     }) {
         return Ok(AgentState::WaitingInteraction(
-            pl_protocol::WaitingInteractionAgentState::new(
-                pl_protocol::TurnId::new(permission.turn_id.clone())?,
+            crate::WaitingInteractionAgentState::new(
+                crate::TurnId::new(permission.turn_id.clone())?,
                 permission.id.clone(),
             ),
         ));
@@ -103,8 +97,8 @@ fn agent_state(snapshot: &ThreadSnapshot) -> Result<AgentState> {
         .rev()
         .find(|turn| turn.state == TurnState::Running)
     {
-        return Ok(AgentState::Running(pl_protocol::RunningAgentState::new(
-            pl_protocol::TurnId::new(turn.turn_id.clone())?,
+        return Ok(AgentState::Running(crate::RunningAgentState::new(
+            crate::TurnId::new(turn.turn_id.clone())?,
         )));
     }
     // Accepted inputs have no Turn identity until execution starts; do not fabricate a queued Turn.

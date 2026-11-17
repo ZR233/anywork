@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     StudioError, StudioErrorCode, ThreadDirectoryFrame, ThreadDirectoryQuery,
     ThreadDirectoryWindow, ThreadMetadataFrame,
 };
+use anyhow::Result;
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -100,7 +100,7 @@ struct MetadataInner {
     epoch: String,
     thread_id: String,
     cancellation: CancellationToken,
-    next: Mutex<ReadState<Option<pl_protocol::SessionDirectoryRow>>>,
+    next: Mutex<ReadState<Option<crate::SessionDirectoryRow>>>,
 }
 
 impl StudioRuntime {
@@ -271,26 +271,26 @@ mod tests {
         Ok((temp, events))
     }
 
-    fn row(id: &str, time: i64) -> pl_protocol::SessionDirectoryRow {
-        pl_protocol::SessionDirectoryRow {
+    fn row(id: &str, time: i64) -> crate::SessionDirectoryRow {
+        crate::SessionDirectoryRow {
             session_id: id.into(),
             agent_id: id.into(),
             parent_agent_id: None,
             thread_id: id.into(),
             workspace_id: "directory-pull-fixture".into(),
             title: id.into(),
-            mode: Some(pl_protocol::ThreadModeId::simple()),
-            workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+            mode: Some(crate::mode::ThreadModeId::simple()),
+            workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
             workspace_path: format!("/tmp/{id}"),
             role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
-            backend: pl_protocol::session::AgentBackend::Native {
-                config: pl_protocol::NativeAgentConfig {
+            backend: crate::AgentBackend::Native {
+                config: crate::NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 },
-                status: pl_protocol::ThreadStatus::Idle,
+                status: crate::ThreadStatus::Idle,
             },
             created_at: time,
             updated_at: time,
@@ -506,14 +506,14 @@ mod tests {
         assert!(futures::poll!(next_structure.as_mut()).is_pending());
         events.patch_thread_runtime(
             events.begin_native_observation("a").as_ref(),
-            pl_protocol::ThreadStatus::Running,
+            crate::ThreadStatus::Running,
             2,
             &pl_core::thread::ThreadSnapshot::default(),
             None,
         )?;
         assert_eq!(
             a.next().await?.unwrap().row.unwrap().native_status(),
-            Some(pl_protocol::ThreadStatus::Running)
+            Some(crate::ThreadStatus::Running)
         );
         assert!(!metadata_has_pending(&b).await);
         assert!(futures::poll!(next_structure.as_mut()).is_pending());
@@ -622,11 +622,11 @@ mod tests {
 
         // Native mode belongs only to the root; it cannot wake or fabricate mode for a child.
         events
-            .commit_observed_thread_mode(&root.thread_id, pl_protocol::ThreadModeId::task(), 2)
+            .commit_observed_thread_mode(&root.thread_id, crate::mode::ThreadModeId::task(), 2)
             .await?;
         assert_eq!(
             root_observation.next().await?.unwrap().row.unwrap().mode,
-            Some(pl_protocol::ThreadModeId::task())
+            Some(crate::mode::ThreadModeId::task())
         );
         assert!(!metadata_has_pending(&child_observation).await);
         assert_eq!(
@@ -718,7 +718,7 @@ mod tests {
         events
             .apply_project_entry(crate::WorkspaceRecord {
                 id: "directory-pull-fixture".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Needle".into(),
                 path: "/workspace".into(),
                 ssh_alias: None,

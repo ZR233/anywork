@@ -7,7 +7,7 @@ use crate::api::studio::types::{
     BridgeInteractionCommandReply, BridgeInteractionResolution, BridgeStopThreadReply,
     BridgeStudioPromptInput, BridgeToolApprovalResolution, SubmitPromptResponse,
 };
-use pl_protocol::{
+use pl_studio_runtime::{
     InteractionResolution, ToolApprovalResolution, ToolApprovalResolutionPayload, UserInputAnswer,
     UserInputResolution,
 };
@@ -24,7 +24,7 @@ pub async fn submit_prompt(
         .studio
         .submit_prompt_command(
             thread_id,
-            pl_protocol::studio::SubmitPromptRequest {
+            pl_studio_runtime::SubmitPromptRequest {
                 input: input.into(),
                 expected_model_route_revision,
             },
@@ -47,7 +47,7 @@ pub async fn stop_thread(
         .studio
         .stop_thread(
             thread_id,
-            pl_protocol::studio::StopThreadRequest {
+            pl_studio_runtime::StopThreadRequest {
                 operation_id,
                 expected_execution_id,
             },
@@ -72,7 +72,7 @@ pub async fn continue_thread(
         .studio
         .continue_thread(
             thread_id,
-            pl_protocol::studio::ContinueThreadRequest {
+            pl_studio_runtime::ContinueThreadRequest {
                 operation_id,
                 expected_continuation_id,
                 expected_model_route_revision,
@@ -100,13 +100,13 @@ pub async fn read_continuation_operation(
     Ok(BridgeContinuationOperationView {
         accepted_sequence: view.accepted_sequence,
         state: match view.state {
-            pl_protocol::studio::ContinuationOperationState::Pending => {
+            pl_studio_runtime::ContinuationOperationState::Pending => {
                 BridgeContinuationOperationState::Pending
             }
-            pl_protocol::studio::ContinuationOperationState::Consumed { turn_id } => {
+            pl_studio_runtime::ContinuationOperationState::Consumed { turn_id } => {
                 BridgeContinuationOperationState::Consumed { turn_id }
             }
-            pl_protocol::studio::ContinuationOperationState::Discarded => {
+            pl_studio_runtime::ContinuationOperationState::Discarded => {
                 BridgeContinuationOperationState::Discarded
             }
         },

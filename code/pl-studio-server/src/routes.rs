@@ -7,32 +7,29 @@ use axum::extract::{FromRequest, FromRequestParts, Multipart, Path, Query, Reque
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
-use pl_protocol::studio::{
+use pl_studio_runtime::mode::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
+use pl_studio_runtime::{
     AccountDomainFrame, AccountObservationTarget, AcpAccountCatalog, AcpAuthCommandReply,
     AcpAuthSnapshot, AcpInstallCommandReply, AcpInstallSnapshot, AcpLocalDetectionCommandReply,
     AcpLocalDetectionSnapshot, AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse,
     CancelAcpAuthRequest, CancelAcpInstallRequest, CancelAcpLocalDetectionRequest,
     ContinuationOperationView, ContinueAcpAuthRequest, ContinueThreadRequest,
     ContinueThreadResponse, CreateAccountRequest, CreateMcpDocumentRequest, CreateThreadRequest,
-    DeleteMcpDocumentRequest, ExpectedRevisionRequest, HealthResponse, LspResetRequest,
-    McpCatalogSnapshot, McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope,
-    OpenProjectRequest, PatchAccountRequest, ReconnectThreadMcpRequest, RemoveAccountModelRequest,
-    RemoveAccountRequest, RemoveAcpAccountRequest, RenameThreadRequest, ResolveInteractionRequest,
-    SearchSkillsRequest, SetAccountBillingKindRequest, SetAccountModelAutoCompactRequest,
-    SetAccountModelConnectionRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
-    SetThreadModeRequest, SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse,
-    StartAcpAuthRequest, StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest,
-    StopThreadResponse, StudioAttachmentAdmissionContext, StudioAttachmentDraftSource,
-    StudioCommandRequest, StudioError, SubmitPromptRequest, SyncAccountModelsReply,
-    SyncAccountModelsRequest, ThreadLspResetRequest, ThreadMcpStateSnapshot,
-    ThreadModelRouteCommandReply, ThreadPageQuery, UpdateAcpAccountRequest,
+    DelegationModelDetail, DelegationModelDetails, DelegationModelList, DeleteMcpDocumentRequest,
+    GetDelegationModelRequest, GetDelegationModelsRequest, HealthResponse,
+    ListDelegationModelsRequest, LspResetRequest, McpCatalogSnapshot, McpDocumentCommitReceipt,
+    McpDocumentContent, McpDocumentRef, McpScope, OpenProjectRequest, PatchAccountRequest,
+    ReconnectThreadMcpRequest, RemoveAccountModelRequest, RemoveAccountRequest,
+    RemoveAcpAccountRequest, ResolveInteractionRequest, SetAccountBillingKindRequest,
+    SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
+    SetAccountModelEnabledRequest, SetDefaultAccountRequest, SetThreadModeRequest,
+    SetThreadModelRouteRequest, SettingsCommandReply, SettingsStateResponse, StartAcpAuthRequest,
+    StartAcpInstallRequest, StartAcpLocalDetectionRequest, StopThreadRequest, StopThreadResponse,
+    StudioAttachmentAdmissionContext, StudioAttachmentDraftSource, StudioError,
+    SubmitPromptRequest, SyncAccountModelsReply, SyncAccountModelsRequest, ThreadLspResetRequest,
+    ThreadMcpStateSnapshot, ThreadModelRouteCommandReply, UpdateAcpAccountRequest,
     UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{
-    DelegationModelDetail, DelegationModelDetails, DelegationModelList, GetDelegationModelRequest,
-    GetDelegationModelsRequest, ListDelegationModelsRequest,
-};
-use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use tokio::io::AsyncWriteExt;
 use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -42,7 +39,7 @@ use crate::conversation;
 use crate::error::ApiError;
 use crate::sse;
 use crate::timeline;
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     CancelChatGptLoginRequest, ChatGptLoginCommandReply, StartChatGptLoginRequest,
 };
 
@@ -55,10 +52,10 @@ use pl_protocol::studio::{
     ),
     components(schemas(
         StudioError,
-        pl_protocol::ActivitySnapshot,
-        pl_protocol::ActivityEntry,
-        pl_protocol::ActivityIdentity,
-        pl_protocol::ChatScope
+        pl_studio_runtime::ActivitySnapshot,
+        pl_studio_runtime::ActivityEntry,
+        pl_studio_runtime::ActivityIdentity,
+        pl_studio_runtime::ChatScope
     ))
 )]
 struct StudioApi;
@@ -66,6 +63,56 @@ struct StudioApi;
 const MAX_MULTIPART_BODY_BYTES: usize = 200 * 1024 * 1024;
 const MAX_MULTIPART_FILE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_MULTIPART_FILES: usize = 16;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadPageQuery {
+    cursor: Option<String>,
+    limit: Option<u32>,
+}
+
+impl ThreadPageQuery {
+    const DEFAULT_LIMIT: u32 = 50;
+    const MAX_LIMIT: u32 = 200;
+
+    fn limit(&self) -> usize {
+        self.limit
+            .unwrap_or(Self::DEFAULT_LIMIT)
+            .clamp(1, Self::MAX_LIMIT) as usize
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameProjectRequest {
+    name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SearchSkillsRequest {
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RenameThreadRequest {
+    operation_id: String,
+    title: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExpectedRevisionRequest {
+    expected_revision: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StudioCommandRequest {
+    operation_id: String,
+}
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -179,7 +226,7 @@ pub(crate) fn parse_product_topic(
 ) -> Result<pl_studio_runtime::StudioProductTopic, ApiError> {
     use pl_studio_runtime::StudioProductTopic;
     let invalid =
-        |message: &str| ApiError(pl_protocol::studio::StudioError::invalid_argument(message));
+        |message: &str| ApiError(pl_studio_runtime::StudioError::invalid_argument(message));
     let topic = match query.topic.trim() {
         "projectDirectory" => StudioProductTopic::ProjectDirectory,
         "threadDirectory" => StudioProductTopic::ThreadDirectory,
@@ -495,11 +542,11 @@ async fn archive_project(
     Ok(Json(project))
 }
 
-#[utoipa::path(put, path = "/api/v1/projects/{workspace_id}/name", operation_id = "project.rename", params(("workspace_id" = String, Path)), request_body = pl_protocol::studio::RenameProjectRequest, responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(put, path = "/api/v1/projects/{workspace_id}/name", operation_id = "project.rename", params(("workspace_id" = String, Path)), request_body = RenameProjectRequest, responses(StudioApiErrors, (status = 200)))]
 async fn rename_project(
     State(state): State<AppState>,
     Path(workspace_id): Path<String>,
-    ApiJson(request): ApiJson<pl_protocol::studio::RenameProjectRequest>,
+    ApiJson(request): ApiJson<RenameProjectRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
@@ -524,11 +571,11 @@ async fn list_threads(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/threads/query", operation_id = "thread.query", params(("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), request_body = pl_protocol::studio::ThreadDirectoryQuery, responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/threads/query", operation_id = "thread.query", params(("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), request_body = pl_studio_runtime::ThreadDirectoryQuery, responses(StudioApiErrors, (status = 200)))]
 async fn query_threads(
     State(state): State<AppState>,
     ApiQuery(page): ApiQuery<ThreadPageQuery>,
-    ApiJson(query): ApiJson<pl_protocol::studio::ThreadDirectoryQuery>,
+    ApiJson(query): ApiJson<pl_studio_runtime::ThreadDirectoryQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state
@@ -627,7 +674,7 @@ async fn rename_thread(
     ))
 }
 
-#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/mode", operation_id = "thread.setMode", params(("thread_id" = String, Path)), request_body = SetThreadModeRequest, responses(StudioApiErrors, (status = 200, body = pl_protocol::studio::ThreadModeCommandReply)))]
+#[utoipa::path(put, path = "/api/v1/threads/{thread_id}/mode", operation_id = "thread.setMode", params(("thread_id" = String, Path)), request_body = SetThreadModeRequest, responses(StudioApiErrors, (status = 200, body = pl_studio_runtime::ThreadModeCommandReply)))]
 async fn set_thread_mode(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
@@ -716,7 +763,7 @@ async fn reload_thread_mode_definitions(
 async fn validate_thread_mode_definition(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<ValidateThreadModeDefinitionRequest>,
-) -> Result<Json<pl_protocol::ThreadModeValidationResult>, ApiError> {
+) -> Result<Json<pl_studio_runtime::mode::ThreadModeValidationResult>, ApiError> {
     Ok(Json(
         state.runtime.validate_thread_mode_definition(&request.json),
     ))
@@ -735,7 +782,7 @@ async fn thread_mode_definition_schema(
 async fn preview_thread_mode_workflow(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<WorkflowPreviewRequest>,
-) -> Result<Json<pl_protocol::WorkflowPreviewSnapshot>, ApiError> {
+) -> Result<Json<pl_studio_runtime::mode::WorkflowPreviewSnapshot>, ApiError> {
     Ok(Json(
         state
             .runtime
@@ -1543,7 +1590,7 @@ struct McpScopeQuery {
 
 fn parse_mcp_scope_query(query: &McpScopeQuery) -> Result<McpScope, ApiError> {
     let invalid =
-        |message: &str| ApiError(pl_protocol::studio::StudioError::invalid_argument(message));
+        |message: &str| ApiError(pl_studio_runtime::StudioError::invalid_argument(message));
     match (query.scope.as_str(), query.ssh_alias.as_ref()) {
         ("host", None) => Ok(McpScope::Host),
         ("ssh", Some(ssh_alias)) if !ssh_alias.trim().is_empty() => Ok(McpScope::Ssh {
@@ -1854,7 +1901,7 @@ mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
-    use pl_protocol::studio::{AcpProvider, StudioErrorCode};
+    use pl_studio_runtime::{AcpProvider, StudioErrorCode};
 
     async fn extract<T: serde::de::DeserializeOwned>(
         body: serde_json::Value,

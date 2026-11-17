@@ -1,4 +1,4 @@
-//! 跨产品共享的 Agent runtime 标识。
+//! 跨 crate 共享的会话、成员与执行上下文标识。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -151,7 +151,5 @@ macro_rules! string_id {
 }
 
 generated_id!(ThreadId, "thread id", "thread");
-generated_id!(TurnId, "turn id", "turn");
-string_id!(AgentRoleId, "agent role id");
-
-pub(crate) use string_id;
+string_id!(SessionId, "session id");
+string_id!(AgentId, "agent id");

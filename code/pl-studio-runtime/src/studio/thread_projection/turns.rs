@@ -1,10 +1,10 @@
 //! Turn lifecycle and diagnostics projected from saved commit metadata.
 use super::ProjectionError;
+use crate::{Turn, TurnPhase, TurnState};
 use pl_core::thread::{
     AttemptStatus, ThreadSnapshot, TurnOutcome as CoreTurnOutcome, TurnRecord,
     TurnState as CoreTurnState,
 };
-use pl_protocol::{Turn, TurnPhase, TurnState};
 
 struct Stamp {
     started_at: i64,
@@ -71,18 +71,18 @@ fn state(
     let started = Some(stamp.started_at);
     let at = stamp.updated_at;
     Ok(match &record.state {
-        CoreTurnState::Running => TurnState::Running(pl_protocol::RunningTurnState::new(
+        CoreTurnState::Running => TurnState::Running(crate::RunningTurnState::new(
             stamp.started_at,
             phase(snapshot, &record.turn_id),
         )),
         CoreTurnState::Finished(CoreTurnOutcome::Completed) => TurnState::Completed(
-            pl_protocol::CompletedTurnState::new(started, at, pl_protocol::TurnCompletion::Normal),
+            crate::CompletedTurnState::new(started, at, crate::TurnCompletion::Normal),
         ),
         CoreTurnState::Finished(CoreTurnOutcome::WaitingInteraction) => {
-            TurnState::Completed(pl_protocol::CompletedTurnState::new(
+            TurnState::Completed(crate::CompletedTurnState::new(
                 started,
                 at,
-                pl_protocol::TurnCompletion::InteractionRequested,
+                crate::TurnCompletion::InteractionRequested,
             ))
         }
         CoreTurnState::Finished(CoreTurnOutcome::StepLimit) => {
@@ -91,7 +91,7 @@ fn state(
                 .values()
                 .filter(|task| task.turn_id == record.turn_id)
                 .collect::<Vec<_>>();
-            let usage = pl_protocol::BudgetUsage {
+            let usage = crate::BudgetUsage {
                 model_steps: record.model_steps,
                 tool_calls: tasks.len().try_into().map_err(|_| ProjectionError::Count)?,
                 wait_calls: tasks
@@ -104,30 +104,30 @@ fn state(
                     .elapsed_ms
                     .ok_or_else(|| ProjectionError::MissingDuration(record.turn_id.clone()))?,
             };
-            TurnState::BudgetLimited(pl_protocol::BudgetLimitedTurnState::new(
+            TurnState::BudgetLimited(crate::BudgetLimitedTurnState::new(
                 started,
                 at,
-                pl_protocol::BudgetLimitSnapshot {
-                    kind: pl_protocol::BudgetLimitKind::ModelStep,
+                crate::BudgetLimitSnapshot {
+                    kind: crate::BudgetLimitKind::ModelStep,
                     usage,
                 },
-                pl_protocol::TurnRolloverOutcome::NotAttempted,
+                crate::TurnRolloverOutcome::NotAttempted,
             ))
         }
-        CoreTurnState::Cancelled => TurnState::Cancelled(pl_protocol::CancelledTurnState::new(
+        CoreTurnState::Cancelled => TurnState::Cancelled(crate::CancelledTurnState::new(
             started,
             at,
             at,
-            pl_protocol::TurnCancellationCause::Unspecified,
+            crate::TurnCancellationCause::Unspecified,
         )),
-        CoreTurnState::Interrupted => TurnState::Cancelled(pl_protocol::CancelledTurnState::new(
+        CoreTurnState::Interrupted => TurnState::Cancelled(crate::CancelledTurnState::new(
             started,
             at,
             at,
             if record.elapsed_ms.is_some() {
-                pl_protocol::TurnCancellationCause::Interrupted
+                crate::TurnCancellationCause::Interrupted
             } else {
-                pl_protocol::TurnCancellationCause::Recovery
+                crate::TurnCancellationCause::Recovery
             },
         )),
         CoreTurnState::Failed {
@@ -143,7 +143,7 @@ fn state(
                 }),
                 None => failure(snapshot, &record.turn_id, description),
             };
-            TurnState::Failed(pl_protocol::FailedTurnState::new(started, at, failure))
+            TurnState::Failed(crate::FailedTurnState::new(started, at, failure))
         }
     })
 }
@@ -193,32 +193,28 @@ pub(super) fn phase(snapshot: &ThreadSnapshot, turn_id: &str) -> TurnPhase {
     }
 }
 
-fn failure(
-    snapshot: &ThreadSnapshot,
-    turn_id: &str,
-    description: &str,
-) -> pl_protocol::TurnFailure {
+fn failure(snapshot: &ThreadSnapshot, turn_id: &str, description: &str) -> crate::TurnFailure {
     let category = if snapshot
         .attempts
         .iter()
         .any(|attempt| attempt.turn_id == turn_id && attempt.status == AttemptStatus::Failed)
     {
-        pl_protocol::TurnFailureCategory::Provider
+        crate::TurnFailureCategory::Provider
     } else {
-        pl_protocol::TurnFailureCategory::Internal
+        crate::TurnFailureCategory::Internal
     };
-    pl_protocol::TurnFailure::permanent(category, description)
+    crate::TurnFailure::permanent(category, description)
 }
 
-pub(super) fn model_failure(error: &pl_core::model::ModelError) -> pl_protocol::TurnFailure {
+pub(super) fn model_failure(error: &pl_core::model::ModelError) -> crate::TurnFailure {
     let description = error.to_string();
     match pl_model::runtime::model_failure_receipt(error) {
         Ok(Some(receipt)) => match receipt.provider_failure {
-            Some(failure) => pl_protocol::TurnFailure {
-                category: if failure.kind == pl_protocol::ProviderFailureKind::Capacity {
-                    pl_protocol::TurnFailureCategory::ProviderCapacity
+            Some(failure) => crate::TurnFailure {
+                category: if failure.kind == crate::ProviderFailureKind::Capacity {
+                    crate::TurnFailureCategory::ProviderCapacity
                 } else {
-                    pl_protocol::TurnFailureCategory::Provider
+                    crate::TurnFailureCategory::Provider
                 },
                 provider_kind: Some(failure.kind),
                 code: failure.code,
@@ -226,8 +222,8 @@ pub(super) fn model_failure(error: &pl_core::model::ModelError) -> pl_protocol::
                 message: failure.message,
                 retry: failure.retry,
             },
-            None => pl_protocol::TurnFailure::permanent(
-                pl_protocol::TurnFailureCategory::Provider,
+            None => crate::TurnFailure::permanent(
+                crate::TurnFailureCategory::Provider,
                 if receipt.message.is_empty() {
                     description.to_owned()
                 } else {
@@ -235,12 +231,11 @@ pub(super) fn model_failure(error: &pl_core::model::ModelError) -> pl_protocol::
                 },
             ),
         },
-        Ok(None) => pl_protocol::TurnFailure::permanent(
-            pl_protocol::TurnFailureCategory::Provider,
-            &description,
-        ),
-        Err(error) => pl_protocol::TurnFailure::permanent(
-            pl_protocol::TurnFailureCategory::Protocol,
+        Ok(None) => {
+            crate::TurnFailure::permanent(crate::TurnFailureCategory::Provider, &description)
+        }
+        Err(error) => crate::TurnFailure::permanent(
+            crate::TurnFailureCategory::Protocol,
             format!("{description}; saved model failure cannot be decoded: {error}"),
         ),
     }

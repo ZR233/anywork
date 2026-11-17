@@ -1,5 +1,5 @@
 use crate::api::studio::types::*;
-use pl_protocol::studio as p;
+use pl_studio_runtime as p;
 
 pub(crate) fn bridge_chatgpt_login_reply(
     value: p::ChatGptLoginCommandReply,

@@ -1,8 +1,8 @@
 //! Root-scoped pending child interaction projection.
 
+use crate::{ChildInteractionSummary, ObservedResource, SessionDirectoryRow};
 use anyhow::Result;
 use pl_core::thread::{ThreadLifecycle, ThreadSnapshot};
-use pl_protocol::{ChildInteractionSummary, ObservedResource, SessionDirectoryRow};
 
 use crate::{StudioChildInteractionsState, StudioProductEventEnvelope, StudioProductEventKind};
 
@@ -282,18 +282,18 @@ mod tests {
             thread_id: id.into(),
             workspace_id: String::new(),
             title: String::new(),
-            mode: Some(pl_protocol::ThreadModeId::simple()),
-            workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+            mode: Some(crate::mode::ThreadModeId::simple()),
+            workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
             workspace_path: String::new(),
             role: String::new(),
-            backend: pl_protocol::session::AgentBackend::Native {
-                config: pl_protocol::NativeAgentConfig {
+            backend: crate::AgentBackend::Native {
+                config: crate::NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 },
-                status: pl_protocol::ThreadStatus::Idle,
+                status: crate::ThreadStatus::Idle,
             },
             created_at: 0,
             updated_at: 0,

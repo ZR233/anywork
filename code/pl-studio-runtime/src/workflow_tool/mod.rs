@@ -3,11 +3,14 @@ mod dynamic;
 pub(crate) mod machine;
 mod restart;
 mod transition;
+mod types;
+
 pub use dynamic::{
     WORKFLOW_EXTENSION, decode_workflow_state, encode_workflow_state, workflow_registrations,
 };
 pub use restart::{TOOL_WORKFLOW_RESTART, validate_workflow_restart_arguments};
 pub use transition::{TOOL_WORKFLOW_TRANSITION, validate_workflow_transition_arguments};
+pub use types::*;
 pub const TOOL_WORKFLOW_CURRENT: &str = "workflow_current";
 pub const TOOL_WORKFLOW_GRAPH: &str = "workflow_graph";
 pub const TOOL_WORKFLOW_HISTORY: &str = "workflow_history";

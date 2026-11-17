@@ -1,8 +1,8 @@
 //! 原件索引 v1 的冻结迁移解码器；正常执行和读取禁止依赖。
-use pl_core::chat::{ChatError, ChatKey};
-use pl_protocol::{
+use crate::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome,
 };
+use pl_core::chat::{ChatError, ChatKey};
 
 /// Product-independent visibility and adjacent-run membership. Keys are opaque to Core.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

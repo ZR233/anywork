@@ -5,10 +5,11 @@
 
 use std::collections::BTreeMap;
 
-use pl_core::{context::OpaquePayload, model::ObservedPartIdentity};
-use pl_protocol::{
-    InferenceModelObservation, ResponsesContextItem, ToolCallCaller, ToolCallKind, UsageReport,
+use crate::completion::{
+    InferenceModelObservation, ResponsesContextItem, ToolCallCaller, ToolCallKind,
 };
+use crate::model::UsageReport;
+use pl_core::{context::OpaquePayload, model::ObservedPartIdentity};
 use serde::{Deserialize, Serialize};
 
 use crate::completion::{CompletionPresentationItem, CompletionPresentationPartKind, ToolCall};
@@ -95,7 +96,7 @@ pub struct ModelStreamContentPart {
 pub struct ModelStreamBlock {
     pub id: String,
     pub kind: CompletionPresentationPartKind,
-    pub channel: Option<pl_protocol::trace::TraceTextChannel>,
+    pub channel: Option<crate::trace::TraceTextChannel>,
     pub provider_item_id: Option<String>,
     pub provider_metadata: Option<serde_json::Value>,
     pub closed: bool,

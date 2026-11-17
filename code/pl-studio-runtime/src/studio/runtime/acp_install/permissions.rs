@@ -3,7 +3,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use pl_protocol::studio::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallStage};
+use crate::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallStage};
 
 use super::mapping::failure_with_message;
 

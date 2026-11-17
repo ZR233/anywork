@@ -1,11 +1,11 @@
 //! Runtime facade for file-backed Thread Mode authoring.
 
-use anyhow::Result;
-use pl_protocol::studio::CommandEffectPoint;
-use pl_protocol::{
+use crate::CommandEffectPoint;
+use crate::mode::{
     ThreadModeDefinitionCommandReply, ThreadModeDefinitionSnapshot, ThreadModeDocument,
     ThreadModeId, ThreadModeValidationResult, WorkflowPreviewRequest, WorkflowPreviewSnapshot,
 };
+use anyhow::Result;
 
 use super::StudioRuntime;
 

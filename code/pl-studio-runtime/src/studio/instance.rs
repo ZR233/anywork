@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use pl_protocol::studio::{StudioError, StudioResult};
+use crate::{StudioError, StudioResult};
 use sha2::{Digest, Sha256};
 
 use super::runtime_lock::{ResolvedRuntimeOptions, RuntimeLock, StudioRuntimeOptions};

@@ -1,7 +1,7 @@
 //! Provider 远程上下文压缩请求与响应。
 
-use pl_protocol::InferenceAccounting;
-use pl_protocol::ModelContextItem;
+use crate::completion::ModelContextItem;
+use crate::model::InferenceAccounting;
 use serde::{Deserialize, Serialize};
 
 /// OpenAI provider 的上下文压缩协议选择。
@@ -31,8 +31,8 @@ pub struct ModelCompactionRequest {
 pub struct ModelCompactionResponse {
     pub input: Vec<ModelContextItem>,
     pub accounting: InferenceAccounting,
-    pub model_observation: Option<pl_protocol::InferenceModelObservation>,
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub model_observation: Option<crate::completion::InferenceModelObservation>,
+    pub timing: Option<crate::completion::InferenceTiming>,
 }
 
 /// Extracts the single native checkpoint returned by a remote v2 compaction adapter.
@@ -40,11 +40,11 @@ pub struct ModelCompactionResponse {
 /// # Errors
 /// Rejects missing or ambiguous checkpoints instead of silently continuing with empty context.
 pub fn remote_compaction_checkpoint(
-    output: Vec<pl_protocol::ModelContextItem>,
-) -> Result<pl_protocol::ModelContextItem, pl_protocol::PureError> {
+    output: Vec<crate::completion::ModelContextItem>,
+) -> Result<crate::completion::ModelContextItem, pl_protocol::PureError> {
     let mut checkpoints = output
         .into_iter()
-        .filter(pl_protocol::ModelContextItem::is_compaction);
+        .filter(crate::completion::ModelContextItem::is_compaction);
     let first = checkpoints.next().ok_or_else(|| {
         pl_protocol::PureError::LlmError("remote compaction returned no checkpoint".into())
     })?;

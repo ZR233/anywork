@@ -9,8 +9,8 @@ use super::{Reservation, SessionRuntime, ThreadAssemblyError};
 pub(crate) struct AcpPreparation {
     owner: SessionRuntime,
     _reservation: Reservation,
-    identity: pl_protocol::AgentThreadIdentity,
-    binding: pl_protocol::AgentBinding,
+    identity: crate::AgentThreadIdentity,
+    binding: crate::AgentBinding,
     pub(crate) resources: Arc<AcpResources>,
 }
 
@@ -38,7 +38,7 @@ impl super::WorkspaceBindingAdmission for AcpPreparation {
 
 impl AcpPreparation {
     /// Publication returns product membership, never a fabricated Native handle.
-    pub(crate) fn publish(&self) -> Result<pl_protocol::AgentThreadIdentity, ThreadAssemblyError> {
+    pub(crate) fn publish(&self) -> Result<crate::AgentThreadIdentity, ThreadAssemblyError> {
         let mut state = self.owner.0.state();
         let id = self.identity.thread_id.as_str();
         if state.closing
@@ -101,7 +101,7 @@ impl SessionRuntime {
             .collect()
     }
 
-    pub(crate) fn acp_identity(&self, thread_id: &str) -> Option<pl_protocol::AgentThreadIdentity> {
+    pub(crate) fn acp_identity(&self, thread_id: &str) -> Option<crate::AgentThreadIdentity> {
         let state = self.0.state();
         state
             .entries
@@ -129,7 +129,7 @@ impl SessionRuntime {
             return match &entry.runtime {
                 AgentRuntime::Acp(acp) => Ok(Some(acp.clone())),
                 AgentRuntime::Native(_) => Err(ThreadAssemblyError::UnsupportedBackend {
-                    backend: pl_protocol::AgentBackendKind::Native,
+                    backend: crate::AgentBackendKind::Native,
                 }),
             };
         }
@@ -146,14 +146,14 @@ impl SessionRuntime {
         match resources {
             Some(PreparedResources::Acp(acp)) => Ok(Some(acp.clone())),
             Some(PreparedResources::Native(_)) => Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Native,
+                backend: crate::AgentBackendKind::Native,
             }),
             None => Ok(None),
         }
     }
     pub(crate) fn prepare_acp(
         &self,
-        identity: pl_protocol::AgentThreadIdentity,
+        identity: crate::AgentThreadIdentity,
         account_id: String,
         resources: Arc<AcpResources>,
     ) -> Result<AcpPreparation, ThreadAssemblyError> {
@@ -203,7 +203,7 @@ impl SessionRuntime {
             owner: self.clone(),
             _reservation: reservation,
             identity,
-            binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig { account_id }),
+            binding: crate::AgentBinding::Acp(crate::AcpAgentConfig { account_id }),
             resources,
         })
     }
@@ -233,7 +233,7 @@ impl SessionRuntime {
 
     pub(crate) async fn bind_acp_result_delivery(
         &self,
-        identity: &pl_protocol::AgentThreadIdentity,
+        identity: &crate::AgentThreadIdentity,
         resources: &Arc<AcpResources>,
     ) -> anyhow::Result<()> {
         let Some(parent_agent) = &identity.parent_agent_id else {
@@ -253,7 +253,7 @@ impl SessionRuntime {
                 .events
                 .agent_execution_identity(parent.thread_id.as_str())
                 .ok_or(ThreadAssemblyError::Closed)?;
-            if !matches!(binding, pl_protocol::AgentBinding::Native(_)) {
+            if !matches!(binding, crate::AgentBinding::Native(_)) {
                 return Ok(());
             }
             parent
@@ -321,7 +321,7 @@ impl SessionRuntime {
             }
             AgentRuntime::Acp(_) => Err(ThreadAssemblyError::Identity(thread_id.into())),
             AgentRuntime::Native(_) => Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Native,
+                backend: crate::AgentBackendKind::Native,
             }),
         }
     }

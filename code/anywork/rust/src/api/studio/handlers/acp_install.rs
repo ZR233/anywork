@@ -3,7 +3,7 @@
 //! 读取是纯查询，不联网、不扫描、不启动任何程序；准备与取消是显式命令，只返回受理回执与
 //! 受理时快照，长网络/文件 IO 在 runtime owner 内后台推进（见 design/25、design/28 §28.6）。
 
-use pl_protocol::studio::{CancelAcpInstallRequest, StartAcpInstallRequest};
+use pl_studio_runtime::{CancelAcpInstallRequest, StartAcpInstallRequest};
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::acp_install::{

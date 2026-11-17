@@ -11,14 +11,14 @@ use super::super::descriptor::{
     TimelineUserInputState,
 };
 use super::super::frozen::ChatItem;
-use crate::{ExecutionItem, ExecutionShape};
-use anyhow::Result;
-use pl_core::chat::ChatError;
-use pl_protocol::{
+use crate::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ThreadAgentState, ThreadContentLifecycle,
     ThreadInferenceState, ThreadToolOutput, ThreadToolState, ThreadToolUserInput,
     ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
 };
+use crate::{ExecutionItem, ExecutionShape};
+use anyhow::Result;
+use pl_core::chat::ChatError;
 use serde::{Deserialize, Serialize};
 
 use crate::plan_tool::{

@@ -1,5 +1,5 @@
 use super::machine::TransitionInput;
-use pl_protocol::PureError;
+use crate::PureError;
 pub const TOOL_WORKFLOW_TRANSITION: &str = "workflow_transition";
 /// Validates the same typed input accepted by the dynamic workflow tool.
 pub fn validate_workflow_transition_arguments(

@@ -5,9 +5,9 @@ use super::{
     thread_observation::ConversationSource,
 };
 
+use crate::protocol::*;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
-use pl_protocol::*;
 use std::sync::Arc;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
@@ -301,7 +301,7 @@ impl ConversationFeed {
         let result = self.receive().await;
         if result.as_ref().err().is_some_and(|error| {
             error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .downcast_ref::<crate::StudioError>()
                 .is_some_and(|error| error.reason() == Some("conversationResyncRequired"))
         }) {
             self.reader.invalidate();
@@ -1355,9 +1355,9 @@ pub(super) mod tests {
                 .await??;
                 assert!(terminal.state.is_terminal());
                 let directory = env.runtime.read_protocol_thread(id).await?;
-                assert_eq!(directory.status, pl_protocol::ThreadStatus::Idle);
+                assert_eq!(directory.status, crate::ThreadStatus::Idle);
                 let snapshot = env.runtime.thread_snapshot(id).await?;
-                assert_eq!(snapshot.thread.status, pl_protocol::ThreadStatus::Idle);
+                assert_eq!(snapshot.thread.status, crate::ThreadStatus::Idle);
                 assert!(snapshot.active_turn.is_none());
                 if let Some(state) = state.as_mut() {
                     state.close().await?;
@@ -1365,7 +1365,7 @@ pub(super) mod tests {
                     let mut reopened = env.runtime.open_conversation_state_feed(id).await?;
                     assert_eq!(
                         state_snapshot(&mut reopened).await?.thread.status,
-                        pl_protocol::ThreadStatus::Idle
+                        crate::ThreadStatus::Idle
                     );
                     reopened.close().await?;
                 }
@@ -1529,7 +1529,7 @@ pub(super) mod tests {
             "this journey must restore a normally shut down Core resource"
         );
         let directory = env.runtime.read_protocol_thread(id).await?;
-        assert_eq!(directory.status, pl_protocol::ThreadStatus::Idle);
+        assert_eq!(directory.status, crate::ThreadStatus::Idle);
         assert!(
             env.runtime
                 .session_of(id)
@@ -1617,7 +1617,7 @@ pub(super) mod tests {
                 pending.interaction_id.clone(),
                 InteractionResolution::UserInput(UserInputResolution {
                     answers: [(
-                        AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                        crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
                         UserInputAnswer {
                             answers: vec!["Approve".into()],
                         },
@@ -1632,7 +1632,7 @@ pub(super) mod tests {
         let error = continuation.recv().await.unwrap_err();
         assert_eq!(
             error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .downcast_ref::<crate::StudioError>()
                 .and_then(|error| error.reason()),
             Some("conversationResyncRequired")
         );
@@ -1994,7 +1994,7 @@ pub(super) mod tests {
                         CompletionPresentationItemKind::Reasoning
                     } else {
                         CompletionPresentationItemKind::Text(
-                            pl_protocol::trace::TraceTextChannel::Final,
+                            pl_model::trace::TraceTextChannel::Final,
                         )
                     },
                     parts: vec![CompletionPresentationPart {
@@ -2051,7 +2051,7 @@ pub(super) mod tests {
                         crate::studio::ids::new_id("timeline-fixture"),
                         &env.project.id,
                         "timeline fixture",
-                        ThreadModeId::simple(),
+                        crate::mode::ThreadModeId::simple(),
                         ThreadWorkspaceMode::Local,
                         env.project.path.clone(),
                         crate::config::ROOT_AGENT_ROUTE_KEY,
@@ -3505,12 +3505,12 @@ pub(super) mod tests {
             .await?
         }
 
-        fn assert_only_admitted_reasoning(snapshot: &pl_protocol::ActivitySnapshot) {
+        fn assert_only_admitted_reasoning(snapshot: &crate::ActivitySnapshot) {
             // The reliable start may be visible, but phase changes must not invent a
             // completion or another body member merely to deliver the State summary.
             assert!(snapshot.entries.len() <= 1);
             for entry in &snapshot.entries {
-                assert_eq!(entry.atom.kind, pl_protocol::ChatAtomKind::Reasoning);
+                assert_eq!(entry.atom.kind, crate::ChatAtomKind::Reasoning);
                 assert_eq!(entry.atom.turn_id.as_deref(), Some("summary-turn"));
                 assert_eq!(entry.atom.attempt_id.as_deref(), Some("summary-attempt"));
                 assert!(entry.atom.completion_item_id.is_none());

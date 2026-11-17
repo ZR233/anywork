@@ -80,9 +80,7 @@ impl StudioRuntime {
             Some(record) => Ok(record),
             // An unknown Thread is an API-visible rejection, not an internal failure: the transports
             // must be able to answer 404 with a typed reason.
-            None => Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::not_found("session"),
-            )),
+            None => Err(anyhow::Error::new(crate::StudioError::not_found("session"))),
         }
     }
 

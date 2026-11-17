@@ -77,7 +77,7 @@ impl StudioRuntime {
                         error_bytes = error.to_string().len(),
                         "background recovery failed"
                     );
-                    runtime.recovery.fail(pl_protocol::StateError {
+                    runtime.recovery.fail(crate::StateError {
                         code: "recoveryCheckFailed".into(),
                         message: format!("{error:#}"),
                         retryable: true,

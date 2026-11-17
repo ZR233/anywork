@@ -56,10 +56,12 @@ pub async fn save_user_agent_profile(
         when_to_use,
         binding: binding.into(),
         workspace_mode: match workspace_mode {
-            BridgeAgentWorkspaceMode::Unrestricted => pl_protocol::AgentWorkspaceMode::Unrestricted,
-            BridgeAgentWorkspaceMode::Directory => pl_protocol::AgentWorkspaceMode::Directory,
-            BridgeAgentWorkspaceMode::Worktree => pl_protocol::AgentWorkspaceMode::Worktree,
-            BridgeAgentWorkspaceMode::Review => pl_protocol::AgentWorkspaceMode::Review,
+            BridgeAgentWorkspaceMode::Unrestricted => {
+                pl_studio_runtime::AgentWorkspaceMode::Unrestricted
+            }
+            BridgeAgentWorkspaceMode::Directory => pl_studio_runtime::AgentWorkspaceMode::Directory,
+            BridgeAgentWorkspaceMode::Worktree => pl_studio_runtime::AgentWorkspaceMode::Worktree,
+            BridgeAgentWorkspaceMode::Review => pl_studio_runtime::AgentWorkspaceMode::Review,
         },
     };
     Ok(settings_command_reply(

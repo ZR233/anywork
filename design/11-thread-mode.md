@@ -7,7 +7,7 @@
 工作模式（`Mode`）是根会话线程（root `Thread`）的执行配置，与技能（`Skill`）、智能体预设（`Agent Profile`）、模型厂商线协议模式完全正交：
 - 内置的简洁模式（`mode.simple`）、任务模式（`mode.task`）及用户自定义模式共用同一套会话线程、执行轮次（`Turn`）、模型推理循环与工具运行时；是否启用工作流状态机仅取决于所注册的模式是否携带状态图定义（`WorkflowDefinition`）。
 - 工作流状态图仅约束阶段提示词注入与合法的状态转换边，不关闭文件读写、命令执行、Git、子智能体派发或最终回复能力。所有工作模式均通过自然生成最终回答或调用 `finish_turn({message})` 汇报结果并结束当前轮次。
-- 跨 crate 的稳定标识类型为 `ThreadModeId`，线协议（wire）统一采用 `mode.<id>` 字符串格式（内置值为 `mode.simple` 与 `mode.task`）。标识与目录 DTO 定义于 `pl-protocol`；内存注册表、不可变目录快照、状态图编译器与工作流状态工具归属 `pl-studio-runtime` 的 `mode` 模块。普通技能系统不解析、不发现、也不加载工作模式。
+- 跨层的稳定标识类型为 `ThreadModeId`，线协议（wire）统一采用 `mode.<id>` 字符串格式（内置值为 `mode.simple` 与 `mode.task`）。标识、目录与编辑器 DTO、内存注册表、不可变目录快照及状态图编译器统一归属 `pl-studio-runtime` 的 `mode` 模块，工作流状态与动态工具归属 `workflow_tool` 模块。普通技能系统不解析、不发现、也不加载工作模式。
 
 ## 11.2 注册与状态图编译
 

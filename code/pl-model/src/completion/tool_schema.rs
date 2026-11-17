@@ -1,7 +1,7 @@
 //! Provider compatibility projection for canonical tool specifications.
 
+use crate::completion::{ToolCallerMode, ToolFormat, ToolSpec};
 use pl_agent_tool::{InputFormat, ToolDefinition};
-use pl_protocol::{ToolCallerMode, ToolFormat, ToolSpec};
 
 use crate::model::ModelCapabilities;
 use crate::protocol::ProtocolEndpoint;

@@ -23,7 +23,7 @@ pub enum BridgeErrorCode {
     Internal,
 }
 
-/// FRB-only wire representation of [`pl_protocol::studio::StudioError`].
+/// FRB-only wire representation of [`pl_studio_runtime::StudioError`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
 #[serde(rename_all = "camelCase")]
 #[error("{message} (correlation id: {correlation_id})")]
@@ -37,8 +37,8 @@ pub struct BridgeError {
 
 impl BridgeError {
     pub(crate) fn not_initialized() -> Self {
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::NotInitialized,
+        pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::NotInitialized,
             "Studio runtime is not initialized",
             true,
         )
@@ -46,8 +46,8 @@ impl BridgeError {
     }
 
     pub(crate) fn runtime_stopped() -> Self {
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::RuntimeStopped,
+        pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::RuntimeStopped,
             "Studio runtime has stopped; restart the application",
             false,
         )
@@ -55,12 +55,12 @@ impl BridgeError {
     }
 
     pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
-        pl_protocol::studio::StudioError::invalid_argument(message).into()
+        pl_studio_runtime::StudioError::invalid_argument(message).into()
     }
 }
 
-impl From<pl_protocol::studio::StudioError> for BridgeError {
-    fn from(error: pl_protocol::studio::StudioError) -> Self {
+impl From<pl_studio_runtime::StudioError> for BridgeError {
+    fn from(error: pl_studio_runtime::StudioError) -> Self {
         Self {
             code: error.code.into(),
             message: error.message,
@@ -71,9 +71,9 @@ impl From<pl_protocol::studio::StudioError> for BridgeError {
     }
 }
 
-impl From<pl_protocol::studio::StudioErrorCode> for BridgeErrorCode {
-    fn from(code: pl_protocol::studio::StudioErrorCode) -> Self {
-        use pl_protocol::studio::StudioErrorCode;
+impl From<pl_studio_runtime::StudioErrorCode> for BridgeErrorCode {
+    fn from(code: pl_studio_runtime::StudioErrorCode) -> Self {
+        use pl_studio_runtime::StudioErrorCode;
 
         match code {
             StudioErrorCode::NotInitialized => Self::NotInitialized,
@@ -109,8 +109,8 @@ impl From<serde_json::Error> for BridgeError {
     }
 }
 
-impl From<pl_protocol::PureError> for BridgeError {
-    fn from(error: pl_protocol::PureError) -> Self {
+impl From<pl_studio_runtime::PureError> for BridgeError {
+    fn from(error: pl_studio_runtime::PureError) -> Self {
         Self::from(anyhow::Error::new(error))
     }
 }
@@ -127,13 +127,13 @@ mod tests {
 
     #[test]
     fn protocol_version_mismatch_reason_survives_bridge_conversion() {
-        let error = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Protocol,
+        let error = pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::Protocol,
             "unsupported completed-history version",
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+            pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch,
             serde_json::Value::Null,
         );
         let bridge = BridgeError::from(error);
@@ -146,7 +146,7 @@ mod tests {
         .expect("details JSON remains valid");
         assert_eq!(
             details["reason"],
-            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch.label()
+            pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch.label()
         );
     }
 }

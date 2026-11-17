@@ -18,7 +18,7 @@ use crate::config::ConfigRuntime;
 use crate::studio::StudioPaths;
 use crate::studio::unix_seconds;
 use crate::studio::{ProductEventBus, StudioRuntime};
-use pl_protocol::studio::{
+use crate::{
     BotCredentialAvailability, BotCredentialOperation, BotDiagnostic, BotPairingRequest,
     BotPlatform, BotSnapshot, BotsStateSnapshot,
 };
@@ -75,7 +75,7 @@ pub(crate) struct ManagedBot {
     pub(crate) connection: BotConnectionOwner,
     pub(crate) credential: Mutex<BotCredentialAvailability>,
     pub(crate) credential_operation: Mutex<BotCredentialOperation>,
-    pub(crate) diagnostic: Mutex<Option<pl_protocol::studio::BotDiagnostic>>,
+    pub(crate) diagnostic: Mutex<Option<crate::BotDiagnostic>>,
     pub(crate) generation: Arc<AtomicU64>,
     pub(crate) token: TokenLease,
     pub(crate) send_rate: super::send::SendRate,
@@ -280,19 +280,17 @@ impl BotRuntime {
         self.inner.canonical.lock().await.clone()
     }
 
-    pub(crate) fn default_model_route(
-        &self,
-    ) -> Result<pl_protocol::studio::BotModelRoute, FeishuError> {
+    pub(crate) fn default_model_route(&self) -> Result<crate::BotModelRoute, FeishuError> {
         let settings = self.inner.config.read().map_err(|error| {
             FeishuError::new(FeishuErrorKind::Unavailable, error.to_string(), false, None)
         })?;
         let route = settings
             .config
-            .mode_model_route(&pl_protocol::ThreadModeId::simple())
+            .mode_model_route(&crate::mode::ThreadModeId::simple())
             .map_err(|error| {
                 FeishuError::new(FeishuErrorKind::Rejected, error.to_string(), false, None)
             })?;
-        Ok(pl_protocol::studio::BotModelRoute {
+        Ok(crate::BotModelRoute {
             account_id: route.account_id.as_str().into(),
             model_id: route.model_id.clone(),
             effort: route.effort.as_ref().map(|effort| effort.as_str().into()),

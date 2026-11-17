@@ -18,7 +18,7 @@ impl PreparedResources {
     {
         self.native().ok_or(
             crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             },
         )
     }

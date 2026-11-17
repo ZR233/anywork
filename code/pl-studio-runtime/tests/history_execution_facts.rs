@@ -5,10 +5,10 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use pl_studio_runtime::ConversationEvent;
+use pl_studio_runtime::{
     ChatAtomKind, ChatClassFilter, ChatScope, ContentRange, ReadDemand, ThreadWorkspaceMode,
 };
-use pl_studio_runtime::ConversationEvent;
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use support::{Environment, completed_prompt, prompt_step, text_reply};
 

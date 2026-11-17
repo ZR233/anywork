@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pl_protocol::studio::{
+use crate::{
     AcpInstallEntry, AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease,
     AcpInstallSnapshot, AcpInstallStage, AcpInstallState, AcpInstalledServer, AcpProvider,
 };

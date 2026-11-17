@@ -9,10 +9,12 @@
 //! [`super::thread`]，装配见 [`super::binding`]。
 
 use pl_model::config::{AccountConfig, AccountId, AgentModelConfig, ResolvedModelRoute};
-use pl_model::protocol::{ProtocolEndpoint, StandaloneWebSearchDialect, WireApi};
-use pl_protocol::HostedWebSearchDialect;
-use pl_protocol::search::{WebSearchConfig, WebSearchMode};
-use pl_protocol::{Result, WebSearchResolutionDescriptor};
+use pl_model::protocol::{
+    HostedWebSearchDialect, ProtocolEndpoint, StandaloneWebSearchDialect, WireApi,
+};
+use pl_protocol::Result;
+
+use super::{WebSearchConfig, WebSearchMode};
 
 /// 本仓库 OpenAI 独立搜索默认使用的服务模型。
 const OPENAI_SEARCH_MODEL: &str = "gpt-6-sol";
@@ -53,20 +55,6 @@ pub struct WebSearchResolution {
     pub path: Option<WebSearchPath>,
     pub account_id: Option<AccountId>,
     pub model_id: Option<String>,
-}
-
-impl WebSearchResolution {
-    /// 生成不包含凭证的公共协议投影。
-    pub fn descriptor(&self) -> WebSearchResolutionDescriptor {
-        WebSearchResolutionDescriptor {
-            configured_mode: mode_label(self.configured_mode).to_string(),
-            effective_mode: mode_label(self.effective_mode).to_string(),
-            availability: availability_label(self.availability).to_string(),
-            path: self.path.map(path_label).map(str::to_string),
-            account_id: self.account_id.as_ref().map(ToString::to_string),
-            model_id: self.model_id.clone(),
-        }
-    }
 }
 
 /// 与会话模型无关的单条搜索服务解析。
@@ -485,31 +473,5 @@ fn unavailable_plan(
         },
         backend: None,
         hosted_dialect: None,
-    }
-}
-
-fn mode_label(mode: WebSearchMode) -> &'static str {
-    match mode {
-        WebSearchMode::Disabled => "disabled",
-        WebSearchMode::Cached => "cached",
-        WebSearchMode::Indexed => "indexed",
-        WebSearchMode::Live => "live",
-    }
-}
-
-fn availability_label(availability: WebSearchAvailability) -> &'static str {
-    match availability {
-        WebSearchAvailability::Available => "available",
-        WebSearchAvailability::Disabled => "disabled",
-        WebSearchAvailability::MissingCredential => "missing_credential",
-        WebSearchAvailability::AccountUnsupported => "account_unsupported",
-        WebSearchAvailability::ModelUnsupported => "model_unsupported",
-    }
-}
-
-fn path_label(path: WebSearchPath) -> &'static str {
-    match path {
-        WebSearchPath::Standalone => "standalone",
-        WebSearchPath::Hosted => "hosted",
     }
 }

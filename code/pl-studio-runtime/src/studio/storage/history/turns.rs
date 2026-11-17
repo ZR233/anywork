@@ -1,7 +1,7 @@
 //! Turn 的业务索引；执行顺序不定义展示成员范围。
 use super::{integer, statement};
+use crate::{ThreadContextDisposition, Turn};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ThreadContextDisposition, Turn};
 use sea_orm::{ConnectionTrait, QueryResult};
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub(super) async fn page(
     database: &str,
     token: Option<&str>,
     limit: usize,
-) -> Result<pl_protocol::ThreadTurnPage> {
+) -> Result<crate::ThreadTurnPage> {
     use crate::studio::runtime::conversation_reader::{JsonBudget, entries};
     use pl_core::chat::{ChatBudget, ChatHistoryRequest, ChatKey, ChatQuery, ReadDemand};
     let through = u64::try_from(super::applied_write_seq(db).await?)?;
@@ -42,7 +42,7 @@ pub(super) async fn page(
     }
     let fixed_through = cursor.as_ref().map_or(through, |cursor| cursor.through);
     let fixed_ceiling = cursor.as_ref().map_or(ceiling, |cursor| cursor.ceiling);
-    let mut result = pl_protocol::ThreadTurnPage {
+    let mut result = crate::ThreadTurnPage {
         turns: vec![],
         next_cursor: None,
     };
@@ -67,7 +67,7 @@ pub(super) async fn page(
             "Turn changed after this fixed history cut; restart the page"
         );
         let before = cursor.as_ref().and_then(|cursor| cursor.record_before);
-        let mut history = pl_protocol::ThreadTurnHistory {
+        let mut history = crate::ThreadTurnHistory {
             turn: turn.turn,
             items: vec![],
             context_disposition: turn.context_disposition,

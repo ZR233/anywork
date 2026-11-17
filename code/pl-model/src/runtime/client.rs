@@ -4,15 +4,16 @@ use crate::completion::{
     CompletionFailure, CompletionRequest, CompletionResponse, ModelCompactionRequest,
     ModelCompactionResponse,
 };
+use crate::model::PricingMode;
 use crate::model::{ModelCapabilities, ModelInfo};
 use crate::protocol::{ProtocolClient, ProtocolEndpoint, WireApi};
-use pl_protocol::{PricingMode, Result};
+use pl_protocol::Result;
 
 /// One resolved model route. Native capabilities remain available through `protocol_client()`.
 #[derive(Debug, Clone)]
 pub struct ModelRuntime {
     runner: InvocationRunner,
-    context: pl_protocol::ModelContextResolution,
+    context: crate::model::ModelContextResolution,
 }
 
 impl ModelRuntime {
@@ -71,7 +72,7 @@ impl ModelRuntime {
         self.runner.connection_fingerprint()
     }
 
-    pub fn context(&self) -> &pl_protocol::ModelContextResolution {
+    pub fn context(&self) -> &crate::model::ModelContextResolution {
         &self.context
     }
 
@@ -116,10 +117,10 @@ pub struct RemoteCompaction<'a> {
 /// A validated native replacement and its observed service accounting.
 #[derive(Debug)]
 pub struct NativeCompactionCheckpoint {
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub timing: Option<crate::completion::InferenceTiming>,
     pub item: crate::completion::ModelContextItem,
-    pub accounting: pl_protocol::InferenceAccounting,
-    pub model_observation: Option<pl_protocol::InferenceModelObservation>,
+    pub accounting: crate::model::InferenceAccounting,
+    pub model_observation: Option<crate::completion::InferenceModelObservation>,
 }
 
 impl RemoteCompaction<'_> {

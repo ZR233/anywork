@@ -278,10 +278,10 @@ async fn exercise(manager: &SshManager, remote_path: &str, artifacts: &Path) -> 
         std::fs::write(shadow.join("report.md"), b"unrelated local namesake")?;
         let mut evidence = Vec::new();
         for (index, name, expected, modality) in [
-            (0, "report.md", &md, pl_protocol::AttachmentModality::File),
-            (1, "valid.png", &png, pl_protocol::AttachmentModality::Image),
-            (3, "opaque.bin", &binary, pl_protocol::AttachmentModality::File),
-            (4, "report.md", &md, pl_protocol::AttachmentModality::File),
+            (0, "report.md", &md, pl_model::completion::AttachmentModality::File),
+            (1, "valid.png", &png, pl_model::completion::AttachmentModality::Image),
+            (3, "opaque.bin", &binary, pl_model::completion::AttachmentModality::File),
+            (4, "report.md", &md, pl_model::completion::AttachmentModality::File),
         ] {
             let FileDisplayResult::Ready { resource, filename, modality:actual, origin } = &receipt.files[index]
                 else { anyhow::bail!("expected success at index {index}: {:?}", receipt.files[index]); };

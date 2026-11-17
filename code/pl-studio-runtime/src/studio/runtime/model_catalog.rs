@@ -2,8 +2,8 @@
 
 use super::StudioRuntime;
 use crate::config::AccountId;
+use crate::{SyncAccountModelsReply, SyncAccountModelsRequest};
 use anyhow::{Result, anyhow};
-use pl_protocol::studio::{SyncAccountModelsReply, SyncAccountModelsRequest};
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex, PoisonError},
@@ -132,8 +132,8 @@ impl StudioRuntime {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if tasks.closing {
-            return Err(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::RuntimeStopped,
+            return Err(crate::StudioError::new(
+                crate::StudioErrorCode::RuntimeStopped,
                 "Model catalog owner is closing",
                 false,
             )

@@ -42,6 +42,8 @@ serde_json = { workspace = true }
 prost = { workspace = true }
 flate2 = { workspace = true }
 schemars = { workspace = true }
+utoipa = { workspace = true }
+agent-client-protocol-schema = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }

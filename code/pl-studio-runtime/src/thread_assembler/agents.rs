@@ -19,10 +19,10 @@ use std::sync::{Arc, Weak};
 #[derive(Debug, Clone)]
 pub(crate) struct AgentHost {
     registry: Weak<Registry>,
-    pub(super) identity: pl_protocol::AgentThreadIdentity,
+    pub(super) identity: crate::AgentThreadIdentity,
     resources: AgentHostResources,
     pub(super) catalog: crate::config::AgentProfileCatalog,
-    selection: pl_protocol::DelegationSettings,
+    selection: crate::DelegationSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -32,7 +32,7 @@ enum AgentHostResources {
 }
 
 impl AgentHost {
-    pub(crate) fn delegation(&self) -> pl_protocol::DelegationSettings {
+    pub(crate) fn delegation(&self) -> crate::DelegationSettings {
         self.selection
     }
 
@@ -112,10 +112,10 @@ impl AgentHost {
     pub(super) fn target_identity(
         &self,
         target: &str,
-    ) -> Result<pl_protocol::AgentThreadIdentity, ControlError> {
+    ) -> Result<crate::AgentThreadIdentity, ControlError> {
         let owner = self.owner()?;
         let state = owner.0.state();
-        let agent = pl_protocol::AgentId::new(target).map_err(ControlError::service)?;
+        let agent = crate::AgentId::new(target).map_err(ControlError::service)?;
         if let Some(id) = state.by_agent.get(&agent)
             && let Some(entry) = state.entries.get(id)
             && entry.identity.session_id == self.identity.session_id
@@ -140,7 +140,7 @@ impl AgentHost {
         &self,
         owner: &SessionRuntime,
         thread: &str,
-    ) -> Result<pl_protocol::AgentId, ControlError> {
+    ) -> Result<crate::AgentId, ControlError> {
         owner
             .0
             .state()
@@ -307,7 +307,7 @@ pub(super) fn agent_row(
 
 fn assigned_workspace(
     snapshot: &pl_core::thread::ThreadSnapshot,
-) -> Result<Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>, ThreadAssemblyError> {
+) -> Result<Option<crate::AgentWorkspaceAssignmentSnapshot>, ThreadAssemblyError> {
     crate::studio::workspace_receipt::from_snapshot(snapshot).map_err(|source| {
         ThreadAssemblyError::Resource {
             operation: "decode assigned child workspace",
@@ -373,7 +373,7 @@ impl AgentHost {
             .config
             .resolve_acp_child_profile(&request.profile_id)
             .map_err(ControlError::service)?;
-        if profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review {
+        if profile.workspace_mode == crate::AgentWorkspaceMode::Review {
             return Err(ControlError::service(std::io::Error::other(
                 "ACP target supports ordinary tasks only",
             )));
@@ -464,7 +464,7 @@ impl AgentHost {
             resources
                 .session()
                 .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
-                .submit(vec![pl_protocol::studio::ContentBlock::Text(
+                .submit(vec![crate::acp_schema::ContentBlock::Text(
                     pl_acp::session::schema::TextContent::new(request.message),
                 )])
                 .await
@@ -521,18 +521,16 @@ impl AgentHost {
             && (request.review_target_agent_id.is_some()
                 || request.review_feedback.is_some()
                 || declared.is_some_and(|profile| {
-                    profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
+                    profile.workspace_mode == crate::AgentWorkspaceMode::Review
                 }))
         {
             return Err(ControlError::service(
                 ThreadAssemblyError::UnsupportedBackend {
-                    backend: pl_protocol::AgentBackendKind::Acp,
+                    backend: crate::AgentBackendKind::Acp,
                 },
             ));
         }
-        if declared
-            .is_some_and(|profile| matches!(profile.binding, pl_protocol::AgentBinding::Acp(_)))
-        {
+        if declared.is_some_and(|profile| matches!(profile.binding, crate::AgentBinding::Acp(_))) {
             return self.spawn_acp_owned(owner, context, request).await;
         }
         let admission = factory
@@ -925,7 +923,7 @@ impl AgentControlHost for AgentHost {
             services
                 .events
                 .agent_execution_identity(&message.target)
-                .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+                .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
         }) || owner
             .0
             .state()
@@ -950,7 +948,7 @@ impl AgentControlHost for AgentHost {
                 ControlError::service(super::agent_services::ServiceError(error))
             })?;
             let current = session.snapshot().await.map_err(ControlError::service)?;
-            let content = vec![pl_protocol::studio::ContentBlock::Text(
+            let content = vec![crate::acp_schema::ContentBlock::Text(
                 pl_acp::session::schema::TextContent::new(message.message),
             )];
             match current.active_run {
@@ -1120,7 +1118,7 @@ impl AgentControlHost for AgentHost {
                             .identity
                             .parent_agent_id
                             .as_ref()
-                            .map(pl_protocol::AgentId::as_str),
+                            .map(crate::AgentId::as_str),
                         &snapshot,
                     )
                     .map_err(|error| {
@@ -1325,10 +1323,10 @@ impl AgentControlHost for AgentHost {
 impl SessionRuntime {
     fn agent_host(
         &self,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         resources: AgentHostResources,
         profiles: &crate::config::AgentProfilesSnapshot,
-        selection: pl_protocol::DelegationSettings,
+        selection: crate::DelegationSettings,
     ) -> Result<AgentHost, ThreadAssemblyError> {
         let mut catalog = profiles
             .catalog
@@ -1343,7 +1341,7 @@ impl SessionRuntime {
                     &profile.definition.definition_id,
                 )
                 && (!matches!(resources, AgentHostResources::Acp(_))
-                    || profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review)
+                    || profile.workspace_mode != crate::AgentWorkspaceMode::Review)
         });
         Ok(AgentHost {
             registry: Arc::downgrade(&self.0),
@@ -1356,10 +1354,10 @@ impl SessionRuntime {
 
     pub(crate) fn acp_agent_host(
         &self,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         resources: &Arc<crate::studio::runtime::acp_business::AcpResources>,
         profiles: &crate::config::AgentProfilesSnapshot,
-        selection: pl_protocol::DelegationSettings,
+        selection: crate::DelegationSettings,
     ) -> Result<AgentHost, ThreadAssemblyError> {
         self.agent_host(
             caller,
@@ -1371,10 +1369,10 @@ impl SessionRuntime {
 
     pub(crate) fn native_agent_host(
         &self,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         resources: &Arc<crate::session::NativeResources>,
         profiles: &crate::config::AgentProfilesSnapshot,
-        selection: pl_protocol::DelegationSettings,
+        selection: crate::DelegationSettings,
     ) -> Result<AgentHost, ThreadAssemblyError> {
         self.agent_host(
             caller,
@@ -1389,7 +1387,7 @@ impl SessionRuntime {
         id: &str,
         thread: &pl_core::thread::ThreadHandle,
         profiles: &crate::config::AgentProfilesSnapshot,
-        selection: pl_protocol::DelegationSettings,
+        selection: crate::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         let (identity, resources) = {
             let state = self.0.state();
@@ -1414,10 +1412,10 @@ impl SessionRuntime {
     /// Returns catalog, schema construction, model declaration encoding or registration errors.
     pub(crate) fn agent_control_tools(
         &self,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         resources: &Arc<crate::session::NativeResources>,
         profiles: &crate::config::AgentProfilesSnapshot,
-        selection: pl_protocol::DelegationSettings,
+        selection: crate::DelegationSettings,
     ) -> Result<Vec<Registration>, ThreadAssemblyError> {
         let host = Arc::new(self.native_agent_host(caller, resources, profiles, selection)?);
         let profiles = host.spawn_profiles();
@@ -1510,7 +1508,7 @@ pub(crate) mod archive_tests {
             model: info,
             effort: None,
         };
-        let profile = pl_protocol::AgentProfileSnapshot {
+        let profile = crate::AgentProfileSnapshot {
             profile_id: "fixture".into(),
             display_name: "fixture".into(),
             description: String::new(),
@@ -1524,7 +1522,7 @@ pub(crate) mod archive_tests {
             content_hash: "fixture".into(),
             system: false,
             enabled: true,
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+            workspace_mode: crate::AgentWorkspaceMode::Directory,
         };
         StudioThreadSpec {
             workspace_usage: None,
@@ -1571,8 +1569,8 @@ pub(crate) mod archive_tests {
         async fn admit(
             &self,
             _: &str,
-            _: pl_protocol::DelegationSettings,
-            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            _: crate::DelegationSettings,
+            _: Option<crate::NewThreadModelRoute>,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }
@@ -1607,11 +1605,11 @@ pub(crate) mod archive_tests {
         async fn admit(
             &self,
             _: &str,
-            _: pl_protocol::DelegationSettings,
-            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            _: crate::DelegationSettings,
+            _: Option<crate::NewThreadModelRoute>,
         ) -> Result<(), ThreadAssemblyError> {
             Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             })
         }
 
@@ -1643,7 +1641,7 @@ pub(crate) mod archive_tests {
             factory,
         ));
         let context = AgentCallContext {
-            caller: pl_protocol::AgentId::new(root.clone()).unwrap(),
+            caller: crate::AgentId::new(root.clone()).unwrap(),
             call_id: "archive-first-write".into(),
             cancellation: Default::default(),
         };
@@ -1684,7 +1682,7 @@ pub(crate) mod archive_tests {
             .await
             .unwrap();
         let context = AgentCallContext {
-            caller: pl_protocol::AgentId::new("root").unwrap(),
+            caller: crate::AgentId::new("root").unwrap(),
             call_id: "unsupported-spawn".into(),
             cancellation: Default::default(),
         };
@@ -1709,7 +1707,7 @@ pub(crate) mod archive_tests {
                 _ => None,
             },
             Some(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp
+                backend: crate::AgentBackendKind::Acp
             })
         ));
         let state = owner.0.state();
@@ -1764,7 +1762,7 @@ pub(crate) mod archive_tests {
             .await
             .unwrap();
         let context = AgentCallContext {
-            caller: pl_protocol::AgentId::new("root").unwrap(),
+            caller: crate::AgentId::new("root").unwrap(),
             call_id: "spawn".into(),
             cancellation: Default::default(),
         };
@@ -1890,7 +1888,7 @@ pub(crate) mod archive_tests {
         for execution in [true, false] {
             let temp = tempfile::tempdir()?;
             let store = StudioStore::open(temp.path().join("home/data/studio.sqlite")).await?;
-            let mut protocol = pl_protocol::Thread::placeholder("sealed-attachment");
+            let mut protocol = crate::Thread::placeholder("sealed-attachment");
             protocol.workspace_id = "workspace".into();
             protocol.root_thread_id = protocol.id.clone();
             register_test_thread(&store, &protocol).await?;
@@ -2077,7 +2075,7 @@ pub(crate) mod archive_tests {
         let factory = close_factory(&store)?;
         let owner = SessionRuntime::default();
         factory.install(&owner)?;
-        let mut protocol = pl_protocol::Thread::placeholder("private-setup");
+        let mut protocol = crate::Thread::placeholder("private-setup");
         protocol.workspace_id = "workspace".into();
         protocol.root_thread_id = protocol.id.clone();
         register_test_thread(&store, &protocol).await?;
@@ -2180,7 +2178,7 @@ mod control_tests {
 
     fn call(agent: &str) -> AgentCallContext {
         AgentCallContext {
-            caller: pl_protocol::AgentId::new(agent).unwrap(),
+            caller: crate::AgentId::new(agent).unwrap(),
             call_id: "trusted-call".into(),
             cancellation: Default::default(),
         }
@@ -2226,10 +2224,10 @@ mod control_tests {
             kind.declaration(
                 &[AgentSpawnProfile {
                     profile_id: "fixture".into(),
-                    backend: pl_protocol::AgentBackendKind::Native,
-                    workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+                    backend: crate::AgentBackendKind::Native,
+                    workspace_mode: crate::AgentWorkspaceMode::Directory,
                 }],
-                pl_protocol::DelegationMode::default(),
+                crate::DelegationMode::default(),
             )
             .unwrap()
             .unwrap(),
@@ -2247,9 +2245,9 @@ mod control_tests {
     ) -> pl_core::thread::ThreadHandle {
         let mut identity = ThreadActivation::native_test(thread, parent.map(|(thread, _)| thread));
         identity.agent.session_id = owner.id().clone();
-        identity.agent.agent_id = pl_protocol::AgentId::new(agent).unwrap();
+        identity.agent.agent_id = crate::AgentId::new(agent).unwrap();
         identity.agent.parent_agent_id =
-            parent.map(|(_, agent)| pl_protocol::AgentId::new(agent).unwrap());
+            parent.map(|(_, agent)| crate::AgentId::new(agent).unwrap());
         owner.install_explicit_activation(identity);
         owner
             .assemble(archive_tests::spec(
@@ -2294,7 +2292,7 @@ mod control_tests {
         }
         let root = host(&owner, "native-root");
         let mut foreign = ThreadActivation::native_test("foreign-native", None);
-        foreign.agent.session_id = pl_protocol::SessionId::new("other-session").unwrap();
+        foreign.agent.session_id = crate::SessionId::new("other-session").unwrap();
         owner.install_explicit_activation(foreign);
         let rejected = owner
             .assemble(archive_tests::spec(
@@ -2445,8 +2443,8 @@ mod control_tests {
         async fn admit(
             &self,
             _: &str,
-            _: pl_protocol::DelegationSettings,
-            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            _: crate::DelegationSettings,
+            _: Option<crate::NewThreadModelRoute>,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }
@@ -2471,8 +2469,8 @@ mod control_tests {
             );
             owner.install_explicit_activation(activation);
             let mut spec = archive_tests::spec(request.id, Some(request.caller), &self.path);
-            let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
-                mode: pl_protocol::AgentWorkspaceMode::Directory,
+            let assignment = crate::AgentWorkspaceAssignmentSnapshot {
+                mode: crate::AgentWorkspaceMode::Directory,
                 project_root: self.path.to_string_lossy().into_owned(),
                 root: self.path.to_string_lossy().into_owned(),
                 writable_paths: Some(Vec::new()),
@@ -2702,8 +2700,8 @@ mod control_tests {
             async fn admit(
                 &self,
                 _: &str,
-                _: pl_protocol::DelegationSettings,
-                _: Option<pl_protocol::studio::NewThreadModelRoute>,
+                _: crate::DelegationSettings,
+                _: Option<crate::NewThreadModelRoute>,
             ) -> Result<(), ThreadAssemblyError> {
                 Ok(())
             }
@@ -2713,7 +2711,7 @@ mod control_tests {
                 request: ChildThreadRequest,
                 _: (),
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
-                let mut record = pl_protocol::Thread::placeholder(&request.id);
+                let mut record = crate::Thread::placeholder(&request.id);
                 record.workspace_id = "publication-project".into();
                 record.root_thread_id = SessionRuntime(self.physical.owner.upgrade().unwrap())
                     .id()
@@ -2789,7 +2787,7 @@ mod control_tests {
             let dir = tempfile::tempdir()?;
             let store = StudioStore::open(dir.path().join("data/studio.sqlite")).await?;
             let services = close_factory(&store)?;
-            let owner = SessionRuntime::open(pl_protocol::SessionId::new("native-root")?);
+            let owner = SessionRuntime::open(crate::SessionId::new("native-root")?);
             owner.set_child_factory(PersistentFactory {
                 physical: PhysicalFactory {
                     owner: Arc::downgrade(&owner.0),
@@ -2799,7 +2797,7 @@ mod control_tests {
                 events: services.events.clone(),
             })?;
             services.install(&owner)?;
-            let mut record = pl_protocol::Thread::placeholder("native-root");
+            let mut record = crate::Thread::placeholder("native-root");
             record.workspace_id = "publication-project".into();
             record.root_thread_id = "native-root".into();
             record.workspace_path = dir.path().to_string_lossy().into_owned();

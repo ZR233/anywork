@@ -905,13 +905,14 @@ fn prepare_workflow(
         .map_err(receipt_error)?;
     let run = state.as_ref().and_then(|state| state.current_run.as_ref());
     if root_prompt.is_none()
-        && run.is_none_or(|run| run.lifecycle == pl_protocol::WorkflowRunLifecycle::Terminal)
+        && run
+            .is_none_or(|run| run.lifecycle == crate::workflow_tool::WorkflowRunLifecycle::Terminal)
     {
         return Ok(None);
     }
     if run.is_some_and(|run| {
         run.mode_id == mode_id
-            && run.lifecycle == pl_protocol::WorkflowRunLifecycle::Active
+            && run.lifecycle == crate::workflow_tool::WorkflowRunLifecycle::Active
             && mode
                 .workflow()
                 .is_some_and(|graph| run.graph_hash == graph.graph_hash())
@@ -1067,10 +1068,10 @@ pub(crate) struct CompactionReceipt {
     pub reasoning_effort_source: Option<CompactionEffortSource>,
     pub context_window: Option<u64>,
     pub turn_id: String,
-    pub accounting: pl_model::completion::InferenceAccounting,
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub accounting: pl_model::model::InferenceAccounting,
+    pub timing: Option<crate::InferenceTiming>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_observation: Option<pl_protocol::InferenceModelObservation>,
+    pub model_observation: Option<crate::InferenceModelObservation>,
     pub implementation: Option<String>,
     pub error: Option<String>,
     /// The replacement's retained tail predates this summary, despite appearing after it.
@@ -1277,7 +1278,7 @@ mod tests {
         let modes = crate::mode::ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&modes)?;
         let mode = registry
-            .mode(&pl_protocol::ThreadModeId::simple())
+            .mode(&crate::mode::ThreadModeId::simple())
             .context("Simple mode")?;
         let snapshot: crate::instruction::InstructionSnapshot = serde_json::from_value(json!({
             "agent": {"id":"root:main", "scope":"root", "usageBinding":{"kind":"rootEntry","entry":"studio"},

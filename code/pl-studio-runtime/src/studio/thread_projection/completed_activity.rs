@@ -1,7 +1,7 @@
 //! The sole mapping between real activity identities and immutable completions.
-use pl_protocol::{ActivityIdentity, ChatAtom, ChatAtomKind, ChatDeliveryKind, ChatSourceId};
+use crate::{ActivityIdentity, ChatAtom, ChatAtomKind, ChatDeliveryKind, ChatSourceId};
 #[cfg(test)]
-use pl_protocol::{ChatAtomLifecycle, CompletedEntry};
+use crate::{ChatAtomLifecycle, CompletedEntry};
 
 pub(in crate::studio) fn activity_identity(atom: &ChatAtom) -> Option<ActivityIdentity> {
     match atom.kind {

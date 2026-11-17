@@ -168,10 +168,10 @@ impl ChatGptSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
     use crate::protocol::chatgpt::{
         CHATGPT_ISSUER, CODEX_CLIENT_ID, ChatGptCredentialRecord, ChatGptCredentialStorage,
     };
-    use pl_protocol::studio::{ChatGptAccountInfo, CodexAccountInfo};
     use serde_json::json;
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

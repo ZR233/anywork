@@ -1,10 +1,10 @@
 //! Indexed, transactionally updated final-task evaluations in the existing product database.
 use super::StudioStore;
-use anyhow::{Result, ensure};
-use pl_protocol::{
+use crate::{
     AgentEvaluation, AgentEvaluationSummary, AgentEvaluationWrite, EvaluateAgentReceipt,
     EvaluateAgentRequest, LabeledEnum,
 };
+use anyhow::{Result, ensure};
 use sea_orm::{ConnectionTrait, DatabaseBackend, QueryResult, Statement, TransactionTrait};
 
 const COLUMNS: &str = "agent_id,parent_agent_id,account_id,model_id,effort,profile_id,mode,preference,turn_id,revision,task_category,outcome,quality,instruction_following,comment,created_at,updated_at";
@@ -105,24 +105,22 @@ fn decode(row: QueryResult) -> Result<AgentEvaluation> {
     let evaluation = AgentEvaluation {
         agent_id: row.try_get("", "agent_id")?,
         parent_agent_id: row.try_get("", "parent_agent_id")?,
-        model: pl_protocol::studio::NewThreadModelRoute {
+        model: crate::NewThreadModelRoute {
             account_id: row.try_get("", "account_id")?,
             model_id: row.try_get("", "model_id")?,
             effort: row.try_get("", "effort")?,
         },
         profile_id: row.try_get("", "profile_id")?,
-        mode: pl_protocol::DelegationMode::from_label(&row.try_get::<String>("", "mode")?)?,
-        preference: pl_protocol::DelegationPreference::from_label(
+        mode: crate::DelegationMode::from_label(&row.try_get::<String>("", "mode")?)?,
+        preference: crate::DelegationPreference::from_label(
             &row.try_get::<String>("", "preference")?,
         )?,
         turn_id: row.try_get("", "turn_id")?,
         revision: u64::try_from(row.try_get::<i64>("", "revision")?)?,
-        task_category: pl_protocol::AgentTaskCategory::from_label(
+        task_category: crate::AgentTaskCategory::from_label(
             &row.try_get::<String>("", "task_category")?,
         )?,
-        outcome: pl_protocol::AgentEvaluationOutcome::from_label(
-            &row.try_get::<String>("", "outcome")?,
-        )?,
+        outcome: crate::AgentEvaluationOutcome::from_label(&row.try_get::<String>("", "outcome")?)?,
         quality: row
             .try_get::<Option<i32>>("", "quality")?
             .map(u8::try_from)
@@ -173,9 +171,9 @@ pub(crate) fn summarize_window(records: &[AgentEvaluation]) -> Result<AgentEvalu
     let mut following = 0u32;
     for record in records.iter().take(10) {
         match record.outcome {
-            pl_protocol::AgentEvaluationOutcome::Passed => summary.passed += 1,
-            pl_protocol::AgentEvaluationOutcome::Failed => summary.failed += 1,
-            pl_protocol::AgentEvaluationOutcome::NotRated => {
+            crate::AgentEvaluationOutcome::Passed => summary.passed += 1,
+            crate::AgentEvaluationOutcome::Failed => summary.failed += 1,
+            crate::AgentEvaluationOutcome::NotRated => {
                 summary.not_rated += 1;
                 continue;
             }

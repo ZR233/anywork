@@ -23,7 +23,7 @@ pub struct BotConfigFile {
     pub platform: BotPlatformConfig,
     pub enabled: bool,
     pub tools_enabled: bool,
-    pub model_route: Option<pl_protocol::studio::BotModelRoute>,
+    pub model_route: Option<crate::BotModelRoute>,
     pub config_revision: u64,
     pub selected_ref: Option<BotCredentialRef>,
     pub created_at: i64,
@@ -588,7 +588,7 @@ updated_at = 200
         assert_eq!(decode_config_snapshot(nested).unwrap(), migrated);
         let mut current = migrated.clone();
         current.schema_version = BOT_CONFIG_SCHEMA_VERSION;
-        current.model_route = Some(pl_protocol::studio::BotModelRoute {
+        current.model_route = Some(crate::BotModelRoute {
             account_id: "account-original".into(),
             model_id: "model-original".into(),
             effort: Some("high".into()),
@@ -624,7 +624,7 @@ updated_at = 200
             kind: crate::config::BotCredentialRefKind::System,
             version: "credential-original".into(),
         });
-        original.model_route = Some(pl_protocol::studio::BotModelRoute {
+        original.model_route = Some(crate::BotModelRoute {
             account_id: "account-original".into(),
             model_id: "model-original".into(),
             effort: Some("high".into()),

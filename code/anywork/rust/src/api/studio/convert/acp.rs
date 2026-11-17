@@ -13,14 +13,14 @@ use crate::api::studio::types::{
     BridgeAcpUsageObservation, BridgeAcpUsageState,
 };
 
-pub(crate) fn bridge_acp_provider(provider: pl_protocol::studio::AcpProvider) -> BridgeAcpProvider {
+pub(crate) fn bridge_acp_provider(provider: pl_studio_runtime::AcpProvider) -> BridgeAcpProvider {
     match provider {
-        pl_protocol::studio::AcpProvider::Antigravity => BridgeAcpProvider::Antigravity,
+        pl_studio_runtime::AcpProvider::Antigravity => BridgeAcpProvider::Antigravity,
     }
 }
 
 pub(crate) fn bridge_acp_account_settings(
-    account: pl_protocol::studio::AcpAccountSettings,
+    account: pl_studio_runtime::AcpAccountSettings,
 ) -> BridgeAcpAccountSettings {
     BridgeAcpAccountSettings {
         account_id: account.account_id,
@@ -36,7 +36,7 @@ pub(crate) fn bridge_acp_account_settings(
 }
 
 pub(crate) fn bridge_acp_account_catalog(
-    catalog: pl_protocol::studio::AcpAccountCatalog,
+    catalog: pl_studio_runtime::AcpAccountCatalog,
 ) -> BridgeAcpAccountCatalog {
     BridgeAcpAccountCatalog {
         templates: catalog
@@ -64,12 +64,12 @@ pub(crate) fn update_acp_account_request(
     expected_revision: u64,
     expected_document_revision: Option<u64>,
     account: BridgeAcpAccountUpdate,
-) -> pl_protocol::studio::UpdateAcpAccountRequest {
-    pl_protocol::studio::UpdateAcpAccountRequest {
+) -> pl_studio_runtime::UpdateAcpAccountRequest {
+    pl_studio_runtime::UpdateAcpAccountRequest {
         operation_id,
         expected_revision,
         expected_document_revision,
-        account: pl_protocol::studio::AcpAccountUpdate {
+        account: pl_studio_runtime::AcpAccountUpdate {
             account_id: account.account_id,
             name: account.name,
             template: account.template.map(protocol_provider),
@@ -81,24 +81,24 @@ pub(crate) fn update_acp_account_request(
     }
 }
 
-fn protocol_provider(provider: BridgeAcpProvider) -> pl_protocol::studio::AcpProvider {
+fn protocol_provider(provider: BridgeAcpProvider) -> pl_studio_runtime::AcpProvider {
     match provider {
-        BridgeAcpProvider::Antigravity => pl_protocol::studio::AcpProvider::Antigravity,
+        BridgeAcpProvider::Antigravity => pl_studio_runtime::AcpProvider::Antigravity,
     }
 }
 
 /// 认证动作 → wire 请求体。
 pub(crate) fn protocol_auth_action(
     action: BridgeAcpAuthAction,
-) -> pl_protocol::studio::AcpAuthAction {
+) -> pl_studio_runtime::AcpAuthAction {
     match action {
-        BridgeAcpAuthAction::Check => pl_protocol::studio::AcpAuthAction::Check,
-        BridgeAcpAuthAction::QueryUsage => pl_protocol::studio::AcpAuthAction::QueryUsage,
+        BridgeAcpAuthAction::Check => pl_studio_runtime::AcpAuthAction::Check,
+        BridgeAcpAuthAction::QueryUsage => pl_studio_runtime::AcpAuthAction::QueryUsage,
     }
 }
 
 pub(crate) fn bridge_acp_auth_snapshot(
-    snapshot: pl_protocol::studio::AcpAuthSnapshot,
+    snapshot: pl_studio_runtime::AcpAuthSnapshot,
 ) -> BridgeAcpAuthSnapshot {
     BridgeAcpAuthSnapshot {
         revision: snapshot.revision,
@@ -120,7 +120,7 @@ pub(crate) fn bridge_acp_auth_snapshot(
 }
 
 fn bridge_acp_auth_active_operation(
-    operation: pl_protocol::studio::AcpAuthActiveOperation,
+    operation: pl_studio_runtime::AcpAuthActiveOperation,
 ) -> BridgeAcpAuthActiveOperation {
     BridgeAcpAuthActiveOperation {
         operation_id: operation.operation_id,
@@ -129,15 +129,15 @@ fn bridge_acp_auth_active_operation(
     }
 }
 
-fn bridge_auth_action(action: pl_protocol::studio::AcpAuthAction) -> BridgeAcpAuthAction {
+fn bridge_auth_action(action: pl_studio_runtime::AcpAuthAction) -> BridgeAcpAuthAction {
     match action {
-        pl_protocol::studio::AcpAuthAction::Check => BridgeAcpAuthAction::Check,
-        pl_protocol::studio::AcpAuthAction::QueryUsage => BridgeAcpAuthAction::QueryUsage,
+        pl_studio_runtime::AcpAuthAction::Check => BridgeAcpAuthAction::Check,
+        pl_studio_runtime::AcpAuthAction::QueryUsage => BridgeAcpAuthAction::QueryUsage,
     }
 }
 
-fn bridge_acp_usage(usage: pl_protocol::studio::AcpUsageObservation) -> BridgeAcpUsageObservation {
-    use pl_protocol::studio::{AcpQuotaRemaining, AcpUsageFailureCode, AcpUsageState};
+fn bridge_acp_usage(usage: pl_studio_runtime::AcpUsageObservation) -> BridgeAcpUsageObservation {
+    use pl_studio_runtime::{AcpQuotaRemaining, AcpUsageFailureCode, AcpUsageState};
     BridgeAcpUsageObservation {
         checked_at: usage.checked_at,
         state: match usage.state {
@@ -186,13 +186,13 @@ fn bridge_acp_usage(usage: pl_protocol::studio::AcpUsageObservation) -> BridgeAc
     }
 }
 
-fn bridge_acp_auth_state(state: pl_protocol::studio::AcpAuthState) -> BridgeAcpAuthState {
+fn bridge_acp_auth_state(state: pl_studio_runtime::AcpAuthState) -> BridgeAcpAuthState {
     match state {
-        pl_protocol::studio::AcpAuthState::Unchecked => BridgeAcpAuthState::Unchecked,
-        pl_protocol::studio::AcpAuthState::Checking { operation_id } => {
+        pl_studio_runtime::AcpAuthState::Unchecked => BridgeAcpAuthState::Unchecked,
+        pl_studio_runtime::AcpAuthState::Checking { operation_id } => {
             BridgeAcpAuthState::Checking { operation_id }
         }
-        pl_protocol::studio::AcpAuthState::Required {
+        pl_studio_runtime::AcpAuthState::Required {
             operation_id,
             methods,
             server,
@@ -201,40 +201,40 @@ fn bridge_acp_auth_state(state: pl_protocol::studio::AcpAuthState) -> BridgeAcpA
             methods: methods.into_iter().map(bridge_acp_auth_method).collect(),
             server: bridge_acp_server(server),
         },
-        pl_protocol::studio::AcpAuthState::Authenticating {
+        pl_studio_runtime::AcpAuthState::Authenticating {
             operation_id,
             method_id,
         } => BridgeAcpAuthState::Authenticating {
             operation_id,
             method_id,
         },
-        pl_protocol::studio::AcpAuthState::Verifying { operation_id } => {
+        pl_studio_runtime::AcpAuthState::Verifying { operation_id } => {
             BridgeAcpAuthState::Verifying { operation_id }
         }
-        pl_protocol::studio::AcpAuthState::Closing {
+        pl_studio_runtime::AcpAuthState::Closing {
             operation_id,
             failure,
         } => BridgeAcpAuthState::Closing {
             operation_id,
             failure: failure.map(bridge_acp_auth_failure),
         },
-        pl_protocol::studio::AcpAuthState::Verified { checked_at, server } => {
+        pl_studio_runtime::AcpAuthState::Verified { checked_at, server } => {
             BridgeAcpAuthState::Verified {
                 checked_at,
                 server: bridge_acp_server(server),
             }
         }
-        pl_protocol::studio::AcpAuthState::Cancelling { operation_id } => {
+        pl_studio_runtime::AcpAuthState::Cancelling { operation_id } => {
             BridgeAcpAuthState::Cancelling { operation_id }
         }
-        pl_protocol::studio::AcpAuthState::Cancelled => BridgeAcpAuthState::Cancelled,
-        pl_protocol::studio::AcpAuthState::Failed { failure } => BridgeAcpAuthState::Failed {
+        pl_studio_runtime::AcpAuthState::Cancelled => BridgeAcpAuthState::Cancelled,
+        pl_studio_runtime::AcpAuthState::Failed { failure } => BridgeAcpAuthState::Failed {
             failure: bridge_acp_auth_failure(failure),
         },
     }
 }
 
-fn bridge_acp_auth_failure(failure: pl_protocol::studio::AcpAuthFailure) -> BridgeAcpAuthFailure {
+fn bridge_acp_auth_failure(failure: pl_studio_runtime::AcpAuthFailure) -> BridgeAcpAuthFailure {
     BridgeAcpAuthFailure {
         code: bridge_acp_failure_code(failure.code),
         stage: bridge_acp_failure_stage(failure.stage),
@@ -244,16 +244,16 @@ fn bridge_acp_auth_failure(failure: pl_protocol::studio::AcpAuthFailure) -> Brid
 }
 
 pub(crate) fn bridge_acp_auth_method(
-    method: pl_protocol::studio::AcpAuthMethod,
+    method: pl_studio_runtime::AcpAuthMethod,
 ) -> BridgeAcpAuthMethod {
     BridgeAcpAuthMethod {
         id: method.id,
         name: method.name,
         description: method.description,
         kind: match method.kind {
-            pl_protocol::studio::AcpAuthMethodKind::Agent => BridgeAcpAuthMethodKind::Agent,
-            pl_protocol::studio::AcpAuthMethodKind::Terminal => BridgeAcpAuthMethodKind::Terminal,
-            pl_protocol::studio::AcpAuthMethodKind::Unsupported => {
+            pl_studio_runtime::AcpAuthMethodKind::Agent => BridgeAcpAuthMethodKind::Agent,
+            pl_studio_runtime::AcpAuthMethodKind::Terminal => BridgeAcpAuthMethodKind::Terminal,
+            pl_studio_runtime::AcpAuthMethodKind::Unsupported => {
                 BridgeAcpAuthMethodKind::Unsupported
             }
         },
@@ -261,7 +261,7 @@ pub(crate) fn bridge_acp_auth_method(
 }
 
 fn bridge_acp_server(
-    server: Option<pl_protocol::studio::AcpServerInfo>,
+    server: Option<pl_studio_runtime::AcpServerInfo>,
 ) -> Option<BridgeAcpServerInfo> {
     server.map(|server| BridgeAcpServerInfo {
         name: server.name,
@@ -271,71 +271,71 @@ fn bridge_acp_server(
 }
 
 fn bridge_acp_failure_code(
-    code: pl_protocol::studio::AcpAuthFailureCode,
+    code: pl_studio_runtime::AcpAuthFailureCode,
 ) -> BridgeAcpAuthFailureCode {
     match code {
-        pl_protocol::studio::AcpAuthFailureCode::PreparationRequired => {
+        pl_studio_runtime::AcpAuthFailureCode::PreparationRequired => {
             BridgeAcpAuthFailureCode::PreparationRequired
         }
-        pl_protocol::studio::AcpAuthFailureCode::InstallationInvalid => {
+        pl_studio_runtime::AcpAuthFailureCode::InstallationInvalid => {
             BridgeAcpAuthFailureCode::InstallationInvalid
         }
-        pl_protocol::studio::AcpAuthFailureCode::UnsupportedPlatform => {
+        pl_studio_runtime::AcpAuthFailureCode::UnsupportedPlatform => {
             BridgeAcpAuthFailureCode::UnsupportedPlatform
         }
-        pl_protocol::studio::AcpAuthFailureCode::ServerVersionMismatch => {
+        pl_studio_runtime::AcpAuthFailureCode::ServerVersionMismatch => {
             BridgeAcpAuthFailureCode::ServerVersionMismatch
         }
-        pl_protocol::studio::AcpAuthFailureCode::Startup => BridgeAcpAuthFailureCode::Startup,
-        pl_protocol::studio::AcpAuthFailureCode::MissingExecutable => {
+        pl_studio_runtime::AcpAuthFailureCode::Startup => BridgeAcpAuthFailureCode::Startup,
+        pl_studio_runtime::AcpAuthFailureCode::MissingExecutable => {
             BridgeAcpAuthFailureCode::MissingExecutable
         }
-        pl_protocol::studio::AcpAuthFailureCode::Io => BridgeAcpAuthFailureCode::Io,
-        pl_protocol::studio::AcpAuthFailureCode::UnsupportedVersion => {
+        pl_studio_runtime::AcpAuthFailureCode::Io => BridgeAcpAuthFailureCode::Io,
+        pl_studio_runtime::AcpAuthFailureCode::UnsupportedVersion => {
             BridgeAcpAuthFailureCode::UnsupportedVersion
         }
-        pl_protocol::studio::AcpAuthFailureCode::UnsupportedMethod => {
+        pl_studio_runtime::AcpAuthFailureCode::UnsupportedMethod => {
             BridgeAcpAuthFailureCode::UnsupportedMethod
         }
-        pl_protocol::studio::AcpAuthFailureCode::Authentication => {
+        pl_studio_runtime::AcpAuthFailureCode::Authentication => {
             BridgeAcpAuthFailureCode::Authentication
         }
-        pl_protocol::studio::AcpAuthFailureCode::Probe => BridgeAcpAuthFailureCode::Probe,
-        pl_protocol::studio::AcpAuthFailureCode::Protocol => BridgeAcpAuthFailureCode::Protocol,
-        pl_protocol::studio::AcpAuthFailureCode::Transport => BridgeAcpAuthFailureCode::Transport,
-        pl_protocol::studio::AcpAuthFailureCode::Timeout => BridgeAcpAuthFailureCode::Timeout,
-        pl_protocol::studio::AcpAuthFailureCode::ResourceLimit => {
+        pl_studio_runtime::AcpAuthFailureCode::Probe => BridgeAcpAuthFailureCode::Probe,
+        pl_studio_runtime::AcpAuthFailureCode::Protocol => BridgeAcpAuthFailureCode::Protocol,
+        pl_studio_runtime::AcpAuthFailureCode::Transport => BridgeAcpAuthFailureCode::Transport,
+        pl_studio_runtime::AcpAuthFailureCode::Timeout => BridgeAcpAuthFailureCode::Timeout,
+        pl_studio_runtime::AcpAuthFailureCode::ResourceLimit => {
             BridgeAcpAuthFailureCode::ResourceLimit
         }
-        pl_protocol::studio::AcpAuthFailureCode::Cancelled => BridgeAcpAuthFailureCode::Cancelled,
-        pl_protocol::studio::AcpAuthFailureCode::StaleOperation => {
+        pl_studio_runtime::AcpAuthFailureCode::Cancelled => BridgeAcpAuthFailureCode::Cancelled,
+        pl_studio_runtime::AcpAuthFailureCode::StaleOperation => {
             BridgeAcpAuthFailureCode::StaleOperation
         }
-        pl_protocol::studio::AcpAuthFailureCode::ConfigChanged => {
+        pl_studio_runtime::AcpAuthFailureCode::ConfigChanged => {
             BridgeAcpAuthFailureCode::ConfigChanged
         }
-        pl_protocol::studio::AcpAuthFailureCode::Cleanup => BridgeAcpAuthFailureCode::Cleanup,
-        pl_protocol::studio::AcpAuthFailureCode::Internal => BridgeAcpAuthFailureCode::Internal,
+        pl_studio_runtime::AcpAuthFailureCode::Cleanup => BridgeAcpAuthFailureCode::Cleanup,
+        pl_studio_runtime::AcpAuthFailureCode::Internal => BridgeAcpAuthFailureCode::Internal,
     }
 }
 
-fn bridge_acp_failure_stage(stage: pl_protocol::studio::AcpAuthStage) -> BridgeAcpAuthStage {
+fn bridge_acp_failure_stage(stage: pl_studio_runtime::AcpAuthStage) -> BridgeAcpAuthStage {
     match stage {
-        pl_protocol::studio::AcpAuthStage::Prepare => BridgeAcpAuthStage::Prepare,
-        pl_protocol::studio::AcpAuthStage::Process => BridgeAcpAuthStage::Process,
-        pl_protocol::studio::AcpAuthStage::Config => BridgeAcpAuthStage::Config,
-        pl_protocol::studio::AcpAuthStage::Initialize => BridgeAcpAuthStage::Initialize,
-        pl_protocol::studio::AcpAuthStage::Authenticate => BridgeAcpAuthStage::Authenticate,
-        pl_protocol::studio::AcpAuthStage::Probe => BridgeAcpAuthStage::Probe,
-        pl_protocol::studio::AcpAuthStage::Close => BridgeAcpAuthStage::Close,
-        pl_protocol::studio::AcpAuthStage::Cleanup => BridgeAcpAuthStage::Cleanup,
+        pl_studio_runtime::AcpAuthStage::Prepare => BridgeAcpAuthStage::Prepare,
+        pl_studio_runtime::AcpAuthStage::Process => BridgeAcpAuthStage::Process,
+        pl_studio_runtime::AcpAuthStage::Config => BridgeAcpAuthStage::Config,
+        pl_studio_runtime::AcpAuthStage::Initialize => BridgeAcpAuthStage::Initialize,
+        pl_studio_runtime::AcpAuthStage::Authenticate => BridgeAcpAuthStage::Authenticate,
+        pl_studio_runtime::AcpAuthStage::Probe => BridgeAcpAuthStage::Probe,
+        pl_studio_runtime::AcpAuthStage::Close => BridgeAcpAuthStage::Close,
+        pl_studio_runtime::AcpAuthStage::Cleanup => BridgeAcpAuthStage::Cleanup,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::{AcpAccountSettings, AcpProvider};
+    use pl_studio_runtime::{AcpAccountSettings, AcpProvider};
 
     #[test]
     fn acp_generic_settings_preserve_launch_fields_and_independent_revisions() {

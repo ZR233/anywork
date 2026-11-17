@@ -6,7 +6,7 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     BotConnectionState, BotRegistrationStatus, BotSnapshot, BotsStateSnapshot,
 };
 use pl_studio_runtime::{

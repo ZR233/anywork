@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use pl_protocol::{PureError, WorkflowSessionState, WorkflowTransitionRecord};
+use crate::PureError;
+use crate::workflow_tool::{WorkflowSessionState, WorkflowTransitionRecord};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

@@ -1,6 +1,6 @@
 //! 已完成正式迁移的只读残余证据导出；正常执行恢复不解码这些旧记录。
 use super::*;
-use pl_protocol::{ContentRange, ContentWindow, LegacyExecutionEvidence};
+use crate::{ContentRange, ContentWindow, LegacyExecutionEvidence};
 
 impl HistoryStore {
     pub(in crate::studio) async fn legacy_evidence_heads(

@@ -1,8 +1,30 @@
 //! User-input tool schema and model-facing result projection.
 
-use pl_protocol::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+pub const AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: &str = "plan_confirmation";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestionOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UserQuestion {
+    pub id: String,
+    pub header: String,
+    pub question: String,
+    #[serde(default)]
+    pub is_other: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<UserQuestionOption>>,
+}
 
 #[derive(Debug, Default)]
 pub struct AskUserTool;

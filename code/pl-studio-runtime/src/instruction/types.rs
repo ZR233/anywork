@@ -88,7 +88,7 @@ pub enum AgentInstructionShape {
 impl AgentInstructionShape {
     pub(crate) fn from_agent_blocks(
         developer: &[InstructionBlock],
-    ) -> Result<Self, pl_protocol::PureError> {
+    ) -> Result<Self, crate::PureError> {
         let mut blocks = developer
             .iter()
             .filter(|block| block.source.kind == InstructionSourceKind::AgentDefinition);
@@ -96,7 +96,7 @@ impl AgentInstructionShape {
             return Ok(Self::Absent);
         };
         if blocks.next().is_some() {
-            return Err(pl_protocol::PureError::ConfigError(
+            return Err(crate::PureError::ConfigError(
                 "instruction snapshot has multiple Agent sources".into(),
             ));
         }
@@ -279,9 +279,9 @@ impl InstructionSnapshot {
         &mut self,
         label: &str,
         content: &str,
-    ) -> Result<bool, pl_protocol::PureError> {
+    ) -> Result<bool, crate::PureError> {
         if content.trim().is_empty() {
-            return Err(pl_protocol::PureError::ConfigError(
+            return Err(crate::PureError::ConfigError(
                 "Mode instructions must not be empty".into(),
             ));
         }
@@ -290,12 +290,10 @@ impl InstructionSnapshot {
             .iter_mut()
             .filter(|block| block.source.kind == InstructionSourceKind::ModeDefinition);
         let block = modes.next().ok_or_else(|| {
-            pl_protocol::PureError::ConfigError(
-                "saved instruction snapshot has no Mode source".into(),
-            )
+            crate::PureError::ConfigError("saved instruction snapshot has no Mode source".into())
         })?;
         if modes.next().is_some() {
-            return Err(pl_protocol::PureError::ConfigError(
+            return Err(crate::PureError::ConfigError(
                 "saved instruction snapshot has more than one Mode source".into(),
             ));
         }

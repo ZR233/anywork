@@ -44,19 +44,19 @@ pub(in crate::studio::runtime) fn seed_synthetic_install(
 ) {
     use sha2::Digest;
     use std::os::unix::fs::PermissionsExt;
-    let release = source::resolve(pl_protocol::studio::AcpProvider::Antigravity).unwrap();
-    let id = source::installation_id(pl_protocol::studio::AcpProvider::Antigravity, &release);
+    let release = source::resolve(crate::AcpProvider::Antigravity).unwrap();
+    let id = source::installation_id(crate::AcpProvider::Antigravity, &release);
     let key = source::storage_key(&id).unwrap();
     let root = paths::ManagedRoot::open(
         store.paths().home(),
         store.acp_servers_root(),
-        pl_protocol::studio::AcpInstallStage::Publish,
+        crate::AcpInstallStage::Publish,
     )
     .unwrap();
     let installed = root
         .ensure_dir(
             &["installed", "antigravity", &release.release.target, &key],
-            pl_protocol::studio::AcpInstallStage::Publish,
+            crate::AcpInstallStage::Publish,
         )
         .unwrap();
     let path = installed.join(&release.command);

@@ -4,9 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::StudioError;
 use anyhow::{Context, Result, bail, ensure};
 use futures::StreamExt;
-use pl_protocol::studio::StudioError;
 use reqwest::header::LOCATION;
 use tokio::io::AsyncReadExt;
 use url::Url;

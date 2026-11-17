@@ -41,7 +41,7 @@ impl StudioRuntime {
         let recovery = crate::StudioRecoveryStateSnapshot {
             state: self.recovery.state(),
         };
-        let host_mcp_catalog = self.read_mcp_catalog(&pl_protocol::McpScope::Host)?;
+        let host_mcp_catalog = self.read_mcp_catalog(&crate::McpScope::Host)?;
         let lsp = self.read_lsp_state().await;
         let mut skills_by_project = Vec::new();
         if let Some(directory) = project_directory.state.value() {
@@ -60,14 +60,14 @@ impl StudioRuntime {
             thread_directory,
             agent_directory,
             settings_config: crate::StudioSettingsConfigStateSnapshot {
-                state: pl_protocol::ObservedResource::ready(
+                state: crate::ObservedResource::ready(
                     settings_config.revision,
                     settings_config.updated_at,
                     settings_config,
                 ),
             },
             model_catalog: crate::StudioModelCatalogStateSnapshot {
-                state: pl_protocol::ObservedResource::ready(
+                state: crate::ObservedResource::ready(
                     model_catalog.revision,
                     model_catalog.updated_at,
                     model_catalog,
@@ -102,7 +102,7 @@ impl StudioRuntime {
 
     pub async fn query_threads(
         &self,
-        query: &pl_protocol::studio::ThreadDirectoryQuery,
+        query: &crate::ThreadDirectoryQuery,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<StudioThreadDirectoryPage> {
@@ -113,7 +113,7 @@ impl StudioRuntime {
     }
 
     /// Reads one canonical Thread without activating its actor.
-    pub async fn read_thread(&self, thread_id: &str) -> Result<pl_protocol::Thread> {
+    pub async fn read_thread(&self, thread_id: &str) -> Result<crate::Thread> {
         self.read_protocol_thread(thread_id).await
     }
 
@@ -123,7 +123,7 @@ impl StudioRuntime {
     }
 
     /// Reads the current process-wide Thread Mode catalog.
-    pub fn read_thread_mode_catalog(&self) -> pl_protocol::ThreadModeCatalogSnapshot {
+    pub fn read_thread_mode_catalog(&self) -> crate::mode::ThreadModeCatalogSnapshot {
         self.config_runtime.read_thread_mode_catalog()
     }
 }

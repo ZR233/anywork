@@ -105,10 +105,7 @@ impl AgentServices {
             !self
                 .events
                 .agent_execution_identity(parent)
-                .is_some_and(|(_, binding, _)| matches!(
-                    binding,
-                    pl_protocol::AgentBinding::Acp(_)
-                ))
+                .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
                 && !owner.0.state().entries.get(parent).is_some_and(|entry| {
                     matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
                 }),

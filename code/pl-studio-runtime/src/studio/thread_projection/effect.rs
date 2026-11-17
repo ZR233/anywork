@@ -3,8 +3,8 @@
 use crate::{ExecutionItem, ExecutionShape};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::{ThreadRawItem, ThreadTurnItem};
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, ThreadSnapshot, input::InputChange};
-use pl_protocol::{ThreadRawItem, ThreadTurnItem};
 
 use super::{ProjectionError, order};
 
@@ -56,7 +56,7 @@ impl EffectProjection {
 }
 
 pub(in crate::studio) fn project_effect_items(
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
     state: &ThreadSnapshot,
     effect: &ThreadEffectBatch,
     existing: &BTreeMap<String, ExecutionItem>,
@@ -408,7 +408,7 @@ pub(in crate::studio) fn project_effect_items(
                 effect.sequence,
                 created_at,
                 effect.committed_at,
-                ExecutionShape::ContextCompaction(pl_protocol::ThreadContextCompactionItem::new(
+                ExecutionShape::ContextCompaction(crate::ThreadContextCompactionItem::new(
                     None,
                     None,
                     effect.committed_at,

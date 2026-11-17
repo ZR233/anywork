@@ -7,12 +7,12 @@ mod validate;
 
 pub(super) use runtime::AttachmentDraftRuntime;
 
-use anyhow::{Context, Result};
-use pl_protocol::session::AgentBackend;
-use pl_protocol::studio::{
+use crate::AgentBackend;
+use crate::{
     AdmitAttachmentDraftsRequest, AdmitAttachmentDraftsResponse, StudioAttachmentAdmissionContext,
     StudioError,
 };
+use anyhow::{Context, Result};
 
 use crate::resource_store::{FileResourceStore, RESOURCE_ID_PREFIX};
 
@@ -63,7 +63,7 @@ impl StudioRuntime {
                 )?
                 .context("Thread has no saved model route")?;
                 let role = if thread.parent_thread_id.is_some() {
-                    pl_protocol::AgentRoleId::new(thread.role)?
+                    crate::AgentRoleId::new(thread.role)?
                 } else {
                     crate::config::root_agent_route_id()
                 };
@@ -148,9 +148,9 @@ mod tests {
     use std::io::Cursor;
     use std::path::Path;
 
+    use crate::acp_schema::PromptCapabilities;
+    use crate::{StudioAttachmentDraftSource, StudioAttachmentModality};
     use anyhow::Result;
-    use pl_protocol::studio::acp_schema::PromptCapabilities;
-    use pl_protocol::studio::{StudioAttachmentDraftSource, StudioAttachmentModality};
 
     use super::AttachmentDraftRuntime;
     use super::source::MAX_GENERIC_SOURCE_BYTES;
@@ -286,10 +286,8 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     mod public_api {
+        use crate::{AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError};
         use anyhow::{Context, Result};
-        use pl_protocol::studio::{
-            AdmitAttachmentDraftsRequest, StudioAttachmentAdmissionContext, StudioError,
-        };
 
         use super::local;
         use crate::acp_transport_fixture::AcpTransportFixture as Fixture;

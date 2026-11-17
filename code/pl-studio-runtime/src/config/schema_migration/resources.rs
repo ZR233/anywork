@@ -213,7 +213,7 @@ fn validate_profile_with_references(
         .context("invalid Profile filename")?;
     crate::config::agent_profile::validate_user_agent_profile_id(profile_id)?;
     let fields = if matches!(&references, ProfileReferences::Historical(_))
-        && matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_))
+        && matches!(&profile.binding, crate::AgentBinding::Acp(_))
     {
         // Historical ACP ids were account keys, not filenames. The frozen account
         // lookup below enforces their old validity without weakening current Profiles.
@@ -229,7 +229,7 @@ fn validate_profile_with_references(
     // joint reference admission before commit; this also applies to disabled candidates.
     if loaded.migrated || require_current {
         let valid_references = match &profile.binding {
-            pl_protocol::AgentBinding::Native(native) => {
+            crate::AgentBinding::Native(native) => {
                 let route = native
                     .route
                     .as_ref()
@@ -246,7 +246,7 @@ fn validate_profile_with_references(
                     })
                     .map(|_| ())
             }
-            pl_protocol::AgentBinding::Acp(acp) => match references {
+            crate::AgentBinding::Acp(acp) => match references {
                 ProfileReferences::Current(definitions) => {
                     crate::config::agent_profile::validate_user_profile(
                         profile_id,
@@ -2229,7 +2229,7 @@ workspace_mode = "directory"
                 .document
                 .into_profile()
                 .unwrap();
-            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+            let crate::AgentBinding::Native(native) = &mut profile.binding else {
                 panic!("imported Profile must be Native");
             };
             let route = native.route.as_mut().expect("imported Native route");
@@ -2264,7 +2264,7 @@ workspace_mode = "directory"
                     .iter()
                     .find(|profile| profile.definition.definition_id == "saved")
                     .expect("unavailable Profile stays in the editable settings catalog");
-                let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+                let crate::AgentBinding::Native(native) = &saved.binding else {
                     panic!("saved Profile must be Native");
                 };
                 assert_eq!(
@@ -2314,7 +2314,7 @@ workspace_mode = "directory"
                     .starts_with("saved.toml.migrated.")
             }));
 
-            let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+            let crate::AgentBinding::Native(native) = &mut profile.binding else {
                 panic!("saved Profile must be Native");
             };
             native
@@ -2341,7 +2341,7 @@ workspace_mode = "directory"
                 .iter()
                 .find(|profile| profile.definition.definition_id == "saved")
                 .unwrap();
-            let pl_protocol::AgentBinding::Native(native) = &saved.binding else {
+            let crate::AgentBinding::Native(native) = &saved.binding else {
                 panic!("repaired Profile must be Native");
             };
             assert_eq!(
@@ -2573,20 +2573,17 @@ cwd = "sub/dir"
 
         let catalog = crate::config::McpCatalogResource::new(paths, &loaded.models);
         let host_snapshot = catalog
-            .read_catalog(paths, &loaded.models, &pl_protocol::McpScope::Host)
+            .read_catalog(paths, &loaded.models, &crate::McpScope::Host)
             .unwrap();
         let git_entry = host_snapshot
             .entries
             .iter()
             .find(|e| e.id == "git_tools")
             .expect("migrated git_tools server must exist in Host catalog");
-        assert_eq!(
-            git_entry.config_status,
-            pl_protocol::McpConfigStatusKind::Enabled
-        );
+        assert_eq!(git_entry.config_status, crate::McpConfigStatusKind::Enabled);
         assert_eq!(
             git_entry.effective_source,
-            pl_protocol::McpEffectiveSource::HostServer
+            crate::McpEffectiveSource::HostServer
         );
         let search_entry = host_snapshot
             .entries
@@ -2595,7 +2592,7 @@ cwd = "sub/dir"
             .expect("migrated zhipu_search builtin must exist in Host catalog");
         assert_eq!(
             search_entry.config_status,
-            pl_protocol::McpConfigStatusKind::Disabled
+            crate::McpConfigStatusKind::Disabled
         );
 
         // Verify the current schema rejects legacy [mcp] tables (no dual-read).
@@ -2659,7 +2656,7 @@ url = "https://example.com/mcp"
 
         let catalog = crate::config::McpCatalogResource::new(paths, &recovered.models);
         let snapshot = catalog
-            .read_catalog(paths, &recovered.models, &pl_protocol::McpScope::Host)
+            .read_catalog(paths, &recovered.models, &crate::McpScope::Host)
             .unwrap();
         let mcp_document = snapshot
             .entries
@@ -2674,7 +2671,7 @@ url = "https://example.com/mcp"
         assert!(!loaded_profile.migrated);
         let profile = loaded_profile.document.into_profile().unwrap();
         assert!(!profile.enabled);
-        let pl_protocol::AgentBinding::Native(native) = profile.binding else {
+        let crate::AgentBinding::Native(native) = profile.binding else {
             panic!("migrated Profile must retain its Native binding");
         };
         let route = native.route.unwrap();
@@ -2718,7 +2715,7 @@ transport = "stdio"
         assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
         let catalog = crate::config::McpCatalogResource::new(paths, &loaded.models);
         let snapshot = catalog
-            .read_catalog(paths, &loaded.models, &pl_protocol::McpScope::Host)
+            .read_catalog(paths, &loaded.models, &crate::McpScope::Host)
             .unwrap();
         let broken = snapshot
             .entries
@@ -2727,7 +2724,7 @@ transport = "stdio"
             .expect("broken_disabled should surface as InvalidDocument entry");
         assert_eq!(
             broken.config_status,
-            pl_protocol::McpConfigStatusKind::InvalidDocument
+            crate::McpConfigStatusKind::InvalidDocument
         );
         assert!(
             snapshot

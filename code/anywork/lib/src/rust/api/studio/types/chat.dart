@@ -162,7 +162,7 @@ sealed class BridgeChatAtomLifecycle with _$BridgeChatAtomLifecycle {
   }) = BridgeChatAtomLifecycle_Terminal;
 }
 
-/// A mechanical FRB boundary for the canonical pl-protocol ChatBatch.
+/// A mechanical FRB boundary for the canonical `pl-studio-runtime` `ChatBatch`.
 class BridgeChatBatch {
   final BridgeChatPlacement placement;
   final List<BridgeCompletedEntry> entries;

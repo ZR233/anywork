@@ -1,5 +1,6 @@
 //! Final evaluations are owned operations, not cancellable tool-side SQL futures.
 use super::{SessionRuntime, agent_services::AgentServices};
+use crate::{AgentEvaluation, AgentEvaluationWrite, EvaluateAgentReceipt, EvaluateAgentRequest};
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
     ThreadLifecycle, ThreadSnapshot, TurnState,
@@ -7,9 +8,6 @@ use pl_core::thread::{
     interactions::InteractionState,
     permissions::PermissionState,
     task::TaskStatus,
-};
-use pl_protocol::{
-    AgentEvaluation, AgentEvaluationWrite, EvaluateAgentReceipt, EvaluateAgentRequest,
 };
 
 impl AgentServices {
@@ -131,12 +129,11 @@ impl AgentServices {
             Some(selection) => selection,
             None => {
                 ensure!(
-                    record.delegation_mode == pl_protocol::DelegationMode::Profile
-                        && record.delegation_preference
-                            == pl_protocol::DelegationPreference::Balanced,
+                    record.delegation_mode == crate::DelegationMode::Profile
+                        && record.delegation_preference == crate::DelegationPreference::Balanced,
                     "child has no canonical delegation provenance"
                 );
-                pl_protocol::DelegationSettings::default()
+                crate::DelegationSettings::default()
             }
         };
         let model = crate::studio::delegation::profile_model(&profile);

@@ -36,7 +36,7 @@ impl ProductEventBus {
 
     pub fn emit_recovery_state(
         &self,
-        state: pl_protocol::ObservedResource<Vec<crate::StudioRecoveryIssue>>,
+        state: crate::ObservedResource<Vec<crate::StudioRecoveryIssue>>,
     ) -> StudioProductEventEnvelope {
         self.emit(StudioProductEventKind::RecoveryStateChanged(
             StudioRecoveryStateSnapshot { state },
@@ -45,14 +45,14 @@ impl ProductEventBus {
 
     pub fn emit_mcp_catalog(
         &self,
-        snapshot: pl_protocol::McpCatalogSnapshot,
+        snapshot: crate::McpCatalogSnapshot,
     ) -> StudioProductEventEnvelope {
         self.emit(StudioProductEventKind::McpCatalogChanged(snapshot))
     }
 
     pub fn emit_thread_mcp_state(
         &self,
-        state: pl_protocol::ThreadMcpStateSnapshot,
+        state: crate::ThreadMcpStateSnapshot,
     ) -> StudioProductEventEnvelope {
         self.emit(StudioProductEventKind::ThreadMcpStateChanged(state))
     }
@@ -75,7 +75,7 @@ impl ProductEventBus {
     /// Mode catalog 只在真实注册/装载变化时发布；同一 revision 重复装载不产生事件。
     pub fn emit_thread_mode_catalog(
         &self,
-        state: pl_protocol::ThreadModeCatalogSnapshot,
+        state: crate::mode::ThreadModeCatalogSnapshot,
     ) -> Option<StudioProductEventEnvelope> {
         let mut published = self
             .mode_catalog_revision
@@ -215,7 +215,7 @@ impl ProductEventBus {
                 pending_commits: pending,
                 oldest_pending_revision: threads.oldest_pending_revision,
                 first_failed_at: super::unix_seconds(),
-                error: pl_protocol::StateError {
+                error: crate::StateError {
                     code: "threadPersistenceFailed".into(),
                     message: error,
                     retryable: true,

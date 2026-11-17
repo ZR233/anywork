@@ -1,9 +1,9 @@
 //! Decoding of a Thread's frozen `studio.workspace` assignment receipt.
 //!
 //! 创建回执、spawn 返回值与 review 目标解析都消费同一编码；不存在第二套解释。
+use crate::AgentWorkspaceAssignmentSnapshot;
 use anyhow::{Result, ensure};
 use pl_core::context::OpaquePayload;
-use pl_protocol::AgentWorkspaceAssignmentSnapshot;
 
 pub(crate) mod migration;
 

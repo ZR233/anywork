@@ -48,6 +48,61 @@ pub enum SkillSourceKind {
     External,
 }
 
+/// Successful skill activation fact for a session.
+///
+/// Emitted when `skill_view` or a direct user gesture successfully loads a
+/// Skill and that content has entered the model-visible context.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillActivation {
+    pub name: String,
+    pub source: String,
+    pub provider_id: String,
+    pub resource_base: SkillActivationResourceBase,
+    pub turn_id: String,
+    pub cause: SkillActivationCause,
+    pub activated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum SkillActivationResourceBase {
+    Directory { path: String },
+    Url { url: String },
+    Opaque { description: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind",
+    deny_unknown_fields
+)]
+pub enum SkillActivationCause {
+    Tool { tool_call_id: String },
+    UserGesture { invocation_id: String },
+}
+
+impl SkillActivation {
+    /// Returns the cause-specific identity used to build the durable Item ID.
+    pub fn item_identity(&self) -> &str {
+        match &self.cause {
+            SkillActivationCause::Tool { tool_call_id } => tool_call_id,
+            SkillActivationCause::UserGesture { invocation_id } => invocation_id,
+        }
+    }
+
+    /// Returns the local directory when the activation uses a directory resource base.
+    pub fn directory_path(&self) -> Option<&str> {
+        match &self.resource_base {
+            SkillActivationResourceBase::Directory { path } => Some(path),
+            SkillActivationResourceBase::Url { .. }
+            | SkillActivationResourceBase::Opaque { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillMetadata {

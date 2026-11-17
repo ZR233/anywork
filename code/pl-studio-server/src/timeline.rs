@@ -12,7 +12,7 @@ use axum::{
     },
 };
 use futures::Stream;
-use pl_protocol::{
+use pl_studio_runtime::{
     DisplayBlockRef, DisplayMemberWindow, OpenTimeline, ReadDemand, TailSnapshot, TimelinePage,
     ViewCursor, ViewUpdate,
 };

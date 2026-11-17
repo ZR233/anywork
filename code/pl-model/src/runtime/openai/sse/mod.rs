@@ -3,7 +3,7 @@ use serde::Deserialize;
 use crate::completion::stream::event::{ModelStreamEvent, ToolInputDeltaPayload};
 use crate::runtime::openai::identity::responses_tool_identity;
 use crate::runtime::openai::usage::ProviderTokenUsage;
-use pl_protocol::trace::TraceTextChannel;
+use crate::trace::TraceTextChannel;
 
 mod decoder;
 mod item;

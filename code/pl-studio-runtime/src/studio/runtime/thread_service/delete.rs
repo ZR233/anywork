@@ -430,7 +430,7 @@ impl StudioRuntime {
                 operation_id,
                 true,
                 vec![self.thread_directory_stamp(&committed)?],
-                pl_protocol::studio::CommandEffectPoint::Immediate,
+                crate::CommandEffectPoint::Immediate,
                 false,
             ),
         }))
@@ -759,20 +759,16 @@ impl DeletionFailures {
     }
 }
 
-fn unresolved_removal(target: &str) -> pl_protocol::studio::StudioError {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Conflict,
+fn unresolved_removal(target: &str) -> crate::StudioError {
+    crate::StudioError::new(
+        crate::StudioErrorCode::Conflict,
         format!("上次删除{target}的结果无法确认，已保留现存目录，避免误删替换对象"),
         false,
     )
 }
 
-fn deletion_error(
-    error: &anyhow::Error,
-    stage: &str,
-    thread_id: &str,
-) -> pl_protocol::studio::StudioError {
-    use pl_protocol::studio::{StudioError, StudioErrorCode};
+fn deletion_error(error: &anyhow::Error, stage: &str, thread_id: &str) -> crate::StudioError {
+    use crate::{StudioError, StudioErrorCode};
     let mut public = if let Some(public) = error.downcast_ref::<StudioError>() {
         public.clone()
     } else if let Some(source) = error
@@ -913,7 +909,7 @@ mod error_tests {
 
     #[test]
     fn deletion_context_preserves_typed_permission_and_original_details() {
-        use pl_protocol::studio::{StudioError, StudioErrorCode};
+        use crate::{StudioError, StudioErrorCode};
         let original = StudioError::new(StudioErrorCode::PermissionDenied, "合成权限拒绝", false)
             .with_details(serde_json::json!({"reason": "syntheticPermission"}));
         let correlation = original.correlation_id.clone();

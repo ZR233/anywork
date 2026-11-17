@@ -2,8 +2,8 @@
 use std::collections::BTreeMap;
 
 use pl_model::protocol::{EffectivePromptCachePolicy, ProtocolEndpoint};
+use pl_model::runtime::PromptPrefixChangedReason;
 use pl_model::runtime::{PromptCacheInput, ThreadPromptMetadata, prompt_diagnostics};
-use pl_protocol::PromptPrefixChangedReason;
 
 fn input<'a>(
     account_id: &'a str,
@@ -35,7 +35,10 @@ fn recorded(
     account_id: &str,
     account: &ProtocolEndpoint,
     model: &str,
-) -> (ThreadPromptMetadata, pl_protocol::ThreadPromptSnapshot) {
+) -> (
+    ThreadPromptMetadata,
+    pl_model::runtime::ThreadPromptSnapshot,
+) {
     let snapshot = prompt_diagnostics(
         &ThreadPromptMetadata::default(),
         input(account_id, account, model),

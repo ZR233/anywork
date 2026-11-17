@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{ChatAtom, ChatContentRole, ContentRef, InferenceBillingRecord, TurnFailure};
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatItemHeader;
 use pl_core::thread::UsageSummary;
-use pl_protocol::{ChatAtom, ChatContentRole, ContentRef, InferenceBillingRecord, TurnFailure};
 use pl_tool::skill::{SkillDiscoverySourceSummary, SkillWinnerSummary};
 use serde::{Deserialize, Serialize};
 
@@ -422,20 +422,20 @@ pub struct SealedMemberCutV2 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExecutionLifecycleExportV2 {
     pub identity: String,
-    pub kind: pl_protocol::ChatAtomKind,
-    pub source: pl_protocol::ChatSourceId,
+    pub kind: crate::ChatAtomKind,
+    pub source: crate::ChatSourceId,
     pub turn_id: Option<String>,
     pub attempt_id: Option<String>,
-    pub tool: Option<pl_protocol::ChatToolIdentity>,
-    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
-    pub delivery: pl_protocol::ChatDeliveryKind,
+    pub tool: Option<crate::ChatToolIdentity>,
+    pub text_channel: Option<crate::ThreadTextChannel>,
+    pub delivery: crate::ChatDeliveryKind,
     pub source_order: Option<u64>,
     pub execution_order: Option<u64>,
-    pub started: Option<pl_protocol::ChatFactPosition>,
+    pub started: Option<crate::ChatFactPosition>,
     pub started_at: Option<i64>,
-    pub ended: Option<pl_protocol::ChatFactPosition>,
+    pub ended: Option<crate::ChatFactPosition>,
     pub finished_at: Option<i64>,
-    pub outcome: Option<pl_protocol::ChatTerminalOutcome>,
+    pub outcome: Option<crate::ChatTerminalOutcome>,
     pub completion_item_id: Option<String>,
     pub last_write_seq: u64,
 }

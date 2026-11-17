@@ -6,8 +6,9 @@
 //! 成员事实在 [`SessionDirectoryRecord`]／[`AgentDirectoryRecord`] 中各自唯一
 //! 归属，父子关系只保存在成员记录的 `parent_agent_id` 中。
 
+use crate::mode::ThreadModeId;
+use crate::{NativeAgentConfig, ThreadWorkspaceMode};
 use anyhow::Result;
-use pl_protocol::{NativeAgentConfig, ThreadModeId, ThreadWorkspaceMode};
 
 use crate::studio::ids::unix_seconds;
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
@@ -80,12 +81,12 @@ impl DirectoryDelta {
             thread_id: session_id,
             role: role.to_string(),
             title: None,
-            backend: pl_protocol::session::AgentBackend::Native {
+            backend: crate::AgentBackend::Native {
                 config: NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 },
-                status: pl_protocol::ThreadStatus::Idle,
+                status: crate::ThreadStatus::Idle,
             },
             explicitly_closed: false,
             created_at: now,
@@ -113,12 +114,12 @@ impl DirectoryDelta {
                 thread_id: spec.agent_id,
                 role: spec.role,
                 title: Some(non_empty_title(&spec.title)),
-                backend: pl_protocol::session::AgentBackend::Native {
+                backend: crate::AgentBackend::Native {
                     config: NativeAgentConfig {
                         route: spec.frozen_model,
                         system_instructions: None,
                     },
-                    status: pl_protocol::ThreadStatus::Idle,
+                    status: crate::ThreadStatus::Idle,
                 },
                 explicitly_closed: false,
                 created_at: now,
@@ -162,7 +163,7 @@ pub(in crate::studio) struct RegisteredChildAgent {
     pub(in crate::studio) session_id: String,
     pub(in crate::studio) role: String,
     pub(in crate::studio) title: String,
-    pub(in crate::studio) frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
+    pub(in crate::studio) frozen_model: Option<crate::NewThreadModelRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +183,7 @@ pub(in crate::studio) struct ProjectRemoval {
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct ProjectDirectoryRecord {
     pub(in crate::studio) id: String,
-    pub(in crate::studio) kind: pl_protocol::studio::WorkspaceKind,
+    pub(in crate::studio) kind: crate::WorkspaceKind,
     pub(in crate::studio) name: String,
     pub(in crate::studio) path: String,
     pub(in crate::studio) ssh_alias: Option<String>,

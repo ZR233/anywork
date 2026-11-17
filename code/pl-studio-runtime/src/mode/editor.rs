@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use pl_protocol::{
+use crate::mode::{
     ThreadModeDocument, ThreadModeEditorLayout, ThreadModeValidationIssue,
     ThreadModeValidationResult,
 };
@@ -131,7 +131,7 @@ pub fn mode_document_schema() -> String {
 
 fn canonical_editor(
     mut editor: ThreadModeEditorLayout,
-    workflow: Option<&pl_protocol::WorkflowDefinition>,
+    workflow: Option<&crate::workflow_tool::WorkflowDefinition>,
     issues: &mut Vec<ThreadModeValidationIssue>,
 ) -> ThreadModeEditorLayout {
     let state_ids = workflow

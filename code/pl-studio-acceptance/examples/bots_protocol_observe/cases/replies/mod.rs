@@ -17,8 +17,8 @@ use crate::support::{
     CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
 };
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatAtomKind, ChatScope, ChatSourceId};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
+use pl_studio_runtime::{ChatAtomKind, ChatScope, ChatSourceId};
 use std::path::Path;
 
 pub(super) const CASE_INTERACTION_RESTART: &str = "reply-interaction-restart";
@@ -123,7 +123,7 @@ pub(super) async fn wait_cancelled_turn(
     session: &Session,
     thread_id: &str,
     turn_id: &str,
-) -> Result<pl_protocol::CancelledTurnState> {
+) -> Result<pl_studio_runtime::CancelledTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
         let mut remaining = CHAT_OBSERVATION_BYTES;
@@ -159,7 +159,7 @@ pub(super) async fn wait_cancelled_turn(
                     continue;
                 }
                 match chat_turn_outcome(&payload)? {
-                    pl_protocol::TurnState::Cancelled(state) => return Ok(state),
+                    pl_studio_runtime::TurnState::Cancelled(state) => return Ok(state),
                     outcome => {
                         anyhow::bail!("Turn {turn_id} ended without cancellation: {outcome:?}")
                     }
@@ -180,7 +180,9 @@ pub(super) async fn wait_cancelled_turn(
     .context("cancelled Turn observation exceeded its deadline")?
 }
 
-pub(super) fn chat_turn_outcome(payload: &serde_json::Value) -> Result<pl_protocol::TurnState> {
+pub(super) fn chat_turn_outcome(
+    payload: &serde_json::Value,
+) -> Result<pl_studio_runtime::TurnState> {
     ensure!(payload["type"] == "turn", "expected a Turn payload");
     ensure!(
         payload["turnId"].as_str().is_some_and(|id| !id.is_empty()),
@@ -202,10 +204,10 @@ pub(super) fn chat_turn_outcome(payload: &serde_json::Value) -> Result<pl_protoc
     ensure!(
         matches!(
             state,
-            pl_protocol::TurnState::Completed(_)
-                | pl_protocol::TurnState::Failed(_)
-                | pl_protocol::TurnState::Cancelled(_)
-                | pl_protocol::TurnState::BudgetLimited(_)
+            pl_studio_runtime::TurnState::Completed(_)
+                | pl_studio_runtime::TurnState::Failed(_)
+                | pl_studio_runtime::TurnState::Cancelled(_)
+                | pl_studio_runtime::TurnState::BudgetLimited(_)
         ),
         "completed Chat contains a nonterminal Turn"
     );
@@ -221,7 +223,7 @@ pub(super) async fn wait_running_turn(
     session: &Session,
     thread_id: &str,
     turn_id: &str,
-) -> Result<pl_protocol::RunningTurnState> {
+) -> Result<pl_studio_runtime::RunningTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     loop {
         let snapshot = session.http()?.read_thread(thread_id).await?;
@@ -231,7 +233,7 @@ pub(super) async fn wait_running_turn(
             .filter(|turn| turn.id == turn_id)
         {
             match &turn.state {
-                pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
+                pl_studio_runtime::TurnState::Running(state) => return Ok(state.clone()),
                 terminal if terminal.is_terminal() => anyhow::bail!(
                     "Turn {turn_id} must still be running when the stop happens, but it is \
                      already terminal: {terminal:?}"

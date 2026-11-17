@@ -9,7 +9,7 @@
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatBatch, ChatPlacement, ChatScope, ContentOwner, ContentTarget, InteractionRequest,
     InteractionStatus, ReadDemand, ThreadBusinessRefs, ThreadNotification, ThreadSnapshot,
     ThreadSubscriptionUpdate,
@@ -225,7 +225,7 @@ impl ThreadWatch {
                         bail!("thread SSE snapshot frame carried a different update");
                     };
                     ensure!(
-                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
                         "thread SSE completed history version {completed_history_version} is unsupported"
                     );
                     ensure!(
@@ -233,10 +233,10 @@ impl ThreadWatch {
                         "thread SSE snapshot belonged to another Thread"
                     );
                     ensure!(
-                        snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+                        snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
                         "thread SSE schema version {} is unsupported; expected {}",
                         snapshot.schema_version,
-                        pl_protocol::THREAD_SCHEMA_VERSION
+                        pl_studio_runtime::THREAD_SCHEMA_VERSION
                     );
                     validate_business_refs(&snapshot.business_refs)?;
                     ensure!(
@@ -434,7 +434,7 @@ pub(crate) fn interaction_status_line(interaction: &InteractionRequest) -> &'sta
 
 fn interaction_questions_line(interaction: &InteractionRequest) -> usize {
     match &interaction.content {
-        pl_protocol::InteractionContent::UserInput(value) => value.questions().len(),
-        pl_protocol::InteractionContent::ToolApproval(_) => 0,
+        pl_studio_runtime::InteractionContent::UserInput(value) => value.questions().len(),
+        pl_studio_runtime::InteractionContent::ToolApproval(_) => 0,
     }
 }

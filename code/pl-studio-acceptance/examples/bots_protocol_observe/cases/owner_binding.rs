@@ -42,14 +42,14 @@ use crate::http;
 use crate::report::{self, CaseResult};
 use crate::topic::BotsTopicWatch;
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::{
+use pl_provider_fixture::feishu::{
+    CallKind, DEFAULT_APP_ID, DEFAULT_APP_SECRET, GROUP_CHAT_ID, RecordedCall,
+};
+use pl_studio_runtime::{
     BotConnectionState, BotConversationThreadReply, BotConversationThreadState,
     BotCredentialAvailability, BotSecretUpdate, BotSnapshot, BotsCommandReply, CommandDisposition,
     CreateBotConversationThreadRequest, ListBotConversationsRequest, SaveBotRequest, StudioError,
     StudioErrorCode,
-};
-use pl_provider_fixture::feishu::{
-    CallKind, DEFAULT_APP_ID, DEFAULT_APP_SECRET, GROUP_CHAT_ID, RecordedCall,
 };
 use std::collections::BTreeSet;
 use std::time::Duration;

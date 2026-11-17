@@ -534,8 +534,8 @@ mod archive_scope_tests {
         async fn admit(
             &self,
             _: &str,
-            _: pl_protocol::DelegationSettings,
-            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            _: crate::DelegationSettings,
+            _: Option<crate::NewThreadModelRoute>,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }

@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pl_protocol::studio::{
+use crate::{
     AcpAuthAccount, AcpAuthActiveOperation, AcpAuthFailure, AcpAuthSnapshot, AcpAuthState,
     AcpUsageObservation,
 };
@@ -64,7 +64,7 @@ impl Slot {
                     if operation_id == &operation.operation_id
             );
         let cleanup_failed = matches!(&terminal, AcpAuthState::Failed { failure }
-            if matches!(failure.stage, pl_protocol::studio::AcpAuthStage::Close | pl_protocol::studio::AcpAuthStage::Cleanup));
+            if matches!(failure.stage, crate::AcpAuthStage::Close | crate::AcpAuthStage::Cleanup));
         let decided = if cancelling && !cleanup_failed {
             AcpAuthState::Cancelled
         } else {
@@ -116,7 +116,7 @@ pub(super) struct Operation {
     pub(super) connection_revision: u64,
     pub(super) generation: u64,
     /// 受理时冻结的启动意图；快照投影与收尾裁决都消费它，不重新读取 state。
-    pub(super) action: pl_protocol::studio::AcpAuthAction,
+    pub(super) action: crate::AcpAuthAction,
     pub(super) cancel: CancellationToken,
     pub(super) authentication: tokio::sync::mpsc::Sender<pl_acp::auth::AuthCommand>,
     /// 关闭编排显式重试实际清理错误；不按固定间隔轮询。
@@ -157,7 +157,7 @@ pub(super) struct AcceptedIntent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum AcceptedAction {
-    Start(pl_protocol::studio::AcpAuthAction),
+    Start(crate::AcpAuthAction),
     Continue {
         target_operation_id: String,
         method_id: String,
@@ -518,13 +518,9 @@ impl AcpAuthInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::{AcpUsageFailureCode, AcpUsageState};
+    use crate::{AcpUsageFailureCode, AcpUsageState};
 
-    fn operation(
-        generation: u64,
-        revision: u64,
-        action: pl_protocol::studio::AcpAuthAction,
-    ) -> Arc<Operation> {
+    fn operation(generation: u64, revision: u64, action: crate::AcpAuthAction) -> Arc<Operation> {
         Arc::new(Operation {
             operation_id: "op".into(),
             account_id: "account".into(),
@@ -555,19 +551,15 @@ mod tests {
             retired: false,
             connection: None,
             background_scheduled: false,
-            operation: Some(operation(
-                3,
-                7,
-                pl_protocol::studio::AcpAuthAction::QueryUsage,
-            )),
+            operation: Some(operation(3, 7, crate::AcpAuthAction::QueryUsage)),
         }
     }
 
     #[test]
     fn snapshot_projects_the_real_operation_identity_for_both_actions() {
         for action in [
-            pl_protocol::studio::AcpAuthAction::Check,
-            pl_protocol::studio::AcpAuthAction::QueryUsage,
+            crate::AcpAuthAction::Check,
+            crate::AcpAuthAction::QueryUsage,
         ] {
             let mut registry = Registry::default();
             registry.slots.insert(
@@ -625,11 +617,7 @@ mod tests {
                 retired: false,
                 connection: None,
                 background_scheduled: false,
-                operation: Some(operation(
-                    3,
-                    7,
-                    pl_protocol::studio::AcpAuthAction::QueryUsage,
-                )),
+                operation: Some(operation(3, 7, crate::AcpAuthAction::QueryUsage)),
             },
         );
         let snapshot = registry.snapshot();
@@ -641,7 +629,7 @@ mod tests {
             Some(AcpAuthActiveOperation {
                 operation_id: "op".into(),
                 connection_revision: 7,
-                action: pl_protocol::studio::AcpAuthAction::QueryUsage,
+                action: crate::AcpAuthAction::QueryUsage,
             })
         );
     }
@@ -773,7 +761,7 @@ mod tests {
 
     #[test]
     fn accepted_cancel_wins_business_results_but_preserves_cleanup_failure() {
-        use pl_protocol::studio::{AcpAuthFailureCode, AcpAuthStage};
+        use crate::{AcpAuthFailureCode, AcpAuthStage};
         for stage in [
             AcpAuthStage::Authenticate,
             AcpAuthStage::Probe,

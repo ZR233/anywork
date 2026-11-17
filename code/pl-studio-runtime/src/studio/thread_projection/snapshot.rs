@@ -1,13 +1,13 @@
 //! Authoritative current snapshots and independently persisted history projections.
 use super::{ProjectionError, project_active_turn};
+use crate::{
+    HistoryFault, Thread, ThreadPersistenceSnapshot, ThreadStatus, ThreadStorageExecution,
+    ThreadStorageState,
+};
 use pl_core::thread::{
     ThreadLifecycle, ThreadSnapshot, TurnState,
     cold::{StorageExecutionPhase, StorageFaultKind},
     input::InputState,
-};
-use pl_protocol::{
-    Thread, ThreadPersistenceSnapshot, ThreadStatus, ThreadStorageExecution, ThreadStorageState,
-    studio::HistoryFault,
 };
 
 /// 权威快照：canonical Thread 状态 + typed 活动 + typed 存储状态。
@@ -20,8 +20,8 @@ pub(in crate::studio) fn project_snapshot(
     state: &ThreadSnapshot,
     usage: &pl_core::thread::UsageSummary,
     persistence: Option<&ThreadPersistenceSnapshot>,
-    business_refs: pl_protocol::ThreadBusinessRefs,
-) -> Result<pl_protocol::ThreadSnapshot, ProjectionError> {
+    business_refs: crate::ThreadBusinessRefs,
+) -> Result<crate::ThreadSnapshot, ProjectionError> {
     let active_turn = project_active_turn(&thread.id, state, thread.updated_at)?;
     let mut interactions = Vec::new();
     for id in state.permissions.keys().chain(state.interactions.keys()) {
@@ -43,8 +43,8 @@ pub(in crate::studio) fn project_snapshot(
         .map_err(|error| ProjectionError::UnsupportedOutput(error.to_string()))?;
     let activity = super::project_activity(&thread.id, state, None);
     let storage = persistence.map(|persistence| storage_state(state, persistence));
-    Ok(pl_protocol::ThreadSnapshot {
-        schema_version: pl_protocol::THREAD_SCHEMA_VERSION,
+    Ok(crate::ThreadSnapshot {
+        schema_version: crate::THREAD_SCHEMA_VERSION,
         revision: state.commit_sequence,
         runtime,
         model_route,
@@ -166,7 +166,7 @@ pub(in crate::studio) fn status(state: &ThreadSnapshot) -> ThreadStatus {
 
 pub(in crate::studio) fn saved_mode(
     state: &ThreadSnapshot,
-) -> Result<Option<pl_protocol::ThreadModeId>, ProjectionError> {
+) -> Result<Option<crate::mode::ThreadModeId>, ProjectionError> {
     state
         .extensions
         .get("studio.mode")

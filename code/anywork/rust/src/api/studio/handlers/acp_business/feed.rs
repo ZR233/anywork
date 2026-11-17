@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use futures::{FutureExt, Stream, StreamExt, stream};
-use pl_protocol::studio::{AcpBusinessFailure, AcpSessionEvent, AcpSessionFrame};
 use pl_studio_runtime::AcpSessionOpen;
+use pl_studio_runtime::{AcpBusinessFailure, AcpSessionEvent, AcpSessionFrame};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -106,13 +106,11 @@ impl BridgeAcpSessionObservation {
     /// Pulls the original window; a concurrent read is Busy, not a second consumer.
     pub async fn next(&self) -> Result<Option<BridgeAcpSessionFrame>, BridgeAcpBusinessError> {
         let mut source = self.inner.source.try_lock().map_err(|_| {
-            BridgeAcpBusinessError::Runtime(BridgeError::from(
-                pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Busy,
-                    "An ACP observation next is already in flight",
-                    true,
-                ),
-            ))
+            BridgeAcpBusinessError::Runtime(BridgeError::from(pl_studio_runtime::StudioError::new(
+                pl_studio_runtime::StudioErrorCode::Busy,
+                "An ACP observation next is already in flight",
+                true,
+            )))
         })?;
         if self.inner.closing.is_cancelled() {
             *source = None;
@@ -163,7 +161,7 @@ mod real_transport {
     use std::time::Duration;
 
     use anyhow::{Context, Result, ensure};
-    use pl_protocol::studio::*;
+    use pl_studio_runtime::*;
     use tokio::time::{sleep, timeout};
 
     use super::*;
@@ -383,7 +381,7 @@ mod tests {
     async fn resident_pull_has_accepted_then_exactly_one_original_settlement() {
         let observation = observation(Source {
             accepted: Some(AcpSessionFrame::Accepted {
-                target: pl_protocol::studio::AcpSessionTarget {
+                target: pl_studio_runtime::AcpSessionTarget {
                     session_id: "product-session".into(),
                     agent_id: "product-agent".into(),
                     thread_id: "product-thread".into(),

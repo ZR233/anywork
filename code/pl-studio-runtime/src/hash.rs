@@ -5,8 +5,8 @@ pub(crate) fn canonical_json_hash(value: &serde_json::Value) -> String {
 }
 
 pub(crate) fn merge_costs(
-    target: &mut Vec<pl_protocol::RuntimeCostAmount>,
-    incoming: &[pl_protocol::RuntimeCostAmount],
+    target: &mut Vec<crate::RuntimeCostAmount>,
+    incoming: &[crate::RuntimeCostAmount],
 ) {
     for cost in incoming {
         if let Some(current) = target

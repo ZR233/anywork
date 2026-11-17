@@ -8,7 +8,6 @@ publish = false
 [dependencies]
 pl-dev-support = { workspace = true }
 pl-model = { workspace = true }
-pl-protocol = { workspace = true }
 pl-provider-fixture = { workspace = true }
 pl-studio-runtime = { workspace = true }
 pl-tool = { workspace = true }

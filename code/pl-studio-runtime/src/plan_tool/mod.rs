@@ -5,6 +5,9 @@ mod dynamic;
 mod restart;
 pub mod state;
 mod submit;
+mod types;
+
+pub use types::*;
 
 pub use context::plan_model_context_section;
 pub(crate) use dynamic::PlanConfirmationPrompt;
@@ -128,7 +131,7 @@ mod tests {
         let plan = decode_plan_state(&snapshot.extensions[PLAN_EXTENSION].payload).unwrap();
         assert_eq!(
             plan.state,
-            pl_protocol::AgentSessionPlanPhase::AwaitingConfirmation
+            crate::plan_tool::AgentSessionPlanPhase::AwaitingConfirmation
         );
         let pending = &snapshot.interactions[plan.pending_interaction_id.as_ref().unwrap()];
         assert_eq!(pending.state, InteractionState::Pending);

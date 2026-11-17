@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         eprintln!("anywk: {error}");
     }
     if let Some(turn) = &report.turn
-        && !matches!(&turn.state, pl_protocol::TurnState::Completed(_))
+        && !matches!(&turn.state, pl_studio_runtime::TurnState::Completed(_))
     {
         eprintln!("anywk: 任务终态 {:?}", turn.state);
     }

@@ -71,10 +71,7 @@ impl StudioStore {
         });
         for session in &delta.session_upserts {
             if let Some(root) = catalog.get_agent(&session.root_agent_id)
-                && matches!(
-                    root.backend,
-                    pl_protocol::session::AgentBackend::Native { .. }
-                )
+                && matches!(root.backend, crate::AgentBackend::Native { .. })
             {
                 self.prepare_session_manifest(session, &root, |id| {
                     delta
@@ -88,10 +85,7 @@ impl StudioStore {
             }
         }
         for agent in &delta.agent_upserts {
-            if matches!(
-                agent.backend,
-                pl_protocol::session::AgentBackend::Acp { .. }
-            ) {
+            if matches!(agent.backend, crate::AgentBackend::Acp { .. }) {
                 continue;
             }
             let session = delta

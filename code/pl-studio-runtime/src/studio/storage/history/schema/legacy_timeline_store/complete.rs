@@ -83,7 +83,7 @@ async fn save_completed(
                     ChatAtomLifecycle::Terminal {
                         started: Some(_),
                         ended: Some(_),
-                        outcome: pl_protocol::ChatTerminalOutcome::Cancelled
+                        outcome: crate::ChatTerminalOutcome::Cancelled
                     }
                 ) && member.atom.attempt_id.is_some()
                     && member.atom.completion_seq.is_none()

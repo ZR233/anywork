@@ -5,7 +5,7 @@ use crate::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind,
 };
-use pl_protocol::trace::TraceTextChannel;
+use crate::trace::TraceTextChannel;
 use pl_protocol::{PureError, Result};
 
 pub(crate) fn completed_chat_presentation(

@@ -70,7 +70,7 @@ pub enum BridgePayloadData {
     },
 }
 
-/// A mechanical FRB boundary for the canonical pl-protocol ChatBatch.
+/// A mechanical FRB boundary for the canonical `pl-studio-runtime` `ChatBatch`.
 #[derive(Debug, Clone)]
 pub struct BridgeChatBatch {
     pub placement: BridgeChatPlacement,

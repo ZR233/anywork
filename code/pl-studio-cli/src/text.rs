@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatAtomKind, ChatContentRole, ChatScope, ContentRange, ReadDemand, ThreadTextChannel, Turn,
 };
 use pl_studio_runtime::{ConversationEvent, StudioRuntime};
@@ -8,7 +8,7 @@ use pl_studio_runtime::{ConversationEvent, StudioRuntime};
 pub(super) async fn final_text(runtime: &StudioRuntime, turn: &Turn) -> Result<String> {
     let demand = ReadDemand {
         max_items: 128,
-        max_bytes: pl_protocol::CHAT_BATCH_MAX_BYTES,
+        max_bytes: pl_studio_runtime::CHAT_BATCH_MAX_BYTES,
     };
     let mut feed = runtime
         .open_conversation_feed(
@@ -52,7 +52,7 @@ pub(super) async fn final_text(runtime: &StudioRuntime, turn: &Turn) -> Result<S
                                 &content.reference,
                                 ContentRange {
                                     offset: bytes.len() as u64,
-                                    max_bytes: pl_protocol::CONTENT_WINDOW_MAX_BYTES,
+                                    max_bytes: pl_studio_runtime::CONTENT_WINDOW_MAX_BYTES,
                                 },
                             )
                             .await?;

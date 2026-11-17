@@ -1,11 +1,4 @@
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::{
-    BotConnectionState, BotConversationKind, BotConversationSource, BotCredentialAvailability,
-    BotCredentialOperation, BotPendingCredentialOperation, BotSecretUpdate, BotSendStatus,
-    CommandDisposition, ListBotConversationsRequest, ReadBotMessagesRequest, SaveBotRequest,
-    SendBotMessageRequest, SetBotEnabledRequest, SetBotTrustedChatRequest,
-    SetBotTrustedUserRequest, StudioErrorCode,
-};
 use pl_provider_fixture::feishu::{
     BOT_OPEN_ID, CallKind, ChatType, ClientConfig, DEFAULT_APP_ID, DEFAULT_APP_SECRET,
     DIRECT_CHAT_ID, FeishuControl, FeishuPeer, GROUP_CHAT_ID, GroupChat, HistoryMessage,
@@ -13,6 +6,13 @@ use pl_provider_fixture::feishu::{
     all_mention, other_bot_mention, text_event, trusted_user_mention,
 };
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+use pl_studio_runtime::{
+    BotConnectionState, BotConversationKind, BotConversationSource, BotCredentialAvailability,
+    BotCredentialOperation, BotPendingCredentialOperation, BotSecretUpdate, BotSendStatus,
+    CommandDisposition, ListBotConversationsRequest, ReadBotMessagesRequest, SaveBotRequest,
+    SendBotMessageRequest, SetBotEnabledRequest, SetBotTrustedChatRequest,
+    SetBotTrustedUserRequest, StudioErrorCode,
+};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -1752,7 +1752,7 @@ impl Session {
         Ok((bot_id, workspace_id))
     }
 
-    async fn bot(&self, bot_id: &str) -> Result<pl_protocol::studio::BotSnapshot> {
+    async fn bot(&self, bot_id: &str) -> Result<pl_studio_runtime::BotSnapshot> {
         self.http()?
             .read_bots()
             .await?
@@ -2157,7 +2157,7 @@ async fn running_turn_id(
 ) -> Result<Option<String>> {
     let snapshot = http.read_thread(thread_id).await?;
     Ok(snapshot.active_turn.as_ref().and_then(|turn| {
-        matches!(turn.state, pl_protocol::TurnState::Running(_)).then(|| turn.id.clone())
+        matches!(turn.state, pl_studio_runtime::TurnState::Running(_)).then(|| turn.id.clone())
     }))
 }
 

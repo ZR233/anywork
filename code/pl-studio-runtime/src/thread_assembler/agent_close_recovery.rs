@@ -12,7 +12,7 @@ impl SessionRuntime {
             .agent_services
             .clone()
             .context("child close services are unavailable")?;
-        let mut roots = BTreeMap::<String, Vec<(usize, pl_protocol::Thread)>>::new();
+        let mut roots = BTreeMap::<String, Vec<(usize, crate::Thread)>>::new();
         let mut acp = Vec::new();
         for pending in services.store.agent_closes().await? {
             if pending.execution_closed && pending.worktree_cleanup.is_terminal() {
@@ -25,7 +25,7 @@ impl SessionRuntime {
             if services
                 .events
                 .agent_execution_identity(&pending.agent_id)
-                .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+                .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
             {
                 acp.push(pending);
                 continue;
@@ -117,7 +117,7 @@ impl AgentServices {
     async fn resume_child_close_tree(
         &self,
         owner: SessionRuntime,
-        targets: Vec<(usize, pl_protocol::Thread)>,
+        targets: Vec<(usize, crate::Thread)>,
     ) -> Result<()> {
         let ids = targets
             .iter()

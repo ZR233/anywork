@@ -1,6 +1,6 @@
 //! 本机检测薄入口：runtime 拥有受理、取消身份与进程收束。
 
-use pl_protocol::studio::{CancelAcpLocalDetectionRequest, StartAcpLocalDetectionRequest};
+use pl_studio_runtime::{CancelAcpLocalDetectionRequest, StartAcpLocalDetectionRequest};
 
 use crate::api::studio::bridge_runtime::active_bridge;
 use crate::api::studio::convert::acp_detection::{

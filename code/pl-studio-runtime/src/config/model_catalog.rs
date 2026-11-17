@@ -6,14 +6,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::{
+    StudioModelCatalogCacheWarning as CacheWarning, StudioModelCatalogError as CatalogError,
+    StudioModelCatalogSource as Source, StudioModelCatalogStatus as Status,
+};
 use pl_model::{
     config::{AccountConfig, AccountId},
     model::ModelInfo,
     protocol::discovery::{ModelCatalogQuery, ModelCatalogQueryCache, ModelCatalogQueryError},
-};
-use pl_protocol::studio::{
-    StudioModelCatalogCacheWarning as CacheWarning, StudioModelCatalogError as CatalogError,
-    StudioModelCatalogSource as Source, StudioModelCatalogStatus as Status,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,13 +40,13 @@ pub(super) fn next_observation_order(paths: &ConfigPaths, minimum: u64) -> Resul
     let path = directory.canonicalize()?.join("sequence.json");
     let previous = match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<u64>(&bytes).map_err(|_| {
-            pl_protocol::PureError::ConfigError("invalid model observation sequence".into())
+            crate::PureError::ConfigError("invalid model observation sequence".into())
         })?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
         Err(error) => return Err(error.into()),
     };
     let order = previous.max(minimum).checked_add(1).ok_or_else(|| {
-        pl_protocol::PureError::ConfigError("model observation sequence exhausted".into())
+        crate::PureError::ConfigError("model observation sequence exhausted".into())
     })?;
     pl_tool::workspace::write_file_atomically(&path, order.to_string().as_bytes())?;
     Ok(order)
@@ -135,10 +135,10 @@ impl SuccessCache {
     pub fn persist(&self, paths: &ConfigPaths, account: &AccountId, identity: &str) -> Result<()> {
         let path = cache_path(paths, account, identity);
         let bytes = serde_json::to_vec(self).map_err(|_| {
-            pl_protocol::PureError::ConfigError("could not encode model observation".into())
+            crate::PureError::ConfigError("could not encode model observation".into())
         })?;
         if bytes.len() > CACHE_BYTES_LIMIT {
-            return Err(pl_protocol::PureError::ConfigError(
+            return Err(crate::PureError::ConfigError(
                 "model observation exceeds cache size limit".into(),
             ));
         }

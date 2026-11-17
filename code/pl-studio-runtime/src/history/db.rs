@@ -537,7 +537,7 @@ mod tests {
             (
                 Query::Events(HistoryEventsQuery::Originals {
                     scope: ChatScope {
-                        query_class: pl_protocol::ChatClassFilter::All {},
+                        query_class: crate::ChatClassFilter::All {},
                         parent_id: None,
                     },
                 }),
@@ -546,7 +546,7 @@ mod tests {
             (
                 Query::Events(HistoryEventsQuery::Originals {
                     scope: ChatScope {
-                        query_class: pl_protocol::ChatClassFilter::All {},
+                        query_class: crate::ChatClassFilter::All {},
                         parent_id: Some("parent".into()),
                     },
                 }),

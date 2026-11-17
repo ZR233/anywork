@@ -52,7 +52,7 @@ const LIVE_FEED_FRAMES: usize = 512;
 pub(in crate::studio) enum ThreadLiveEvent {
     BusinessRefs {
         sequence: u64,
-        references: pl_protocol::ThreadBusinessRefs,
+        references: crate::ThreadBusinessRefs,
     },
     /// Changes produced by committed effect `sequence`.
     ///
@@ -75,8 +75,8 @@ pub(in crate::studio) enum ThreadLiveEvent {
     Runtime {
         observation_revision: u64,
         catalog_revision: u64,
-        runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
-        model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+        runtime: Arc<crate::ThreadRuntimeSnapshot>,
+        model_route: Option<crate::ThreadModelRouteSnapshot>,
     },
     /// Current execution activity of the Thread; `None` means no activity.
     ///
@@ -87,7 +87,7 @@ pub(in crate::studio) enum ThreadLiveEvent {
     /// the body must stay cheap to clone and must not bloat the frame every other variant shares.
     Activity {
         observation_revision: u64,
-        activity: Option<Arc<pl_protocol::ThreadActivity>>,
+        activity: Option<Arc<crate::ThreadActivity>>,
     },
 }
 
@@ -95,14 +95,14 @@ pub(in crate::studio) enum ThreadLiveEvent {
 pub(super) struct RuntimeStateCut {
     pub(super) observation_revision: u64,
     pub(super) catalog_revision: u64,
-    pub(super) runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
-    pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    pub(super) runtime: Arc<crate::ThreadRuntimeSnapshot>,
+    pub(super) model_route: Option<crate::ThreadModelRouteSnapshot>,
 }
 
 #[derive(Clone)]
 pub(super) struct StateActivityCut {
     pub(super) observation_revision: u64,
-    pub(super) activity: Option<Arc<pl_protocol::ThreadActivity>>,
+    pub(super) activity: Option<Arc<crate::ThreadActivity>>,
 }
 
 /// A bounded State observation, cancelled with its owner.
@@ -164,7 +164,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// state from its own copies. A storage pause changes neither the content nor the activity, so
     /// the value is watched on its own instead of riding the content feed: a subscriber parked on
     /// the feed still learns about a pause the moment the owner publishes it.
-    storage: watch::Sender<Option<pl_protocol::ThreadStorageState>>,
+    storage: watch::Sender<Option<crate::ThreadStorageState>>,
     /// Newest terminal Turn this owner projected, published by this owner only.
     ///
     /// A subscription's authoritative snapshot carries only the *active* Turn, and `turnCompleted`
@@ -175,7 +175,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// from the timeline window, re-reading SQL, or caching the `running` state it happened to see.
     /// It is a watch rather than a feed frame precisely because it has to outlive the broadcast: a
     /// fact nobody was subscribed for is still the fact the next subscriber must start from.
-    last_turn: watch::Sender<Option<Arc<pl_protocol::Turn>>>,
+    last_turn: watch::Sender<Option<Arc<crate::Turn>>>,
     /// Latest shared current content, never a queue of deltas. Subscribers derive their own bounded
     /// increments from these canonical blocks, so coalescing a wakeup cannot drop text.
     conversation: Mutex<Arc<publication::ConversationPublication>>,
@@ -187,7 +187,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// Original State activity event retained for subscribers opening after its broadcast.
     latest_activity: Mutex<Option<StateActivityCut>>,
     /// 现役 State 协议的通知去重，不拥有业务内容或读取资格。
-    latest_business_refs: Mutex<Option<pl_protocol::ThreadBusinessRefs>>,
+    latest_business_refs: Mutex<Option<crate::ThreadBusinessRefs>>,
 }
 
 impl ThreadLiveFeed {
@@ -249,7 +249,7 @@ impl ThreadLiveFeed {
     pub(super) fn publish_test_state_activity(
         &self,
         observation_revision: u64,
-        activity: Option<pl_protocol::ThreadActivity>,
+        activity: Option<crate::ThreadActivity>,
     ) {
         self.publish(|| ThreadLiveEvent::Activity {
             observation_revision,
@@ -270,7 +270,7 @@ impl ThreadLiveFeed {
         Ok(())
     }
 
-    fn publish_business_refs(&self, sequence: u64, references: pl_protocol::ThreadBusinessRefs) {
+    fn publish_business_refs(&self, sequence: u64, references: crate::ThreadBusinessRefs) {
         let mut previous = self
             .latest_business_refs
             .lock()
@@ -285,7 +285,7 @@ impl ThreadLiveFeed {
     }
 
     pub(super) fn new(
-        storage: Option<pl_protocol::ThreadStorageState>,
+        storage: Option<crate::ThreadStorageState>,
         owner_progress: watch::Receiver<Progress>,
         delivery_closed: tokio_util::sync::CancellationToken,
     ) -> Self {
@@ -338,7 +338,7 @@ impl ThreadLiveFeed {
 
     /// Watches the newest terminal Turn this owner projected, so a subscriber that registers after
     /// that commit never has to derive the fact from the window or from SQL.
-    pub(in crate::studio) fn last_turn(&self) -> watch::Receiver<Option<Arc<pl_protocol::Turn>>> {
+    pub(in crate::studio) fn last_turn(&self) -> watch::Receiver<Option<Arc<crate::Turn>>> {
         self.last_turn.subscribe()
     }
 
@@ -350,7 +350,7 @@ impl ThreadLiveFeed {
     /// this owner *after* a newer one — a deferred admission that storage pressure released late is
     /// taken over behind the live stream — so the retained fact only ever moves forward and the newest
     /// terminal Turn is never replaced by an older one.
-    fn publish_last_turn(&self, turn: Arc<pl_protocol::Turn>) {
+    fn publish_last_turn(&self, turn: Arc<crate::Turn>) {
         if self.is_delivery_closed() {
             return;
         }
@@ -370,14 +370,12 @@ impl ThreadLiveFeed {
     }
 
     /// Watches the owner's typed storage state, so a subscriber only mirrors it.
-    pub(in crate::studio) fn storage(
-        &self,
-    ) -> watch::Receiver<Option<pl_protocol::ThreadStorageState>> {
+    pub(in crate::studio) fn storage(&self) -> watch::Receiver<Option<crate::ThreadStorageState>> {
         self.storage.subscribe()
     }
 
     /// Publishes the owner's newly derived typed storage state.
-    fn publish_storage(&self, storage: Option<pl_protocol::ThreadStorageState>) {
+    fn publish_storage(&self, storage: Option<crate::ThreadStorageState>) {
         self.storage.send_replace(storage);
     }
 
@@ -1222,19 +1220,19 @@ struct LiveOwner {
     /// The Thread's only activity projection: the same owner derives it from the snapshot it just
     /// published, so activity never becomes a second fact source and never reads SQL.
     /// Last activity already broadcast, so an unchanged projection does not produce a frame.
-    activity_published: Option<pl_protocol::ThreadActivity>,
-    runtime_published: Option<pl_protocol::ThreadRuntimeSnapshot>,
-    model_route_published: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    activity_published: Option<crate::ThreadActivity>,
+    runtime_published: Option<crate::ThreadRuntimeSnapshot>,
+    model_route_published: Option<crate::ThreadModelRouteSnapshot>,
     /// Last typed storage state this owner published to its feed.
     ///
     /// The owner derives it from the owner snapshot plus the coordinator's typed watch, so a
     /// subscriber mirrors the value instead of recomputing it from its own copies. It is kept as one
     /// value so a change of fault kind, generation, watermark or phase is all one comparison.
-    storage_published: Option<pl_protocol::ThreadStorageState>,
+    storage_published: Option<crate::ThreadStorageState>,
     /// The Thread's reliable admission channel, shared with the history writer.
     channel: Arc<HistoryChannel>,
     chat: Session,
-    thread: pl_protocol::Thread,
+    thread: crate::Thread,
     feed: Arc<ThreadLiveFeed>,
     /// The one committed batch this owner prepared but has not handed to the writer yet; see
     /// [`PendingHandoff`].
@@ -1396,10 +1394,10 @@ impl LiveOwner {
         projector: &ObservationServices,
         handle: &ThreadHandle,
         snapshot: &ThreadSnapshot,
-        thread: pl_protocol::Thread,
+        thread: crate::Thread,
         feed: Arc<ThreadLiveFeed>,
         state: Arc<WorkerState>,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<Self> {
         let channel = state.channel.clone();
         let id = thread.id.as_str();
@@ -1432,7 +1430,7 @@ impl LiveOwner {
             pl_core::chat::ChatCompletionCursor::new(chat.epoch(), 0),
             None,
             Some(0),
-            pl_core::chat::ReadDemand::new(1, pl_protocol::CHAT_BATCH_MAX_BYTES as usize),
+            pl_core::chat::ReadDemand::new(1, crate::CHAT_BATCH_MAX_BYTES as usize),
             &super::conversation_reader::JsonBudget::new(database_id.clone(), String::new()),
         )
         .await?;
@@ -2086,7 +2084,7 @@ impl LiveOwner {
             let history = services.store.history(&self.thread.id).await?;
             let mut result = history.turn_result(&turn.turn_id).await?;
             for record in prepared.completions.iter() {
-                let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+                let atom: crate::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
                 if atom.turn_id.as_deref() == Some(turn.turn_id.as_str()) {
                     result.observe_completion(record, &self.thread.id)?;
                 }
@@ -2306,7 +2304,7 @@ impl LiveOwner {
     fn observe_storage(
         &mut self,
         snapshot: &ThreadSnapshot,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) {
         if let Some(through) = persistence.and_then(|detail| detail.history_durable_sequence) {
             self.retained.projection.confirm_sources(through);
@@ -2337,7 +2335,7 @@ impl Drop for LiveOwner {
 /// putting a history read on the commit or preview path.
 async fn cold_seed(
     store: &StudioStore,
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
     snapshot: &ThreadSnapshot,
     channel: &HistoryChannel,
     retained: &[Arc<pl_core::thread::ThreadEffectBatch>],
@@ -2917,10 +2915,7 @@ async fn await_settled_target(
 /// branch drains the accepted directory writes first. The target is fixed at admission time and later
 /// unrelated writes do not extend the wait. Only the first install and a product refresh resolve this
 /// DTO: a streaming preview belongs to the owner already installed and never reads the directory.
-async fn product_association(
-    services: &ObservationServices,
-    id: &str,
-) -> Result<pl_protocol::Thread> {
+async fn product_association(services: &ObservationServices, id: &str) -> Result<crate::Thread> {
     if let Some(thread) = services.events.thread_snapshot(id)? {
         return Ok(thread);
     }
@@ -2931,7 +2926,7 @@ async fn product_association(
         .read_thread_association(id)
         .await?
         .context("observed Thread has no product association")?;
-    Ok(pl_protocol::Thread::from(association))
+    Ok(crate::Thread::from(association))
 }
 
 // The worker carries the projection owner, its feed and the product watermark across one projection;
@@ -2954,7 +2949,7 @@ impl ProjectionWorker {
         &mut self,
         snapshot: &ThreadSnapshot,
         products: bool,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<()> {
         let Self {
             services,
@@ -3100,13 +3095,13 @@ mod readiness_tests {
         let store = ConversationStore::new(history)?;
         let attempts = Arc::new(AtomicUsize::new(0));
         let release = Arc::new(Notify::new());
-        let expected = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::StaleRevision,
+        let expected = crate::StudioError::new(
+            crate::StudioErrorCode::StaleRevision,
             "original initialization failure",
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            crate::StudioErrorReason::StaleReadScope,
             serde_json::json!({"initialization":"original"}),
         );
         let factory = Arc::new({
@@ -3193,7 +3188,7 @@ pub(in crate::studio) mod storage_fault_tests {
         revision: u64,
         state: pl_core::thread::interactions::InteractionState,
     ) -> Result<pl_core::thread::interactions::InteractionRecord> {
-        let questions = vec![pl_protocol::UserQuestion {
+        let questions = vec![crate::UserQuestion {
             id: "provider".into(),
             header: "Provider".into(),
             question: "Which provider should the next release verify?".into(),
@@ -3220,11 +3215,11 @@ pub(in crate::studio) mod storage_fault_tests {
         })
     }
 
-    async fn register_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+    async fn register_test_thread(store: &StudioStore, thread: &crate::Thread) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
                 ssh_alias: None,
@@ -3259,8 +3254,8 @@ pub(in crate::studio) mod storage_fault_tests {
         Ok(())
     }
 
-    fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
-        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+    fn bound_thread(thread_id: &str) -> crate::Thread {
+        let mut thread = crate::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
@@ -3284,7 +3279,7 @@ pub(in crate::studio) mod storage_fault_tests {
         let resources = close_factory(store)?;
         let sessions = crate::session::SessionTable::new();
         let threads = sessions.materialize(
-            &pl_protocol::SessionId::new("terminal-parent").expect("valid fixture session"),
+            &crate::SessionId::new("terminal-parent").expect("valid fixture session"),
         )?;
         resources.install(&threads)?;
         let services = ObservationServices {
@@ -3438,7 +3433,7 @@ pub(in crate::studio) mod storage_fault_tests {
             anyhow::ensure!(
                 matches!(&row.activity, crate::StudioAgentActivity::Native { execution: Some(execution), .. }
                     if execution.id() == "execution:1"
-                        && execution.phase() == pl_protocol::AgentExecutionPhase::Stopping),
+                        && execution.phase() == crate::AgentExecutionPhase::Stopping),
                 "the directory must first publish the exact stopping execution"
             );
 
@@ -3525,16 +3520,16 @@ pub(in crate::studio) mod storage_fault_tests {
         if !review {
             return Ok(write);
         }
-        let workspace = pl_protocol::AgentWorkspaceAssignmentSnapshot {
-            mode: pl_protocol::AgentWorkspaceMode::Review,
+        let workspace = crate::AgentWorkspaceAssignmentSnapshot {
+            mode: crate::AgentWorkspaceMode::Review,
             project_root: "/proved-root".into(),
             root: "/proved-root".into(),
             writable_paths: Some(vec![]),
             worktree: None,
-            review_target: Some(pl_protocol::AgentReviewTargetSnapshot {
+            review_target: Some(crate::AgentReviewTargetSnapshot {
                 agent_id: "unstarted-executor".into(),
-                feedback: Some(pl_protocol::AgentReviewFeedback::ToExecutor),
-                baseline: Some(pl_protocol::AgentReviewBaseline {
+                feedback: Some(crate::AgentReviewFeedback::ToExecutor),
+                baseline: Some(crate::AgentReviewBaseline {
                     turn_id: "executor-terminal".into(),
                     input_id: None,
                     terminal_sequence: 1,
@@ -3548,7 +3543,7 @@ pub(in crate::studio) mod storage_fault_tests {
                 }),
             }),
         };
-        let profile = pl_protocol::AgentProfileSnapshot {
+        let profile = crate::AgentProfileSnapshot {
             profile_id: "custom-history-review".into(),
             display_name: "History review".into(),
             description: String::new(),
@@ -3562,7 +3557,7 @@ pub(in crate::studio) mod storage_fault_tests {
             content_hash: "immutable-profile".into(),
             system: false,
             enabled: true,
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Review,
+            workspace_mode: crate::AgentWorkspaceMode::Review,
         };
         for (id, payload) in [
             (
@@ -4309,7 +4304,7 @@ pub(in crate::studio) mod storage_fault_tests {
 
     /// 一个最小终态 Turn 提交：交接与报告路径的专项测试共用同一真实 effect/checkpoint。
     fn terminal_turn_write(
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         turn_id: &str,
     ) -> Result<(TurnRecord, ThreadWrite)> {
         let turn = TurnRecord {
@@ -4556,8 +4551,8 @@ pub(in crate::studio) mod storage_fault_tests {
     }
 
     /// A registered child of a real parent thread, as the directory and the report path require.
-    fn child_thread(child_id: &str, parent_id: &str) -> pl_protocol::Thread {
-        let mut thread = pl_protocol::Thread::placeholder(child_id);
+    fn child_thread(child_id: &str, parent_id: &str) -> crate::Thread {
+        let mut thread = crate::Thread::placeholder(child_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = child_id.to_owned();
         thread.root_thread_id = parent_id.to_owned();
@@ -4594,16 +4589,14 @@ pub(in crate::studio) mod storage_fault_tests {
             )
             .await?;
             let result = async {
-                let thread = env
-                    .start(pl_protocol::ThreadWorkspaceMode::Local, prompt)
-                    .await?;
+                let thread = env.start(crate::ThreadWorkspaceMode::Local, prompt).await?;
                 let id = &thread.thread.id;
                 let mut delivery = env
                     .runtime
                     .open_conversation_feed(
                         id,
-                        pl_protocol::ChatScope::conversation(None),
-                        pl_protocol::ReadDemand {
+                        crate::ChatScope::conversation(None),
+                        crate::ReadDemand {
                             max_items: 37,
                             max_bytes: 256 * 1024,
                         },
@@ -4711,8 +4704,7 @@ pub(in crate::studio) mod storage_fault_tests {
         );
         let sessions = crate::session::SessionTable::new();
         let threads = sessions.materialize(
-            &pl_protocol::SessionId::new("child-terminal-report-parent")
-                .expect("valid fixture session"),
+            &crate::SessionId::new("child-terminal-report-parent").expect("valid fixture session"),
         )?;
         threads.set_agent_services(
             config.clone(),
@@ -4755,7 +4747,7 @@ pub(in crate::studio) mod storage_fault_tests {
     /// channel, projection, retained handoff and writer.
     async fn state_observation_owner(
         fixture: &ObservationFixture,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         channel: &Arc<HistoryChannel>,
         snapshot: Option<ThreadSnapshot>,
     ) -> Result<(ThreadHandle, Arc<ThreadLiveFeed>, LiveOwner)> {
@@ -5177,7 +5169,7 @@ pub(in crate::studio) mod storage_fault_tests {
 
     #[tokio::test]
     async fn recovered_behind_terminal_qualifies_directory_before_retention() -> Result<()> {
-        use pl_protocol::ThreadStatus;
+        use crate::ThreadStatus;
 
         for (case, newer_running, explicitly_closed) in [
             ("first-recovery", false, false),
@@ -5406,8 +5398,8 @@ pub(in crate::studio) mod storage_fault_tests {
 
     #[tokio::test]
     async fn terminal_handoff_accepts_live_runtime_before_completion() -> Result<()> {
+        use crate::ThreadStatus;
         use crate::studio::thread_projection::TurnEvent;
-        use pl_protocol::ThreadStatus;
 
         for (case, newer_running, replaced_owner, explicitly_closed, retry) in [
             ("idle", false, false, false, false),
@@ -5657,7 +5649,7 @@ pub(in crate::studio) mod storage_fault_tests {
     #[tokio::test]
     async fn terminal_seed_uses_current_runtime_and_preserves_close_through_handoffs() -> Result<()>
     {
-        use pl_protocol::ThreadStatus;
+        use crate::ThreadStatus;
 
         for (newer_running, explicitly_closed) in [(false, false), (true, false), (false, true)] {
             let fixture = observation_fixture().await?;
@@ -5940,9 +5932,9 @@ pub(in crate::studio) mod storage_fault_tests {
                             assert_eq!(delivered, 1);
                             assert_eq!(
                                 references,
-                                pl_protocol::ThreadBusinessRefs {
+                                crate::ThreadBusinessRefs {
                                     plan: None,
-                                    interactions: Some(pl_protocol::CurrentCollectionRef {
+                                    interactions: Some(crate::CurrentCollectionRef {
                                         database_id: database_id.clone(),
                                         collection: "interactions".into(),
                                         revision: 0,
@@ -6006,7 +5998,7 @@ pub(in crate::studio) mod storage_fault_tests {
     {
         let fixture = observation_fixture().await?;
         let mut thread = bound_thread("behind-business-cut");
-        thread.status = pl_protocol::ThreadStatus::Running;
+        thread.status = crate::ThreadStatus::Running;
         register_test_thread(&fixture.store, &thread).await?;
         publish_test_directory(&fixture.store, &fixture.services.events).await?;
         let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone(), None).await?;
@@ -6052,7 +6044,7 @@ pub(in crate::studio) mod storage_fault_tests {
                     .events
                     .patch_thread_runtime(
                         live.native_directory.as_ref(),
-                        pl_protocol::ThreadStatus::Running,
+                        crate::ThreadStatus::Running,
                         2,
                         &newer,
                         None,
@@ -6076,7 +6068,7 @@ pub(in crate::studio) mod storage_fault_tests {
                     .expect("valid Native directory")
                     .expect("registered Native member")
                     .status,
-                pl_protocol::ThreadStatus::Running
+                crate::ThreadStatus::Running
             );
             let after = feed.current_conversation().context("public cut retained")?;
             assert!(Arc::ptr_eq(&published, &after));
@@ -6149,15 +6141,15 @@ pub(in crate::studio) mod storage_fault_tests {
                     1,
                     10,
                     10,
-                    ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                        pl_protocol::ThreadToolInvocation::new(
+                    ExecutionShape::Tool(crate::ThreadToolItem::new(
+                        crate::ThreadToolInvocation::new(
                             call_id.into(),
                             "request_user_input".into(),
                             "{\"questions\":[]}".into(),
                         ),
-                        pl_protocol::ThreadToolState::Running(
-                            pl_protocol::RunningThreadTool::new(String::new()),
-                        ),
+                        crate::ThreadToolState::Running(crate::RunningThreadTool::new(
+                            String::new(),
+                        )),
                     )),
                 )],
                 Default::default(),
@@ -6173,7 +6165,11 @@ pub(in crate::studio) mod storage_fault_tests {
             let effect = Arc::make_mut(&mut write.effect);
             effect.committed_at = 11;
             effect.interactions = Arc::from([pending.clone()]);
-            write.checkpoint.state.interactions.insert(local_interaction_id, pending);
+            write
+                .checkpoint
+                .state
+                .interactions
+                .insert(local_interaction_id, pending);
             write.checkpoint.state.interaction_collection_revision = 1;
             sink.admit(&thread.id, write)?;
             let admitted = channel.next_unprojected().context("admitted question")?;
@@ -6195,7 +6191,8 @@ pub(in crate::studio) mod storage_fault_tests {
                         anyhow::bail!("handoff escaped its pending gate")
                     }
                 }
-            }).await??;
+            })
+            .await??;
             assert_eq!(channel.handoff_ticket(), 0);
             assert!(feed.last_turn().borrow().is_none());
             // Register State before capturing the conversation cut, as the consumer does. Current
@@ -6203,35 +6200,43 @@ pub(in crate::studio) mod storage_fault_tests {
             let mut receiver = feed.subscribe();
             let cut = feed.conversation();
             let source = cut.source.as_ref().context("captured pending cut")?;
-            assert_eq!(
-                source.current.projection().source_effect_seq,
-                1
-            );
+            assert_eq!(source.current.projection().source_effect_seq, 1);
             assert!(source.current.interactions().iter().any(|interaction| {
                 interaction.interaction_id == interaction_id
-                    && interaction.status() == pl_protocol::InteractionStatus::Pending
+                    && interaction.status() == crate::InteractionStatus::Pending
             }));
-            assert!(matches!(receiver.try_recv(), Err(broadcast::error::TryRecvError::Empty)));
+            assert!(matches!(
+                receiver.try_recv(),
+                Err(broadcast::error::TryRecvError::Empty)
+            ));
             control.send_replace(Some(Ok(())));
             tokio::time::timeout(Duration::from_secs(3), advance).await??;
             match receiver.try_recv()? {
                 ThreadLiveEvent::Committed { sequence, changes } => {
                     assert_eq!(sequence, 1);
                     assert_eq!(
-                        changes.iter().filter(|change| matches!(
-                            change,
-                            LiveEvent::Interaction(interaction)
-                                if interaction.interaction_id == interaction_id
-                                    && interaction.status() == pl_protocol::InteractionStatus::Pending
-                        )).count(),
+                        changes
+                            .iter()
+                            .filter(|change| matches!(
+                                change,
+                                LiveEvent::Interaction(interaction)
+                                    if interaction.interaction_id == interaction_id
+                                        && interaction.status() == crate::InteractionStatus::Pending
+                            ))
+                            .count(),
                         1
                     );
                 }
-                other => anyhow::bail!("late State registration lost its frozen question: {other:?}"),
+                other => {
+                    anyhow::bail!("late State registration lost its frozen question: {other:?}")
+                }
             }
             assert!(feed.last_turn().borrow().is_some());
             tokio::time::timeout(Duration::from_secs(3), sink.flush(&thread.id, 1)).await??;
-            assert_eq!(fixture.store.history(&thread.id).await?.watermark().await?, 1);
+            assert_eq!(
+                fixture.store.history(&thread.id).await?.watermark().await?,
+                1
+            );
             Ok(())
         }
         .await;
@@ -6272,7 +6277,7 @@ pub(in crate::studio) mod storage_fault_tests {
         async fn root_delegation(
             &self,
             identity: &ThreadActivation,
-        ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
             let _ = identity;
             Ok(Default::default())
         }
@@ -6831,30 +6836,28 @@ pub(in crate::studio) mod storage_fault_tests {
             2,
             10,
             11,
-            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                pl_protocol::ThreadToolInvocation::new(
+            ExecutionShape::Tool(crate::ThreadToolItem::new(
+                crate::ThreadToolInvocation::new(
                     call_id.into(),
                     "request_user_input".into(),
                     "{\"questions\":[]}".into(),
                 ),
-                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
-                    String::new(),
-                )),
+                crate::ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
             )),
         );
         let mut current =
             crate::studio::storage::history::conversation::current::PreparedCurrent::new(
                 crate::studio::thread_projection::FrozenCurrentProjection::new(
-                    pl_protocol::CurrentProjection::empty(1, pl_protocol::ThreadStatus::Idle),
+                    crate::CurrentProjection::empty(1, crate::ThreadStatus::Idle),
                 ),
                 Arc::from([]),
             );
         let mut start = crate::studio::runtime::chat_item::atom(&question);
         start.source_order = Some(question.ordinal);
         start.started_at = Some(question.created_at);
-        start.lifecycle = pl_protocol::ChatAtomLifecycle::Active {
-            status: pl_protocol::ChatActiveStatus::Running,
-            started: Some(pl_protocol::ChatFactPosition {
+        start.lifecycle = crate::ChatAtomLifecycle::Active {
+            status: crate::ChatActiveStatus::Running,
+            started: Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             }),
@@ -7109,7 +7112,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .await?;
         let saved = &items
             .iter()
-            .find(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Compaction)
+            .find(|entry| entry.atom.kind == crate::ChatAtomKind::Compaction)
             .context("saved operation original")?
             .atom;
         assert!(
@@ -7132,19 +7135,19 @@ pub(in crate::studio) mod storage_fault_tests {
         let record = pl_core::chat::ChatHistory::item(&history, &saved.id)
             .await?
             .context("saved operation atom")?;
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+        let atom: crate::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
         assert_eq!(
             atom.source,
-            pl_protocol::ChatSourceId::Operation {
+            crate::ChatSourceId::Operation {
                 operation_id: "current-compaction".into(),
             }
         );
         assert!(matches!(
             atom.lifecycle,
-            pl_protocol::ChatAtomLifecycle::Terminal {
+            crate::ChatAtomLifecycle::Terminal {
                 started: None,
                 ended: Some(_),
-                outcome: pl_protocol::ChatTerminalOutcome::Completed,
+                outcome: crate::ChatTerminalOutcome::Completed,
             }
         ));
         Ok(())
@@ -7215,7 +7218,7 @@ pub(in crate::studio) mod storage_fault_tests {
         projection.publish_prepared(&chat, &mut prepared).await?;
         assert!(channel.prepare(prepared));
         tokio::time::timeout(Duration::from_secs(5), sink.flush(&thread.id, 1)).await??;
-        let source_ids = [pl_protocol::ChatSourceId::ForegroundTurn {
+        let source_ids = [crate::ChatSourceId::ForegroundTurn {
             turn_id: turn.turn_id.clone(),
         }];
         let original_source = store
@@ -7227,7 +7230,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .context("saved running source")?;
         assert_eq!(
             original_source.started,
-            Some(pl_protocol::ChatFactPosition {
+            Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             })
@@ -7304,7 +7307,7 @@ pub(in crate::studio) mod storage_fault_tests {
             .await?
             .context("saved interrupted turn")?;
         assert_eq!(saved.id, interrupted.turn_id);
-        assert!(matches!(saved.state, pl_protocol::TurnState::Cancelled(_)));
+        assert!(matches!(saved.state, crate::TurnState::Cancelled(_)));
         let recovered_source = history
             .execution_sources(&source_ids, 2)
             .await?
@@ -7313,15 +7316,15 @@ pub(in crate::studio) mod storage_fault_tests {
         assert_eq!(recovered_source.started, original_source.started);
         assert_eq!(
             recovered_source.ended,
-            Some(pl_protocol::ChatFactPosition {
+            Some(crate::ChatFactPosition {
                 effect_seq: 2,
                 suborder: 4,
             })
         );
         assert_eq!(
             recovered_source.lifecycle,
-            pl_protocol::ChatSourceLifecycle::Ended {
-                outcome: pl_protocol::ChatTerminalOutcome::Cancelled,
+            crate::ChatSourceLifecycle::Ended {
+                outcome: crate::ChatTerminalOutcome::Cancelled,
             }
         );
         Ok(())

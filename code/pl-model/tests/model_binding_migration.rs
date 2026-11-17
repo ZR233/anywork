@@ -207,7 +207,7 @@ fn legacy_prepared_request_keeps_frozen_source_and_identity() {
     assert_eq!(prompt.prompt_cache_policy, "implicitPrefix");
     assert_eq!(
         prompt.prefix_changed_reason,
-        pl_protocol::PromptPrefixChangedReason::AccountChanged
+        pl_model::runtime::PromptPrefixChangedReason::AccountChanged
     );
     assert_eq!(prompt.updated_at, 1234);
 
@@ -326,7 +326,7 @@ fn legacy_assistant_frame_migrates_its_binding() {
     assert_eq!(receipt.response.model, "deepseek-v4-pro");
     assert_eq!(
         receipt.response.accounting.pricing,
-        pl_protocol::PricingOutcome::Disabled
+        pl_model::model::PricingOutcome::Disabled
     );
     let mut frame = json!({"receipt": &receipt, "bindings": [], "compatibilityFamily": null});
     for version in [3, 4] {
@@ -364,7 +364,7 @@ fn legacy_assistant_frame_migrates_its_binding() {
         } else {
             assert_eq!(
                 decoded.unwrap().unwrap().response.accounting.pricing,
-                pl_protocol::PricingOutcome::NoCharge
+                pl_model::model::PricingOutcome::NoCharge
             );
         }
     }
@@ -430,7 +430,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
     assert_eq!(receipt.message, "transport failed");
     assert_eq!(
         receipt.accounting.pricing,
-        pl_protocol::PricingOutcome::Disabled
+        pl_model::model::PricingOutcome::Disabled
     );
     let mut current = serde_json::to_value(&receipt).unwrap();
     for version in [3, 4] {
@@ -480,7 +480,7 @@ fn legacy_failure_receipts_migrate_and_unknown_versions_fail_closed() {
         } else {
             assert_eq!(
                 decoded.unwrap().unwrap().accounting.pricing,
-                pl_protocol::PricingOutcome::NoCharge
+                pl_model::model::PricingOutcome::NoCharge
             );
         }
     }

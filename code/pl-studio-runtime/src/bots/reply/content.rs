@@ -2,7 +2,7 @@
 
 use super::projection::{ReplyProjection, gap};
 use crate::studio::{ConversationReader, StudioRuntime};
-use pl_protocol::{
+use crate::{
     ActivitySnapshot, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatSourceId,
     CompletedEntry, ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
     ThreadTextChannel, TurnState,
@@ -269,9 +269,9 @@ struct ReplyMetadata {
     source: ChatSourceId,
     turn_id: Option<String>,
     kind: ChatAtomKind,
-    tool: Option<pl_protocol::ChatToolIdentity>,
+    tool: Option<crate::ChatToolIdentity>,
     text_channel: Option<ThreadTextChannel>,
-    contents: Vec<pl_protocol::ChatAtomContent>,
+    contents: Vec<crate::ChatAtomContent>,
 }
 
 async fn decode_envelope(

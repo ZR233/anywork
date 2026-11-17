@@ -1,5 +1,5 @@
 //! Studio built-in MCP directory, credential selection and persisted enablement.
-use pl_protocol::{PureError, Result};
+use crate::{PureError, Result};
 use pl_tool::approval::ToolEffect;
 use pl_tool::mcp::config::*;
 use serde::{Deserialize, Serialize};

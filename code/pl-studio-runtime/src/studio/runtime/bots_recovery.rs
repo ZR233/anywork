@@ -5,10 +5,10 @@
 //! 的 typed 契约。读取显式区分 Ready/Absent/NotReady：读、IO 与 decode 失败保持
 //! `Result` 错误，不折叠成 None，也不激活执行 owner 或创建第二份历史事实源。
 
+use crate::{InteractionRequest, InteractionStatus};
 use anyhow::Result;
 use pl_core::thread::interactions::{InteractionRecord, InteractionState};
 use pl_core::thread::permissions::{PermissionRecord, PermissionState};
-use pl_protocol::{InteractionRequest, InteractionStatus};
 
 use super::StudioRuntime;
 use crate::bots::{BotInputRead, BotInteractionFact, BotInteractionKind, BotInteractionRead};
@@ -182,8 +182,8 @@ impl StudioRuntime {
 
 fn bot_interaction_kind(interaction: &InteractionRequest) -> BotInteractionKind {
     match interaction.kind() {
-        pl_protocol::InteractionKind::UserInput => BotInteractionKind::UserInput,
-        pl_protocol::InteractionKind::ToolApproval => BotInteractionKind::Permission,
+        crate::InteractionKind::UserInput => BotInteractionKind::UserInput,
+        crate::InteractionKind::ToolApproval => BotInteractionKind::Permission,
     }
 }
 

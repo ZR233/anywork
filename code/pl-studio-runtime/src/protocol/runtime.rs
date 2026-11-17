@@ -1,7 +1,7 @@
 //! Runtime health projections shared by the Studio bridge.
 //!
 //! Workflow state is intentionally not duplicated here: it is projected from the
-//! canonical `AgentWorkingState` into `pl_protocol::ThreadRuntimeSnapshot`.
+//! canonical `AgentWorkingState` into `crate::ThreadRuntimeSnapshot`.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,9 +15,9 @@ pub struct StudioAgentDirectoryEntry {
     pub parent_agent_id: Option<String>,
     pub thread_id: String,
     pub role: String,
-    pub delegation_mode: pl_protocol::DelegationMode,
-    pub delegation_preference: pl_protocol::DelegationPreference,
-    pub frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
+    pub delegation_mode: crate::DelegationMode,
+    pub delegation_preference: crate::DelegationPreference,
+    pub frozen_model: Option<crate::NewThreadModelRoute>,
     pub task: String,
     pub summary: Option<String>,
     pub activity: StudioAgentActivity,
@@ -32,13 +32,13 @@ pub struct StudioAgentDirectoryEntry {
 )]
 pub enum StudioAgentActivity {
     Native {
-        state: pl_protocol::AgentState,
+        state: crate::AgentState,
         /// 该成员当前拥有的执行；未装载、无当前执行时为 `None`。
         ///
         /// 它来自会话执行事实，不是 `activeTurn` 的可空投影：准备、等待准入与清理期同样有身份，
         /// 所以列表可以在没有轮次编号时仍给出正确的停止目标。
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        execution: Option<pl_protocol::AgentExecution>,
+        execution: Option<crate::AgentExecution>,
         /// 用户是否可以对这一行发起精确停止。
         ///
         /// 由当前执行、生命周期与显式关闭意图派生；`state` 仍是业务状态，两者不互相推断。

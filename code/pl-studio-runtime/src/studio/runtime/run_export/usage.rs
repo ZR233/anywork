@@ -2,11 +2,11 @@
 
 use std::collections::BTreeMap;
 
+use crate::{InferenceBillingRecord, PricingOutcome};
 use anyhow::{Result, ensure};
 use pl_core::model::ModelUsage;
 use pl_core::thread::UsageSummary;
 use pl_core::usage::{UsageAnalysis, UsageField, UsageStatus, analyze_usage};
-use pl_protocol::{InferenceBillingRecord, PricingOutcome};
 
 use super::types::{
     ModelUsageExportV2, ThreadUsageExportV2, UsageCoverage, UsageExportV2, UsageKnownTotalsV2,

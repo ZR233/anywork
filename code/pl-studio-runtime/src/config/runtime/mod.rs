@@ -13,14 +13,15 @@ use super::{
     AgentProfilesResource, AgentProfilesSnapshot, ConfigStore, McpCatalogResource,
     McpDocumentError, ResolvedThreadMcpServer, ScopedEffectiveMcpServer, StudioConfig,
 };
+use crate::mode::ThreadModeDocument;
+use crate::mode::ThreadModeId;
 use crate::mode::ThreadModeManager;
-use pl_model::config::AccountId;
-use pl_protocol::ThreadModeDocument;
-use pl_protocol::{
+use crate::{
     CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogSnapshot,
-    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope, ThreadModeId,
-    UpdateMcpDocumentRequest, studio::StudioModelCatalogStatus,
+    McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope,
+    StudioModelCatalogStatus, UpdateMcpDocumentRequest,
 };
+use pl_model::config::AccountId;
 use std::collections::BTreeMap;
 
 /// Settings desired state 的唯一进程内 owner。
@@ -55,7 +56,7 @@ struct RuntimeState {
     observations: BTreeMap<AccountId, Observation>,
     closing: bool,
     /// Target delivery metadata from the original settings/catalog clocks; no business mirror.
-    account_projection_revisions: BTreeMap<pl_protocol::studio::AccountIdentity, (u64, u64)>,
+    account_projection_revisions: BTreeMap<crate::AccountIdentity, (u64, u64)>,
 }
 
 /// canonical Settings 提交的同步观察者。
@@ -117,9 +118,9 @@ pub struct ResolvedAgentProfile {
     /// The same snapshot used for Profile and route resolution, for coherent resource assembly.
     pub config: StudioConfig,
     pub revision: u64,
-    pub profile: pl_protocol::AgentProfileSnapshot,
-    pub definition: pl_protocol::AgentDefinitionSnapshot,
-    pub binding: pl_protocol::AgentBinding,
+    pub profile: crate::AgentProfileSnapshot,
+    pub definition: crate::AgentDefinitionSnapshot,
+    pub binding: crate::AgentBinding,
     pub route: pl_model::config::ResolvedModelRoute,
 }
 
@@ -221,7 +222,7 @@ impl ConfigRuntime {
                 .iter()
                 .filter(|profile| profile.enabled)
             {
-                if matches!(profile.binding, pl_protocol::AgentBinding::Native(_)) {
+                if matches!(profile.binding, crate::AgentBinding::Native(_)) {
                     crate::studio::delegation::validate_credential(&super::resolve_profile_route(
                         &config, profile,
                     )?)?;
@@ -302,7 +303,7 @@ impl ConfigRuntime {
 
     pub(crate) fn account_configuration_revision(
         &self,
-        identity: &pl_protocol::studio::AccountIdentity,
+        identity: &crate::AccountIdentity,
     ) -> ConfigRuntimeResult<Option<u64>> {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
         Ok(state
@@ -318,7 +319,7 @@ impl ConfigRuntime {
         let state = self.state.read().map_err(|_| config_runtime_poisoned())?;
         Ok(state
             .account_projection_revisions
-            .get(&pl_protocol::studio::AccountIdentity::Native {
+            .get(&crate::AccountIdentity::Native {
                 account_id: account.to_owned(),
             })
             .map(|revisions| revisions.1))
@@ -418,7 +419,7 @@ impl ConfigRuntime {
             .profiles
             .read()
             .catalog
-            .executable(pl_protocol::DelegationMode::Profile)?)
+            .executable(crate::DelegationMode::Profile)?)
     }
 
     /// 读取已发布的 Agent Profiles 资源快照（完整配置与诊断）；纯缓存读取。
@@ -664,7 +665,7 @@ impl ConfigRuntime {
                 self.mcp_catalog
                     .read_catalog(self.store.paths(), models, &scope)
             })
-            .collect::<pl_protocol::Result<Vec<_>>>()
+            .collect::<crate::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 
@@ -707,14 +708,14 @@ impl ConfigRuntime {
         &self,
         profile_id: &str,
     ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
-        self.resolve_delegated_profile(profile_id, pl_protocol::DelegationMode::Profile, None)
+        self.resolve_delegated_profile(profile_id, crate::DelegationMode::Profile, None)
     }
 
     /// Resolves role and model together, before allocating workspaces or provider resources.
     pub(crate) fn resolve_acp_child_profile(
         &self,
         profile_id: &str,
-    ) -> ConfigRuntimeResult<(pl_protocol::AgentProfile, super::AcpServiceDefinition)> {
+    ) -> ConfigRuntimeResult<(crate::AgentProfile, super::AcpServiceDefinition)> {
         let _command = self
             .command_lock
             .lock()
@@ -737,7 +738,7 @@ impl ConfigRuntime {
                     "Agent Profile is missing or disabled: {profile_id}"
                 ))
             })?;
-        let pl_protocol::AgentBinding::Acp(binding) = &profile.binding else {
+        let crate::AgentBinding::Acp(binding) = &profile.binding else {
             return Err(PureError::ConfigError("ACP Profile binding changed".into()).into());
         };
         let definitions = self.read_acp_definitions();
@@ -756,8 +757,8 @@ impl ConfigRuntime {
     pub fn resolve_delegated_profile(
         &self,
         profile_id: &str,
-        mode: pl_protocol::DelegationMode,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        mode: crate::DelegationMode,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> ConfigRuntimeResult<ResolvedAgentProfile> {
         // Configuration commands also adopt the Profile cache before releasing this lock.
         // This pure resolution cannot combine a new config with the previous role catalog.
@@ -790,28 +791,28 @@ impl ConfigRuntime {
                     "Agent Profile is missing or disabled: {profile_id}"
                 ))
             })?;
-        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+        if matches!(&profile.binding, crate::AgentBinding::Acp(_)) {
             return Err(PureError::ConfigError(
                 "ACP Profile requires ACP business preparation".into(),
             )
             .into());
         }
         match (mode, selection) {
-            (pl_protocol::DelegationMode::Profile, None) => {}
-            (pl_protocol::DelegationMode::Profile, Some(_)) => {
+            (crate::DelegationMode::Profile, None) => {}
+            (crate::DelegationMode::Profile, Some(_)) => {
                 return Err(PureError::ConfigError(
                     "fixed Profile delegation forbids modelSelection".into(),
                 )
                 .into());
             }
-            (pl_protocol::DelegationMode::Automatic, None) => {
+            (crate::DelegationMode::Automatic, None) => {
                 return Err(PureError::ConfigError(
                     "automatic delegation requires modelSelection".into(),
                 )
                 .into());
             }
-            (pl_protocol::DelegationMode::Automatic, Some(selection)) => {
-                let pl_protocol::AgentBinding::Native(native) = &mut profile.binding else {
+            (crate::DelegationMode::Automatic, Some(selection)) => {
+                let crate::AgentBinding::Native(native) = &mut profile.binding else {
                     unreachable!("ACP rejected before Native selection");
                 };
                 native.route = Some(selection);
@@ -1052,8 +1053,8 @@ impl ConfigRuntime {
 fn initial_account_projection_revisions(
     config: &StudioConfig,
     acp: &super::AcpDefinitionsSnapshot,
-) -> BTreeMap<pl_protocol::studio::AccountIdentity, (u64, u64)> {
-    use pl_protocol::studio::AccountIdentity;
+) -> BTreeMap<crate::AccountIdentity, (u64, u64)> {
+    use crate::AccountIdentity;
     config
         .models
         .accounts
@@ -1073,7 +1074,7 @@ fn update_account_projection_revisions(
     next: &ConfigRuntimeSnapshot,
     catalog: &ModelCatalogRuntimeSnapshot,
 ) {
-    use pl_protocol::studio::AccountIdentity;
+    use crate::AccountIdentity;
     let mut revisions = BTreeMap::new();
     for (id, account) in &next.canonical_config.models.accounts {
         let identity = AccountIdentity::Native {
@@ -1347,7 +1348,7 @@ mod tests {
                 let catalog = runtime.mcp_catalog_snapshot(&McpScope::Host).unwrap();
                 assert!(catalog.entries.iter().any(|entry| {
                     entry.id == "guarded"
-                        && entry.config_status == pl_protocol::McpConfigStatusKind::Disabled
+                        && entry.config_status == crate::McpConfigStatusKind::Disabled
                 }));
             } else {
                 let catalog = runtime.mcp_catalog_snapshot(&McpScope::Host).unwrap();
@@ -1539,10 +1540,10 @@ mod tests {
             display_name: "ACP child".into(),
             description: "ACP configuration boundary".into(),
             when_to_use: "ACP dispatch fixture".into(),
-            binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+            binding: crate::AgentBinding::Acp(crate::AcpAgentConfig {
                 account_id: "acp-fixture".into(),
             }),
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+            workspace_mode: crate::AgentWorkspaceMode::Directory,
         };
         let (saved, _) = runtime
             .save_user_agent_profile(configured.revision, "acp-child", &profile)
@@ -1559,8 +1560,8 @@ mod tests {
                 .any(|profile| profile.definition.definition_id == "acp-child")
         );
         for mode in [
-            pl_protocol::DelegationMode::Profile,
-            pl_protocol::DelegationMode::Automatic,
+            crate::DelegationMode::Profile,
+            crate::DelegationMode::Automatic,
         ] {
             assert!(
                 catalog
@@ -1590,8 +1591,8 @@ mod tests {
             .save_acp_definition(saved.revision, &disabled, Some(entry.document_revision))
             .expect("disable definition");
         for mode in [
-            pl_protocol::DelegationMode::Profile,
-            pl_protocol::DelegationMode::Automatic,
+            crate::DelegationMode::Profile,
+            crate::DelegationMode::Automatic,
         ] {
             assert!(
                 runtime

@@ -1,7 +1,9 @@
 use anyhow::{Context, Result, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
-use pl_protocol::studio::{
+use pl_studio_runtime::StudioThreadDirectoryPage;
+use pl_studio_runtime::WorkspaceRecord;
+use pl_studio_runtime::{
     BotConversationPage, BotConversationThreadReply, BotMessagePage, BotSendResult,
     BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
     CreateBotConversationThreadRequest, HealthResponse, ListBotConversationsRequest,
@@ -9,12 +11,10 @@ use pl_protocol::studio::{
     SetBotEnabledRequest, SetBotTrustedChatRequest, SetBotTrustedUserRequest,
     StartBotRegistrationRequest, StudioError,
 };
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatBatch, ChatPlacement, ChatScope, ContentRange, ContentRef, ContentWindow,
     CurrentCollectionPage, CurrentCollectionRef, ReadDemand,
 };
-use pl_studio_runtime::StudioThreadDirectoryPage;
-use pl_studio_runtime::WorkspaceRecord;
 use reqwest::StatusCode;
 use reqwest::redirect::Policy as RedirectPolicy;
 use serde::Serialize;
@@ -113,7 +113,7 @@ impl ChatRead {
     pub async fn next_notification(
         &mut self,
         deadline: Instant,
-    ) -> Result<pl_protocol::ThreadNotificationEnvelope> {
+    ) -> Result<pl_studio_runtime::ThreadNotificationEnvelope> {
         loop {
             let event = tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
@@ -124,9 +124,9 @@ impl ChatRead {
             .context("conversation SSE ended before the required State notification")??;
             match event.event.as_str() {
                 "notification" => {
-                    let update: pl_protocol::ThreadSubscriptionUpdate =
+                    let update: pl_studio_runtime::ThreadSubscriptionUpdate =
                         serde_json::from_str(&event.data)?;
-                    let pl_protocol::ThreadSubscriptionUpdate::Notification { notification } =
+                    let pl_studio_runtime::ThreadSubscriptionUpdate::Notification { notification } =
                         update
                     else {
                         bail!("conversation SSE notification frame carried a different update");
@@ -150,7 +150,7 @@ impl ChatRead {
     pub async fn next_activity(
         &mut self,
         deadline: Instant,
-    ) -> Result<pl_protocol::ActivitySnapshot> {
+    ) -> Result<pl_studio_runtime::ActivitySnapshot> {
         loop {
             let event = tokio::time::timeout_at(
                 tokio::time::Instant::from_std(deadline),
@@ -315,7 +315,7 @@ impl StudioHttp {
     pub async fn open_project(&self, path: &str) -> Result<WorkspaceRecord> {
         self.post_json(
             "/api/v1/projects",
-            &pl_protocol::studio::OpenProjectRequest {
+            &pl_studio_runtime::OpenProjectRequest {
                 path: path.to_owned(),
             },
         )
@@ -325,7 +325,7 @@ impl StudioHttp {
     pub async fn create_thread(
         &self,
         workspace_id: &str,
-        request: &pl_protocol::studio::CreateThreadRequest,
+        request: &pl_studio_runtime::CreateThreadRequest,
     ) -> Result<pl_studio_runtime::StudioStartNewThreadResponse> {
         let path = format!("/api/v1/projects/{workspace_id}/threads");
         let (status, body) = self
@@ -337,7 +337,7 @@ impl StudioHttp {
     pub async fn submit_prompt(
         &self,
         thread_id: &str,
-        request: &pl_protocol::studio::SubmitPromptRequest,
+        request: &pl_studio_runtime::SubmitPromptRequest,
     ) -> Result<PromptReceipt> {
         self.post_json(&format!("/api/v1/threads/{thread_id}/prompts"), request)
             .await
@@ -346,20 +346,20 @@ impl StudioHttp {
     pub async fn set_thread_mode(
         &self,
         thread_id: &str,
-        request: &pl_protocol::studio::SetThreadModeRequest,
-    ) -> Result<pl_protocol::studio::ThreadModeCommandReply> {
+        request: &pl_studio_runtime::SetThreadModeRequest,
+    ) -> Result<pl_studio_runtime::ThreadModeCommandReply> {
         self.put_json(&format!("/api/v1/threads/{thread_id}/mode"), request)
             .await
     }
 
-    pub async fn read_settings(&self) -> Result<pl_protocol::studio::SettingsStateResponse> {
+    pub async fn read_settings(&self) -> Result<pl_studio_runtime::SettingsStateResponse> {
         self.get_json("/api/v1/settings").await
     }
 
     pub async fn patch_account(
         &self,
-        request: &pl_protocol::studio::PatchAccountRequest,
-    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        request: &pl_studio_runtime::PatchAccountRequest,
+    ) -> Result<pl_studio_runtime::SettingsCommandReply> {
         let path = "/api/v1/accounts";
         let response = self
             .command_client
@@ -375,16 +375,16 @@ impl StudioHttp {
 
     pub async fn set_model_connection(
         &self,
-        request: &pl_protocol::studio::SetAccountModelConnectionRequest,
-    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        request: &pl_studio_runtime::SetAccountModelConnectionRequest,
+    ) -> Result<pl_studio_runtime::SettingsCommandReply> {
         self.put_json("/api/v1/accounts/model-connection", request)
             .await
     }
 
     pub async fn update_settings_field(
         &self,
-        request: &pl_protocol::studio::UpdateSettingsFieldRequest,
-    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+        request: &pl_studio_runtime::UpdateSettingsFieldRequest,
+    ) -> Result<pl_studio_runtime::SettingsCommandReply> {
         self.put_json("/api/v1/settings/field", request).await
     }
 
@@ -406,16 +406,16 @@ impl StudioHttp {
     }
 
     /// Canonical Thread snapshot (public projection, including the active Turn).
-    pub async fn read_thread(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
-        let snapshot: pl_protocol::ThreadSnapshot = self
+    pub async fn read_thread(&self, thread_id: &str) -> Result<pl_studio_runtime::ThreadSnapshot> {
+        let snapshot: pl_studio_runtime::ThreadSnapshot = self
             .get_json(&format!("/api/v1/threads/{thread_id}"))
             .await?;
         ensure!(
-            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
             "Thread {} schema version {} is unsupported; expected {}",
             snapshot.thread.id,
             snapshot.schema_version,
-            pl_protocol::THREAD_SCHEMA_VERSION
+            pl_studio_runtime::THREAD_SCHEMA_VERSION
         );
         ensure!(
             snapshot.thread.id == thread_id,
@@ -513,9 +513,9 @@ impl StudioHttp {
                 match event.event.as_str() {
                     "snapshot" => {
                         ensure!(!saw_snapshot, "conversation SSE sent multiple initial snapshots");
-                        let update: pl_protocol::ThreadSubscriptionUpdate =
+                        let update: pl_studio_runtime::ThreadSubscriptionUpdate =
                             serde_json::from_str(&event.data)?;
-                        let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                        let pl_studio_runtime::ThreadSubscriptionUpdate::Snapshot {
                             completed_history_version,
                             snapshot,
                             ..
@@ -525,12 +525,12 @@ impl StudioHttp {
                         };
                         ensure!(
                             completed_history_version
-                                == pl_protocol::COMPLETED_HISTORY_VERSION,
+                                == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
                             "conversation SSE completed history version {completed_history_version} is unsupported"
                         );
                         ensure!(
                             snapshot.thread.id == thread_id
-                                && snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+                                && snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
                             "conversation SSE State snapshot identity/schema did not match the current contract"
                         );
                         saw_snapshot = true;
@@ -548,10 +548,10 @@ impl StudioHttp {
                     "activity" => {}
                     "notification" => {
                         ensure!(saw_snapshot, "conversation SSE delivered notification before State snapshot");
-                        let update: pl_protocol::ThreadSubscriptionUpdate =
+                        let update: pl_studio_runtime::ThreadSubscriptionUpdate =
                             serde_json::from_str(&event.data)?;
                         ensure!(
-                            matches!(update, pl_protocol::ThreadSubscriptionUpdate::Notification { .. }),
+                            matches!(update, pl_studio_runtime::ThreadSubscriptionUpdate::Notification { .. }),
                             "conversation SSE notification frame carried a different update"
                         );
                     }
@@ -727,7 +727,7 @@ impl StudioHttp {
         if !status.is_success() {
             let error = serde_json::from_str::<StudioError>(&text).unwrap_or_else(|_| {
                 StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Internal,
+                    pl_studio_runtime::StudioErrorCode::Internal,
                     format!("{status}: {}", crate::env::redact(&text)),
                     false,
                 )
@@ -803,7 +803,7 @@ impl StudioHttp {
         } else {
             let error = serde_json::from_str::<StudioError>(&text).unwrap_or_else(|_| {
                 StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Internal,
+                    pl_studio_runtime::StudioErrorCode::Internal,
                     format!("{status}: {}", crate::env::redact(&text)),
                     false,
                 )

@@ -1,14 +1,64 @@
-use crate::completion::stable_tool_schemas;
 use std::collections::BTreeMap;
 
-use pl_protocol::{
-    Message, PromptPrefixChangedReason, PureError, ThreadPromptMetadata, ThreadPromptSnapshot,
-};
-
-use crate::completion::ReasoningConfig;
-use crate::protocol::{EffectivePromptCachePolicy, ProtocolEndpoint};
-use pl_protocol::ToolSpec;
+use pl_protocol::PureError;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::completion::{Message, ReasoningConfig, ToolSpec, stable_tool_schemas};
+use crate::protocol::{EffectivePromptCachePolicy, ProtocolEndpoint};
+
+/// prompt generation 发生冷启动的原因。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptPrefixChangedReason {
+    Initial,
+    PromptScopeChanged,
+    AccountChanged,
+    ModelChanged,
+    BaseInstructionsChanged,
+    GlobalInstructionsChanged,
+    ModeRoleChanged,
+    SkillCatalogChanged,
+    WorkspaceInstructionsChanged,
+    RequestPropertiesChanged,
+    FixedPrefixChanged,
+    ToolSchemaChanged,
+    ContextCompacted,
+    ContextAppended,
+    ContextRecovered,
+}
+
+/// Thread 当前 prompt generation 的脱敏诊断快照。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPromptSnapshot {
+    pub scope: String,
+    pub generation: u64,
+    pub account_id: String,
+    #[serde(default)]
+    pub account_hash: String,
+    pub model_id: String,
+    pub fixed_prefix_hash: String,
+    #[serde(default)]
+    pub fixed_prefix_section_hashes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub request_properties_hash: String,
+    pub tool_schema_hash: String,
+    pub context_hash: String,
+    #[serde(default)]
+    pub prompt_cache_policy: String,
+    pub prefix_changed_reason: PromptPrefixChangedReason,
+    pub updated_at: i64,
+}
+
+/// `threads.metadata_json` 中按产品模式/agent role 保存的 prompt generation。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadPromptMetadata {
+    pub active_scope: String,
+    #[serde(default)]
+    pub slots: BTreeMap<String, ThreadPromptSnapshot>,
+}
 
 /// 计算 prompt generation 所需的固定请求属性。
 #[derive(Debug)]

@@ -1,6 +1,6 @@
 use pl_core::thread::current::RuntimeEpoch;
-use pl_protocol::{ChatActiveStatus, ChatTerminalOutcome, RuntimeCostAmount};
 use pl_studio_runtime::history::*;
+use pl_studio_runtime::{ChatActiveStatus, ChatTerminalOutcome, RuntimeCostAmount};
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait,
 };
@@ -302,7 +302,7 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
     let mut classifier = HistoryClassifier::new(run);
     let targets = (0..2000)
         .map(|index| {
-            pl_protocol::ThreadWaitTarget::new(
+            pl_studio_runtime::ThreadWaitTarget::new(
                 format!("task-{index}"),
                 Some("terminal".into()),
                 None,
@@ -310,12 +310,12 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
             )
         })
         .collect();
-    let presentation = pl_protocol::ThreadWaitPresentation::new(
-        pl_protocol::ThreadWaitIntent::Events {
+    let presentation = pl_studio_runtime::ThreadWaitPresentation::new(
+        pl_studio_runtime::ThreadWaitIntent::Events {
             targets,
             timeout_ms: 3000,
         },
-        pl_protocol::ThreadWaitState::Waiting,
+        pl_studio_runtime::ThreadWaitState::Waiting,
         None,
     );
     let expected = serde_json::to_vec(&presentation)?;
@@ -551,7 +551,7 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         name: "terminal".into(),
     });
     let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
-    let atom = pl_protocol::ChatAtom {
+    let atom = pl_studio_runtime::ChatAtom {
         id: tool.entity_id.clone(),
         completion_item_id: None,
         completion_seq: None,
@@ -560,7 +560,7 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         source_order: None,
         kind: tool.kind,
         delivery: tool.delivery,
-        lifecycle: pl_protocol::ChatAtomLifecycle::Active {
+        lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
             status: ChatActiveStatus::Running,
             started: None,
         },
@@ -837,8 +837,8 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
 }
 
 fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
-    let accounting = pl_protocol::InferenceAccounting {
-        usage: pl_protocol::UsageReport {
+    let accounting = pl_studio_runtime::InferenceAccounting {
+        usage: pl_studio_runtime::UsageReport {
             input_tokens: Some(100),
             output_tokens: Some(20),
             cache_read_tokens: Some(40),
@@ -847,7 +847,7 @@ fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
             total_tokens: Some(120),
         },
         pricing: if priced {
-            pl_protocol::PricingOutcome::Estimated {
+            pl_studio_runtime::PricingOutcome::Estimated {
                 cost: RuntimeCostAmount {
                     currency: "CNY".into(),
                     amount: 0.25,
@@ -858,7 +858,7 @@ fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
                 }),
             }
         } else {
-            pl_protocol::PricingOutcome::default()
+            pl_studio_runtime::PricingOutcome::default()
         },
         ..Default::default()
     };

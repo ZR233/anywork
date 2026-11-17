@@ -36,7 +36,7 @@ impl StudioRuntime {
 
 pub(super) async fn read_history(
     store: &crate::studio::StudioStore,
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
 ) -> Result<HistoryStore> {
     let history = store.history(&thread.id).await?;
     let fence = crate::studio::thread_factory::recovery::load_checkpoint_read_only(store, thread)
@@ -54,8 +54,8 @@ fn ensure_fence_reached(watermark: u64, fence: u64) -> Result<()> {
     if watermark >= fence {
         return Ok(());
     }
-    Err(anyhow::Error::new(pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Busy,
+    Err(anyhow::Error::new(crate::StudioError::new(
+        crate::StudioErrorCode::Busy,
         "Thread history is behind its durable checkpoint fence; pending persistence must recover first",
         true,
     )))

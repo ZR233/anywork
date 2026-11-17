@@ -1,10 +1,10 @@
 //! Immutable dispatch provenance. The selected child route belongs only to its saved Profile.
+use crate::{DelegationMode, DelegationPreference, DelegationSettings};
 use anyhow::{Result, ensure};
 use pl_core::{
     context::OpaquePayload,
     thread::{ThreadSnapshot, extensions::ExtensionRecord},
 };
-use pl_protocol::{DelegationMode, DelegationPreference, DelegationSettings};
 
 pub(crate) const EXTENSION: &str = "studio.delegation";
 const FORMAT: &str = "pl.studio.delegation";
@@ -51,10 +51,8 @@ pub(crate) fn migrate(state: &mut ThreadSnapshot) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn profile_model(
-    profile: &pl_protocol::AgentProfileSnapshot,
-) -> pl_protocol::studio::NewThreadModelRoute {
-    pl_protocol::studio::NewThreadModelRoute {
+pub(crate) fn profile_model(profile: &crate::AgentProfileSnapshot) -> crate::NewThreadModelRoute {
+    crate::NewThreadModelRoute {
         account_id: profile.account_id.clone(),
         model_id: profile.model_id.clone(),
         effort: profile.effort.clone(),
@@ -66,7 +64,7 @@ pub(crate) fn profile_model(
 /// credential-free local endpoints. All child query/spawn/continuation paths use this result.
 pub(crate) fn resolve_child_route(
     config: &crate::StudioConfig,
-    profile: &pl_protocol::AgentProfileSnapshot,
+    profile: &crate::AgentProfileSnapshot,
 ) -> crate::Result<pl_model::config::ResolvedModelRoute> {
     resolve_child_selection(
         config,
@@ -78,9 +76,9 @@ pub(crate) fn resolve_child_route(
 
 pub(crate) fn resolve_current_child_route(
     config: &crate::StudioConfig,
-    profile: &pl_protocol::AgentProfile,
+    profile: &crate::AgentProfile,
 ) -> crate::Result<pl_model::config::ResolvedModelRoute> {
-    let pl_protocol::AgentBinding::Native(native) = &profile.binding else {
+    let crate::AgentBinding::Native(native) = &profile.binding else {
         return Err(crate::PureError::ConfigError(
             "ACP execution is not supported before S4".into(),
         ));
@@ -155,6 +153,7 @@ pub(crate) fn preference_prompt(selection: DelegationSettings) -> Option<&'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
     use pl_model::{
         config::{AccountConfig, AccountId, ModelRouteConfig, ReasoningEffort},
         protocol::{
@@ -164,7 +163,6 @@ mod tests {
             },
         },
     };
-    use pl_protocol::studio::{AccountAuthenticationMethod, ChatGptAccountInfo};
     use std::sync::Arc;
 
     struct NoCredentialIo;

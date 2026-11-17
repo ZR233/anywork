@@ -85,13 +85,13 @@ pub(crate) fn validate_request(request: &CompletionRequest) -> Result<()> {
                 allowed_callers, ..
             } => {
                 if !allowed_callers.is_empty()
-                    && !allowed_callers.contains(&pl_protocol::ToolCallerMode::Direct)
+                    && !allowed_callers.contains(&crate::completion::ToolCallerMode::Direct)
                 {
                     return Err(invalid(&format!("request.tools[{index}].allowed_callers")));
                 }
             }
             ToolSpec::WebSearch {
-                options: pl_protocol::HostedWebSearchOptions::OpenAi { .. },
+                options: crate::completion::HostedWebSearchOptions::OpenAi { .. },
             } => {}
             _ => return Err(invalid(&format!("request.tools[{index}].type"))),
         }

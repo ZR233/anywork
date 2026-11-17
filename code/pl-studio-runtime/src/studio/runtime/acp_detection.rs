@@ -10,13 +10,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use anyhow::Result;
-use futures::FutureExt;
-use pl_protocol::studio::{
+use crate::{
     AcpLocalDetectionFailure, AcpLocalDetectionFailureKind, AcpLocalDetectionSnapshot,
     AcpLocalDetectionState, CancelAcpLocalDetectionRequest, StartAcpLocalDetectionRequest,
     StudioError, StudioErrorCode,
 };
+use anyhow::Result;
+use futures::FutureExt;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -381,11 +381,11 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use anyhow::Result;
-    use pl_protocol::studio::{
+    use crate::{
         AcpAccountUpdate, AcpLocalDetectionFailureKind as FailureKind,
         AcpLocalDetectionState as State, UpdateAcpAccountRequest,
     };
+    use anyhow::Result;
     use serde::Deserialize;
     use tokio::time::{Instant, sleep, timeout};
 
@@ -530,7 +530,7 @@ sys.stderr.flush()
                 .collect()
         }
 
-        fn start(&self, id: &str) -> pl_protocol::studio::AcpLocalDetectionCommandReply {
+        fn start(&self, id: &str) -> crate::AcpLocalDetectionCommandReply {
             self.runtime
                 .start_acp_local_detection(StartAcpLocalDetectionRequest {
                     operation_id: id.into(),

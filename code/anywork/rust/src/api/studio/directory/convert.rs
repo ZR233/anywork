@@ -1,7 +1,7 @@
 use super::types::*;
 use crate::api::studio::convert::thread_stream::bridge_session_row;
 use crate::api::studio::types::BridgeResourceStamp;
-use pl_protocol::studio as p;
+use pl_studio_runtime as p;
 
 impl From<BridgeThreadDirectoryQuery> for p::ThreadDirectoryQuery {
     fn from(value: BridgeThreadDirectoryQuery) -> Self {

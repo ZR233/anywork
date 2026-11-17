@@ -113,11 +113,7 @@ impl LspObservationServices {
         {
             let _command = self.state.command().await;
             let initial = health(&self.registry).await;
-            if let Err(error) = self
-                .state
-                .begin(pl_protocol::StateOperation::Activate)
-                .await
-            {
+            if let Err(error) = self.state.begin(crate::StateOperation::Activate).await {
                 tracing::warn!(%error, "failed to begin LSP observed state");
             } else if let Err(error) = self.state.ready(initial, false).await {
                 tracing::warn!(%error, "failed to publish initial LSP observed state");
@@ -188,21 +184,21 @@ impl StudioRuntime {
 
     pub(in crate::studio::runtime) fn check_thread_read_access(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<()> {
         self.recovery.ensure_thread_read_access(thread)
     }
 
     pub(in crate::studio::runtime) fn check_thread_execution_access(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<()> {
         self.recovery.ensure_thread_execution_access(thread)
     }
 
     pub(in crate::studio::runtime) async fn verify_thread_execution_preparation(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
     ) -> Result<()> {
         // Resource validation can retain a cold checkpoint while composing local/SSH IO.
@@ -236,7 +232,7 @@ impl StudioRuntime {
     pub(in crate::studio::runtime) async fn read_protocol_thread(
         &self,
         thread_id: &str,
-    ) -> Result<pl_protocol::Thread> {
+    ) -> Result<crate::Thread> {
         if let Some(thread) = self
             .agent_facility
             .product_events
@@ -248,11 +244,9 @@ impl StudioRuntime {
         let Some(record) = self.store.read_thread(thread_id).await? else {
             // An unknown Thread is an API-visible rejection: answering it as an internal failure
             // would hide a deleted or foreign identity behind a redacted 500.
-            return Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::not_found("session"),
-            ));
+            return Err(anyhow::Error::new(crate::StudioError::not_found("session")));
         };
-        Ok(pl_protocol::Thread::from(record))
+        Ok(crate::Thread::from(record))
     }
 
     pub(super) async fn start_lsp_state_watcher(&self) -> Result<()> {

@@ -13,7 +13,7 @@ Studio 的普通桌面根智能体（`root`）、外部机器人根智能体、�
 
 ### 成员身份、定义快照与后端绑定
 
-会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（类型定义见 `pl-protocol` 的 `session`/`agent` 模块，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
+会话成员的产品身份与配置按三类事实拆分，各自有唯一 owner（基础身份标识 `SessionId`/`AgentId`/`ThreadId` 定义见 `pl-protocol`，目录与成员描述定义见 `pl-studio-runtime`，目录持久化见 [17.1](./17-studio-storage.md#171-数据布局)）：
 - **成员描述（`AgentDescriptor`）**：`agent_id`、所属 `session_id`、`parent_agent_id`（主成员为 `None`）、默认 `thread_id`、成员定义 ID、显示标题、backend 类别与工作区引用。root/child 表达成员关系，Native/ACP 表达执行方式，两者正交；不得用 `AcpRootThread`、`AcpChildSession` 等交叉类型复制业务逻辑。首版一名成员对应一个默认 Thread。
 - **定义快照（`AgentDefinitionSnapshot`）**：可复用定义的不可变快照——定义 ID、显示名、描述、用途、来源与修订/内容身份；不混入模型配置与运行状态，也不拥有线程、连接或任务。修改可复用定义只影响后续新实例。
 - **后端绑定（`AgentBinding`）**：封闭枚举 `Native(NativeAgentConfig)`/`Acp(AcpAgentConfig)`。`NativeAgentConfig` 复用既有 `NewThreadModelRoute` 承载 child 创建期冻结的模型路由（root 为 `None`）；当前 Profile 的指令正文位于 Native 分支，执行历史继续按既有格式冻结。`AcpAgentConfig` 只引用既有 ACP 账号 ID，不持久化连接修订，也不包含 Native model/effort/system-instruction 占位值。连接修订只用于运行期准入，活动实例冻结实际定义；目录只保存实际后端值及对端会话引用，存储见 [17](./17-studio-storage.md#171-数据布局)。ACP 独立业务会话不自动开放 ACP Profile：混合父子派发须等结果与关闭链完成后进入生产准入，此前仍在资源准备前明确拒绝，不提供空实现或假成功。
@@ -87,7 +87,7 @@ Native 与 ACP 适配共用同一协作所有者。ACP 的宿主 MCP 工具使�
 
 - **可信调用上下文**：`AgentCallContext` 是不支持反序列化的进程内值，只携带调用成员 `AgentId`、宿主可信 `call_id` 与本次调用的取消令牌。会话由已绑定的所有者确定，默认 `ThreadId` 从 `AgentThreadIdentity` 解析，不接受模型指定调用者身份。Native 适配器先核验冻结工具绑定、本次成员实例及实际 `CallContext`，再转换为业务上下文；同名成员重新物化不能使旧工具绑定重新取得资格。调用取消不成为已发布 child 的生命周期令牌。
 - **成员关系与操作资格分开**：根成员、直接 child、后代与同会话判定只使用目录提交的 `session_id / agent_id / parent_agent_id / thread_id`；驻留实例引用这些冻结事实，冷成员沿原目录读取，不启动执行或扫描历史。Native `parent_id` 或快照不能作为公共关系算法的回退。准备期预约仍由原所有者登记并计入容量；已发布、关闭中、永久显式关闭及实例代次资格沿原准入边界裁决，不能以“正在执行”证明成员归属。
-- **业务结果与错误**：端口返回真实的创建、消息受理、成员摘要、精确执行中断及逐成员关闭事实，不返回 Native `ToolOutput / ToolError`。纯结果值归既有 collaboration 边界，保存、检查点及工作树执行仍归原所有者；只有实际跨 FRB/HTTP 的值才进入 `pl-protocol`。业务错误保留分类和标准来源链，由适配器转换，而非统一抹成字符串。
+- **业务结果与错误**：端口返回真实的创建、消息受理、成员摘要、精确执行中断及逐成员关闭事实，不返回 Native `ToolOutput / ToolError`。纯结果值归既有 collaboration 边界，保存、检查点及工作树执行仍归原所有者；只有实际跨多同级 crate 共享的基础原语才进入 `pl-protocol`，其余跨 FRB/HTTP 的 Studio 产品协议统一归属 `pl-studio-runtime`。业务错误保留分类和标准来源链，由适配器转换，而非统一抹成字符串。
 - **部分成功不可丢失**：child 已发布后首次输入失败，创建结果仍保留 `agentId`、实际工作区、消息受理状态及原错误，Native 按原 `with_output` 语义交付，调用方仍可关闭该成员。关闭部分失败保留 `AgentCloseOutcome` 的全部逐成员执行与工作树清理结果，不以单个协议错误覆盖已产生的业务事实。
 - **原有 Native 语义不变**：消息持久身份裁决先于中断或新输入副作用，相同消息返回原序号，冲突明确拒绝；发送回执保持原受理时机，不新增等待旧轮退出的同步前置条件。中断由目标所有者核验实际 execution 身份，迟到请求不命中新执行。Native 通用 `wait`、inbox、可靠终态报告、review 与会话读取保持原机制，不增加 Native `wait_agent` 或公共提交到 Turn 解析器。ACP 适配不改变上述语义。
 

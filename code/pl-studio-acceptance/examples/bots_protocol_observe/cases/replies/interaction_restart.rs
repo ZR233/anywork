@@ -20,17 +20,17 @@ use crate::support::{
 };
 use crate::thread_watch::{ThreadWatch, interaction_line};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::studio::ResolveInteractionRequest;
-use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ContentOwner, ContentTarget, InteractionContent,
-    InteractionRequest, InteractionResolution, InteractionStatus, ThreadBusinessRefs,
-    UserInputAnswer, UserInputResolution,
-};
 use pl_provider_fixture::feishu::{
     ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event,
 };
 use pl_provider_fixture::{
     Protocol, RealtimeToolCall, Reply, Step, responses_text, responses_tool_calls,
+};
+use pl_studio_runtime::ResolveInteractionRequest;
+use pl_studio_runtime::{
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ContentOwner, ContentTarget, InteractionContent,
+    InteractionRequest, InteractionResolution, InteractionStatus, ThreadBusinessRefs,
+    UserInputAnswer, UserInputResolution,
 };
 use std::collections::HashMap;
 
@@ -366,7 +366,7 @@ async fn assert_interaction_reference_page(
             deadline.into(),
             session.http()?.open_chat(
                 thread_id,
-                pl_protocol::ChatScope::conversation(None),
+                pl_studio_runtime::ChatScope::conversation(None),
                 CHAT_DEMAND,
             ),
         )
@@ -465,7 +465,7 @@ async fn assert_plan_reference(
             deadline.into(),
             session.http()?.open_chat(
                 thread_id,
-                pl_protocol::ChatScope::conversation(None),
+                pl_studio_runtime::ChatScope::conversation(None),
                 CHAT_DEMAND,
             ),
         )

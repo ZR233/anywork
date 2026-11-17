@@ -1,10 +1,10 @@
 //! Shared typed read boundary for GUI, HTTP and the root's local query tools.
 use super::StudioRuntime;
-use anyhow::Result;
-use pl_protocol::{
+use crate::{
     DelegationModelDetail, DelegationModelDetails, DelegationModelList, GetDelegationModelRequest,
     GetDelegationModelsRequest, ListDelegationModelsRequest,
 };
+use anyhow::Result;
 
 impl StudioRuntime {
     fn delegation_models(&self) -> crate::thread_assembler::delegation_models::DelegationModels {

@@ -200,9 +200,9 @@ pub enum SettingsFieldInput {
     },
 }
 
-impl From<SettingsFieldInput> for pl_protocol::studio::SettingsFieldUpdate {
+impl From<SettingsFieldInput> for pl_studio_runtime::SettingsFieldUpdate {
     fn from(value: SettingsFieldInput) -> Self {
-        use pl_protocol::studio::SettingsFieldUpdate as Update;
+        use pl_studio_runtime::SettingsFieldUpdate as Update;
         match value {
             SettingsFieldInput::InstructionBaseOverride { value } => {
                 Update::InstructionBaseOverride { value }
@@ -462,19 +462,19 @@ pub enum BridgeModelOrigin {
     Manual,
 }
 
-impl From<pl_protocol::ModelOriginDto> for BridgeModelOrigin {
-    fn from(origin: pl_protocol::ModelOriginDto) -> Self {
+impl From<pl_studio_runtime::ModelOriginDto> for BridgeModelOrigin {
+    fn from(origin: pl_studio_runtime::ModelOriginDto) -> Self {
         match origin {
-            pl_protocol::ModelOriginDto::Bundled => Self::Bundled,
-            pl_protocol::ModelOriginDto::Online => Self::Online,
-            pl_protocol::ModelOriginDto::Manual => Self::Manual,
+            pl_studio_runtime::ModelOriginDto::Bundled => Self::Bundled,
+            pl_studio_runtime::ModelOriginDto::Online => Self::Online,
+            pl_studio_runtime::ModelOriginDto::Manual => Self::Manual,
         }
     }
 }
 
-impl From<pl_protocol::studio::StudioModelCatalogStatus> for BridgeModelCatalogStatusDto {
-    fn from(status: pl_protocol::studio::StudioModelCatalogStatus) -> Self {
-        use pl_protocol::studio::{
+impl From<pl_studio_runtime::StudioModelCatalogStatus> for BridgeModelCatalogStatusDto {
+    fn from(status: pl_studio_runtime::StudioModelCatalogStatus) -> Self {
+        use pl_studio_runtime::{
             StudioModelCatalogCacheWarning as Warning, StudioModelCatalogError as Error,
             StudioModelCatalogSource as Source,
         };
@@ -591,7 +591,7 @@ pub enum BridgeUiLanguage {
     En,
 }
 
-impl From<BridgeUiLanguage> for pl_protocol::studio::StudioUiLanguage {
+impl From<BridgeUiLanguage> for pl_studio_runtime::StudioUiLanguage {
     fn from(value: BridgeUiLanguage) -> Self {
         match value {
             BridgeUiLanguage::System => Self::System,
@@ -601,12 +601,12 @@ impl From<BridgeUiLanguage> for pl_protocol::studio::StudioUiLanguage {
     }
 }
 
-impl From<pl_protocol::studio::StudioUiLanguage> for BridgeUiLanguage {
-    fn from(value: pl_protocol::studio::StudioUiLanguage) -> Self {
+impl From<pl_studio_runtime::StudioUiLanguage> for BridgeUiLanguage {
+    fn from(value: pl_studio_runtime::StudioUiLanguage) -> Self {
         match value {
-            pl_protocol::studio::StudioUiLanguage::System => Self::System,
-            pl_protocol::studio::StudioUiLanguage::Zh => Self::Zh,
-            pl_protocol::studio::StudioUiLanguage::En => Self::En,
+            pl_studio_runtime::StudioUiLanguage::System => Self::System,
+            pl_studio_runtime::StudioUiLanguage::Zh => Self::Zh,
+            pl_studio_runtime::StudioUiLanguage::En => Self::En,
         }
     }
 }
@@ -843,8 +843,8 @@ pub struct BridgeModelPriceTier {
     pub cache_write_per_mtok: Option<f64>,
 }
 
-impl From<pl_protocol::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot {
-    fn from(snapshot: pl_protocol::AccountCatalogSnapshot) -> Self {
+impl From<pl_studio_runtime::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot {
+    fn from(snapshot: pl_studio_runtime::AccountCatalogSnapshot) -> Self {
         Self {
             schema_version: snapshot.schema_version,
             revision: snapshot.revision,
@@ -897,8 +897,8 @@ impl From<pl_protocol::AccountCatalogSnapshot> for BridgeAccountCatalogSnapshot 
     }
 }
 
-impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
-    fn from(model: pl_protocol::ModelDescriptor) -> Self {
+impl From<pl_studio_runtime::ModelDescriptor> for BridgeModelDescriptor {
+    fn from(model: pl_studio_runtime::ModelDescriptor) -> Self {
         Self {
             model_id: model.model_id,
             enabled: model.enabled,
@@ -907,25 +907,25 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                 .into_iter()
                 .map(|support| BridgeModelTypeSupport {
                     model_type: match support.model_type {
-                        pl_protocol::ModelType::Text => BridgeModelType::Text,
+                        pl_studio_runtime::ModelType::Text => BridgeModelType::Text,
                     },
                     exclusions: support
                         .exclusions
                         .into_iter()
                         .map(|reason| match reason {
-                            pl_protocol::ModelTypeExclusion::TextInputUnsupported => {
+                            pl_studio_runtime::ModelTypeExclusion::TextInputUnsupported => {
                                 BridgeModelTypeExclusion::TextInputUnsupported
                             }
-                            pl_protocol::ModelTypeExclusion::TextOutputUnsupported => {
+                            pl_studio_runtime::ModelTypeExclusion::TextOutputUnsupported => {
                                 BridgeModelTypeExclusion::TextOutputUnsupported
                             }
-                            pl_protocol::ModelTypeExclusion::ContextParametersInvalid => {
+                            pl_studio_runtime::ModelTypeExclusion::ContextParametersInvalid => {
                                 BridgeModelTypeExclusion::ContextParametersInvalid
                             }
-                            pl_protocol::ModelTypeExclusion::InputBudgetExhausted => {
+                            pl_studio_runtime::ModelTypeExclusion::InputBudgetExhausted => {
                                 BridgeModelTypeExclusion::InputBudgetExhausted
                             }
-                            pl_protocol::ModelTypeExclusion::ContextWindowUnknown => {
+                            pl_studio_runtime::ModelTypeExclusion::ContextWindowUnknown => {
                                 BridgeModelTypeExclusion::ContextWindowUnknown
                             }
                         })
@@ -939,13 +939,13 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
             max_context_window: model.max_context_window,
             context: BridgeModelContextResolution {
                 unavailable: model.context.unavailable.map(|reason| match reason {
-                    pl_protocol::ModelContextUnavailable::WindowUnknown => {
+                    pl_studio_runtime::ModelContextUnavailable::WindowUnknown => {
                         BridgeModelContextUnavailable::WindowUnknown
                     }
-                    pl_protocol::ModelContextUnavailable::InvalidParameters => {
+                    pl_studio_runtime::ModelContextUnavailable::InvalidParameters => {
                         BridgeModelContextUnavailable::InvalidParameters
                     }
-                    pl_protocol::ModelContextUnavailable::InputBudgetExhausted => {
+                    pl_studio_runtime::ModelContextUnavailable::InputBudgetExhausted => {
                         BridgeModelContextUnavailable::InputBudgetExhausted
                     }
                 }),
@@ -953,7 +953,7 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
                 input_token_limit: model.context.input_token_limit,
                 auto_compact_limit: model.context.auto_compact_limit,
                 adjustment: model.context.adjustment.map(|reason| match reason {
-                    pl_protocol::ModelContextAdjustment::SafetyLimit => {
+                    pl_studio_runtime::ModelContextAdjustment::SafetyLimit => {
                         BridgeModelContextAdjustment::SafetyLimit
                     }
                 }),
@@ -986,8 +986,8 @@ impl From<pl_protocol::ModelDescriptor> for BridgeModelDescriptor {
     }
 }
 
-impl From<pl_protocol::ModelCapabilitiesDto> for BridgeModelCapabilities {
-    fn from(value: pl_protocol::ModelCapabilitiesDto) -> Self {
+impl From<pl_studio_runtime::ModelCapabilitiesDto> for BridgeModelCapabilities {
+    fn from(value: pl_studio_runtime::ModelCapabilitiesDto) -> Self {
         Self {
             input: value.input.into_iter().map(Into::into).collect(),
             output: value.output.into_iter().map(bridge_modality).collect(),
@@ -1005,8 +1005,8 @@ impl From<pl_protocol::ModelCapabilitiesDto> for BridgeModelCapabilities {
     }
 }
 
-impl From<pl_protocol::ModelPricingDto> for BridgeModelPricing {
-    fn from(value: pl_protocol::ModelPricingDto) -> Self {
+impl From<pl_studio_runtime::ModelPricingDto> for BridgeModelPricing {
+    fn from(value: pl_studio_runtime::ModelPricingDto) -> Self {
         Self {
             currency: value.currency,
             source: value.source,
@@ -1026,25 +1026,25 @@ impl From<pl_protocol::ModelPricingDto> for BridgeModelPricing {
     }
 }
 
-fn bridge_modality(modality: pl_protocol::ModelModalityDto) -> BridgeModelModality {
+fn bridge_modality(modality: pl_studio_runtime::ModelModalityDto) -> BridgeModelModality {
     match modality {
-        pl_protocol::ModelModalityDto::Text => BridgeModelModality::Text,
-        pl_protocol::ModelModalityDto::Image => BridgeModelModality::Image,
-        pl_protocol::ModelModalityDto::Audio => BridgeModelModality::Audio,
-        pl_protocol::ModelModalityDto::Video => BridgeModelModality::Video,
-        pl_protocol::ModelModalityDto::File => BridgeModelModality::File,
+        pl_studio_runtime::ModelModalityDto::Text => BridgeModelModality::Text,
+        pl_studio_runtime::ModelModalityDto::Image => BridgeModelModality::Image,
+        pl_studio_runtime::ModelModalityDto::Audio => BridgeModelModality::Audio,
+        pl_studio_runtime::ModelModalityDto::Video => BridgeModelModality::Video,
+        pl_studio_runtime::ModelModalityDto::File => BridgeModelModality::File,
     }
 }
 
-fn bridge_input_source(source: pl_protocol::ModelInputSourceDto) -> BridgeModelInputSource {
+fn bridge_input_source(source: pl_studio_runtime::ModelInputSourceDto) -> BridgeModelInputSource {
     match source {
-        pl_protocol::ModelInputSourceDto::Local => BridgeModelInputSource::Local,
-        pl_protocol::ModelInputSourceDto::RemoteUrl => BridgeModelInputSource::RemoteUrl,
+        pl_studio_runtime::ModelInputSourceDto::Local => BridgeModelInputSource::Local,
+        pl_studio_runtime::ModelInputSourceDto::RemoteUrl => BridgeModelInputSource::RemoteUrl,
     }
 }
 
-impl From<pl_protocol::ModelInputCapabilityDto> for BridgeModelInputCapability {
-    fn from(capability: pl_protocol::ModelInputCapabilityDto) -> Self {
+impl From<pl_studio_runtime::ModelInputCapabilityDto> for BridgeModelInputCapability {
+    fn from(capability: pl_studio_runtime::ModelInputCapabilityDto) -> Self {
         Self {
             modality: bridge_modality(capability.modality),
             sources: capability

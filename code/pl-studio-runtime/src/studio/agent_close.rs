@@ -5,7 +5,7 @@ use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
 pub(crate) const EXTENSION: &str = "studio.agent-close";
 const FORMAT: &str = "pl.studio.agent-close";
 
-pub(crate) fn state_error(error: &anyhow::Error) -> pl_protocol::StateError {
+pub(crate) fn state_error(error: &anyhow::Error) -> crate::StateError {
     // The original typed transport error remains the internal cause. Serializing its entire
     // source chain would bypass the worktree boundary's safe SSH/Git diagnostic vocabulary.
     let message = match error
@@ -18,7 +18,7 @@ pub(crate) fn state_error(error: &anyhow::Error) -> pl_protocol::StateError {
         Some(worktree) => worktree.safe_diagnostic(),
         None => format!("{error:#}"),
     };
-    pl_protocol::StateError {
+    crate::StateError {
         code: "agentCloseIncomplete".into(),
         message: message.chars().take(2048).collect(),
         retryable: true,
@@ -99,10 +99,10 @@ impl pl_core::model::Model for ClosedAdmission {
 
 /// Cold projections expose resumability, not the previous process owner's resource lifecycle.
 pub(in crate::studio) fn directory_status(
-    status: pl_protocol::ThreadStatus,
+    status: crate::ThreadStatus,
     explicit: bool,
-) -> pl_protocol::ThreadStatus {
-    use pl_protocol::ThreadStatus;
+) -> crate::ThreadStatus {
+    use crate::ThreadStatus;
     if explicit {
         if status == ThreadStatus::Closed {
             status

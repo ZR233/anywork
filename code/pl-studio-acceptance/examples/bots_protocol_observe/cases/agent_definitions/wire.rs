@@ -2,11 +2,11 @@
 //! Expected markers select a synthetic phase; they never prove role assembly.
 use super::saved::Instructions;
 use anyhow::{Context, Result, ensure};
-use pl_protocol::AgentProfileSnapshot;
 use pl_provider_fixture::{
     RecordedRequest,
     agent_definitions::{AgentPhase, DISABLED_PROFILE, UNAVAILABLE_PROFILE},
 };
+use pl_studio_runtime::AgentProfileSnapshot;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};

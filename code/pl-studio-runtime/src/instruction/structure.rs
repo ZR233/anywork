@@ -10,7 +10,7 @@
 //! sources in the wrong region, and empty role blocks fail closed instead of being projected as
 //! defaults.
 
-use pl_protocol::PureError;
+use crate::PureError;
 
 use super::{AgentInstructionShape, InstructionBlock, InstructionSnapshot, InstructionSourceKind};
 use crate::agent::definition::{

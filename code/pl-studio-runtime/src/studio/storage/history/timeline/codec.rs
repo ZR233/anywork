@@ -20,7 +20,7 @@ use anyhow::Result;
 use pl_core::chat::PresentationPart;
 use pl_core::model::ContentBlock;
 
-use pl_protocol::{
+use crate::{
     ThreadThinkingItem, ThreadToolState, ThreadToolUserInput, ThreadToolUserInputState,
     UserQuestion,
 };

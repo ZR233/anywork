@@ -868,7 +868,7 @@ impl RuntimeOrderIndex {
             stamp.revision,
             stamp.created_at,
             stamp.updated_at,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
                 Vec::new(),
                 "Pending execution body belongs to its prepared batch.",
                 stamp.created_at,
@@ -1113,7 +1113,7 @@ struct Progress {
     /// durable with an effect is exactly the one this field advances to on that same commit.
     usage: UsageSummary,
     error: Option<String>,
-    fault: Option<pl_protocol::studio::HistoryFault>,
+    fault: Option<crate::HistoryFault>,
     fault_generation: u64,
     /// Whether the newest fault generation's retry has been verified as really landed.
     ///
@@ -1227,7 +1227,7 @@ impl OperationOutput {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HistoryStatus {
     pub(crate) fault_generation: u64,
-    pub(crate) fault: Option<pl_protocol::studio::HistoryFault>,
+    pub(crate) fault: Option<crate::HistoryFault>,
     pub(crate) error: Option<String>,
     pub(crate) admitted_sequence: u64,
     pub(crate) committed_sequence: u64,
@@ -1249,15 +1249,12 @@ enum Step {
 #[derive(Debug, thiserror::Error)]
 #[error("{source}")]
 struct ClassifiedWriteError {
-    kind: pl_protocol::studio::HistoryFault,
+    kind: crate::HistoryFault,
     #[source]
     source: anyhow::Error,
 }
 
-fn classified(
-    kind: pl_protocol::studio::HistoryFault,
-    source: impl Into<anyhow::Error>,
-) -> anyhow::Error {
+fn classified(kind: crate::HistoryFault, source: impl Into<anyhow::Error>) -> anyhow::Error {
     ClassifiedWriteError {
         kind,
         source: source.into(),
@@ -2099,7 +2096,7 @@ impl HistoryChannel {
                 progress.retry_requested = false;
             }
             progress.fault_target = progress.fault_target.max(sequence);
-            progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+            progress.fault = Some(crate::HistoryFault::WriteFailed);
             progress.error = Some(message);
             progress.fault_recovered = false;
             progress.saving_revision = 0;
@@ -2108,7 +2105,7 @@ impl HistoryChannel {
                     &progress,
                     Instant::now(),
                     "projection_prepare",
-                    pl_protocol::studio::HistoryFault::WriteFailed,
+                    crate::HistoryFault::WriteFailed,
                     &["projection_failed"],
                 );
                 self.report(&progress);
@@ -2197,7 +2194,7 @@ impl HistoryChannel {
         if progress.error.is_none() {
             progress.fault_generation = progress.fault_generation.saturating_add(1);
         }
-        progress.fault = Some(pl_protocol::studio::HistoryFault::WriterUnavailable);
+        progress.fault = Some(crate::HistoryFault::WriterUnavailable);
         progress.error = Some("history writer unavailable; queued facts retained".to_owned());
         progress.fault_recovered = false;
         progress.retry_requested = false;
@@ -2332,7 +2329,7 @@ impl HistoryChannel {
             return;
         }
         progress.fault_generation = progress.fault_generation.saturating_add(1);
-        progress.fault = Some(pl_protocol::studio::HistoryFault::NoProgress);
+        progress.fault = Some(crate::HistoryFault::NoProgress);
         progress.fault_target = progress
             .effects
             .back()
@@ -2344,7 +2341,7 @@ impl HistoryChannel {
             &progress,
             now,
             "watchdog",
-            pl_protocol::studio::HistoryFault::NoProgress,
+            crate::HistoryFault::NoProgress,
             &["no_progress"],
         );
         self.report(&progress);
@@ -2357,7 +2354,7 @@ impl HistoryChannel {
         progress: &Progress,
         now: Instant,
         source: &str,
-        kind: pl_protocol::studio::HistoryFault,
+        kind: crate::HistoryFault,
         reasons: &[&str],
     ) {
         let head = progress.effects.front();
@@ -2405,7 +2402,7 @@ impl std::fmt::Debug for HistoryChannel {
 
 struct Inner {
     store: StudioStore,
-    thread: pl_protocol::Thread,
+    thread: crate::Thread,
     #[cfg(test)]
     chat: pl_core::chat::Session,
     conversation: Arc<crate::studio::conversation_store::ConversationStore>,
@@ -2630,7 +2627,7 @@ impl ThreadStorageSink {
 
     pub(crate) async fn new(
         store: StudioStore,
-        thread: pl_protocol::Thread,
+        thread: crate::Thread,
         restored_checkpoint: Option<&ThreadCheckpoint>,
     ) -> Result<Self> {
         let catalog = store.catalog();
@@ -2817,7 +2814,7 @@ impl ThreadStorageSink {
                     let progress = lock_progress(&inner);
                     progress.error.is_some()
                         && !progress.retry_requested
-                        && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+                        && progress.fault != Some(crate::HistoryFault::QueueFull)
                 };
                 if paused {
                     // 通道可以把一个本 incarnation 自己没失败过的 Thread 标成失败：投影无法完成的
@@ -2866,9 +2863,7 @@ impl ThreadStorageSink {
                         {
                             let kind = error
                                 .downcast_ref::<ClassifiedWriteError>()
-                                .map_or(pl_protocol::studio::HistoryFault::WriteFailed, |typed| {
-                                    typed.kind
-                                });
+                                .map_or(crate::HistoryFault::WriteFailed, |typed| typed.kind);
                             record_error(
                                 &inner,
                                 kind,
@@ -2917,7 +2912,7 @@ async fn step(inner: &Inner) -> Result<Step> {
         // The pre-lock loop check is not permission to retry that newly published generation.
         if progress.error.is_some()
             && !progress.retry_requested
-            && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+            && progress.fault != Some(crate::HistoryFault::QueueFull)
         {
             return Ok(Step::Idle);
         }
@@ -3211,7 +3206,7 @@ enum FaultTarget {
 
 fn record_error(
     inner: &Inner,
-    kind: pl_protocol::studio::HistoryFault,
+    kind: crate::HistoryFault,
     target: FaultTarget,
     message: String,
     reasons: &[&str],
@@ -3241,7 +3236,7 @@ fn record_error(
         inner.channel.diagnose(
             &progress,
             Instant::now(),
-            if kind == pl_protocol::studio::HistoryFault::BlobFailed {
+            if kind == crate::HistoryFault::BlobFailed {
                 "blob_fence"
             } else {
                 "history_writer"
@@ -3408,9 +3403,9 @@ impl ColdStore for ThreadStorageSink {
             record_error(
                 &self.0,
                 if error.is::<ExecutionIndexBudgetFull>() {
-                    pl_protocol::studio::HistoryFault::QueueFull
+                    crate::HistoryFault::QueueFull
                 } else {
-                    pl_protocol::studio::HistoryFault::WriteFailed
+                    crate::HistoryFault::WriteFailed
                 },
                 FaultTarget::Queued,
                 error.to_string(),
@@ -3499,7 +3494,7 @@ impl ColdStore for ThreadStorageSink {
             // with the error this call returns instead of letting the latch look recovered.
             record_error(
                 &self.0,
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 FaultTarget::NextWrite,
                 "Thread persistence ticket mismatch".to_owned(),
                 &["ticket_mismatch"],
@@ -3538,7 +3533,7 @@ impl ColdStore for ThreadStorageSink {
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+                progress.fault = Some(crate::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 report(&self.0, &progress);
@@ -3640,7 +3635,7 @@ impl ColdStore for ThreadStorageSink {
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+                progress.fault = Some(crate::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 drop(index);
@@ -3846,11 +3841,9 @@ fn storage_error(message: &str) -> Arc<ColdStoreError> {
 ///
 /// Both sides are already typed values: this is a rename, not a classification. Core therefore never
 /// sees an error string that it would have to interpret to know what failed.
-fn storage_fault_kind(
-    fault: pl_protocol::studio::HistoryFault,
-) -> pl_core::thread::cold::StorageFaultKind {
+fn storage_fault_kind(fault: crate::HistoryFault) -> pl_core::thread::cold::StorageFaultKind {
+    use crate::HistoryFault;
     use pl_core::thread::cold::StorageFaultKind;
-    use pl_protocol::studio::HistoryFault;
     match fault {
         HistoryFault::QueueFull => StorageFaultKind::QueueFull,
         HistoryFault::WriteFailed => StorageFaultKind::WriteFailed,
@@ -4074,8 +4067,7 @@ mod batch_tests {
                 }
                 "pressure" => lock_progress(&fixture.sink.0).pressure_paused = true,
                 "queue-full" => {
-                    lock_progress(&fixture.sink.0).fault =
-                        Some(pl_protocol::studio::HistoryFault::QueueFull)
+                    lock_progress(&fixture.sink.0).fault = Some(crate::HistoryFault::QueueFull)
                 }
                 "gap" => fixture.sink.admit(&id, ticket(&id, 2))?,
                 _ => unreachable!(),
@@ -4158,11 +4150,11 @@ mod batch_tests {
         prior: &[ContextRecord],
     ) -> Result<ThreadWrite> {
         use crate::studio::thread_projection::AuxiliaryBillingReceipt;
-        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
-        use pl_protocol::{
+        use crate::{
             InferenceAccounting, InferenceBillingRecord, PricingOutcome, RuntimeCostAmount,
             UsageReport,
         };
+        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
         let mut write = visible_input_ticket(id, sequence, &format!("input-{sequence}"))?;
         let record = ContextRecord {
             id: format!("context-{sequence}"),
@@ -4499,10 +4491,7 @@ mod watchdog_tests {
         let retained = sink.pressure(id).thread_bytes;
         channel.detect_stall_at(admitted_at + NO_PROGRESS_WINDOW);
         let failed = channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::NoProgress)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
         assert_eq!(failed.committed_sequence, 0);
         assert_eq!(failed.queued_records, 4);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
@@ -4634,10 +4623,7 @@ mod watchdog_tests {
         assert!(channel.subscribe().borrow().fault.is_none());
         channel.detect_stall_at(started + NO_PROGRESS_WINDOW);
         let failed = channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::NoProgress)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
         assert_eq!(failed.committed_sequence, 0);
         assert_eq!(failed.queued_records, 1);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
@@ -4761,7 +4747,7 @@ mod watchdog_tests {
                 &progress,
                 Instant::now(),
                 "history_store",
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 &reasons,
             );
             Arc::make_mut(&mut progress.effects.front_mut().unwrap().write)
@@ -4772,7 +4758,7 @@ mod watchdog_tests {
                 &progress,
                 Instant::now(),
                 "history_store",
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 &reasons,
             );
         });
@@ -4962,8 +4948,8 @@ pub(crate) mod storage_fault_tests {
         Ok(write)
     }
 
-    pub(super) fn test_thread(thread_id: &str) -> pl_protocol::Thread {
-        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+    pub(super) fn test_thread(thread_id: &str) -> crate::Thread {
+        let mut thread = crate::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
@@ -4972,12 +4958,12 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) async fn register_test_thread(
         store: &StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
                 ssh_alias: None,
@@ -4996,11 +4982,11 @@ pub(crate) mod storage_fault_tests {
     }
 
     impl crate::studio::ProductEventBus {
-        pub(crate) async fn commit_test_thread(&self, thread: &pl_protocol::Thread) -> Result<()> {
+        pub(crate) async fn commit_test_thread(&self, thread: &crate::Thread) -> Result<()> {
             let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
                 crate::studio::store::directory::ProjectDirectoryRecord {
                     id: thread.workspace_id.clone(),
-                    kind: pl_protocol::studio::WorkspaceKind::Project,
+                    kind: crate::WorkspaceKind::Project,
                     name: "Test".into(),
                     path: thread.workspace_path.clone(),
                     ssh_alias: None,
@@ -5033,11 +5019,11 @@ pub(crate) mod storage_fault_tests {
         use crate::studio::agent_host::ThreadWriteBehindWriter;
         use crate::studio::runtime::ModelPerformanceOwner;
         use crate::studio::thread_projection::AuxiliaryBillingReceipt;
-        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
-        use pl_protocol::{
+        use crate::{
             FirstOutputSource, InferenceAccounting, InferenceBillingRecord, InferenceTiming,
             PricingOutcome, RuntimeCostAmount, UsageReport,
         };
+        use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
@@ -5343,18 +5329,16 @@ pub(crate) mod storage_fault_tests {
             WorkspaceEndpoint, WorkspaceIdentity, WorktreeLease, WorktreeLeaseOwnerKind,
             WorktreeLeaseState,
         };
-        use pl_protocol::{
-            AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot,
-        };
+        use crate::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
         async fn register(
             store: &StudioStore,
-            thread: &pl_protocol::Thread,
+            thread: &crate::Thread,
             project_root: &std::path::Path,
         ) -> Result<()> {
             let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
                 crate::studio::store::directory::ProjectDirectoryRecord {
                     id: thread.workspace_id.clone(),
-                    kind: pl_protocol::studio::WorkspaceKind::Project,
+                    kind: crate::WorkspaceKind::Project,
                     name: "Subdirectory Project".into(),
                     path: project_root.to_string_lossy().into_owned(),
                     ssh_alias: None,
@@ -5380,7 +5364,7 @@ pub(crate) mod storage_fault_tests {
         root.workspace_path = project_root.to_string_lossy().into_owned();
         register(&store, &root, &project_root).await?;
         let mut root_worktree = test_thread("root-worktree");
-        root_worktree.workspace_mode = pl_protocol::ThreadWorkspaceMode::Worktree;
+        root_worktree.workspace_mode = crate::ThreadWorkspaceMode::Worktree;
         let root_site = WorktreeManager::allocate_path(
             &repository,
             &root_worktree.id,
@@ -5418,7 +5402,7 @@ pub(crate) mod storage_fault_tests {
                 AgentWorkspaceMode::Review,
                 &child_site,
                 Some(child_receipt.clone()),
-                Some(pl_protocol::AgentReviewTargetSnapshot {
+                Some(crate::AgentReviewTargetSnapshot {
                     baseline: None,
                     feedback: None,
                     agent_id: "worktree-owner".into(),
@@ -5463,7 +5447,7 @@ pub(crate) mod storage_fault_tests {
                 &crate::studio::store::directory::DirectoryDelta::upsert_project(
                     crate::studio::store::directory::ProjectDirectoryRecord {
                         id: "project-test".into(),
-                        kind: pl_protocol::studio::WorkspaceKind::Project,
+                        kind: crate::WorkspaceKind::Project,
                         name: "Subdirectory Project".into(),
                         path: project_root.to_string_lossy().into_owned(),
                         ssh_alias: None,
@@ -5734,13 +5718,13 @@ pub(crate) mod storage_fault_tests {
                 )?,
             )
             .await?;
-        let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
-            mode: pl_protocol::AgentWorkspaceMode::Worktree,
+        let assignment = crate::AgentWorkspaceAssignmentSnapshot {
+            mode: crate::AgentWorkspaceMode::Worktree,
             project_root: parent.workspace_path.clone(),
             root: lease.path.clone(),
             writable_paths: None,
             review_target: None,
-            worktree: Some(pl_protocol::AgentWorktreeSnapshot {
+            worktree: Some(crate::AgentWorktreeSnapshot {
                 repository_root: lease.repository_root.clone(),
                 path: lease.path.clone(),
                 base_commit: lease.base_commit.clone(),
@@ -6303,7 +6287,7 @@ pub(crate) mod storage_fault_tests {
         let unavailable = channel.subscribe().borrow().clone();
         assert_eq!(
             unavailable.fault,
-            Some(pl_protocol::studio::HistoryFault::WriterUnavailable)
+            Some(crate::HistoryFault::WriterUnavailable)
         );
         assert!(unavailable.error.is_some());
         assert_eq!(unavailable.committed_sequence, 0);
@@ -6817,7 +6801,7 @@ pub(crate) mod storage_fault_tests {
             9,
             10,
             20,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(Vec::new(), "done", 20)),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         index.materialize(&item, 7)?;
         index.mark_completion("completed", true);
@@ -6878,11 +6862,7 @@ pub(crate) mod storage_fault_tests {
             9,
             10,
             20,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
-                Vec::new(),
-                "completed",
-                20,
-            )),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "completed", 20)),
         );
         // There is room for placement alone, but not its stamp. Both must be funded before
         // insertion; rejecting the stamp must not leave an unowned retained=true entry.
@@ -7370,10 +7350,7 @@ pub(crate) mod storage_fault_tests {
         let retained = sink.pressure(id).thread_bytes;
         sink.0.channel.detect_stall();
         let failed = sink.0.channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::NoProgress)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
         assert_eq!(lock_progress(&sink.0).prepared_through(), 2);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
         assert!(sink.flush(id, 2).await.is_err());
@@ -7557,10 +7534,7 @@ pub(crate) mod storage_fault_tests {
         spawn_projection(store, thread)
     }
 
-    fn spawn_projection(
-        store: StudioStore,
-        thread: pl_protocol::Thread,
-    ) -> tokio::task::JoinHandle<()> {
+    fn spawn_projection(store: StudioStore, thread: crate::Thread) -> tokio::task::JoinHandle<()> {
         let channel = store.thread_persistence().history_channel(&thread.id);
         let chat = store
             .thread_persistence()
@@ -7647,7 +7621,7 @@ pub(crate) mod storage_fault_tests {
     /// No parent owner is needed; recovery must later prove its independently missing receipt.
     pub(crate) async fn save_terminal_report(
         store: &StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         message: pl_core::thread::inbox::ThreadMessage,
     ) -> Result<()> {
         let checkpoint = store.history(&thread.id).await?.checkpoint().await?;
@@ -8081,7 +8055,7 @@ pub(crate) mod storage_fault_tests {
         CompletionPresentationItem {
             provider_item_id: format!("stress-item-{index}"),
             output_index: Some(index as u32),
-            kind: CompletionPresentationItemKind::Text(pl_protocol::trace::TraceTextChannel::Final),
+            kind: CompletionPresentationItemKind::Text(pl_model::trace::TraceTextChannel::Final),
             parts: vec![CompletionPresentationPart {
                 content_index: 0,
                 provider_part_id: Some(format!("stress-part-{index}")),
@@ -8297,7 +8271,7 @@ pub(crate) mod storage_fault_tests {
                 if let Some(value) = fact.outcome {
                     phase_bytes += serde_json::to_vec(&value)?.len();
                 }
-                if let pl_protocol::ChatSourceId::InboxMessage {
+                if let crate::ChatSourceId::InboxMessage {
                     source_id,
                     message_id,
                 } = &fact.source
@@ -8562,14 +8536,14 @@ pub(crate) mod storage_fault_tests {
         let item = saved.get(&item_id).context("saved parent message")?;
         assert_eq!(
             item.ordinal,
-            serde_json::from_slice::<pl_protocol::ChatAtom>(&original.header.metadata)?
+            serde_json::from_slice::<crate::ChatAtom>(&original.header.metadata)?
                 .source_order
                 .context("known original source order")?
         );
         assert_eq!(item.turn_id, "child-turn");
         assert_eq!(item.id, original.header.item_id);
         assert!(matches!(item.state(), crate::ExecutionShape::Text(text)
-            if text.channel() == pl_protocol::ThreadTextChannel::ParentAgent
+            if text.channel() == crate::ThreadTextChannel::ParentAgent
                 && text.text() == "implement the assigned task"));
         assert_eq!(history.watermark().await?, 2);
         assert_eq!(sink.0.channel.subscribe().borrow().fault, None);
@@ -9423,7 +9397,7 @@ pub(crate) mod storage_fault_tests {
             .find(|write| write.turn.id == "visible-turn")
             .unwrap();
         let history = store.history(id).await?;
-        let source_ids = [pl_protocol::ChatSourceId::ForegroundTurn {
+        let source_ids = [crate::ChatSourceId::ForegroundTurn {
             turn_id: "visible-turn".into(),
         }];
         let original_source = history
@@ -9433,7 +9407,7 @@ pub(crate) mod storage_fault_tests {
             .context("saved running source")?;
         assert_eq!(
             original_source.started,
-            Some(pl_protocol::ChatFactPosition {
+            Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             })
@@ -9511,7 +9485,7 @@ pub(crate) mod storage_fault_tests {
         let opening_batch =
             drive_live_projection(&mut projection, &chat, &sink, id, opening).await?;
         sink.flush(id, 1).await?;
-        let first = serde_json::from_slice::<pl_protocol::ChatAtom>(
+        let first = serde_json::from_slice::<crate::ChatAtom>(
             &opening_batch.completions[0].header.metadata,
         )?
         .source_order
@@ -9687,7 +9661,7 @@ pub(crate) mod storage_fault_tests {
             .expect("the Turn row is re-projected onto its own content version");
         match turn_row.state() {
             crate::ExecutionShape::Turn(turn) => {
-                assert!(matches!(turn.state(), pl_protocol::TurnState::Completed(_)))
+                assert!(matches!(turn.state(), crate::TurnState::Completed(_)))
             }
             other => panic!("the Turn row keeps its Turn state, got {other:?}"),
         }
@@ -9855,9 +9829,9 @@ pub(crate) mod storage_fault_tests {
         let artifact = "z".repeat(2048);
         let raw_content = "p".repeat(1024);
         let failure = "f".repeat(256);
-        let attachment = pl_protocol::ThreadAttachment {
+        let attachment = crate::ThreadAttachment {
             id: "artifact-attachment".to_owned(),
-            modality: pl_protocol::AttachmentModality::File,
+            modality: crate::AttachmentModality::File,
             media_type: "application/octet-stream".to_owned(),
             filename: Some("artifact.bin".to_owned()),
             width: None,
@@ -9872,15 +9846,15 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            crate::ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                pl_protocol::ThreadToolInvocation::new(
+            crate::ExecutionShape::Tool(crate::ThreadToolItem::new(
+                crate::ThreadToolInvocation::new(
                     "call".to_owned(),
                     "shell".to_owned(),
                     arguments.clone(),
                 ),
-                pl_protocol::ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                crate::ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
                     1,
-                    pl_protocol::ThreadToolOutput::new(
+                    crate::ThreadToolOutput::new(
                         result.clone(),
                         vec![attachment.clone()],
                         vec![serde_json::json!({"stdout": artifact.clone()})],
@@ -9897,8 +9871,8 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
-                vec![pl_protocol::ThreadRawPayload {
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
+                vec![crate::ThreadRawPayload {
                     format: "pl.model.receipt".to_owned(),
                     version: 1,
                     content: raw_content.clone(),
@@ -9915,11 +9889,11 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            crate::ExecutionShape::Text(pl_protocol::ThreadTextItem::new(
-                pl_protocol::ThreadTextChannel::Commentary,
+            crate::ExecutionShape::Text(crate::ThreadTextItem::new(
+                crate::ThreadTextChannel::Commentary,
                 "visible".to_owned(),
                 vec![attachment],
-                pl_protocol::ThreadContentLifecycle::failed(1, failure.clone()),
+                crate::ThreadContentLifecycle::failed(1, failure.clone()),
             )),
         );
         let bytes = crate::studio::thread_projection::retained_bytes(&[tool, raw, failed_text]);
@@ -10337,10 +10311,7 @@ pub(crate) mod storage_fault_tests {
         sink.admit(id, third.clone())
             .expect_err("a new record cannot cross an unsaved sequence gap");
         let fault = channel.subscribe().borrow().clone();
-        assert_eq!(
-            fault.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
+        assert_eq!(fault.fault, Some(crate::HistoryFault::WriteFailed));
         assert_eq!(fault.queued_records, 1);
 
         sink.admit(id, ticket(id, 2))?;
@@ -10519,10 +10490,7 @@ pub(crate) mod storage_fault_tests {
         })
         .await??;
         let failed = status.borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
         assert_eq!(failed.queued_records, 1);
         assert_eq!(
             store.history("sqlite-rejection").await?.watermark().await?,
@@ -11265,10 +11233,7 @@ pub(crate) mod storage_fault_tests {
         })
         .await??;
         let failed = status.borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
         assert!(failed.queued_records >= 2);
         assert_eq!(
             store
@@ -11358,7 +11323,7 @@ pub(crate) mod storage_fault_tests {
         let unavailable = sink.0.channel.subscribe().borrow().clone();
         assert_eq!(
             unavailable.fault,
-            Some(pl_protocol::studio::HistoryFault::WriterUnavailable)
+            Some(crate::HistoryFault::WriterUnavailable)
         );
         assert!(sink.flush("lost-ack", 1).await.is_err());
         drop(locked);
@@ -11511,10 +11476,7 @@ pub(crate) mod storage_fault_tests {
         })
         .await??;
         let failed = status.borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::WriteFailed)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
         // Nothing of the rejected revision is durable: the watermark stays on the previously
         // committed effect and the effect is retained in order for retry.
         assert_eq!(failed.committed_sequence, 1);
@@ -11572,7 +11534,7 @@ pub(crate) mod storage_fault_tests {
         tokio::fs::write(&source, bytes).await?;
         let draft = crate::studio::store::attachment::AttachmentDraftObject {
             draft_id: "draft-1".to_owned(),
-            modality: pl_protocol::studio::StudioAttachmentModality::File,
+            modality: crate::StudioAttachmentModality::File,
             media_type: "text/plain".to_owned(),
             filename: "attachment.txt".to_owned(),
             storage_path: source,
@@ -11627,10 +11589,7 @@ pub(crate) mod storage_fault_tests {
         })
         .await??;
         let failed = status.borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::BlobFailed)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::BlobFailed));
         // The blob fence runs before the atomic commit, so the missing blob blocks both the effect's
         // history and its checkpoint: the watermark stays untouched until the blob is durable.
         assert_eq!(failed.committed_sequence, 0);
@@ -11921,10 +11880,7 @@ pub(crate) mod storage_fault_tests {
                     .is_err()
             );
             let failed = sink.0.channel.subscribe().borrow().clone();
-            assert_eq!(
-                failed.fault,
-                Some(pl_protocol::studio::HistoryFault::WriteFailed)
-            );
+            assert_eq!(failed.fault, Some(crate::HistoryFault::WriteFailed));
             assert_eq!(failed.queued_records, 0);
             sink.0.channel.retry(failed.fault_generation)?;
             // Exercise the worker after the retry, with equal old watermarks but no
@@ -11994,12 +11950,12 @@ pub(crate) mod storage_fault_tests {
 
         // A writer that is already past this generation's fault — it reports the same generation with
         // no error and fully admitted watermarks — still cannot offer a continue the owner refuses.
-        let writer = pl_protocol::ThreadPersistenceSnapshot {
+        let writer = crate::ThreadPersistenceSnapshot {
             fault_generation: 2,
             history_admitted_sequence: Some(9),
             history_durable_sequence: Some(9),
             last_error: None,
-            ..pl_protocol::ThreadPersistenceSnapshot::default()
+            ..crate::ThreadPersistenceSnapshot::default()
         };
         let storage = storage_state(&owner, &writer);
         assert!(storage.resume_required);
@@ -12527,15 +12483,15 @@ pub(crate) mod storage_fault_tests {
             1,
             1,
             1,
-            crate::ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                pl_protocol::ThreadToolInvocation::new(
+            crate::ExecutionShape::Tool(crate::ThreadToolItem::new(
+                crate::ThreadToolInvocation::new(
                     "capture-2".to_owned(),
                     "capture".to_owned(),
                     "{}".to_owned(),
                 ),
-                pl_protocol::ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                crate::ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
                     1,
-                    pl_protocol::ThreadToolOutput::new(
+                    crate::ThreadToolOutput::new(
                         "accepted so far".to_owned(),
                         Vec::new(),
                         Vec::new(),

@@ -6,7 +6,7 @@ use crate::account_usage::{
     AccountUsageData, AccountUsageState, DeepSeekBalanceInfo, DeepSeekBalanceUsage,
     SubscriptionQuotaLimit, SubscriptionQuotaWindow, SubscriptionUsage, SubscriptionUsageDetail,
 };
-use pl_protocol::studio::*;
+use crate::protocol::*;
 
 pub(super) fn complete(entry: &mut AccountUsageObservation, result: Option<&AccountUsageRecord>) {
     entry.checked_at = Some(unix_seconds());
@@ -161,13 +161,11 @@ pub(super) fn legacy_snapshot(state: &UsageState) -> AccountUsageStateSnapshot {
                     AccountUsagePhase::MissingCredential => {
                         AccountUsageState::missing_credential("account API key is not configured")
                     }
-                    AccountUsagePhase::Failed => {
-                        AccountUsageState::failed(pl_protocol::StateError {
-                            code: "accountUsageQueryFailed".into(),
-                            message: "Account usage query failed".into(),
-                            retryable: entry.failure.as_ref().is_some_and(|error| error.retryable),
-                        })
-                    }
+                    AccountUsagePhase::Failed => AccountUsageState::failed(crate::StateError {
+                        code: "accountUsageQueryFailed".into(),
+                        message: "Account usage query failed".into(),
+                        retryable: entry.failure.as_ref().is_some_and(|error| error.retryable),
+                    }),
                     AccountUsagePhase::Succeeded => AccountUsageState::unsupported(),
                 }
             };
@@ -182,7 +180,7 @@ pub(super) fn legacy_snapshot(state: &UsageState) -> AccountUsageStateSnapshot {
         })
         .collect();
     AccountUsageStateSnapshot {
-        state: pl_protocol::ObservedResource::ready(
+        state: crate::ObservedResource::ready(
             state.revision,
             state.updated_at,
             AccountUsageStateData {

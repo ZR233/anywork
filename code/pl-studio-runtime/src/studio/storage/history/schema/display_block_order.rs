@@ -230,7 +230,7 @@ pub(super) async fn validate_display(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{ChatSourceId, DisplayBlockBody, DisplayBlockRef, WorkTiming};
+    use crate::{ChatSourceId, DisplayBlockBody, DisplayBlockRef, WorkTiming};
 
     const THREAD: &str = "display-snapshot-migration";
 
@@ -319,15 +319,15 @@ mod tests {
         // Produce a real frozen observation, then encode only its header in the
         // published v4 shape. Original payload/body storage is shared by both schemas.
         use crate::studio::thread_projection::presentation::{ObservationInput, PresentationState};
-        use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-        use pl_protocol::{
+        use crate::{
             ChatActiveStatus, ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle,
             ChatContentRole, ChatFactPosition, ContentOwner, ContentRef, ContentTarget,
         };
+        use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
         let mut atom: ChatAtom =
             serde_json::from_slice(&conversation::tests::metadata("observed-tool"))?;
         atom.kind = ChatAtomKind::ToolCall;
-        atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+        atom.delivery = crate::ChatDeliveryKind::Foreground;
         atom.source = ChatSourceId::ForegroundTurn {
             turn_id: "observed-turn".into(),
         };

@@ -2,14 +2,14 @@
 //! No producer, event queue, persistence acknowledgement or UI credit is involved.
 use std::sync::{Arc, Mutex};
 
+use crate::{
+    DisplayBlockRef, DisplayMemberWindow, HistoryDelta, HistoryPlacement, OpenTimeline,
+    PRESENTATION_VERSION, ReadDemand, StudioError, StudioErrorCode, StudioErrorReason,
+    TIMELINE_READER_PROTOCOL_VERSION, TailSnapshot, TailUpdate, TimelinePage, ViewCursor,
+    ViewUpdate,
+};
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
-use pl_protocol::{
-    DisplayBlockRef, DisplayMemberWindow, HistoryDelta, HistoryPlacement, OpenTimeline,
-    PRESENTATION_VERSION, ReadDemand, TIMELINE_READER_PROTOCOL_VERSION, TailSnapshot, TailUpdate,
-    TimelinePage, ViewCursor, ViewUpdate,
-    studio::{StudioError, StudioErrorCode, StudioErrorReason},
-};
 use tokio_util::sync::CancellationToken;
 
 use super::presentation_reader::{DisplayReadCut, encoded_size};
@@ -105,13 +105,13 @@ impl StudioRuntime {
         reader_protocol_version: u32,
         demand: ReadDemand,
     ) -> Result<TimelineReader> {
-        pl_protocol::validate_timeline_versions(presentation_version, reader_protocol_version)?;
+        crate::validate_timeline_versions(presentation_version, reader_protocol_version)?;
         demand.validate(1)?;
         // Registers observation before any display query, without executing the Thread.
         let shared = self
             .open_feed_resources(
                 thread_id,
-                pl_protocol::ChatScope::conversation(None),
+                crate::ChatScope::conversation(None),
                 demand,
                 false,
             )

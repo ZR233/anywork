@@ -69,9 +69,7 @@ pub(in crate::studio) use user_input::{
 };
 
 /// The canonical terminal Turn already prepared for the reliable history transaction.
-pub(in crate::studio) fn prepared_terminal_turn(
-    prepared: &PreparedEffect,
-) -> Option<pl_protocol::Turn> {
+pub(in crate::studio) fn prepared_terminal_turn(prepared: &PreparedEffect) -> Option<crate::Turn> {
     prepared
         .turns
         .iter()
@@ -92,7 +90,7 @@ pub(crate) enum ProjectionError {
     #[error("review delivery application fact cannot be projected")]
     ReviewDelivery(#[source] anyhow::Error),
     #[error("saved product state cannot be projected")]
-    Product(#[from] pl_protocol::PureError),
+    Product(#[from] crate::PureError),
     #[error("saved workflow state cannot be projected")]
     Workflow(#[from] pl_core::tool::opaque::ToolError),
     #[error("saved tool media receipt cannot be decoded")]
@@ -127,10 +125,8 @@ pub(crate) enum ProjectionError {
     MissingDuration(String),
 }
 
-pub(super) fn raw_payload(
-    payload: &pl_core::context::OpaquePayload,
-) -> pl_protocol::ThreadRawPayload {
-    pl_protocol::ThreadRawPayload {
+pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::ThreadRawPayload {
+    crate::ThreadRawPayload {
         format: payload.format().into(),
         version: payload.version(),
         content: payload.content().into(),

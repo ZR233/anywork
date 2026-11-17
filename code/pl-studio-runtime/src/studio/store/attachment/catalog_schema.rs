@@ -15,17 +15,17 @@ enum AttachmentModalityV1 {
     File,
 }
 
-impl From<pl_protocol::studio::StudioAttachmentModality> for AttachmentModalityV1 {
-    fn from(value: pl_protocol::studio::StudioAttachmentModality) -> Self {
+impl From<crate::StudioAttachmentModality> for AttachmentModalityV1 {
+    fn from(value: crate::StudioAttachmentModality) -> Self {
         match value {
-            pl_protocol::studio::StudioAttachmentModality::Image => Self::Image,
-            pl_protocol::studio::StudioAttachmentModality::Video => Self::Video,
-            pl_protocol::studio::StudioAttachmentModality::File => Self::File,
+            crate::StudioAttachmentModality::Image => Self::Image,
+            crate::StudioAttachmentModality::Video => Self::Video,
+            crate::StudioAttachmentModality::File => Self::File,
         }
     }
 }
 
-impl From<AttachmentModalityV1> for pl_protocol::studio::StudioAttachmentModality {
+impl From<AttachmentModalityV1> for crate::StudioAttachmentModality {
     fn from(value: AttachmentModalityV1) -> Self {
         match value {
             AttachmentModalityV1::Image => Self::Image,
@@ -197,7 +197,7 @@ mod tests {
             records: vec![crate::studio::records::AttachmentRecord {
                 id: "attachment-a".into(),
                 thread_id: "thread-a".into(),
-                modality: pl_protocol::studio::StudioAttachmentModality::Image,
+                modality: crate::StudioAttachmentModality::Image,
                 media_type: "image/png".into(),
                 filename: Some("image.png".into()),
                 blob_relative_path: "blobs/aa/blob".into(),

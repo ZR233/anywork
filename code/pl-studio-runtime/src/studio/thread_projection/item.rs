@@ -1,5 +1,6 @@
 //! 仅用于执行投影的局部类型；旧持久 JSON 仅由 schema 的冻结解码器读取。
-use pl_protocol::*;
+use crate::ThreadAttachment;
+use crate::protocol::*;
 use serde::{Deserialize, Serialize};
 
 /// Runtime 内部有界执行投影。正文只在转换期间物化，不作为持久化或 wire 记录。

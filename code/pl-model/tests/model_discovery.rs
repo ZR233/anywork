@@ -1015,6 +1015,7 @@ fn server_url_for_identity() -> &'static str {
 
 #[tokio::test]
 async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_usage() {
+    use pl_model::model::{PricingOutcome, UnpricedReason};
     use pl_model::{
         completion::{
             AttachmentInput, AttachmentModality, AttachmentSource, CompletionRequest, ContentPart,
@@ -1022,7 +1023,6 @@ async fn rich_envelopes_drive_real_inference_wire_and_unknown_pricing_preserves_
         },
         runtime::{ModelInvocationContext, ModelRuntime},
     };
-    use pl_protocol::{PricingOutcome, UnpricedReason};
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
     for (adapter, body, effort_path, declares_image, expected_limit) in [
         (

@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use crate::acp_schema::PromptCapabilities;
+use crate::{StudioAttachmentDraftSource, StudioAttachmentModality, StudioError};
 use anyhow::{Context, Result, ensure};
 use pl_model::model::{
     MediaMixPolicy, MediaRepresentation, ModelInfo, ModelInputSource, ModelModality,
 };
-use pl_protocol::studio::acp_schema::PromptCapabilities;
-use pl_protocol::studio::{StudioAttachmentDraftSource, StudioAttachmentModality, StudioError};
 use url::Url;
 
 use crate::studio::store::attachment::AttachmentDraftObject;

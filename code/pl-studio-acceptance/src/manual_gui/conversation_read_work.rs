@@ -9,17 +9,17 @@ use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelInfo, ModelTransportProfile};
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::studio::{
-    CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
-};
-use pl_protocol::{
+use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+use pl_studio_runtime::{
     CHAT_BATCH_MAX_BYTES, CHAT_READ_MAX_ITEMS, ChatScope, HistoryPlacement, ReadDemand,
     ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
 };
-use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use pl_studio_runtime::{
     ConversationEvent, ConversationStateFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
+};
+use pl_studio_runtime::{
+    CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
 };
 use serde::Serialize;
 use std::fs;
@@ -213,7 +213,9 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().label().into(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple()
+                    .label()
+                    .into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -375,7 +377,7 @@ async fn wait_completed(
                         "Thread subscription repeated its initial State snapshot"
                     );
                     ensure!(
-                        completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
                         "unsupported completed history version {completed_history_version}"
                     );
                     *saw_snapshot = true;
@@ -390,11 +392,11 @@ async fn wait_completed(
                     {
                         let snapshot = runtime.thread_snapshot(thread_id).await?;
                         ensure!(
-                            snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                            snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                                 && snapshot.thread.id == thread_id
-                                && matches!(turn.state, pl_protocol::TurnState::Completed(_))
+                                && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_))
                                 && snapshot.active_turn.is_none()
-                                && snapshot.thread.status == pl_protocol::ThreadStatus::Idle,
+                                && snapshot.thread.status == pl_studio_runtime::ThreadStatus::Idle,
                             "completed Turn notification and schema-17 Thread State disagree: \
                              input_id={input_id:?}, schema={}, thread_id={}, turn_state={:?}, \
                              active_turn_present={}, thread_status={:?}, state_revision={}",
@@ -428,8 +430,8 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
     let reader = runtime
         .open_timeline_reader(
             thread_id,
-            pl_protocol::PRESENTATION_VERSION,
-            pl_protocol::TIMELINE_READER_PROTOCOL_VERSION,
+            pl_studio_runtime::PRESENTATION_VERSION,
+            pl_studio_runtime::TIMELINE_READER_PROTOCOL_VERSION,
             demand,
         )
         .await?;

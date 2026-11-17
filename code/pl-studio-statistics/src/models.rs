@@ -74,9 +74,9 @@ pub struct StudioModelPerformanceSample {
     pub call_id: String,
     pub purpose: Option<String>,
     pub first_output_source: pl_protocol::FirstOutputSource,
-    pub usage_status: pl_protocol::UsageReportStatus,
-    pub ttft_availability: pl_protocol::MetricAvailability,
-    pub throughput_availability: pl_protocol::MetricAvailability,
+    pub usage_status: UsageReportStatus,
+    pub ttft_availability: MetricAvailability,
+    pub throughput_availability: MetricAvailability,
     pub completed_at: i64,
     pub account_id: String,
     pub account_display_name: String,
@@ -87,7 +87,7 @@ pub struct StudioModelPerformanceSample {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_model: Option<String>,
     #[serde(default)]
-    pub model_match_state: pl_protocol::ModelMatchState,
+    pub model_match_state: ModelMatchState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     pub completion_tokens: Option<u64>,
@@ -95,4 +95,51 @@ pub struct StudioModelPerformanceSample {
     pub decode_millis: Option<u64>,
     pub total_response_millis: Option<u64>,
     pub tokens_per_second: Option<f64>,
+}
+
+/// Provider-reported usage completeness status for one model call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageReportStatus {
+    LegacyUnknown,
+    Missing,
+    Partial,
+    Reported,
+    Invalid,
+}
+
+/// Why an individual performance metric can or cannot be displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MetricAvailability {
+    Available,
+    NotCollected,
+    NoVisibleOutput,
+    MissingOutput,
+    ZeroOutput,
+    InvalidUsage,
+    InvalidTiming,
+    LegacyUnknown,
+}
+
+/// Relationship between the sent wire model name and the provider-reported model name.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelMatchState {
+    Matched,
+    Mismatched,
+    Unreported,
+    #[default]
+    LegacyUnknown,
+}
+
+impl ModelMatchState {
+    /// Classifies whether the provider-reported model matches the sent wire model.
+    pub fn from_observation(sent_model: &str, reported_model: Option<&str>) -> Self {
+        match reported_model {
+            Some(reported) if reported == sent_model => Self::Matched,
+            Some(_) => Self::Mismatched,
+            None => Self::Unreported,
+        }
+    }
 }

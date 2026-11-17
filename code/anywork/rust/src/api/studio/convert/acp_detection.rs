@@ -1,6 +1,6 @@
 //! 本机检测结果的逐字段映射；读、命令、基线与事件使用同一转换。
 
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     AcpLocalDetectionCommandReply, AcpLocalDetectionFailureKind, AcpLocalDetectionSnapshot,
     AcpLocalDetectionState,
 };
@@ -64,7 +64,7 @@ mod tests {
     use super::*;
     use crate::api::studio::convert::event::{bridge_product_baseline, bridge_product_event};
     use crate::api::studio::types::{BridgeProductBaseline, BridgeProductEventPayload};
-    use pl_protocol::studio::AcpLocalDetectionFailure;
+    use pl_studio_runtime::AcpLocalDetectionFailure;
     use pl_studio_runtime::{
         StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
         StudioProductEventKind, StudioProductTopic,
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn acp_detection_cancel_reply_keeps_command_id_distinct_from_target() {
-        use pl_protocol::studio::{
+        use pl_studio_runtime::{
             CommandDisposition, CommandEffectPoint, ResourceStamp, StudioCommandReceipt,
         };
         let reply = bridge_acp_local_detection_reply(AcpLocalDetectionCommandReply {

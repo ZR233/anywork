@@ -5,7 +5,7 @@ pub struct BridgeStudioPromptInput {
     pub attachment_draft_ids: Vec<String>,
 }
 
-impl From<BridgeStudioPromptInput> for pl_protocol::studio::StudioPromptInput {
+impl From<BridgeStudioPromptInput> for pl_studio_runtime::StudioPromptInput {
     fn from(value: BridgeStudioPromptInput) -> Self {
         Self {
             input_id: value.input_id,
@@ -26,7 +26,7 @@ pub enum BridgeAttachmentAdmissionContext {
 }
 
 impl From<BridgeAttachmentAdmissionContext>
-    for pl_protocol::studio::StudioAttachmentAdmissionContext
+    for pl_studio_runtime::StudioAttachmentAdmissionContext
 {
     fn from(value: BridgeAttachmentAdmissionContext) -> Self {
         match value {
@@ -34,7 +34,7 @@ impl From<BridgeAttachmentAdmissionContext>
                 Self::ExistingThread { thread_id }
             }
             BridgeAttachmentAdmissionContext::NewThread { route } => Self::NewThread {
-                route: pl_protocol::studio::NewThreadModelRoute {
+                route: pl_studio_runtime::NewThreadModelRoute {
                     account_id: route.account_id,
                     model_id: route.model_id,
                     effort: route.effort,
@@ -55,7 +55,7 @@ pub enum BridgeAttachmentDraftSource {
     },
 }
 
-impl From<BridgeAttachmentDraftSource> for pl_protocol::studio::StudioAttachmentDraftSource {
+impl From<BridgeAttachmentDraftSource> for pl_studio_runtime::StudioAttachmentDraftSource {
     fn from(value: BridgeAttachmentDraftSource) -> Self {
         match value {
             BridgeAttachmentDraftSource::LocalFile { path } => Self::LocalFile { path },
@@ -73,12 +73,12 @@ pub enum BridgeAttachmentModality {
     File,
 }
 
-impl From<pl_protocol::studio::StudioAttachmentModality> for BridgeAttachmentModality {
-    fn from(value: pl_protocol::studio::StudioAttachmentModality) -> Self {
+impl From<pl_studio_runtime::StudioAttachmentModality> for BridgeAttachmentModality {
+    fn from(value: pl_studio_runtime::StudioAttachmentModality) -> Self {
         match value {
-            pl_protocol::studio::StudioAttachmentModality::Image => Self::Image,
-            pl_protocol::studio::StudioAttachmentModality::Video => Self::Video,
-            pl_protocol::studio::StudioAttachmentModality::File => Self::File,
+            pl_studio_runtime::StudioAttachmentModality::Image => Self::Image,
+            pl_studio_runtime::StudioAttachmentModality::Video => Self::Video,
+            pl_studio_runtime::StudioAttachmentModality::File => Self::File,
         }
     }
 }
@@ -94,8 +94,8 @@ pub struct BridgeAttachmentDraft {
     pub height: Option<u32>,
 }
 
-impl From<pl_protocol::studio::StudioAttachmentDraft> for BridgeAttachmentDraft {
-    fn from(value: pl_protocol::studio::StudioAttachmentDraft) -> Self {
+impl From<pl_studio_runtime::StudioAttachmentDraft> for BridgeAttachmentDraft {
+    fn from(value: pl_studio_runtime::StudioAttachmentDraft) -> Self {
         Self {
             draft_id: value.draft_id,
             modality: value.modality.into(),

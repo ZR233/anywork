@@ -88,8 +88,8 @@ impl BridgeAccountObservation {
             return Ok(None);
         }
         let _next = inner.next_gate.try_lock().map_err(|_| {
-            BridgeError::from(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Busy,
+            BridgeError::from(pl_studio_runtime::StudioError::new(
+                pl_studio_runtime::StudioErrorCode::Busy,
                 "An account next read is already in flight",
                 true,
             ))

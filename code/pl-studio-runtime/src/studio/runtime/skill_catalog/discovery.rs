@@ -6,8 +6,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::studio::ids::unix_seconds;
+use crate::{ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation};
 use anyhow::{Context, Error, Result};
-use pl_protocol::{ObservedResourceCommand, ObservedResourceKind, StateError, StateOperation};
 use pl_tool::skill::SkillsConfig;
 use pl_tool::skill::{
     FrozenSkillCatalog, SkillCatalog, SkillDiscoverySources, SkillProviderRequest,
@@ -95,12 +95,12 @@ impl SkillCatalogRuntime {
             .await?;
         // Last-good data may remain visible in Settings, but cannot authorize a new model input.
         let error = match &snapshot.state {
-            pl_protocol::ObservedResource::Degraded(state) => Some(state.error()),
-            pl_protocol::ObservedResource::Failed(state) => Some(state.error()),
+            crate::ObservedResource::Degraded(state) => Some(state.error()),
+            crate::ObservedResource::Failed(state) => Some(state.error()),
             _ => None,
         };
         if let Some(error) = error {
-            return Err(pl_protocol::PureError::ConfigError(format!(
+            return Err(crate::PureError::ConfigError(format!(
                 "{}: {}",
                 error.code, error.message
             ))

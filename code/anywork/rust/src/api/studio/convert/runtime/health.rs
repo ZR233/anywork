@@ -1,7 +1,7 @@
 //! agent 目录、MCP/LSP 健康与观测状态桥接。
 
 use crate::api::studio::types::*;
-use pl_protocol::AgentExecutionPhase;
+use pl_studio_runtime::AgentExecutionPhase;
 use pl_studio_runtime::*;
 
 pub(crate) fn bridge_agent_directory_entry(
@@ -146,12 +146,12 @@ fn bridge_lsp_activity(activity: &LspAvailableActivity) -> BridgeLspActivity {
     }
 }
 
-pub(crate) fn bridge_state_error(error: &pl_protocol::StateError) -> BridgeStateError {
+pub(crate) fn bridge_state_error(error: &pl_studio_runtime::StateError) -> BridgeStateError {
     error.into()
 }
 
 pub(crate) fn bridge_uninitialized_resource(
-    state: &pl_protocol::UninitializedResource,
+    state: &pl_studio_runtime::UninitializedResource,
 ) -> BridgeUninitializedResource {
     BridgeUninitializedResource {
         revision: state.revision(),
@@ -160,7 +160,7 @@ pub(crate) fn bridge_uninitialized_resource(
 }
 
 pub(crate) fn bridge_loading_resource(
-    state: &pl_protocol::LoadingResource,
+    state: &pl_studio_runtime::LoadingResource,
 ) -> BridgeLoadingResource {
     BridgeLoadingResource {
         revision: state.revision(),
@@ -171,7 +171,7 @@ pub(crate) fn bridge_loading_resource(
 }
 
 pub(crate) fn bridge_ready_resource<T>(
-    state: &pl_protocol::ReadyResource<T>,
+    state: &pl_studio_runtime::ReadyResource<T>,
 ) -> BridgeReadyResource {
     BridgeReadyResource {
         revision: state.revision(),
@@ -181,7 +181,7 @@ pub(crate) fn bridge_ready_resource<T>(
 }
 
 pub(crate) fn bridge_refreshing_resource<T>(
-    state: &pl_protocol::RefreshingResource<T>,
+    state: &pl_studio_runtime::RefreshingResource<T>,
 ) -> BridgeRefreshingResource {
     BridgeRefreshingResource {
         revision: state.revision(),
@@ -193,7 +193,7 @@ pub(crate) fn bridge_refreshing_resource<T>(
 }
 
 pub(crate) fn bridge_stale_resource<T>(
-    state: &pl_protocol::StaleResource<T>,
+    state: &pl_studio_runtime::StaleResource<T>,
 ) -> BridgeStaleResource {
     BridgeStaleResource {
         revision: state.revision(),
@@ -203,7 +203,7 @@ pub(crate) fn bridge_stale_resource<T>(
 }
 
 pub(crate) fn bridge_degraded_resource<T>(
-    state: &pl_protocol::DegradedResource<T>,
+    state: &pl_studio_runtime::DegradedResource<T>,
 ) -> BridgeDegradedResource {
     BridgeDegradedResource {
         revision: state.revision(),
@@ -214,7 +214,9 @@ pub(crate) fn bridge_degraded_resource<T>(
     }
 }
 
-pub(crate) fn bridge_failed_resource(state: &pl_protocol::FailedResource) -> BridgeFailedResource {
+pub(crate) fn bridge_failed_resource(
+    state: &pl_studio_runtime::FailedResource,
+) -> BridgeFailedResource {
     BridgeFailedResource {
         revision: state.revision(),
         failed_at: state.failed_at(),
@@ -224,7 +226,7 @@ pub(crate) fn bridge_failed_resource(state: &pl_protocol::FailedResource) -> Bri
 }
 
 pub(crate) fn bridge_stopped_resource(
-    state: &pl_protocol::StoppedResource,
+    state: &pl_studio_runtime::StoppedResource,
 ) -> BridgeStoppedResource {
     BridgeStoppedResource {
         revision: state.revision(),
@@ -232,8 +234,8 @@ pub(crate) fn bridge_stopped_resource(
     }
 }
 
-impl From<pl_protocol::StateError> for BridgeStateError {
-    fn from(error: pl_protocol::StateError) -> Self {
+impl From<pl_studio_runtime::StateError> for BridgeStateError {
+    fn from(error: pl_studio_runtime::StateError) -> Self {
         Self {
             code: error.code,
             message: error.message,
@@ -242,8 +244,8 @@ impl From<pl_protocol::StateError> for BridgeStateError {
     }
 }
 
-impl From<&pl_protocol::StateError> for BridgeStateError {
-    fn from(error: &pl_protocol::StateError) -> Self {
+impl From<&pl_studio_runtime::StateError> for BridgeStateError {
+    fn from(error: &pl_studio_runtime::StateError) -> Self {
         Self {
             code: error.code.clone(),
             message: error.message.clone(),
@@ -252,19 +254,19 @@ impl From<&pl_protocol::StateError> for BridgeStateError {
     }
 }
 
-impl From<pl_protocol::StateOperation> for BridgeStateOperation {
-    fn from(operation: pl_protocol::StateOperation) -> Self {
+impl From<pl_studio_runtime::StateOperation> for BridgeStateOperation {
+    fn from(operation: pl_studio_runtime::StateOperation) -> Self {
         match operation {
-            pl_protocol::StateOperation::Initialize => Self::Initialize,
-            pl_protocol::StateOperation::Activate => Self::Activate,
-            pl_protocol::StateOperation::Reload => Self::Reload,
-            pl_protocol::StateOperation::Reconcile => Self::Reconcile,
-            pl_protocol::StateOperation::Discover => Self::Discover,
-            pl_protocol::StateOperation::Check => Self::Check,
-            pl_protocol::StateOperation::Probe => Self::Probe,
-            pl_protocol::StateOperation::Repair => Self::Repair,
-            pl_protocol::StateOperation::Reset => Self::Reset,
-            pl_protocol::StateOperation::Shutdown => Self::Shutdown,
+            pl_studio_runtime::StateOperation::Initialize => Self::Initialize,
+            pl_studio_runtime::StateOperation::Activate => Self::Activate,
+            pl_studio_runtime::StateOperation::Reload => Self::Reload,
+            pl_studio_runtime::StateOperation::Reconcile => Self::Reconcile,
+            pl_studio_runtime::StateOperation::Discover => Self::Discover,
+            pl_studio_runtime::StateOperation::Check => Self::Check,
+            pl_studio_runtime::StateOperation::Probe => Self::Probe,
+            pl_studio_runtime::StateOperation::Repair => Self::Repair,
+            pl_studio_runtime::StateOperation::Reset => Self::Reset,
+            pl_studio_runtime::StateOperation::Shutdown => Self::Shutdown,
         }
     }
 }
@@ -294,7 +296,7 @@ mod tests {
     fn agent_directory_keeps_backend_identity_and_native_stop_qualification() {
         let native = bridge_agent_directory_entry(member(StudioAgentActivity::Native {
             state: AgentState::idle(),
-            execution: Some(pl_protocol::AgentExecution::new(
+            execution: Some(pl_studio_runtime::AgentExecution::new(
                 "execution",
                 AgentExecutionPhase::Preparing,
                 None,

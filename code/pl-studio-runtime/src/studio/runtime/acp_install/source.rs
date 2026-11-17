@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use pl_protocol::studio::{
+use crate::{
     AcpInstallAvailability, AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease,
     AcpInstallStage, AcpProvider,
 };

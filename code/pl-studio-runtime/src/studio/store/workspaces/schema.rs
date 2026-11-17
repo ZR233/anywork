@@ -3,8 +3,8 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::WorkspaceKind;
 use anyhow::{Result, ensure};
-use pl_protocol::studio::WorkspaceKind;
 use serde::{Deserialize, Serialize};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 

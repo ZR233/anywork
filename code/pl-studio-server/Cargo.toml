@@ -10,7 +10,6 @@ default = []
 
 [dependencies]
 pl-studio-update = { workspace = true }
-pl-protocol = { workspace = true }
 pl-studio-runtime = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true, features = ["multipart"] }

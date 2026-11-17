@@ -44,10 +44,10 @@ mod tests {
     use super::legacy_timeline_types::*;
     use super::legacy_timeline_types::{ChatScope, CurrentProjection};
     use super::*;
+    use crate::protocol::*;
     use crate::studio::paths::SqliteFileMode;
     use crate::studio::storage::history::connect;
     use anyhow::Result;
-    use pl_protocol::*;
 
     const THREAD: &str = "background-tail-migration";
     async fn migration_records(db: &impl ConnectionTrait) -> Result<Vec<String>> {

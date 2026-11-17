@@ -44,7 +44,7 @@ pub(super) fn prepare(
             "boundary observation lost its immutable body"
         );
     }
-    let owner = pl_protocol::ContentOwner::DisplayObservation {
+    let owner = crate::ContentOwner::DisplayObservation {
         block_id: previous.block_id.clone(),
         member_key: previous.head.member_key.clone(),
     };

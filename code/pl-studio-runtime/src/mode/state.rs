@@ -8,9 +8,11 @@ pub const MAX_ARCHIVED_WORKFLOW_RUNS: usize = 16;
 
 pub const MAX_WORKFLOW_OPERATION_RECEIPTS: usize = 32;
 
-use pl_protocol::{
-    PureError, ThreadModeId, WorkflowOperationReceipt, WorkflowRun, WorkflowRunArchive,
-    WorkflowRunLifecycle, WorkflowSessionState, WorkflowStateKind,
+use crate::PureError;
+use crate::mode::ThreadModeId;
+use crate::workflow_tool::{
+    WorkflowOperationReceipt, WorkflowRun, WorkflowRunArchive, WorkflowRunLifecycle,
+    WorkflowSessionState, WorkflowStateKind,
 };
 
 /// Archives an incompatible run when an idle root Thread changes Mode.

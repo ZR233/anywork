@@ -10,7 +10,7 @@ pub enum BridgeMcpScope {
     },
 }
 
-impl From<BridgeMcpScope> for pl_protocol::McpScope {
+impl From<BridgeMcpScope> for pl_studio_runtime::McpScope {
     fn from(value: BridgeMcpScope) -> Self {
         match value {
             BridgeMcpScope::Host => Self::Host,
@@ -19,11 +19,11 @@ impl From<BridgeMcpScope> for pl_protocol::McpScope {
     }
 }
 
-impl From<pl_protocol::McpScope> for BridgeMcpScope {
-    fn from(value: pl_protocol::McpScope) -> Self {
+impl From<pl_studio_runtime::McpScope> for BridgeMcpScope {
+    fn from(value: pl_studio_runtime::McpScope) -> Self {
         match value {
-            pl_protocol::McpScope::Host => Self::Host,
-            pl_protocol::McpScope::Ssh { ssh_alias } => Self::Ssh { ssh_alias },
+            pl_studio_runtime::McpScope::Host => Self::Host,
+            pl_studio_runtime::McpScope::Ssh { ssh_alias } => Self::Ssh { ssh_alias },
         }
     }
 }
@@ -35,7 +35,7 @@ pub struct BridgeMcpDocumentRef {
     pub relative_path: String,
 }
 
-impl From<BridgeMcpDocumentRef> for pl_protocol::McpDocumentRef {
+impl From<BridgeMcpDocumentRef> for pl_studio_runtime::McpDocumentRef {
     fn from(value: BridgeMcpDocumentRef) -> Self {
         Self {
             scope: value.scope.into(),
@@ -44,8 +44,8 @@ impl From<BridgeMcpDocumentRef> for pl_protocol::McpDocumentRef {
     }
 }
 
-impl From<pl_protocol::McpDocumentRef> for BridgeMcpDocumentRef {
-    fn from(value: pl_protocol::McpDocumentRef) -> Self {
+impl From<pl_studio_runtime::McpDocumentRef> for BridgeMcpDocumentRef {
+    fn from(value: pl_studio_runtime::McpDocumentRef) -> Self {
         Self {
             scope: value.scope.into(),
             relative_path: value.relative_path,
@@ -63,14 +63,14 @@ pub enum BridgeMcpConfigStatusKind {
     InvalidDocument,
 }
 
-impl From<pl_protocol::McpConfigStatusKind> for BridgeMcpConfigStatusKind {
-    fn from(value: pl_protocol::McpConfigStatusKind) -> Self {
+impl From<pl_studio_runtime::McpConfigStatusKind> for BridgeMcpConfigStatusKind {
+    fn from(value: pl_studio_runtime::McpConfigStatusKind) -> Self {
         match value {
-            pl_protocol::McpConfigStatusKind::Enabled => Self::Enabled,
-            pl_protocol::McpConfigStatusKind::Disabled => Self::Disabled,
-            pl_protocol::McpConfigStatusKind::ShadowedDisable => Self::ShadowedDisable,
-            pl_protocol::McpConfigStatusKind::MissingPrereq => Self::MissingPrereq,
-            pl_protocol::McpConfigStatusKind::InvalidDocument => Self::InvalidDocument,
+            pl_studio_runtime::McpConfigStatusKind::Enabled => Self::Enabled,
+            pl_studio_runtime::McpConfigStatusKind::Disabled => Self::Disabled,
+            pl_studio_runtime::McpConfigStatusKind::ShadowedDisable => Self::ShadowedDisable,
+            pl_studio_runtime::McpConfigStatusKind::MissingPrereq => Self::MissingPrereq,
+            pl_studio_runtime::McpConfigStatusKind::InvalidDocument => Self::InvalidDocument,
         }
     }
 }
@@ -88,17 +88,21 @@ pub enum BridgeMcpEffectiveSource {
     InvalidFile,
 }
 
-impl From<pl_protocol::McpEffectiveSource> for BridgeMcpEffectiveSource {
-    fn from(value: pl_protocol::McpEffectiveSource) -> Self {
+impl From<pl_studio_runtime::McpEffectiveSource> for BridgeMcpEffectiveSource {
+    fn from(value: pl_studio_runtime::McpEffectiveSource) -> Self {
         match value {
-            pl_protocol::McpEffectiveSource::HostServer => Self::HostServer,
-            pl_protocol::McpEffectiveSource::HostBuiltin => Self::HostBuiltin,
-            pl_protocol::McpEffectiveSource::InheritedHostServer => Self::InheritedHostServer,
-            pl_protocol::McpEffectiveSource::InheritedHostBuiltin => Self::InheritedHostBuiltin,
-            pl_protocol::McpEffectiveSource::SshOverrideServer => Self::SshOverrideServer,
-            pl_protocol::McpEffectiveSource::SshOverrideBuiltin => Self::SshOverrideBuiltin,
-            pl_protocol::McpEffectiveSource::SshDisabledTombstone => Self::SshDisabledTombstone,
-            pl_protocol::McpEffectiveSource::InvalidFile => Self::InvalidFile,
+            pl_studio_runtime::McpEffectiveSource::HostServer => Self::HostServer,
+            pl_studio_runtime::McpEffectiveSource::HostBuiltin => Self::HostBuiltin,
+            pl_studio_runtime::McpEffectiveSource::InheritedHostServer => Self::InheritedHostServer,
+            pl_studio_runtime::McpEffectiveSource::InheritedHostBuiltin => {
+                Self::InheritedHostBuiltin
+            }
+            pl_studio_runtime::McpEffectiveSource::SshOverrideServer => Self::SshOverrideServer,
+            pl_studio_runtime::McpEffectiveSource::SshOverrideBuiltin => Self::SshOverrideBuiltin,
+            pl_studio_runtime::McpEffectiveSource::SshDisabledTombstone => {
+                Self::SshDisabledTombstone
+            }
+            pl_studio_runtime::McpEffectiveSource::InvalidFile => Self::InvalidFile,
         }
     }
 }
@@ -118,17 +122,17 @@ pub enum BridgeMcpExecutionLocation {
     },
 }
 
-impl From<pl_protocol::McpExecutionLocation> for BridgeMcpExecutionLocation {
-    fn from(value: pl_protocol::McpExecutionLocation) -> Self {
+impl From<pl_studio_runtime::McpExecutionLocation> for BridgeMcpExecutionLocation {
+    fn from(value: pl_studio_runtime::McpExecutionLocation) -> Self {
         match value {
-            pl_protocol::McpExecutionLocation::HostLocal => Self::HostLocal,
-            pl_protocol::McpExecutionLocation::HostRemoteStreamableHttp => {
+            pl_studio_runtime::McpExecutionLocation::HostLocal => Self::HostLocal,
+            pl_studio_runtime::McpExecutionLocation::HostRemoteStreamableHttp => {
                 Self::HostRemoteStreamableHttp
             }
-            pl_protocol::McpExecutionLocation::SshRemote { ssh_alias } => {
+            pl_studio_runtime::McpExecutionLocation::SshRemote { ssh_alias } => {
                 Self::SshRemote { ssh_alias }
             }
-            pl_protocol::McpExecutionLocation::SshRemoteStreamableHttp { ssh_alias } => {
+            pl_studio_runtime::McpExecutionLocation::SshRemoteStreamableHttp { ssh_alias } => {
                 Self::SshRemoteStreamableHttp { ssh_alias }
             }
         }
@@ -154,8 +158,8 @@ pub struct BridgeMcpCatalogEntry {
     pub message: Option<String>,
 }
 
-impl From<pl_protocol::McpCatalogEntry> for BridgeMcpCatalogEntry {
-    fn from(value: pl_protocol::McpCatalogEntry) -> Self {
+impl From<pl_studio_runtime::McpCatalogEntry> for BridgeMcpCatalogEntry {
+    fn from(value: pl_studio_runtime::McpCatalogEntry) -> Self {
         Self {
             id: value.id,
             document: value.document.map(Into::into),
@@ -184,8 +188,8 @@ pub struct BridgeMcpDocumentDiagnostic {
     pub message: String,
 }
 
-impl From<pl_protocol::McpDocumentDiagnostic> for BridgeMcpDocumentDiagnostic {
-    fn from(value: pl_protocol::McpDocumentDiagnostic) -> Self {
+impl From<pl_studio_runtime::McpDocumentDiagnostic> for BridgeMcpDocumentDiagnostic {
+    fn from(value: pl_studio_runtime::McpDocumentDiagnostic) -> Self {
         Self {
             document: value.document.into(),
             id: value.id,
@@ -204,8 +208,8 @@ pub struct BridgeMcpCatalogSnapshot {
     pub diagnostics: Vec<BridgeMcpDocumentDiagnostic>,
 }
 
-impl From<pl_protocol::McpCatalogSnapshot> for BridgeMcpCatalogSnapshot {
-    fn from(value: pl_protocol::McpCatalogSnapshot) -> Self {
+impl From<pl_studio_runtime::McpCatalogSnapshot> for BridgeMcpCatalogSnapshot {
+    fn from(value: pl_studio_runtime::McpCatalogSnapshot) -> Self {
         Self {
             scope: value.scope.into(),
             revision: value.revision,
@@ -225,8 +229,8 @@ pub struct BridgeMcpDocumentContent {
     pub diagnostic: Option<BridgeMcpDocumentDiagnostic>,
 }
 
-impl From<pl_protocol::McpDocumentContent> for BridgeMcpDocumentContent {
-    fn from(value: pl_protocol::McpDocumentContent) -> Self {
+impl From<pl_studio_runtime::McpDocumentContent> for BridgeMcpDocumentContent {
+    fn from(value: pl_studio_runtime::McpDocumentContent) -> Self {
         Self {
             document: value.document.into(),
             id: value.id,
@@ -245,7 +249,7 @@ pub struct BridgeCreateMcpDocumentInput {
     pub raw_toml: String,
 }
 
-impl From<BridgeCreateMcpDocumentInput> for pl_protocol::CreateMcpDocumentRequest {
+impl From<BridgeCreateMcpDocumentInput> for pl_studio_runtime::CreateMcpDocumentRequest {
     fn from(value: BridgeCreateMcpDocumentInput) -> Self {
         Self {
             scope: value.scope.into(),
@@ -263,7 +267,7 @@ pub struct BridgeUpdateMcpDocumentInput {
     pub raw_toml: String,
 }
 
-impl From<BridgeUpdateMcpDocumentInput> for pl_protocol::UpdateMcpDocumentRequest {
+impl From<BridgeUpdateMcpDocumentInput> for pl_studio_runtime::UpdateMcpDocumentRequest {
     fn from(value: BridgeUpdateMcpDocumentInput) -> Self {
         Self {
             document: value.document.into(),
@@ -280,7 +284,7 @@ pub struct BridgeDeleteMcpDocumentInput {
     pub expected_revision: u64,
 }
 
-impl From<BridgeDeleteMcpDocumentInput> for pl_protocol::DeleteMcpDocumentRequest {
+impl From<BridgeDeleteMcpDocumentInput> for pl_studio_runtime::DeleteMcpDocumentRequest {
     fn from(value: BridgeDeleteMcpDocumentInput) -> Self {
         Self {
             document: value.document.into(),
@@ -297,8 +301,8 @@ pub struct BridgeMcpDocumentCommitReceipt {
     pub snapshot: BridgeMcpCatalogSnapshot,
 }
 
-impl From<pl_protocol::McpDocumentCommitReceipt> for BridgeMcpDocumentCommitReceipt {
-    fn from(value: pl_protocol::McpDocumentCommitReceipt) -> Self {
+impl From<pl_studio_runtime::McpDocumentCommitReceipt> for BridgeMcpDocumentCommitReceipt {
+    fn from(value: pl_studio_runtime::McpDocumentCommitReceipt) -> Self {
         Self {
             document: value.document.map(Into::into),
             revision: value.revision,
@@ -317,14 +321,14 @@ pub enum BridgeThreadMcpLifecycleKind {
     ShuttingDown,
 }
 
-impl From<pl_protocol::ThreadMcpLifecycleKind> for BridgeThreadMcpLifecycleKind {
-    fn from(value: pl_protocol::ThreadMcpLifecycleKind) -> Self {
+impl From<pl_studio_runtime::ThreadMcpLifecycleKind> for BridgeThreadMcpLifecycleKind {
+    fn from(value: pl_studio_runtime::ThreadMcpLifecycleKind) -> Self {
         match value {
-            pl_protocol::ThreadMcpLifecycleKind::Connecting => Self::Connecting,
-            pl_protocol::ThreadMcpLifecycleKind::Available => Self::Available,
-            pl_protocol::ThreadMcpLifecycleKind::Unavailable => Self::Unavailable,
-            pl_protocol::ThreadMcpLifecycleKind::Unsupported => Self::Unsupported,
-            pl_protocol::ThreadMcpLifecycleKind::ShuttingDown => Self::ShuttingDown,
+            pl_studio_runtime::ThreadMcpLifecycleKind::Connecting => Self::Connecting,
+            pl_studio_runtime::ThreadMcpLifecycleKind::Available => Self::Available,
+            pl_studio_runtime::ThreadMcpLifecycleKind::Unavailable => Self::Unavailable,
+            pl_studio_runtime::ThreadMcpLifecycleKind::Unsupported => Self::Unsupported,
+            pl_studio_runtime::ThreadMcpLifecycleKind::ShuttingDown => Self::ShuttingDown,
         }
     }
 }
@@ -344,8 +348,8 @@ pub struct BridgeThreadMcpServerState {
     pub last_checked_at: Option<i64>,
 }
 
-impl From<pl_protocol::ThreadMcpServerState> for BridgeThreadMcpServerState {
-    fn from(value: pl_protocol::ThreadMcpServerState) -> Self {
+impl From<pl_studio_runtime::ThreadMcpServerState> for BridgeThreadMcpServerState {
+    fn from(value: pl_studio_runtime::ThreadMcpServerState) -> Self {
         Self {
             id: value.id,
             effective_source: value.effective_source.into(),
@@ -370,8 +374,8 @@ pub struct BridgeThreadMcpStateSnapshot {
     pub servers: Vec<BridgeThreadMcpServerState>,
 }
 
-impl From<pl_protocol::ThreadMcpStateSnapshot> for BridgeThreadMcpStateSnapshot {
-    fn from(value: pl_protocol::ThreadMcpStateSnapshot) -> Self {
+impl From<pl_studio_runtime::ThreadMcpStateSnapshot> for BridgeThreadMcpStateSnapshot {
+    fn from(value: pl_studio_runtime::ThreadMcpStateSnapshot) -> Self {
         Self {
             thread_id: value.thread_id,
             scope: value.scope.into(),
@@ -388,7 +392,7 @@ pub struct BridgeReconnectThreadMcpInput {
     pub server_id: Option<String>,
 }
 
-impl From<BridgeReconnectThreadMcpInput> for pl_protocol::ReconnectThreadMcpRequest {
+impl From<BridgeReconnectThreadMcpInput> for pl_studio_runtime::ReconnectThreadMcpRequest {
     fn from(value: BridgeReconnectThreadMcpInput) -> Self {
         Self {
             thread_id: value.thread_id,

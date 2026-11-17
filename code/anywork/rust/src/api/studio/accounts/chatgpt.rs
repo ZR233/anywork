@@ -3,7 +3,7 @@ use crate::api::studio::{
     convert::chatgpt_auth::bridge_chatgpt_login_reply,
     types::{BridgeChatGptLoginCommandReply, BridgeError},
 };
-use pl_protocol::studio::{CancelChatGptLoginRequest, StartChatGptLoginRequest};
+use pl_studio_runtime::{CancelChatGptLoginRequest, StartChatGptLoginRequest};
 
 /// Starts an editor-bound authorization without creating or changing an account.
 pub async fn start_chatgpt_login(

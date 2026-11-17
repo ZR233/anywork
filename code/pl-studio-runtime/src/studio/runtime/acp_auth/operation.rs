@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use pl_protocol::studio::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAuthState};
+use crate::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAuthState};
 use tokio::sync::watch;
 
 use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
@@ -158,10 +158,7 @@ fn terminal_result(
     operation: &Operation,
     action: &AcpAuthAction,
     last_progress: &pl_acp::auth::AuthProgress,
-) -> (
-    AcpAuthState,
-    Option<pl_protocol::studio::AcpUsageObservation>,
-) {
+) -> (AcpAuthState, Option<crate::AcpUsageObservation>) {
     match protocol {
         Some(Ok(pl_acp::auth::AuthOutcome::Verified { server, usage })) => {
             let checked_at = crate::studio::unix_seconds();
@@ -169,17 +166,16 @@ fn terminal_result(
                 checked_at,
                 server: map_auth_server(server),
             };
-            let usage_update = matches!(action, AcpAuthAction::QueryUsage).then(|| {
-                pl_protocol::studio::AcpUsageObservation {
+            let usage_update =
+                matches!(action, AcpAuthAction::QueryUsage).then(|| crate::AcpUsageObservation {
                     checked_at,
                     state: usage.map_or(
-                        pl_protocol::studio::AcpUsageState::Failed {
-                            code: pl_protocol::studio::AcpUsageFailureCode::InvalidResponse,
+                        crate::AcpUsageState::Failed {
+                            code: crate::AcpUsageFailureCode::InvalidResponse,
                         },
                         super::usage::map_report,
                     ),
-                }
-            });
+                });
             (state, usage_update)
         }
         Some(Err(error)) => {

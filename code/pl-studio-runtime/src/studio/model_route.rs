@@ -73,8 +73,8 @@ pub(crate) struct SavedModelRoute {
 }
 
 impl SavedModelRoute {
-    pub(crate) fn snapshot(self, available: bool) -> pl_protocol::ThreadModelRouteSnapshot {
-        pl_protocol::ThreadModelRouteSnapshot {
+    pub(crate) fn snapshot(self, available: bool) -> crate::ThreadModelRouteSnapshot {
+        crate::ThreadModelRouteSnapshot {
             bot_id: self.bot_id,
             account_id: self.route.account_id.into_string(),
             model_id: self.route.model_id,
@@ -87,9 +87,7 @@ impl SavedModelRoute {
     }
 }
 
-pub(crate) fn projected(
-    state: &ThreadSnapshot,
-) -> Result<Option<pl_protocol::ThreadModelRouteSnapshot>> {
+pub(crate) fn projected(state: &ThreadSnapshot) -> Result<Option<crate::ThreadModelRouteSnapshot>> {
     let child = state.extensions.contains_key(AGENT_PROFILE_EXTENSION);
     let bot_id = bot_owner(state)?;
     Ok(route_record(state, child)?.map(|(record, route)| {
@@ -128,7 +126,7 @@ pub(crate) fn saved(state: &ThreadSnapshot) -> Result<Option<SavedModelRoute>> {
         .transpose()
 }
 
-pub(crate) fn encode_profile(profile: &pl_protocol::AgentProfileSnapshot) -> Result<OpaquePayload> {
+pub(crate) fn encode_profile(profile: &crate::AgentProfileSnapshot) -> Result<OpaquePayload> {
     Ok(OpaquePayload::new(
         AGENT_PROFILE_FORMAT,
         FORMAT_VERSION,
@@ -138,7 +136,7 @@ pub(crate) fn encode_profile(profile: &pl_protocol::AgentProfileSnapshot) -> Res
 
 pub(crate) fn saved_profile(
     state: &ThreadSnapshot,
-) -> Result<Option<(pl_protocol::AgentProfileSnapshot, u64)>> {
+) -> Result<Option<(crate::AgentProfileSnapshot, u64)>> {
     state
         .extensions
         .get(AGENT_PROFILE_EXTENSION)
@@ -159,7 +157,7 @@ pub(crate) fn saved_profile(
 pub(crate) fn required_saved_profile(
     state: &ThreadSnapshot,
     child_id: &str,
-) -> Result<pl_protocol::AgentProfileSnapshot> {
+) -> Result<crate::AgentProfileSnapshot> {
     saved_profile(state)?
         .map(|(profile, _)| profile)
         .ok_or_else(|| {
@@ -169,9 +167,7 @@ pub(crate) fn required_saved_profile(
         })
 }
 
-pub(crate) fn profile_route(
-    profile: &pl_protocol::AgentProfileSnapshot,
-) -> Result<ModelRouteConfig> {
+pub(crate) fn profile_route(profile: &crate::AgentProfileSnapshot) -> Result<ModelRouteConfig> {
     Ok(ModelRouteConfig {
         account_id: AccountId::new(profile.account_id.clone())?,
         model_id: profile.model_id.clone(),
@@ -224,7 +220,7 @@ pub(crate) fn route_record(
         let Some(record) = state.extensions.get(AGENT_PROFILE_EXTENSION) else {
             return Ok(None);
         };
-        let profile: pl_protocol::AgentProfileSnapshot =
+        let profile: crate::AgentProfileSnapshot =
             decode_profile_payload(&record.payload, AGENT_PROFILE_FORMAT, "Agent Profile")?;
         Ok(Some((record, profile_route(&profile)?)))
     } else {
@@ -238,8 +234,8 @@ pub(crate) fn route_record(
 /// Availability describes next admission, not whether an old in-flight session is still resident.
 /// This never changes the saved selector or tears down a running model.
 pub(crate) fn annotate_availability(
-    route: Option<&mut pl_protocol::ThreadModelRouteSnapshot>,
-    thread: &pl_protocol::Thread,
+    route: Option<&mut crate::ThreadModelRouteSnapshot>,
+    thread: &crate::Thread,
     config: &crate::StudioConfig,
 ) -> Result<()> {
     let Some(route) = route else {
@@ -296,7 +292,7 @@ fn decode_profile_payload(
     payload: &OpaquePayload,
     expected_format: &str,
     label: &str,
-) -> Result<pl_protocol::AgentProfileSnapshot> {
+) -> Result<crate::AgentProfileSnapshot> {
     if payload.format() != expected_format || payload.version() != FORMAT_VERSION {
         bail!(
             "unsupported saved {label} codec {} version {}; explicit recovery migration required",

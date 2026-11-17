@@ -34,7 +34,7 @@ impl StudioThreadFactory {
     /// neither mode activates a model or repairs/rebinds a physical resource.
     pub(crate) async fn verify_execution_workspace(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
         check: ExecutionWorkspaceCheck,
     ) -> Result<()> {
@@ -54,7 +54,7 @@ impl StudioThreadFactory {
         {
             ensure!(
                 bot.workspace_id == thread.workspace_id
-                    && thread.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
+                    && thread.workspace_mode == crate::ThreadWorkspaceMode::Local,
                 "bot execution directory association is incompatible"
             );
             let complete = self

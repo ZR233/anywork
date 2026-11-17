@@ -1,5 +1,5 @@
 //! One immutable, bounded current head shared by its existing owners, never its bodies.
-use pl_protocol::CurrentProjection;
+use crate::CurrentProjection;
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug)]

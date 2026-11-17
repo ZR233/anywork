@@ -55,7 +55,7 @@ pub(crate) enum BotInteractionKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BotInteractionFact {
     pub kind: BotInteractionKind,
-    pub status: pl_protocol::InteractionStatus,
+    pub status: crate::InteractionStatus,
     /// Resolved 且存在 canonical continuation 输入时的输入身份。
     pub continuation_input: Option<String>,
 }

@@ -85,7 +85,7 @@ impl StudioShutdownReport {
     /// 关闭阶段在独立 owned task 中运行；即使阶段 panic，也必须给出可诊断的报告而不是
     /// 让等待方永久挂起，也绝不伪报 `Clean`。
     pub fn panicked() -> Self {
-        let correlation_id = pl_protocol::studio::StudioError::internal().correlation_id;
+        let correlation_id = crate::StudioError::internal().correlation_id;
         Self {
             outcome: StudioShutdownOutcome::Degraded,
             issues: vec![StudioShutdownIssue {

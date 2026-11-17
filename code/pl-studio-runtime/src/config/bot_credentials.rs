@@ -6,7 +6,7 @@ use super::credential::{
     BotCredentialIoError, BotCredentialIoKind, BotProtectedPersist, BotProtectedRead,
     CredentialStore,
 };
-use pl_protocol::studio::BotCredentialAvailability;
+use crate::BotCredentialAvailability;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

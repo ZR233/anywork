@@ -1,11 +1,11 @@
 //! Independent, revocable read qualification. Queries never take the feed's receive/credit lock.
 use super::thread_observation::ObservationSlot;
+use crate::protocol::*;
 use crate::studio::storage::history::HistoryStore;
 use crate::studio::thread_projection::current_page;
 use anyhow::{Result, ensure};
 use core::ChatBudget as _;
 use pl_core::chat as core;
-use pl_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::sync::{
     Arc, OnceLock,
@@ -173,13 +173,13 @@ pub(super) fn core_demand(demand: ReadDemand) -> Result<core::ReadDemand> {
 }
 #[track_caller]
 pub(super) fn resync() -> anyhow::Error {
-    let error = pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Busy,
+    let error = crate::StudioError::new(
+        crate::StudioErrorCode::Busy,
         "Conversation source continuity changed; open a new handle",
         true,
     )
     .with_reason(
-        pl_protocol::studio::StudioErrorReason::ConversationResyncRequired,
+        crate::StudioErrorReason::ConversationResyncRequired,
         serde_json::Value::Null,
     );
     let caller = std::panic::Location::caller();

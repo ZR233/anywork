@@ -20,10 +20,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
+use crate::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease, AcpInstallStage};
 use flate2::bufread::DeflateDecoder;
-use pl_protocol::studio::{
-    AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease, AcpInstallStage,
-};
 use pl_tool::workspace::path_safety;
 use rawzip::{CompressionMethod, RECOMMENDED_BUFFER_SIZE, ZipArchive};
 use sha2::{Digest, Sha256};

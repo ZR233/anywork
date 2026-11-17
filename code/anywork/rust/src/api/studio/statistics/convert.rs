@@ -92,10 +92,14 @@ fn bridge_sample(
         sent_model: value.sent_model,
         reported_model: value.reported_model,
         model_match_state: match value.model_match_state {
-            pl_protocol::ModelMatchState::Matched => BridgeStatisticsModelMatchState::Matched,
-            pl_protocol::ModelMatchState::Mismatched => BridgeStatisticsModelMatchState::Mismatched,
-            pl_protocol::ModelMatchState::Unreported => BridgeStatisticsModelMatchState::Unreported,
-            pl_protocol::ModelMatchState::LegacyUnknown => {
+            pl_studio_runtime::ModelMatchState::Matched => BridgeStatisticsModelMatchState::Matched,
+            pl_studio_runtime::ModelMatchState::Mismatched => {
+                BridgeStatisticsModelMatchState::Mismatched
+            }
+            pl_studio_runtime::ModelMatchState::Unreported => {
+                BridgeStatisticsModelMatchState::Unreported
+            }
+            pl_studio_runtime::ModelMatchState::LegacyUnknown => {
                 BridgeStatisticsModelMatchState::LegacyUnknown
             }
         },
@@ -139,7 +143,7 @@ pub(super) fn bridge_effort_page(value: StatisticsEffortPage) -> BridgeStatistic
 }
 
 pub(super) fn statistics_error(error: StatisticsError) -> BridgeError {
-    use pl_protocol::studio::{StudioError, StudioErrorCode};
+    use pl_studio_runtime::{StudioError, StudioErrorCode};
     let (code, retryable) = match error {
         StatisticsError::Closed => (StudioErrorCode::RuntimeStopped, false),
         StatisticsError::InvalidReference | StatisticsError::InvalidPageLimit => {
@@ -167,7 +171,7 @@ pub(super) fn statistics_error(error: StatisticsError) -> BridgeError {
 }
 
 pub(super) fn statistics_sink_stopped() -> BridgeError {
-    use pl_protocol::studio::{StudioError, StudioErrorCode};
+    use pl_studio_runtime::{StudioError, StudioErrorCode};
     let mut failure = BridgeError::from(StudioError::new(
         StudioErrorCode::Unavailable,
         "statistics sink stopped",

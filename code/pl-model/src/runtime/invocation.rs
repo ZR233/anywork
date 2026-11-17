@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::completion::{InferenceModelObservation, InferenceTiming};
+use crate::trace::{AgentEventSender, TraceEventSink};
 use futures::StreamExt;
-use pl_protocol::trace::{AgentEventSender, TraceEventSink};
-use pl_protocol::{InferenceModelObservation, InferenceTiming, PureError, Result};
+use pl_protocol::{PureError, Result};
 
 use super::{ModelSession, responses_websocket, wire_capture};
 
@@ -170,7 +171,7 @@ pub(crate) struct InvocationRunner {
     native_body: serde_json::Map<String, serde_json::Value>,
     purpose: InvocationPurpose,
     pub(crate) clock: Arc<dyn super::InferenceClock>,
-    pub(crate) pricing_mode: pl_protocol::PricingMode,
+    pub(crate) pricing_mode: crate::model::PricingMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,7 +333,7 @@ impl InvocationRunner {
             native_body: Default::default(),
             purpose: InvocationPurpose::Completion,
             clock: Arc::new(super::clock::SystemInferenceClock),
-            pricing_mode: pl_protocol::PricingMode::Catalog,
+            pricing_mode: crate::model::PricingMode::Catalog,
         })
     }
 
@@ -850,9 +851,10 @@ impl InvocationRunner {
             current.begin_generation(generation);
         }
         let has_hosted_tools = request.tools.iter().any(|tool| match tool {
-            pl_protocol::ToolSpec::Function { .. } | pl_protocol::ToolSpec::Custom { .. } => false,
-            pl_protocol::ToolSpec::ProgrammaticToolCalling
-            | pl_protocol::ToolSpec::WebSearch { .. } => true,
+            crate::completion::ToolSpec::Function { .. }
+            | crate::completion::ToolSpec::Custom { .. } => false,
+            crate::completion::ToolSpec::ProgrammaticToolCalling
+            | crate::completion::ToolSpec::WebSearch { .. } => true,
         });
         let is_compaction = self.purpose == InvocationPurpose::RemoteCompaction;
         let (body, mut model_observation) = match self
@@ -1342,11 +1344,11 @@ mod cache_tests {
 #[cfg(test)]
 mod chatgpt_tests {
     use super::*;
+    use crate::completion::{Message, MessageContent, MessageRole, ToolCallKind};
     use crate::completion::{SystemPrompt, ToolSpec};
     use crate::protocol::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
-    use pl_protocol::{Message, MessageContent, MessageRole, ToolCallKind};
     use serde_json::json;
 
     struct NoCredentialIo;
@@ -1368,7 +1370,7 @@ mod chatgpt_tests {
         let record = ChatGptCredentialRecord {
             schema_version: 1,
             registration_id: "wire-registration".into(),
-            account: pl_protocol::studio::ChatGptAccountInfo {
+            account: crate::config::ChatGptAccountInfo {
                 issuer: "https://auth.openai.com".into(),
                 subject: "wire-subject".into(),
                 client_id: "issued-wire-client".into(),
@@ -1452,7 +1454,7 @@ mod chatgpt_tests {
         ),
     ];
         let mut assistant = message(MessageRole::Assistant, "");
-        assistant.tool_calls = Some(vec![pl_protocol::ToolCallRecord {
+        assistant.tool_calls = Some(vec![crate::completion::ToolCallRecord {
             item_id: "item-edit".into(),
             call_id: "call-edit".into(),
             name: "edit".into(),
@@ -1464,7 +1466,7 @@ mod chatgpt_tests {
             .tool_calls
             .as_mut()
             .unwrap()
-            .push(pl_protocol::ToolCallRecord {
+            .push(crate::completion::ToolCallRecord {
                 item_id: "item-lookup".into(),
                 call_id: "call-lookup".into(),
                 name: "lookup".into(),
@@ -1473,14 +1475,14 @@ mod chatgpt_tests {
                 caller: None,
             });
         let mut output = message(MessageRole::Tool, "edited");
-        output.tool_result = Some(pl_protocol::ToolResultRecord {
+        output.tool_result = Some(crate::completion::ToolResultRecord {
             item_id: "item-edit".into(),
             call_id: "call-edit".into(),
             name: "edit".into(),
             kind: ToolCallKind::Custom,
         });
         let mut function_output = message(MessageRole::Tool, "found");
-        function_output.tool_result = Some(pl_protocol::ToolResultRecord {
+        function_output.tool_result = Some(crate::completion::ToolResultRecord {
             item_id: "item-lookup".into(),
             call_id: "call-lookup".into(),
             name: "lookup".into(),
@@ -1666,7 +1668,7 @@ mod chatgpt_tests {
         );
         let mut search_request = request();
         search_request.tools = vec![ToolSpec::WebSearch {
-            options: pl_protocol::HostedWebSearchOptions::OpenAi {
+            options: crate::completion::HostedWebSearchOptions::OpenAi {
                 external_web_access: false,
                 indexed_web_access: None,
                 filters: None,
@@ -1712,7 +1714,7 @@ mod chatgpt_tests {
             allowed_callers, ..
         } = &mut only_programmatic
         {
-            *allowed_callers = vec![pl_protocol::ToolCallerMode::Programmatic];
+            *allowed_callers = vec![crate::completion::ToolCallerMode::Programmatic];
         }
         for tool in [ToolSpec::ProgrammaticToolCalling, only_programmatic] {
             let mut selected = request();
@@ -1729,8 +1731,8 @@ mod chatgpt_tests {
         } = &mut mixed
         {
             *allowed_callers = vec![
-                pl_protocol::ToolCallerMode::Direct,
-                pl_protocol::ToolCallerMode::Programmatic,
+                crate::completion::ToolCallerMode::Direct,
+                crate::completion::ToolCallerMode::Programmatic,
             ];
         }
         let mut selected = request();
@@ -1749,9 +1751,9 @@ mod chatgpt_tests {
             // Test the opaque input path without introducing a second codec or network bypass.
             selected
                 .input
-                .push(pl_protocol::ModelContextItem::Responses {
-                    item: pl_protocol::ResponsesContextItem {
-                        kind: pl_protocol::ResponsesContextItemKind::Unknown,
+                .push(crate::completion::ModelContextItem::Responses {
+                    item: crate::completion::ResponsesContextItem {
+                        kind: crate::completion::ResponsesContextItemKind::Unknown,
                         value,
                     },
                 });
@@ -1762,9 +1764,9 @@ mod chatgpt_tests {
             json!({"type":"reasoning","id":"r","encrypted_content":"opaque","status":"completed"});
         selected
             .input
-            .push(pl_protocol::ModelContextItem::Responses {
-                item: pl_protocol::ResponsesContextItem {
-                    kind: pl_protocol::ResponsesContextItemKind::Reasoning,
+            .push(crate::completion::ModelContextItem::Responses {
+                item: crate::completion::ResponsesContextItem {
+                    kind: crate::completion::ResponsesContextItemKind::Reasoning,
                     value: reasoning.clone(),
                 },
             });
@@ -1906,7 +1908,7 @@ mod timing_tests {
         }
         timer.observe(&ModelStreamEvent::text_completed(
             "text".into(),
-            pl_protocol::trace::TraceTextChannel::Final,
+            crate::trace::TraceTextChannel::Final,
             None,
             None,
         ));
@@ -1944,7 +1946,8 @@ mod timing_tests {
             CompletionEventStream, StreamCollectContext,
             collect_completion_event_stream_with_idle_timeout,
         };
-        use pl_protocol::{PureError, trace::TraceTextChannel};
+        use crate::trace::TraceTextChannel;
+        use pl_protocol::PureError;
         use tokio_util::sync::CancellationToken;
 
         for ending in ["error", "eof", "timeout", "cancel"] {

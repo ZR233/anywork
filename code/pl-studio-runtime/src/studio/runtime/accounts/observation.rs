@@ -1,10 +1,10 @@
 use super::super::StudioRuntime;
 use crate::StudioProductTopic;
 use crate::studio::product_event_bus::ProductTopicSignal;
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AccountDomainFrame, AccountObservationTarget, ResourceStamp, StudioError, StudioErrorCode,
 };
+use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{Mutex, watch};
 use tokio_util::sync::CancellationToken;

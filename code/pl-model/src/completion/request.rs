@@ -4,10 +4,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::completion::tool_schema::{ToolProjection, provider_compatible_tool};
 use crate::completion::usage::ReasoningConfig;
+use crate::completion::{AttachmentModality, ContentPart, Message, ModelContextItem, ToolSpec};
 use crate::model::{ModelCapabilities, ModelModality};
-use pl_protocol::{
-    AttachmentModality, ContentPart, Message, ModelContextItem, PureError, ToolSpec,
-};
+use pl_protocol::PureError;
 
 /// Provider-neutral trusted instruction content for one completion request.
 ///

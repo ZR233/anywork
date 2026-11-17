@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use pl_protocol::{AgentWorkspaceMode, PureError};
+use crate::{AgentWorkspaceMode, PureError};
 use serde::Serialize;
 
 use super::definition::{

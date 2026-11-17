@@ -1,8 +1,8 @@
 //! Final text emitted by the explicit completion tool, decoded from the saved producer receipt.
 use super::order;
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 use pl_core::thread::ToolOutcome;
-use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 
 pub(super) fn project_completion(
     thread_id: &str,

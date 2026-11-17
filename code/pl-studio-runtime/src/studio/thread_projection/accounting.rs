@@ -175,7 +175,7 @@ impl PreparedAccounting {
 
 fn merge_costs(
     target: &mut Vec<pl_core::thread::UsageCost>,
-    incoming: &[pl_protocol::RuntimeCostAmount],
+    incoming: &[crate::RuntimeCostAmount],
 ) -> bool {
     let mut complete = true;
     for cost in incoming {

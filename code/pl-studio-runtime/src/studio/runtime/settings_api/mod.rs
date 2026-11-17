@@ -1,13 +1,13 @@
 //! Studio Settings 命令层：把各类设置更新请求写入配置 runtime 并发布 canonical snapshot。
 
-use anyhow::{Context, Result};
-use pl_protocol::ThreadModeId;
-use pl_protocol::studio::{
+use crate::mode::ThreadModeId;
+use crate::{
     CommandEffectPoint, CreateAccountRequest, RemoveAccountModelRequest, RemoveAccountRequest,
     SetAccountBillingKindRequest, SetAccountModelEnabledRequest, SetDefaultAccountRequest,
     SetThreadModelRouteRequest, SettingsCommandReply, SettingsFieldUpdate, SettingsStateResponse,
     ThreadModelRouteCommandReply, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
+use anyhow::{Context, Result};
 
 use crate::PermissionMode;
 use crate::account_usage::account_usage_query_kind;
@@ -54,12 +54,12 @@ impl StudioRuntime {
             })?;
         let config = projected?;
         Ok(crate::StudioSettingsConfigStateSnapshot {
-            state: pl_protocol::ObservedResource::ready(config.revision, config.updated_at, config),
+            state: crate::ObservedResource::ready(config.revision, config.updated_at, config),
         })
     }
 
     /// Reads the canonical built-in account and model catalog.
-    pub fn load_account_catalog(&self) -> Result<pl_protocol::AccountCatalogSnapshot> {
+    pub fn load_account_catalog(&self) -> Result<crate::AccountCatalogSnapshot> {
         let mut snapshot = pl_model::config::builtin_account_catalog()?.snapshot()?;
         for template in &mut snapshot.templates {
             template.supports_usage_query = Some(
@@ -93,8 +93,7 @@ impl StudioRuntime {
             let projects = self.agent_facility.product_events.project_snapshot().await;
             anyhow::ensure!(
                 !projects.iter().any(|project| {
-                    project.kind == pl_protocol::studio::WorkspaceKind::Standalone
-                        && value.contains(&project.id)
+                    project.kind == crate::WorkspaceKind::Standalone && value.contains(&project.id)
                 }),
                 "the standalone workspace cannot be pinned"
             );
@@ -154,7 +153,7 @@ impl StudioRuntime {
                     SettingsFieldUpdate::ProjectDocMaxBytes { value } => {
                         config.instructions.project_doc_max_bytes = usize::try_from(value)
                             .map_err(|_| {
-                                pl_protocol::PureError::ConfigError(
+                                crate::PureError::ConfigError(
                                     "projectDocMaxBytes exceeds this platform".to_string(),
                                 )
                             })?;
@@ -193,7 +192,7 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::GeneralSidebarWidth { value } => {
                         if !value.is_none_or(|width| (300..=440).contains(&width)) {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "sidebar width must be between 300 and 440".to_string(),
                             ));
                         }
@@ -201,7 +200,7 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::GeneralPinnedThreadIds { value } => {
                         if value.len() > 64 {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "at most 64 pinned sessions are supported".to_string(),
                             ));
                         }
@@ -209,7 +208,7 @@ impl StudioRuntime {
                     }
                     SettingsFieldUpdate::GeneralPinnedProjectIds { value } => {
                         if value.len() > 64 {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "at most 64 pinned projects are supported".to_string(),
                             ));
                         }
@@ -256,10 +255,8 @@ impl StudioRuntime {
                         account_id,
                         model_id,
                     } => {
-                        let mode =
-                            ThreadModeId::new(mode_id.trim().to_string()).map_err(|error| {
-                                pl_protocol::PureError::ConfigError(error.to_string())
-                            })?;
+                        let mode = ThreadModeId::new(mode_id.trim().to_string())
+                            .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         let effort = config
                             .mode_model_routes
                             .get(&mode)
@@ -275,21 +272,19 @@ impl StudioRuntime {
                             &model_id,
                             effort,
                         )
-                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+                        .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         config.mode_model_routes.insert(mode, route);
                     }
                     SettingsFieldUpdate::ModeReasoningEffort { mode_id, effort } => {
-                        let mode =
-                            ThreadModeId::new(mode_id.trim().to_string()).map_err(|error| {
-                                pl_protocol::PureError::ConfigError(error.to_string())
-                            })?;
+                        let mode = ThreadModeId::new(mode_id.trim().to_string())
+                            .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         let current =
                             config
                                 .mode_model_routes
                                 .get(&mode)
                                 .cloned()
                                 .ok_or_else(|| {
-                                    pl_protocol::PureError::ConfigError(format!(
+                                    crate::PureError::ConfigError(format!(
                                         "Thread Mode {mode} has no model route"
                                     ))
                                 })?;
@@ -300,7 +295,7 @@ impl StudioRuntime {
                             &current.model_id,
                             effort.as_deref(),
                         )
-                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+                        .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         config.mode_model_routes.insert(mode, route);
                     }
                     SettingsFieldUpdate::RoleModel {
@@ -310,7 +305,7 @@ impl StudioRuntime {
                     } => {
                         let role_key = role.trim();
                         if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
@@ -329,13 +324,13 @@ impl StudioRuntime {
                             &model_id,
                             effort,
                         )
-                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+                        .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         config.models.routes.insert(role_id, route);
                     }
                     SettingsFieldUpdate::RoleReasoningEffort { role, effort } => {
                         let role_key = role.trim();
                         if role_key == crate::config::ROOT_AGENT_ROUTE_KEY {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "planner is a root identity, not a configurable child model role"
                                     .to_string(),
                             ));
@@ -350,7 +345,7 @@ impl StudioRuntime {
                             &current.model_id,
                             effort.as_deref(),
                         )
-                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))?;
+                        .map_err(|error| crate::PureError::ConfigError(error.to_string()))?;
                         config.models.routes.insert(role_id, route);
                     }
                 }
@@ -417,7 +412,7 @@ impl StudioRuntime {
                     |desired, effective| {
                         let id = AccountId::new(request.account.account_id.trim())?;
                         if desired.models.accounts.contains_key(&id) {
-                            return Err(pl_protocol::PureError::ConfigError(
+                            return Err(crate::PureError::ConfigError(
                                 "account already exists; use a field patch".into(),
                             ));
                         }
@@ -427,14 +422,11 @@ impl StudioRuntime {
                             credential,
                             &self.config_runtime,
                         )
-                        .map_err(|error| pl_protocol::PureError::ConfigError(error.to_string()))
+                        .map_err(|error| crate::PureError::ConfigError(error.to_string()))
                     },
                 )?)
             })?;
-        if matches!(
-            authentication,
-            pl_protocol::studio::AccountAuthenticationIntent::ApiKey
-        ) {
+        if matches!(authentication, crate::AccountAuthenticationIntent::ApiKey) {
             self.chatgpt_auth.discard_account(&account_id).await?;
         }
         self.publish_settings_state()?;
@@ -466,9 +458,7 @@ impl StudioRuntime {
                     .get(&account_id)
                     .cloned()
                     .ok_or_else(|| {
-                        pl_protocol::PureError::ConfigError(format!(
-                            "unknown account: {account_id}"
-                        ))
+                        crate::PureError::ConfigError(format!("unknown account: {account_id}"))
                     })?;
                 account.set_model_enabled(&request.model_id, request.enabled)?;
                 changed = desired.models.accounts.get(&account_id).is_some_and(|old| {
@@ -500,7 +490,7 @@ impl StudioRuntime {
             .update(request.expected_revision, |desired| {
                 let mut next = desired.clone();
                 let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
-                    pl_protocol::PureError::ConfigError(format!("unknown account: {account_id}"))
+                    crate::PureError::ConfigError(format!("unknown account: {account_id}"))
                 })?;
                 let value = request.billing_kind.value();
                 changed = account.billing_kind != value;
@@ -596,9 +586,7 @@ impl StudioRuntime {
             |desired, _effective| {
                 let mut next = desired.clone();
                 let account = next.models.accounts.get_mut(&account_id).ok_or_else(|| {
-                    pl_protocol::PureError::ConfigError(format!(
-                        "account does not exist: {account_id}"
-                    ))
+                    crate::PureError::ConfigError(format!("account does not exist: {account_id}"))
                 })?;
                 account.remove_manual_model(model_id)?;
                 next.validate_declarations()?;
@@ -816,13 +804,13 @@ impl StudioRuntime {
     }
 }
 
-fn parse_web_search_mode(value: &str) -> pl_protocol::Result<pl_protocol::search::WebSearchMode> {
+fn parse_web_search_mode(value: &str) -> crate::Result<crate::WebSearchMode> {
     match value.trim() {
-        "disabled" => Ok(pl_protocol::search::WebSearchMode::Disabled),
-        "cached" => Ok(pl_protocol::search::WebSearchMode::Cached),
-        "indexed" => Ok(pl_protocol::search::WebSearchMode::Indexed),
-        "live" => Ok(pl_protocol::search::WebSearchMode::Live),
-        _ => Err(pl_protocol::PureError::ConfigError(
+        "disabled" => Ok(crate::WebSearchMode::Disabled),
+        "cached" => Ok(crate::WebSearchMode::Cached),
+        "indexed" => Ok(crate::WebSearchMode::Indexed),
+        "live" => Ok(crate::WebSearchMode::Live),
+        _ => Err(crate::PureError::ConfigError(
             "Unsupported web search mode".to_string(),
         )),
     }
@@ -830,13 +818,13 @@ fn parse_web_search_mode(value: &str) -> pl_protocol::Result<pl_protocol::search
 
 fn parse_web_search_context_size(
     value: Option<&str>,
-) -> pl_protocol::Result<Option<pl_protocol::WebSearchContextSize>> {
+) -> crate::Result<Option<crate::WebSearchContextSize>> {
     match value.map(str::trim).filter(|value| !value.is_empty()) {
         None => Ok(None),
-        Some("low") => Ok(Some(pl_protocol::WebSearchContextSize::Low)),
-        Some("medium") => Ok(Some(pl_protocol::WebSearchContextSize::Medium)),
-        Some("high") => Ok(Some(pl_protocol::WebSearchContextSize::High)),
-        Some(_) => Err(pl_protocol::PureError::ConfigError(
+        Some("low") => Ok(Some(crate::WebSearchContextSize::Low)),
+        Some("medium") => Ok(Some(crate::WebSearchContextSize::Medium)),
+        Some("high") => Ok(Some(crate::WebSearchContextSize::High)),
+        Some(_) => Err(crate::PureError::ConfigError(
             "Unsupported web search context size".to_string(),
         )),
     }
@@ -844,7 +832,7 @@ fn parse_web_search_context_size(
 
 fn update_web_search_location(
     config: &mut crate::StudioConfig,
-    update: impl FnOnce(&mut pl_protocol::search::WebSearchLocation),
+    update: impl FnOnce(&mut crate::WebSearchLocation),
 ) {
     let location = config
         .web_search
@@ -867,7 +855,7 @@ pub(super) fn validated_route(
     let model_id = model_id.trim();
     let account_key = AccountId::new(account_id)?;
     let account = config.models.accounts.get(&account_key).ok_or_else(|| {
-        pl_protocol::studio::StudioError::invalid_argument(format!(
+        crate::StudioError::invalid_argument(format!(
             "{subject} references missing account: {account_id}"
         ))
     })?;
@@ -876,7 +864,7 @@ pub(super) fn validated_route(
         .iter()
         .find(|model| model.model_id == model_id)
         .ok_or_else(|| {
-            pl_protocol::studio::StudioError::invalid_argument(format!(
+            crate::StudioError::invalid_argument(format!(
                 "{subject} references missing model: {account_id}.{model_id}"
             ))
         })?;
@@ -887,7 +875,7 @@ pub(super) fn validated_route(
                 .iter()
                 .any(|candidate| candidate == value)
             {
-                return Err(pl_protocol::studio::StudioError::invalid_argument(format!(
+                return Err(crate::StudioError::invalid_argument(format!(
                     "{subject} uses unsupported effort '{value}' for model {account_id}.{model_id}"
                 ))
                 .into());
@@ -906,9 +894,9 @@ pub(super) fn validated_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::StudioUiLanguage;
     use crate::config::{ConfigPaths, ConfigStore, StudioConfig};
     use crate::{StudioHostKind, StudioRuntimeOptions};
-    use pl_protocol::studio::StudioUiLanguage;
 
     #[tokio::test]
     async fn ui_language_commands_publish_persist_and_survive_restart() -> Result<()> {

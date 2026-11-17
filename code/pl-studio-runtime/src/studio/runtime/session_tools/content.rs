@@ -2,9 +2,9 @@
 use super::{StudioRuntime, output};
 use crate::studio::ConversationReader;
 
+use crate::{ChatBatch, ChatScope, ContentRange, ContentRef, ReadDemand};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
-use pl_protocol::{ChatBatch, ChatScope, ContentRange, ContentRef, ReadDemand};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -85,13 +85,13 @@ impl Default for ReadOwners {
     }
 }
 fn stale_scope() -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::StaleRevision,
+    crate::StudioError::new(
+        crate::StudioErrorCode::StaleRevision,
         "Tool read scope is unknown or retired",
         false,
     )
     .with_reason(
-        pl_protocol::studio::StudioErrorReason::StaleReadScope,
+        crate::StudioErrorReason::StaleReadScope,
         serde_json::Value::Null,
     )
     .into()
@@ -355,7 +355,7 @@ pub(super) struct ReadInput {
     #[schemars(with = "Option<serde_json::Value>")]
     reference: Option<ContentRef>,
     #[schemars(with = "Option<serde_json::Value>")]
-    collection: Option<pl_protocol::CurrentCollectionRef>,
+    collection: Option<crate::CurrentCollectionRef>,
     #[schemars(with = "Option<serde_json::Value>")]
     range: Option<ContentRange>,
     #[serde(default)]
@@ -366,8 +366,8 @@ pub(super) struct ReadInput {
 pub(super) fn read_schema() -> serde_json::Value {
     let mut schema = pl_agent_tool::typed::input_schema_for::<ReadInput>();
     schema["properties"]["demand"] = serde_json::json!({"anyOf":[{"type":"object","required":["maxItems","maxBytes"],"additionalProperties":false,"properties":{
-        "maxItems":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_READ_MAX_ITEMS},
-        "maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
+        "maxItems":{"type":"integer","minimum":1,"maximum":crate::CHAT_READ_MAX_ITEMS},
+        "maxBytes":{"type":"integer","minimum":1,"maximum":crate::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
     schema["properties"]["reference"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy the canonical ContentRef from the Chat envelope or manifest unchanged."},{"type":"null"}]});
     schema["properties"]["scope"]["description"] = serde_json::json!(
         "Required for a new original read: explicitly select queryClass Class or All, and optional real encoded parentId. Continue an existing readScope without repeating scope. Display group IDs are not business parents."
@@ -377,7 +377,7 @@ pub(super) fn read_schema() -> serde_json::Value {
         "Read the current Plan and interaction resource heads on this readScope; no demand or content cursor is required."
     );
     schema["properties"]["range"] = serde_json::json!({"anyOf":[{"type":"object","required":["offset","maxBytes"],"additionalProperties":false,"properties":{
-        "offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CONTENT_WINDOW_MAX_BYTES}}},{"type":"null"}]});
+        "offset":{"type":"integer","minimum":0},"maxBytes":{"type":"integer","minimum":1,"maximum":crate::CONTENT_WINDOW_MAX_BYTES}}},{"type":"null"}]});
     schema
 }
 fn encode(value: &impl Serialize) -> Result<String> {
@@ -439,17 +439,16 @@ pub(super) async fn get(
                 .await?;
             pending_more = page.continuation.is_some();
             for entry in page.entries {
-                let interaction =
-                    match entry.payload {
-                        pl_protocol::PayloadData::Inline { bytes } => Some(
-                            serde_json::from_slice::<pl_protocol::InteractionRequest>(&bytes)?,
-                        ),
-                        pl_protocol::PayloadData::Deferred { .. } => None,
-                    };
+                let interaction = match entry.payload {
+                    crate::PayloadData::Inline { bytes } => {
+                        Some(serde_json::from_slice::<crate::InteractionRequest>(&bytes)?)
+                    }
+                    crate::PayloadData::Deferred { .. } => None,
+                };
                 let value = if let Some(interaction) = interaction {
                     let kind = match &interaction.content {
-                        pl_protocol::InteractionContent::UserInput(_) => "userInput",
-                        pl_protocol::InteractionContent::ToolApproval(_) => "toolApproval",
+                        crate::InteractionContent::UserInput(_) => "userInput",
+                        crate::InteractionContent::ToolApproval(_) => "toolApproval",
                     };
                     serde_json::json!({"interactionId":interaction.interaction_id,"kind":kind,
                         "revision":interaction.revision,"scope":interaction.scope,
@@ -468,8 +467,8 @@ pub(super) async fn get(
             .map(|entry| {
                 let atom = entry.atom;
                 let outcome = match &atom.lifecycle {
-                    pl_protocol::ChatAtomLifecycle::Terminal { outcome, .. } => Some(*outcome),
-                    pl_protocol::ChatAtomLifecycle::Active { .. } => None,
+                    crate::ChatAtomLifecycle::Terminal { outcome, .. } => Some(*outcome),
+                    crate::ChatAtomLifecycle::Active { .. } => None,
                 };
                 serde_json::json!({"id":entry.record_id,"kind":atom.kind,"turnId":atom.turn_id,
                 "startedAt":atom.started_at,"finishedAt":atom.finished_at,"outcome":outcome,
@@ -494,7 +493,7 @@ pub(super) async fn get(
 async fn initial_activity(
     resource: &ReadResource,
     through_seq: u64,
-) -> Result<Arc<pl_protocol::ActivitySnapshot>> {
+) -> Result<Arc<crate::ActivitySnapshot>> {
     let mut feed = resource.feed.lock().await;
     match feed.recv().await? {
         Some(crate::studio::ConversationEvent::Activity { snapshot }) => {
@@ -513,10 +512,7 @@ async fn opened_facts(
     session: &str,
     resource: &ReadResource,
     through_seq: u64,
-) -> Result<(
-    pl_protocol::ThreadSnapshot,
-    Arc<pl_protocol::ActivitySnapshot>,
-)> {
+) -> Result<(crate::ThreadSnapshot, Arc<crate::ActivitySnapshot>)> {
     let activity = initial_activity(resource, through_seq).await?;
     // One-shot tool output reads the point-in-time helper. It does not open a second assembler.
     let state = runtime.thread_snapshot(session).await?;
@@ -815,7 +811,7 @@ pub(super) async fn search(
                 let page = search_read(
                     cancel,
                     runtime.agent_facility.product_events.query_threads(
-                        &pl_protocol::studio::ThreadDirectoryQuery {
+                        &crate::ThreadDirectoryQuery {
                             workspace_id: args.workspace_id.clone(),
                             archived: args.archived,
                             ..Default::default()
@@ -1164,10 +1160,7 @@ mod tests {
         .await?;
         let result = async {
             let thread = env
-                .start(
-                    pl_protocol::ThreadWorkspaceMode::Local,
-                    "search-run-members",
-                )
+                .start(crate::ThreadWorkspaceMode::Local, "search-run-members")
                 .await?;
             let session = &thread.thread.id;
             let completed =
@@ -1194,7 +1187,7 @@ mod tests {
             let mut members = std::collections::BTreeSet::new();
             loop {
                 for entry in page.entries {
-                    if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                    if entry.atom.kind == crate::ChatAtomKind::Reasoning {
                         assert!(members.insert(entry.record_id));
                     }
                 }
@@ -1226,10 +1219,10 @@ mod tests {
             let mut terminal_receipt = false;
             for _ in 0..64 {
                 for entry in &page.entries {
-                    if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                    if entry.atom.kind == crate::ChatAtomKind::Reasoning {
                         assert!(child_members.insert(entry.record_id.clone()));
                     }
-                    terminal_receipt |= entry.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt;
+                    terminal_receipt |= entry.atom.kind == crate::ChatAtomKind::TurnReceipt;
                 }
                 let Some(before) = page.before.as_deref() else {
                     break;
@@ -1302,18 +1295,18 @@ mod tests {
 
     fn reason(error: &anyhow::Error) -> Option<&str> {
         error
-            .downcast_ref::<pl_protocol::studio::StudioError>()
+            .downcast_ref::<crate::StudioError>()
             .and_then(|error| error.reason())
     }
 
     #[tokio::test]
     async fn session_tools_read_plan_and_interaction_refs_then_keep_hidden_continuation_out_of_history()
     -> Result<()> {
-        use pl_protocol::studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput};
-        use pl_protocol::{
+        use crate::{
             AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionResolution, InteractionStatus,
             ThreadNotification, ThreadSubscriptionUpdate, UserInputAnswer, UserInputResolution,
         };
+        use crate::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput};
         use serde_json::json;
         use std::time::Duration;
         const PROMPT: &str = "session-business-plan";
@@ -1349,7 +1342,7 @@ mod tests {
                         text: PROMPT.into(),
                         attachment_draft_ids: Vec::new(),
                     },
-                    mode: pl_protocol::ThreadModeId::task().to_string(),
+                    mode: crate::mode::ThreadModeId::task().to_string(),
                     route: NewThreadModelRoute {
                         account_id: "root-fixture".into(),
                         model_id: support::MODEL.into(),
@@ -1357,7 +1350,7 @@ mod tests {
                     },
                     delegation_mode: None,
                     delegation_preference: None,
-                    workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+                    workspace_mode: crate::ThreadWorkspaceMode::Local,
                 },
                 None,
             ))
@@ -1422,9 +1415,9 @@ mod tests {
             let opened: serde_json::Value = serde_json::from_str(opened.payload().content())?;
             assert_eq!(
                 opened["state"]["schemaVersion"],
-                pl_protocol::THREAD_SCHEMA_VERSION
+                crate::THREAD_SCHEMA_VERSION
             );
-            let state_refs: pl_protocol::ThreadBusinessRefs =
+            let state_refs: crate::ThreadBusinessRefs =
                 serde_json::from_value(opened["state"]["businessRefs"].clone())?;
             let scope = opened["readScope"].as_str().context("read scope")?;
             let reader = owners.get(scope, id, None).await?;
@@ -1438,7 +1431,7 @@ mod tests {
             .await?;
             let heads: serde_json::Value = serde_json::from_str(heads.payload().content())?;
             assert_eq!(
-                serde_json::from_value::<pl_protocol::ThreadBusinessRefs>(
+                serde_json::from_value::<crate::ThreadBusinessRefs>(
                     heads["businessRefs"].clone()
                 )?,
                 state_refs
@@ -1456,7 +1449,7 @@ mod tests {
             )
             .await?;
             let window: serde_json::Value = serde_json::from_str(window.payload().content())?;
-            let window: pl_protocol::ContentWindow =
+            let window: crate::ContentWindow =
                 serde_json::from_value(window["window"].clone())?;
             assert!(String::from_utf8(window.bytes)?.contains("Business reference plan"));
             let collection = state_refs.interactions.context("interaction collection")?;
@@ -1504,7 +1497,7 @@ mod tests {
                         && turn.input_id.as_deref() != Some("business-plan-input")
                     {
                         anyhow::ensure!(
-                            matches!(turn.state, pl_protocol::TurnState::Completed(_)),
+                            matches!(turn.state, crate::TurnState::Completed(_)),
                             "approved continuation failed: {:?}",
                             turn.state
                         );
@@ -1585,7 +1578,7 @@ mod tests {
                 batch
                     .entries
                     .iter()
-                    .filter(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Input)
+                    .filter(|entry| entry.atom.kind == crate::ChatAtomKind::Input)
                     .count(),
                 1,
                 "hidden approval continuation became another user message"
@@ -1717,7 +1710,7 @@ mod tests {
         .await?;
         let result = async {
             let thread = env
-                .start(pl_protocol::ThreadWorkspaceMode::Local, "search-new-scope")
+                .start(crate::ThreadWorkspaceMode::Local, "search-new-scope")
                 .await?;
             let session = &thread.thread.id;
             support::completed_prompt(&env.runtime, session, "search-new-scope").await?;
@@ -1817,12 +1810,12 @@ mod tests {
         .await?;
         let result = async {
         let older = env.runtime.create_thread(&env.project.id, "older empty search session").await?;
-        let thread = env.start(pl_protocol::ThreadWorkspaceMode::Local, "search-borrowed-scope").await?;
+        let thread = env.start(crate::ThreadWorkspaceMode::Local, "search-borrowed-scope").await?;
         let session = &thread.thread.id;
         support::completed_prompt(&env.runtime, session, "search-borrowed-scope").await?;
         // Validate the actual directory order used by the production cross-session scan.
         let directory = env.runtime.agent_facility.product_events.query_threads(
-            &pl_protocol::studio::ThreadDirectoryQuery {
+            &crate::ThreadDirectoryQuery {
                 workspace_id: Some(env.project.id.clone()), ..Default::default()
             }, None, 1,
         ).await?;
@@ -1964,7 +1957,7 @@ mod tests {
         .await?;
         let result = async {
         let thread = env
-            .start(pl_protocol::ThreadWorkspaceMode::Local, "tool-read-scopes")
+            .start(crate::ThreadWorkspaceMode::Local, "tool-read-scopes")
             .await?;
         let session = &thread.thread.id;
         support::completed_prompt(&env.runtime, session, "tool-read-scopes").await?;
@@ -1993,7 +1986,7 @@ mod tests {
             .entries
             .iter()
             .find_map(|entry| {
-                (entry.atom.kind == pl_protocol::ChatAtomKind::Text)
+                (entry.atom.kind == crate::ChatAtomKind::Text)
                     .then(|| entry.record_id.clone())
             })
             .context("public text item")?;

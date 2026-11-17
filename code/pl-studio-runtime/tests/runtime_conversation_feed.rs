@@ -5,14 +5,13 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use pl_provider_fixture::{ReplyStage, responses_text};
+use pl_studio_runtime::{
     ActivitySnapshot, ChatAtomContent, ChatAtomLifecycle, ChatBatch, ChatPlacement, ChatScope,
     ChatSourceId, CompletedEntry, ContentOwner, ContentRange, ContentRef, ContentTarget,
-    PayloadData, ReadDemand, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-    TurnState,
-    studio::{StudioPromptInput, SubmitPromptRequest},
+    PayloadData, ReadDemand, StudioPromptInput, SubmitPromptRequest, ThreadNotification,
+    ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
 };
-use pl_provider_fixture::{ReplyStage, responses_text};
 use pl_studio_runtime::{
     ConversationEvent as ContentEvent, ConversationFeed as ContentFeed, ConversationReader,
     ConversationStateFeed, StudioRuntime,
@@ -110,8 +109,8 @@ async fn next(feed: &mut ObservedFeed) -> Result<Observation> {
         } = update.as_ref()
     {
         ensure!(
-            *completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION
-                && snapshot.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+            *completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION
+                && snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
         );
         if !snapshot.interactions.is_empty() {
             ensure!(
@@ -487,7 +486,7 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
             while !initial
                 .iter()
                 .chain(&appended)
-                .any(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning)
+                .any(|entry| entry.atom.kind == pl_studio_runtime::ChatAtomKind::Reasoning)
             {
                 let batch = chat(&mut feed).await?;
                 batch.validate_for(&ChatScope::conversation(None))?;
@@ -564,12 +563,12 @@ async fn observe_reliable_websocket_output(reconnect: bool, state_first: bool) -
                                 .await
                                 .context("completed Turn receipt")?;
                             ensure!(
-                                receipt.atom.kind == pl_protocol::ChatAtomKind::TurnReceipt
+                                receipt.atom.kind == pl_studio_runtime::ChatAtomKind::TurnReceipt
                                     && receipt.atom.turn_id.as_deref() == Some(turn.id.as_str())
                                     && matches!(
                                         receipt.atom.lifecycle,
                                         ChatAtomLifecycle::Terminal {
-                                            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+                                            outcome: pl_studio_runtime::ChatTerminalOutcome::Completed,
                                             ..
                                         }
                                     )
@@ -1010,7 +1009,7 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                                 .entries
                                 .iter()
                                 .filter(|entry| {
-                                    entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning
+                                    entry.atom.kind == pl_studio_runtime::ChatAtomKind::Reasoning
                                 })
                                 .count()
                                 == 2
@@ -1035,9 +1034,9 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                             );
                             through = batch.through_seq;
                             for entry in items(batch.entries)? {
-                                if entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning {
+                                if entry.atom.kind == pl_studio_runtime::ChatAtomKind::Reasoning {
                                     reasoning.push(entry);
-                                } else if entry.atom.kind == pl_protocol::ChatAtomKind::Text {
+                                } else if entry.atom.kind == pl_studio_runtime::ChatAtomKind::Text {
                                     let value = envelope(
                                         feed.reader(),
                                         entry.atom.payload.as_ref(),
@@ -1092,7 +1091,9 @@ async fn reliable_member_is_public_before_attempt_end_or_sqlite_commit() -> Resu
                     let queried = pages(members.reader(), &scope, set, demand(1))
                         .await?
                         .into_iter()
-                        .filter(|entry| entry.atom.kind == pl_protocol::ChatAtomKind::Reasoning)
+                        .filter(|entry| {
+                            entry.atom.kind == pl_studio_runtime::ChatAtomKind::Reasoning
+                        })
                         .collect::<Vec<_>>();
                     ensure!(queried.len() == 2);
                     ensure!(
@@ -1232,7 +1233,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
             };
             ensure!(
                 error
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .downcast_ref::<pl_studio_runtime::StudioError>()
                     .and_then(|error| error.reason())
                     == Some("conversationResyncRequired"),
                 "{error:#}"
@@ -1244,7 +1245,7 @@ async fn saved_nonempty_feed_requires_a_new_set_after_restart() -> Result<()> {
                 .context("old reader survived restart")?;
             ensure!(
                 stale
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .downcast_ref::<pl_studio_runtime::StudioError>()
                     .and_then(|error| error.reason())
                     == Some("conversationResyncRequired"),
                 "{stale:#}"
@@ -1505,7 +1506,9 @@ fn live_body_target(snapshot: &ActivitySnapshot) -> Result<Option<LiveBodyTarget
         .entries
         .iter()
         .map(|entry| &entry.atom)
-        .find(|atom| atom.kind == pl_protocol::ChatAtomKind::Text && !atom.contents.is_empty())
+        .find(|atom| {
+            atom.kind == pl_studio_runtime::ChatAtomKind::Text && !atom.contents.is_empty()
+        })
     else {
         return Ok(None);
     };
@@ -1525,7 +1528,7 @@ fn live_body_target(snapshot: &ActivitySnapshot) -> Result<Option<LiveBodyTarget
 }
 
 fn running_execution<'a>(
-    snapshot: &'a pl_protocol::ThreadSnapshot,
+    snapshot: &'a pl_studio_runtime::ThreadSnapshot,
     turn_id: &str,
 ) -> Option<&'a str> {
     let turn = snapshot.active_turn.as_ref()?;
@@ -1533,7 +1536,7 @@ fn running_execution<'a>(
         return None;
     }
     let execution = snapshot.runtime.as_ref()?.execution.as_ref()?;
-    (execution.phase() == pl_protocol::AgentExecutionPhase::Running
+    (execution.phase() == pl_studio_runtime::AgentExecutionPhase::Running
         && execution.turn_id() == Some(turn_id))
     .then_some(execution.id())
 }

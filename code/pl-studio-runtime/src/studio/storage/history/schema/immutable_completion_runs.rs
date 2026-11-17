@@ -3,7 +3,7 @@ use super::legacy_completion_types::{
     ChatReadHint, ChatRunPosition, ChatRunSeed, native_read_hint_v1,
 };
 use super::*;
-use pl_protocol::{ChatAtom, ChatAtomLifecycle};
+use crate::{ChatAtom, ChatAtomLifecycle};
 
 mod summary_coverage;
 
@@ -249,9 +249,9 @@ async fn prove_derived_coverage(db: &impl ConnectionTrait) -> Result<()> {
                 );
                 if let Some(payload) = &item.payload {
                     ensure!(
-                        matches!(payload, pl_protocol::PayloadData::Deferred { reference, byte_length }
+                        matches!(payload, crate::PayloadData::Deferred { reference, byte_length }
                             if reference.database_id == database
-                                && matches!(&reference.target, pl_protocol::ContentTarget::ItemPayload { item_id } if item_id == id)
+                                && matches!(&reference.target, crate::ContentTarget::ItemPayload { item_id } if item_id == id)
                                 && *byte_length == u64::try_from(record.try_get::<i64>("", "bytes")?)?),
                         "derived item has unique payload"
                     );
@@ -399,7 +399,7 @@ pub(super) async fn validate_preserved(db: &impl ConnectionTrait) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatTerminalOutcome};
+    use crate::{ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatTerminalOutcome};
     use sea_orm::{Database, DatabaseConnection, TransactionTrait};
     use sea_orm_migration::MigratorTraitSelf;
 
@@ -445,7 +445,7 @@ mod tests {
             atom.source = ChatSourceId::ForegroundTurn {
                 turn_id: "前台:F".into(),
             };
-            atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+            atom.delivery = crate::ChatDeliveryKind::Foreground;
             atom.lifecycle = ChatAtomLifecycle::Terminal {
                 started: None,
                 ended: None,
@@ -684,11 +684,9 @@ mod tests {
             TIMELINE_PROJECTION_VERSION, TimelineCategory, TimelineCategoryCount,
             TimelineGroupSummary, TimelineItem, TimelineItemKind, TimelineMembersRef,
         };
+        use crate::{ChatAtomContent, ChatContentRole, ContentOwner, ContentRef, ContentTarget};
         use pl_core::chat::{
             ChatContent, ChatContentKey, ChatContents, ChatKey, ContentData, ContentDescriptor,
-        };
-        use pl_protocol::{
-            ChatAtomContent, ChatContentRole, ContentOwner, ContentRef, ContentTarget,
         };
         use std::sync::Arc;
 
@@ -746,7 +744,7 @@ mod tests {
             atom.source = ChatSourceId::ForegroundTurn {
                 turn_id: "after-boundary".into(),
             };
-            atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+            atom.delivery = crate::ChatDeliveryKind::Foreground;
             atom.completion_seq = Some(1);
             atom.contents = vec![ChatAtomContent {
                 role: ChatContentRole::ReasoningSummary,
@@ -943,7 +941,7 @@ mod tests {
     async fn original_deferred_display_payload_is_covered_but_conflicting_references_roll_back()
     -> Result<()> {
         use super::super::legacy_timeline_types::{TimelineItem, TimelineItemKind};
-        use pl_protocol::{ContentRef, ContentTarget, PayloadData};
+        use crate::{ContentRef, ContentTarget, PayloadData};
         for conflict in ["none", "database", "item", "length"] {
             let (_dir, db) = fixture().await?;
             seed(&db, 1).await?;
@@ -1069,11 +1067,11 @@ mod tests {
         atom.kind = ChatAtomKind::Reasoning;
         atom.attempt_id = Some("attempt".into());
         atom.lifecycle = ChatAtomLifecycle::Terminal {
-            started: Some(pl_protocol::ChatFactPosition {
+            started: Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             }),
-            ended: Some(pl_protocol::ChatFactPosition {
+            ended: Some(crate::ChatFactPosition {
                 effect_seq: 2,
                 suborder: 0,
             }),

@@ -30,7 +30,7 @@ impl AgentServices {
         if self
             .events
             .agent_execution_identity(&target)
-            .is_some_and(|(_, binding, _)| matches!(binding, pl_protocol::AgentBinding::Acp(_)))
+            .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
         {
             let operation = owner.agent_operation(&target).await;
             let _seal = owner.seal_agent_operation(&target);
@@ -74,10 +74,7 @@ impl AgentServices {
         for (member, _) in self.factory.directory_rows_for_root(&caller).await? {
             // Select by public directory identity before reading a Native record. An ACP
             // root or sibling has no Native projection and is outside this close scope.
-            if !matches!(
-                member.backend,
-                pl_protocol::session::AgentBackend::Native { .. }
-            ) {
+            if !matches!(member.backend, crate::AgentBackend::Native { .. }) {
                 continue;
             }
             let path = self.authorize(&caller, &member.thread_id).await?;
@@ -258,7 +255,7 @@ impl AgentServices {
     pub(super) async fn close_saved_child(
         &self,
         owner: &SessionRuntime,
-        record: &pl_protocol::Thread,
+        record: &crate::Thread,
     ) -> Result<()> {
         let intent = self
             .store
@@ -359,7 +356,7 @@ impl AgentServices {
     pub(super) fn install_storage_owner(
         &self,
         owner: &SessionRuntime,
-        record: &pl_protocol::Thread,
+        record: &crate::Thread,
         checkpoint: pl_core::thread::ThreadCheckpoint,
         purpose: EntryPurpose,
     ) -> Result<ThreadHandle, ThreadAssemblyError> {
@@ -368,14 +365,14 @@ impl AgentServices {
                 .agent_execution_identity(&record.id)
                 .ok_or_else(|| ThreadAssemblyError::Identity(record.id.clone()))?;
         if &identity.session_id != owner.id()
-            || parent_thread.as_ref().map(pl_protocol::ThreadId::as_str)
+            || parent_thread.as_ref().map(crate::ThreadId::as_str)
                 != record.parent_thread_id.as_deref()
         {
             return Err(ThreadAssemblyError::Identity(record.id.clone()));
         }
-        if matches!(binding, pl_protocol::AgentBinding::Acp(_)) {
+        if matches!(binding, crate::AgentBinding::Acp(_)) {
             return Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             });
         }
         let thread =

@@ -116,4 +116,4 @@ impl fmt::Display for AccountModelKey {
     }
 }
 
-pub use pl_protocol::AgentRoleId;
+string_id!(AgentRoleId, "agent role id");

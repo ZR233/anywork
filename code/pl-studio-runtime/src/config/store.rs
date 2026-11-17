@@ -10,7 +10,7 @@ use crate::{PureError, Result};
 use super::credential::{CredentialStore, MemoryCredentialStore, SystemCredentialStore};
 use super::{STUDIO_CONFIG_DIR_NAME, STUDIO_CONFIG_FILE_NAME, StudioConfig};
 #[cfg(test)]
-use pl_protocol::ThreadModeId;
+use crate::mode::ThreadModeId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigPaths {
@@ -394,9 +394,7 @@ impl ConfigStore {
     fn hydrate_credentials(&self, config: &mut StudioConfig) -> Result<()> {
         if self.environment_only {
             for account in config.models.accounts.values_mut() {
-                if account.authentication
-                    == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt
-                {
+                if account.authentication == crate::AccountAuthenticationMethod::ChatGpt {
                     return Err(PureError::ConfigError("CLI requires API accounts with environment credentials; ChatGPT/OAuth is unsupported".into()));
                 }
                 account.bearer_token = None;
@@ -408,7 +406,7 @@ impl ConfigStore {
         let _locks = self.lock_accounts(config.models.accounts.keys().map(ToString::to_string))?;
         for (account_id, account) in &mut config.models.accounts {
             self.ensure_credential_available(account_id.as_str())?;
-            if account.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+            if account.authentication == crate::AccountAuthenticationMethod::ChatGpt {
                 account.bearer_token = None;
                 let payload = self
                     .credentials
@@ -556,9 +554,9 @@ fn user_home_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::WebSearchMode;
     use pl_model::config::{AccountCapabilitySelection, AccountId};
     use pl_model::protocol::StandaloneWebSearchDialect;
-    use pl_protocol::search::WebSearchMode;
 
     #[test]
     fn cli_loader_requires_existing_main_and_preserves_pending_credentials() {
@@ -617,7 +615,7 @@ mod tests {
         );
         assert!(cli.credentials.copy_legacy_account(id.as_str()).is_err());
         config.models.accounts.get_mut(&id).unwrap().authentication =
-            pl_protocol::studio::AccountAuthenticationMethod::ChatGpt;
+            crate::AccountAuthenticationMethod::ChatGpt;
         assert!(cli.hydrate_credentials(&mut config).is_err());
     }
 
@@ -653,7 +651,7 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
-        account.billing_kind = Some(pl_protocol::BillingKind::NoCharge);
+        account.billing_kind = Some(crate::BillingKind::NoCharge);
         store.save(&expected).unwrap();
         let mut historical: toml::Value =
             toml::from_str(&std::fs::read_to_string(store.paths.config_file()).unwrap()).unwrap();
@@ -672,7 +670,7 @@ mod tests {
         assert_eq!(
             migrated.models.accounts[&pl_model::config::AccountId::new(&id).unwrap()]
                 .authentication,
-            pl_protocol::studio::AccountAuthenticationMethod::ApiKey
+            crate::AccountAuthenticationMethod::ApiKey
         );
         assert_eq!(
             store.credentials.load_strict(&id).unwrap().as_deref(),
@@ -696,8 +694,8 @@ mod tests {
 
     #[test]
     fn chatgpt_save_rolls_back_original_credentials_and_preserves_refresh_markers() {
+        use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
         use pl_model::protocol::chatgpt::ChatGptCredentialRecord;
-        use pl_protocol::studio::{AccountAuthenticationMethod, ChatGptAccountInfo};
         let (_directory, store) = isolated_store();
         let mut initial = StudioConfig::default_config().unwrap();
         let id = pl_model::config::AccountId::new("transaction-fixture").unwrap();
@@ -742,7 +740,7 @@ mod tests {
         account.bearer_token = None;
         let intents = super::super::credential_commit::CredentialIntents::for_account(
             id.as_str(),
-            &pl_protocol::studio::AccountAuthenticationIntent::ChatGpt {
+            &crate::AccountAuthenticationIntent::ChatGpt {
                 login_id: "fixture-login".into(),
                 editor_id: "fixture-editor".into(),
             },
@@ -1017,10 +1015,7 @@ mod tests {
         assert_eq!(fs::read(path).unwrap(), original);
         let loaded = store.load_for_startup().unwrap();
         assert_eq!(loaded, config);
-        assert_eq!(
-            loaded.delegation,
-            pl_protocol::DelegationSettings::default()
-        );
+        assert_eq!(loaded.delegation, crate::DelegationSettings::default());
         assert!(
             loaded
                 .models
@@ -1553,7 +1548,7 @@ mod tests {
         assert_eq!(current_profile.display_name, "Verify");
         assert_eq!(current_profile.description, "Checks conversions");
         assert_eq!(current_profile.when_to_use, "after a migration");
-        let pl_protocol::AgentBinding::Native(native) = current_profile.binding else {
+        let crate::AgentBinding::Native(native) = current_profile.binding else {
             panic!("schema 1 Profile must migrate to Native");
         };
         assert_eq!(native.system_instructions.as_deref(), Some("verify"));

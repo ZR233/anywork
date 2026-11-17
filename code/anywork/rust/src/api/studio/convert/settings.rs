@@ -12,7 +12,7 @@ use crate::api::studio::types::{
 use pl_studio_runtime::{AccountUsageData, AccountUsageState, SubscriptionQuotaWindow};
 
 pub(crate) fn bridge_settings_snapshot(
-    snapshot: pl_protocol::studio::SettingsStateResponse,
+    snapshot: pl_studio_runtime::SettingsStateResponse,
 ) -> BridgeSettingsStateResponse {
     BridgeSettingsStateResponse {
         config: bridge_settings_config_snapshot(snapshot.config),
@@ -21,7 +21,7 @@ pub(crate) fn bridge_settings_snapshot(
 }
 
 pub(crate) fn bridge_settings_config_snapshot(
-    snapshot: pl_protocol::studio::SettingsConfigSnapshot,
+    snapshot: pl_studio_runtime::SettingsConfigSnapshot,
 ) -> BridgeSettingsConfigSnapshotDto {
     BridgeSettingsConfigSnapshotDto {
         revision: snapshot.revision,
@@ -31,7 +31,7 @@ pub(crate) fn bridge_settings_config_snapshot(
 }
 
 pub(crate) fn bridge_model_catalog_snapshot(
-    snapshot: pl_protocol::studio::ModelCatalogSnapshot,
+    snapshot: pl_studio_runtime::ModelCatalogSnapshot,
 ) -> BridgeModelCatalogSnapshotDto {
     BridgeModelCatalogSnapshotDto {
         revision: snapshot.revision,
@@ -53,7 +53,7 @@ pub(crate) fn bridge_model_catalog_snapshot(
 }
 
 pub(crate) fn bridge_model_catalog_account(
-    account: pl_protocol::studio::StudioAccountModelCatalog,
+    account: pl_studio_runtime::StudioAccountModelCatalog,
 ) -> BridgeModelCatalogAccountDto {
     BridgeModelCatalogAccountDto {
         account_id: account.account_id,
@@ -67,7 +67,7 @@ pub(crate) fn bridge_model_catalog_account(
 }
 
 pub(crate) fn bridge_settings(
-    settings: pl_protocol::studio::StudioSettings,
+    settings: pl_studio_runtime::StudioSettings,
 ) -> BridgeStudioSettingsDto {
     BridgeStudioSettingsDto {
         default_account_id: settings.default_account_id,
@@ -136,7 +136,7 @@ pub(crate) fn bridge_settings(
 }
 
 pub(crate) fn bridge_web_search_settings(
-    settings: pl_protocol::studio::StudioWebSearchSettings,
+    settings: pl_studio_runtime::StudioWebSearchSettings,
 ) -> BridgeWebSearchSettingsDto {
     BridgeWebSearchSettingsDto {
         configured_mode: settings.configured_mode,
@@ -154,7 +154,7 @@ pub(crate) fn bridge_web_search_settings(
 }
 
 pub(crate) fn bridge_deepseek_web_search_settings(
-    settings: pl_protocol::studio::StudioDeepSeekWebSearchSettings,
+    settings: pl_studio_runtime::StudioDeepSeekWebSearchSettings,
 ) -> BridgeDeepSeekWebSearchSettingsDto {
     BridgeDeepSeekWebSearchSettingsDto {
         configured_enabled: settings.configured_enabled,
@@ -167,7 +167,7 @@ pub(crate) fn bridge_deepseek_web_search_settings(
 }
 
 fn bridge_custom_model_settings(
-    model: pl_protocol::studio::StudioCustomModelSettings,
+    model: pl_studio_runtime::StudioCustomModelSettings,
 ) -> BridgeCustomModelSettingsDto {
     BridgeCustomModelSettingsDto {
         input_capabilities: model
@@ -191,12 +191,12 @@ pub(crate) fn account_settings_request(
     operation_id: String,
     expected_revision: u64,
     input: AccountSettingsInput,
-) -> pl_protocol::studio::CreateAccountRequest {
+) -> pl_studio_runtime::CreateAccountRequest {
     let account = input.account;
-    pl_protocol::studio::CreateAccountRequest {
+    pl_studio_runtime::CreateAccountRequest {
         operation_id,
         expected_revision,
-        account: pl_protocol::studio::AccountSettingsUpdate {
+        account: pl_studio_runtime::AccountSettingsUpdate {
             account_id: account.account_id,
             authentication: account.authentication.into(),
             template_id: account.template_id,
@@ -204,17 +204,17 @@ pub(crate) fn account_settings_request(
             name: account.name,
             base_url: account.base_url,
             secret: match account.secret {
-                AccountSecretInput::Preserve => pl_protocol::studio::AccountSecretUpdate::Preserve,
+                AccountSecretInput::Preserve => pl_studio_runtime::AccountSecretUpdate::Preserve,
                 AccountSecretInput::Replace { value } => {
-                    pl_protocol::studio::AccountSecretUpdate::Replace { value }
+                    pl_studio_runtime::AccountSecretUpdate::Replace { value }
                 }
-                AccountSecretInput::Clear => pl_protocol::studio::AccountSecretUpdate::Clear,
+                AccountSecretInput::Clear => pl_studio_runtime::AccountSecretUpdate::Clear,
             },
             initial_billing_kind: account.initial_billing_kind.map(Into::into),
             custom_models: account
                 .custom_models
                 .into_iter()
-                .map(|model| pl_protocol::studio::AccountModelUpdate {
+                .map(|model| pl_studio_runtime::AccountModelUpdate {
                     model_id: model.model_id,
                     display_name: model.display_name,
                     wire_api: model.wire_api,
@@ -225,7 +225,7 @@ pub(crate) fn account_settings_request(
             model_connection_modes: account
                 .model_connection_modes
                 .into_iter()
-                .map(|mode| pl_protocol::studio::AccountModelConnectionUpdate {
+                .map(|mode| pl_studio_runtime::AccountModelConnectionUpdate {
                     model_id: mode.model_id,
                     connection_mode: mode.connection_mode,
                 })
@@ -233,7 +233,7 @@ pub(crate) fn account_settings_request(
             model_auto_compact_limits: account
                 .model_auto_compact_limits
                 .into_iter()
-                .map(|limit| pl_protocol::studio::AccountModelAutoCompactUpdate {
+                .map(|limit| pl_studio_runtime::AccountModelAutoCompactUpdate {
                     model_id: limit.model_id,
                     limit: limit.limit,
                 })
@@ -317,7 +317,7 @@ fn zhipu_window_labels(window: &SubscriptionQuotaWindow) -> (&'static str, &str)
 }
 
 pub(crate) fn bridge_account_settings(
-    account: pl_protocol::studio::StudioAccountSettings,
+    account: pl_studio_runtime::StudioAccountSettings,
 ) -> BridgeAccountSettingsDto {
     BridgeAccountSettingsDto {
         authentication: account.authentication.into(),

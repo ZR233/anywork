@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::AttachmentModality;
 use anyhow::Result;
 use pl_core::{
     context::{ContextContent, ContextRecord, ContextSource, OpaquePayload, ResourceReference},
@@ -17,7 +18,6 @@ use pl_core::{
     tool::ToolOutput,
 };
 use pl_model::runtime::{attachment_content, decode_attachment};
-use pl_protocol::AttachmentModality;
 
 use super::{CurrentFile, VerifiedResources, verify_recovery_resources};
 use crate::{

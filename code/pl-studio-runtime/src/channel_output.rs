@@ -4,8 +4,8 @@
 //! must durably record each attempted stage before polling its future, and must not
 //! automatically retry an unknown outcome.
 
+use crate::AttachmentModality;
 use pl_core::context::ResourceReference;
-use pl_protocol::AttachmentModality;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, future::Future, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;

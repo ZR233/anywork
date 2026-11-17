@@ -1,10 +1,10 @@
 //! Automatic review policy, model invocation and response decoding owned by Studio.
 use crate::approval::{ToolApprovalDecision, ToolReviewCallback, ToolReviewRequest};
+use crate::{Message, MessageContent, MessageRole};
 use pl_model::completion::{CompletionRequest, ReasoningConfig, ReasoningSummary};
 use pl_model::config::ResolvedModelRoute;
 use pl_model::protocol::ProtocolEndpoint;
 use pl_model::runtime::{ModelInvocationContext, ModelRuntime};
-use pl_protocol::{Message, MessageContent, MessageRole};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -101,7 +101,7 @@ async fn review(binding: ReviewBinding, request: ToolReviewRequest) -> ToolAppro
         Ok(response) => response.model_observation.clone(),
         Err(failure) => failure.model_observation().cloned(),
     };
-    let billing = pl_protocol::InferenceBillingRecord {
+    let billing = crate::InferenceBillingRecord {
         purpose: Some("review".into()),
         inference_id,
         account_id: route.account_id.as_str().into(),
@@ -187,10 +187,10 @@ fn parse_reviewer_decision(content: &str) -> Result<ToolApprovalDecision, Review
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ChatGptAccountInfo;
     use pl_model::protocol::chatgpt::{
         ChatGptAuthError, ChatGptCredentialRecord, ChatGptCredentialStorage, ChatGptSession,
     };
-    use pl_protocol::studio::ChatGptAccountInfo;
 
     struct NoCredentialIo;
 

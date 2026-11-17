@@ -37,7 +37,7 @@ impl StudioRuntime {
     pub async fn submit_prompt_command(
         &self,
         thread_id: String,
-        request: pl_protocol::studio::SubmitPromptRequest,
+        request: crate::SubmitPromptRequest,
     ) -> Result<StudioSubmitPromptResponse> {
         self.submit_prompt(StudioSubmitPromptRequest {
             thread_id,
@@ -153,8 +153,8 @@ impl StudioRuntime {
             {
                 #[derive(serde::Deserialize)]
                 struct AcceptedPrompt {
-                    request: pl_protocol::studio::StudioPromptInput,
-                    presentation: pl_protocol::MessagePresentation,
+                    request: crate::StudioPromptInput,
+                    presentation: crate::MessagePresentation,
                 }
                 let accepted: AcceptedPrompt =
                     serde_json::from_str(previous.input.payload.content())?;
@@ -251,7 +251,7 @@ impl StudioRuntime {
                 self.reconcile_child_interaction_notices(&thread_id).await?;
             }
             let original_request = input.clone();
-            let pl_protocol::studio::StudioPromptInput {
+            let crate::StudioPromptInput {
                 input_id,
                 text: prompt,
                 attachment_draft_ids,
@@ -287,15 +287,9 @@ impl StudioRuntime {
                     });
                 }
                 let modality = match attachment.modality {
-                    pl_protocol::studio::StudioAttachmentModality::Image => {
-                        pl_protocol::AttachmentModality::Image
-                    }
-                    pl_protocol::studio::StudioAttachmentModality::Video => {
-                        pl_protocol::AttachmentModality::Video
-                    }
-                    pl_protocol::studio::StudioAttachmentModality::File => {
-                        pl_protocol::AttachmentModality::File
-                    }
+                    crate::StudioAttachmentModality::Image => crate::AttachmentModality::Image,
+                    crate::StudioAttachmentModality::Video => crate::AttachmentModality::Video,
+                    crate::StudioAttachmentModality::File => crate::AttachmentModality::File,
                 };
                 context.push(pl_model::runtime::attachment_content(reference, modality)?);
             }
@@ -303,8 +297,8 @@ impl StudioRuntime {
             #[serde(rename_all = "camelCase")]
             struct PromptPayload<'a> {
                 text: &'a str,
-                request: &'a pl_protocol::studio::StudioPromptInput,
-                presentation: pl_protocol::MessagePresentation,
+                request: &'a crate::StudioPromptInput,
+                presentation: crate::MessagePresentation,
                 attachments: &'a [crate::studio::AttachmentRecord],
             }
             let payload = pl_core::context::OpaquePayload::new(
@@ -422,7 +416,7 @@ fn submission_step_limit(
 }
 
 pub(in crate::studio::runtime) fn validate_prompt_content(
-    input: &pl_protocol::studio::StudioPromptInput,
+    input: &crate::StudioPromptInput,
 ) -> Result<()> {
     anyhow::ensure!(!input.input_id.trim().is_empty(), "inputId is empty");
     if input.text.trim().is_empty() && input.attachment_draft_ids.is_empty() {

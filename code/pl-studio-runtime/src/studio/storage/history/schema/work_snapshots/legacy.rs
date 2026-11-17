@@ -3,7 +3,7 @@ use super::*;
 use crate::studio::thread_projection::presentation::{
     DisplayMemberWrite, lightweight, member_key, record,
 };
-use pl_protocol::{ChatAtom, DisplayBlockBody, SingleVisibility};
+use crate::{ChatAtom, DisplayBlockBody, SingleVisibility};
 use serde_json::{Value, json};
 
 pub(super) async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
@@ -160,10 +160,10 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
             let item_id: String = row.try_get("", "item_id")?;
             atom.completion_item_id = Some(item_id.clone());
             atom.completion_seq = Some(u64::try_from(after)?);
-            atom.payload = Some(pl_protocol::PayloadData::Deferred {
-                reference: pl_protocol::ContentRef {
+            atom.payload = Some(crate::PayloadData::Deferred {
+                reference: crate::ContentRef {
                     database_id: database.clone(),
-                    target: pl_protocol::ContentTarget::ItemPayload { item_id },
+                    target: crate::ContentTarget::ItemPayload { item_id },
                 },
                 byte_length: u64::try_from(row.try_get::<i64>("", "byte_length")?)?,
             });
@@ -197,8 +197,8 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
                     thinking_summary: None,
                     body: if is_work {
                         DisplayBlockBody::Work {
-                            timing: pl_protocol::WorkTiming::default(),
-                            members: pl_protocol::DisplayBlockRef {
+                            timing: crate::WorkTiming::default(),
+                            members: crate::DisplayBlockRef {
                                 database_id: database.clone(),
                                 block_id: id.clone(),
                             },
@@ -226,7 +226,7 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
                 block_id: header.id.clone(),
                 association_key: association.clone(),
                 terminal: true,
-                head: pl_protocol::DisplayMemberHead {
+                head: crate::DisplayMemberHead {
                     member_key: association.clone(),
                     member_order: ordinal,
                     record: record(atom, None),

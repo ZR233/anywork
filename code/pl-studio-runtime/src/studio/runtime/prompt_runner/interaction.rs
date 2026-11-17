@@ -35,17 +35,17 @@ impl StudioRuntime {
     ) -> Result<StudioResolveInteractionResponse> {
         Self::validate_operation_id(&operation_id)?;
         if host_thread_id.trim().is_empty() {
-            return Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::invalid_argument("hostThreadId is required"),
-            ));
+            return Err(anyhow::Error::new(crate::StudioError::invalid_argument(
+                "hostThreadId is required",
+            )));
         }
         let lifecycle_guard = self.lifecycle_lock.lock().await;
         let current = match self.read_interaction_for_resolve(&interaction_id).await? {
             Some(current) => current,
             None => {
-                return Err(anyhow::Error::new(
-                    pl_protocol::studio::StudioError::not_found("interaction"),
-                ));
+                return Err(anyhow::Error::new(crate::StudioError::not_found(
+                    "interaction",
+                )));
             }
         };
         let interaction = current.interaction;
@@ -65,13 +65,13 @@ impl StudioRuntime {
         let thread_id = interaction.scope.thread_id.clone();
         if self.is_child_plan_record(&owner, local_id).await? {
             return Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::PermissionDenied,
+                crate::StudioError::new(
+                    crate::StudioErrorCode::PermissionDenied,
                     "A child Plan confirmation stays a diagnostic and is not decidable",
                     false,
                 )
                 .with_reason(
-                    pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
+                    crate::StudioErrorReason::InteractionNotHosted,
                     serde_json::json!({
                         "interactionId": interaction.interaction_id,
                         "interactionThreadId": thread_id,
@@ -86,13 +86,13 @@ impl StudioRuntime {
             && interaction.revision != expected_revision
         {
             return Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::StaleRevision,
+                crate::StudioError::new(
+                    crate::StudioErrorCode::StaleRevision,
                     "The interaction changed since it was observed; reload before deciding",
                     true,
                 )
                 .with_reason(
-                    pl_protocol::studio::StudioErrorReason::StaleInteraction,
+                    crate::StudioErrorReason::StaleInteraction,
                     serde_json::json!({
                         "interactionId": interaction.interaction_id,
                         "expectedRevision": expected_revision,
@@ -110,13 +110,13 @@ impl StudioRuntime {
         if current.durable || interaction.status() != InteractionStatus::Pending {
             if interaction.resolution().as_ref() != Some(&resolution) {
                 return Err(anyhow::Error::new(
-                    pl_protocol::studio::StudioError::new(
-                        pl_protocol::studio::StudioErrorCode::Conflict,
+                    crate::StudioError::new(
+                        crate::StudioErrorCode::Conflict,
                         "The interaction already has a different terminal decision",
                         false,
                     )
                     .with_reason(
-                        pl_protocol::studio::StudioErrorReason::StaleInteraction,
+                        crate::StudioErrorReason::StaleInteraction,
                         serde_json::json!({
                             "interactionId": interaction.interaction_id,
                             "currentRevision": interaction.revision,
@@ -316,7 +316,7 @@ impl StudioRuntime {
             // checks that silently lost the saved facts would allow a reused operation id and would
             // stop recognising a child Plan record.
             let thread = self.read_owned_thread(thread_id).await?;
-            let thread: pl_protocol::Thread = thread.into();
+            let thread: crate::Thread = thread.into();
             if let Some(checkpoint) =
                 crate::studio::thread_factory::recovery::load_checkpoint_read_only(
                     &self.store,
@@ -436,13 +436,13 @@ impl StudioRuntime {
             return Ok(());
         };
         Err(anyhow::Error::new(
-            pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Conflict,
+            crate::StudioError::new(
+                crate::StudioErrorCode::Conflict,
                 "This operation id already decided another interaction",
                 false,
             )
             .with_reason(
-                pl_protocol::studio::StudioErrorReason::StaleInteraction,
+                crate::StudioErrorReason::StaleInteraction,
                 serde_json::json!({
                     "operationId": operation_id,
                     "interactionId": format!("{thread_id}:{other}"),
@@ -547,7 +547,7 @@ impl StudioRuntime {
         &self,
         host_thread_id: &str,
     ) -> Result<crate::studio::ThreadRecord> {
-        use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
+        use crate::{StudioError, StudioErrorCode, StudioErrorReason};
         if host_thread_id.trim().is_empty() {
             return Err(anyhow::Error::new(StudioError::invalid_argument(
                 "hostThreadId is required",
@@ -577,7 +577,7 @@ impl StudioRuntime {
         host_thread_id: &str,
         interaction: &InteractionRequest,
     ) -> Result<crate::studio::ThreadRecord> {
-        use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
+        use crate::{StudioError, StudioErrorCode, StudioErrorReason};
         let host = self.ensure_root_host(host_thread_id).await?;
         let owner = self.read_owned_thread(&interaction.scope.thread_id).await?;
         if owner.id != host.id && owner.parent_thread_id.as_deref() != Some(host.id.as_str()) {
@@ -613,7 +613,7 @@ impl StudioRuntime {
                 format!("interaction:{}", interaction.interaction_id),
                 interaction.revision,
             )],
-            pl_protocol::studio::CommandEffectPoint::Immediate,
+            crate::CommandEffectPoint::Immediate,
             durable,
         );
         receipt.requires_identity_observation = true;
@@ -889,13 +889,13 @@ fn collect_decision_records(
 /// The retryable answer for "the decision is accepted but not saved yet".
 pub(super) fn child_decision_not_saved(interaction: &InteractionRequest) -> anyhow::Error {
     anyhow::Error::new(
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Busy,
+        crate::StudioError::new(
+            crate::StudioErrorCode::Busy,
             "The decision is accepted but not saved yet; retry to deliver it to the main session",
             true,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::InteractionNotHosted,
+            crate::StudioErrorReason::InteractionNotHosted,
             serde_json::json!({
                 "interactionId": interaction.interaction_id,
                 "decisionSaved": false,
@@ -912,13 +912,13 @@ pub(super) fn child_decision_not_saved(interaction: &InteractionRequest) -> anyh
 /// the identity.
 fn unreadable_decision(thread_id: &str, local_id: &str) -> anyhow::Error {
     anyhow::Error::new(
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Protocol,
+        crate::StudioError::new(
+            crate::StudioErrorCode::Protocol,
             "A saved decision of this session cannot be read; reload before deciding",
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleInteraction,
+            crate::StudioErrorReason::StaleInteraction,
             serde_json::json!({
                 "threadId": thread_id,
                 "interactionId": local_id,
@@ -933,13 +933,13 @@ fn unreadable_decision(thread_id: &str, local_id: &str) -> anyhow::Error {
 /// operation produced them, so no caller may be answered with its own identity as the accepted one.
 fn decision_identity_unrecorded(interaction: &InteractionRequest) -> anyhow::Error {
     anyhow::Error::new(
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Conflict,
+        crate::StudioError::new(
+            crate::StudioErrorCode::Conflict,
             "The stored decision predates operation identities and cannot be replayed under this one",
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleInteraction,
+            crate::StudioErrorReason::StaleInteraction,
             serde_json::json!({
                 "interactionId": interaction.interaction_id,
                 "currentRevision": interaction.revision,
@@ -1015,11 +1015,10 @@ fn operation_identity_of(content: &str, family: DecisionFamily) -> DecisionIdent
 fn is_complete_legacy_response(value: &serde_json::Value, family: DecisionFamily) -> bool {
     match family {
         DecisionFamily::Question => {
-            serde_json::from_value::<pl_protocol::UserInputResolution>(value.clone()).is_ok()
+            serde_json::from_value::<crate::UserInputResolution>(value.clone()).is_ok()
         }
         DecisionFamily::Approval => {
-            serde_json::from_value::<pl_protocol::ToolApprovalResolutionPayload>(value.clone())
-                .is_ok()
+            serde_json::from_value::<crate::ToolApprovalResolutionPayload>(value.clone()).is_ok()
         }
     }
 }
@@ -1031,7 +1030,7 @@ fn is_complete_legacy_response(value: &serde_json::Value, family: DecisionFamily
 /// distinct, actionable outcomes.
 fn interaction_error(error: crate::thread_assembler::StudioInteractionError) -> anyhow::Error {
     use crate::thread_assembler::StudioInteractionError as Source;
-    use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
+    use crate::{StudioError, StudioErrorCode, StudioErrorReason};
     match error {
         Source::Identity => anyhow::Error::new(
             StudioError::new(

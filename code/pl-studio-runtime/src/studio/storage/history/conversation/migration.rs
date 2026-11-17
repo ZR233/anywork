@@ -412,14 +412,14 @@ pub(in super::super) async fn append_published(
 pub(in super::super) struct LegacyActiveMember {
     pub id: String,
     pub source_order: Option<u64>,
-    pub contents: Vec<pl_protocol::ContentRef>,
+    pub contents: Vec<crate::ContentRef>,
 }
 
 pub(in super::super) async fn active_members(
     db: &impl ConnectionTrait,
     current: &crate::studio::storage::history::schema::legacy_timeline_types::CurrentProjection,
 ) -> Result<Vec<LegacyActiveMember>> {
-    use pl_protocol::{ContentOwner, ContentRef, ContentTarget};
+    use crate::{ContentOwner, ContentRef, ContentTarget};
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct Entry {
@@ -499,7 +499,7 @@ pub(in super::super) async fn active_members(
                 .checked_add(serde_json::to_vec(&body.reference)?.len())
                 .context("legacy member metadata size overflow")?;
             ensure!(
-                bytes <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+                bytes <= crate::CHAT_BATCH_MAX_BYTES as usize,
                 "legacy active members exceed current budget; original database preserved"
             );
             ensure!(

@@ -4,8 +4,8 @@ use super::{
     content::{InputView, input_view},
 };
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{MessagePresentation, ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 use pl_core::thread::input::InputState;
-use pl_protocol::{MessagePresentation, ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 
 pub(super) fn project_input(
     thread_id: &str,
@@ -47,10 +47,10 @@ pub(super) fn project_input(
         // A continuation's control input is framework control, not saved user content: it projects as
         // one runtime notice with no payload to expand, so the framework encoding never reaches the
         // transcript and no user question is repeated.
-        Ok(InputView::ControlNotice { notice }) => ExecutionShape::Raw(
-            pl_protocol::ThreadRawItem::runtime_control(notice, updated_at),
-        ),
-        Err(error) => ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
+        Ok(InputView::ControlNotice { notice }) => {
+            ExecutionShape::Raw(crate::ThreadRawItem::runtime_control(notice, updated_at))
+        }
+        Err(error) => ExecutionShape::Raw(crate::ThreadRawItem::stored(
             vec![super::raw_payload(&input.input.payload)],
             error.to_string(),
             updated_at,

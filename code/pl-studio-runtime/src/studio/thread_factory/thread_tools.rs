@@ -14,7 +14,7 @@ use std::sync::Arc;
 pub(super) struct ThreadToolAssembly<'a> {
     pub verified_local: Option<&'a super::VerifiedLocalResume>,
     pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
-    pub assignment: Option<&'a pl_protocol::AgentWorkspaceAssignmentSnapshot>,
+    pub assignment: Option<&'a crate::AgentWorkspaceAssignmentSnapshot>,
     pub thread_id: &'a str,
     pub cancellation: &'a tokio_util::sync::CancellationToken,
     pub config: &'a crate::config::StudioConfig,
@@ -55,11 +55,11 @@ impl StudioThreadFactory {
     pub(super) fn configure_review_finish(
         tools: &mut StudioThreadTools,
         id: &str,
-        profile: &pl_protocol::AgentProfileSnapshot,
-        assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
+        profile: &crate::AgentProfileSnapshot,
+        assignment: &crate::AgentWorkspaceAssignmentSnapshot,
     ) -> Result<(), ThreadAssemblyError> {
-        if profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review
-            || assignment.mode != pl_protocol::AgentWorkspaceMode::Review
+        if profile.workspace_mode != crate::AgentWorkspaceMode::Review
+            || assignment.mode != crate::AgentWorkspaceMode::Review
         {
             return Ok(());
         }

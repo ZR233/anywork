@@ -1,7 +1,7 @@
 //! Frozen schema-17 completion fold, used exclusively by named historical migrations.
 use super::legacy_timeline_types::*;
+use crate::protocol::*;
 use crate::studio::thread_projection::ProjectionError;
-use pl_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::result::Result;

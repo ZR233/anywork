@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatBatch, CompletedEntry, ContentManifestPage, ContentRange, ContentRef, ContentWindow,
     CurrentCollectionPage, CurrentCollectionRef, LegacyExecutionEvidencePage, ReadDemand,
-    studio::{StudioError, StudioErrorCode, StudioErrorReason},
+    StudioError, StudioErrorCode, StudioErrorReason,
 };
 use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineReader};
 use serde::Deserialize;
@@ -579,8 +579,8 @@ mod tests {
         model::{ModelInfo, ModelTransportProfile},
         protocol::ProtocolEndpoint,
     };
-    use pl_protocol::{ChatBatch, ChatPlacement, ChatScope};
     use pl_provider_fixture::FixtureServer;
+    use pl_studio_runtime::{ChatBatch, ChatPlacement, ChatScope};
     use pl_studio_runtime::{
         StudioHostKind, StudioRuntime, StudioRuntimeOptions,
         config::{ConfigPaths, ConfigStore, StudioConfig},
@@ -840,18 +840,15 @@ mod tests {
         use axum::body::Bytes;
         use axum::response::IntoResponse;
         use futures::{Stream, StreamExt};
-        use pl_protocol::{
-            ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentManifestPage,
-            ContentOwner, ContentTarget, ContentWindow, PayloadData, ReadDemand,
-            ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
-            studio::{
-                CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
-                SubmitPromptRequest,
-            },
-        };
         use pl_provider_fixture::{
             FixtureServer, Protocol, ReplyStage, Step, responses_authoritative_final,
             responses_reasoning_text, responses_text, responses_text_chunks,
+        };
+        use pl_studio_runtime::{
+            ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentManifestPage,
+            ContentOwner, ContentTarget, ContentWindow, CreateThreadRequest, NewThreadModelRoute,
+            PayloadData, ReadDemand, StudioError, StudioPromptInput, SubmitPromptRequest,
+            ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
         };
         use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
         use serde::{Serialize, de::DeserializeOwned};
@@ -989,13 +986,13 @@ mod tests {
                     CreateThreadRequest {
                         title: Some("HTTP conversation journey".into()),
                         input: input(FIRST),
-                        mode: pl_protocol::ThreadModeId::simple().to_string(),
+                        mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                         route: NewThreadModelRoute {
                             account_id: ACCOUNT.into(),
                             model_id: MODEL.into(),
                             effort: None,
                         },
-                        delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                        delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,
                     },
@@ -1200,7 +1197,7 @@ mod tests {
                 }
             }
 
-            async fn activity(&mut self) -> Result<pl_protocol::ActivitySnapshot> {
+            async fn activity(&mut self) -> Result<pl_studio_runtime::ActivitySnapshot> {
                 loop {
                     let (event, value) = self
                         .event()
@@ -1526,13 +1523,13 @@ mod tests {
 
         async fn activity_with_response(
             body: &mut SseBody,
-        ) -> Result<pl_protocol::ActivitySnapshot> {
+        ) -> Result<pl_studio_runtime::ActivitySnapshot> {
             for _ in 0..64 {
                 let activity = body.activity().await?;
                 if activity.entries.iter().any(|entry| {
                     entry.atom.kind == ChatAtomKind::Text
                         && entry.atom.contents.iter().any(|content| {
-                            matches!(content.role, pl_protocol::ChatContentRole::Body)
+                            matches!(content.role, pl_studio_runtime::ChatContentRole::Body)
                         })
                 }) {
                     return Ok(activity);
@@ -1767,8 +1764,8 @@ mod tests {
                     turn_receipts += 1;
                     ensure!(
                         message.atom.kind == ChatAtomKind::TurnReceipt
-                            && matches!(&message.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
-                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            && matches!(&message.atom.lifecycle, pl_studio_runtime::ChatAtomLifecycle::Terminal {
+                                outcome: pl_studio_runtime::ChatTerminalOutcome::Completed, ..
                             })
                             && value["data"]["inputId"].as_str() == first_turn.input_id.as_deref()
                             && value["data"]["outcome"]["kind"] == "completed",
@@ -1796,11 +1793,11 @@ mod tests {
             .iter()
             .find(|entry| {
                 entry.atom.kind == ChatAtomKind::Text
-                    && matches!(&entry.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Active { .. })
+                    && matches!(&entry.atom.lifecycle, pl_studio_runtime::ChatAtomLifecycle::Active { .. })
             })
             .context("Activity omitted live text part")?;
         let response_ref = live_entry.atom.contents.iter()
-            .find(|content| content.role == pl_protocol::ChatContentRole::Body)
+            .find(|content| content.role == pl_studio_runtime::ChatContentRole::Body)
             .context("Activity omitted live Body content reference")?
             .reference
             .clone();
@@ -1994,10 +1991,10 @@ mod tests {
             "reopened response Turn identity changed: {:?}",
             restored_text.atom.turn_id
         );
-        let pl_protocol::ChatAtomLifecycle::Terminal {
+        let pl_studio_runtime::ChatAtomLifecycle::Terminal {
             started: Some(started),
             ended: Some(ended),
-            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+            outcome: pl_studio_runtime::ChatTerminalOutcome::Completed,
         } = &restored_text.atom.lifecycle
         else {
             bail!(
@@ -2099,8 +2096,8 @@ mod tests {
                     ensure!(
                         message == reopened_receipt
                             && message.atom.kind == ChatAtomKind::TurnReceipt
-                            && matches!(&message.atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {
-                                outcome: pl_protocol::ChatTerminalOutcome::Completed, ..
+                            && matches!(&message.atom.lifecycle, pl_studio_runtime::ChatAtomLifecycle::Terminal {
+                                outcome: pl_studio_runtime::ChatTerminalOutcome::Completed, ..
                             })
                             && value["data"]["inputId"].as_str() == next_completed_turn.input_id.as_deref()
                             && value["data"]["outcome"]["kind"] == "completed",
@@ -2181,7 +2178,7 @@ mod tests {
         let shutdown_ref = shutdown_activity.entries.iter()
             .find(|entry| entry.atom.kind == ChatAtomKind::Text)
             .and_then(|entry| entry.atom.contents.iter()
-                .find(|content| content.role == pl_protocol::ChatContentRole::Body))
+                .find(|content| content.role == pl_studio_runtime::ChatContentRole::Body))
             .context("shutdown Activity response reference")?
             .reference.clone();
         let response = env
@@ -2263,7 +2260,7 @@ mod tests {
                     thread,
                 })
             }
-            async fn open(&self) -> Result<(pl_protocol::OpenTimeline, HeaderMap)> {
+            async fn open(&self) -> Result<(pl_studio_runtime::OpenTimeline, HeaderMap)> {
                 let request = serde_json::from_value(serde_json::json!({
                     "presentationVersion": 6, "readerProtocolVersion": 1,
                     "demand": { "maxItems": 1, "maxBytes": 16384 }
@@ -2285,9 +2282,9 @@ mod tests {
             }
             async fn first(
                 &self,
-                metadata: &pl_protocol::OpenTimeline,
+                metadata: &pl_studio_runtime::OpenTimeline,
                 headers: &HeaderMap,
-            ) -> Result<pl_protocol::ViewUpdate> {
+            ) -> Result<pl_studio_runtime::ViewUpdate> {
                 let request =
                     serde_json::from_value(serde_json::json!({"after": metadata.initial_cursor}))?;
                 let response = api(crate::timeline::next(
@@ -2515,7 +2512,7 @@ mod tests {
                     let response = api(opened)?.into_response();
                     let id = response.headers()[CONVERSATION_HEADER].to_str()?.to_owned();
                     let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                    let metadata: pl_protocol::OpenTimeline = serde_json::from_slice(&bytes)?;
+                    let metadata: pl_studio_runtime::OpenTimeline = serde_json::from_slice(&bytes)?;
                     ensure!(metadata.reader_id == id);
                     let mut headers = HeaderMap::new();
                     headers.insert(CONVERSATION_HEADER, HeaderValue::from_str(&id)?);
@@ -2555,11 +2552,13 @@ mod tests {
                         )
                         .await)?;
                         let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                        let update: pl_protocol::ViewUpdate = serde_json::from_slice(&bytes)?;
-                        ensure!(update.history.placement == pl_protocol::HistoryPlacement::Set);
+                        let update: pl_studio_runtime::ViewUpdate = serde_json::from_slice(&bytes)?;
+                        ensure!(
+                            update.history.placement == pl_studio_runtime::HistoryPlacement::Set
+                        );
                         ensure!(matches!(
                             update.tail,
-                            pl_protocol::TailUpdate::Replace { .. }
+                            pl_studio_runtime::TailUpdate::Replace { .. }
                         ));
                         if let Some(previous) = &first {
                             ensure!(&update == previous, "retry changed response");

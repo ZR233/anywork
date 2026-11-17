@@ -1,5 +1,5 @@
 //! Mechanical mappings of immutable completed records and activity snapshots.
-use pl_protocol as protocol;
+use pl_studio_runtime as protocol;
 
 use crate::api::studio::types::*;
 
@@ -510,7 +510,7 @@ mod tests {
         let mapped = business_refs(protocol::ThreadBusinessRefs {
             plan: Some(protocol::CurrentPlanHead {
                 revision: 12,
-                phase: protocol::AgentSessionPlanPhase::Approved,
+                phase: protocol::plan_tool::AgentSessionPlanPhase::Approved,
                 document: None,
             }),
             interactions: Some(protocol::CurrentCollectionRef {

@@ -918,8 +918,8 @@ pub(crate) mod memory_faults {
 #[cfg(test)]
 mod startup_diagnostics {
     use super::*;
+    use crate::StudioErrorCode;
     use crate::studio::startup::{StudioStartupError, StudioStartupErrorKind};
-    use pl_protocol::studio::StudioErrorCode;
 
     #[test]
     fn credential_source_survives_while_startup_diagnostics_redact_secret_material() {

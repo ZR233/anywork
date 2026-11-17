@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::BotModelRoute;
 use anyhow::{Context, Result, ensure};
-use pl_protocol::studio::BotModelRoute;
 use serde::{Deserialize, Serialize};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 

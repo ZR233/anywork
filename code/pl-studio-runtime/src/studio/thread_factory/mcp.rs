@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
 use anyhow::Result;
-use pl_protocol::{McpScope, ThreadMcpLifecycleKind, ThreadMcpServerState, ThreadMcpStateSnapshot};
 use pl_tool::command::ExecutorCommandBackend;
 use pl_tool::mcp::{
     McpAvailabilityKind, McpAvailabilitySnapshot, McpResetScope, McpRuntime, McpRuntimeHandle,
@@ -853,9 +853,7 @@ impl StudioThreadFactory {
         server_id: Option<&str>,
     ) -> Result<ThreadMcpStateSnapshot> {
         let owner = self.mcp_owner(thread_id).ok_or_else(|| {
-            pl_protocol::studio::StudioError::invalid_argument(format!(
-                "Thread '{thread_id}' is not active"
-            ))
+            crate::StudioError::invalid_argument(format!("Thread '{thread_id}' is not active"))
         })?;
         let (_, _, state) = self
             .reconnect_mcp_for_owner(&owner, server_id, CancellationToken::new())
@@ -886,7 +884,7 @@ impl StudioThreadFactory {
                 let resolved = self.resolve_mcp_owner_snapshot(owner)?;
                 if let Some(target_id) = server_id {
                     let target = resolved.servers.get(target_id).ok_or_else(|| {
-                        pl_protocol::studio::StudioError::invalid_argument(format!(
+                        crate::StudioError::invalid_argument(format!(
                             "MCP server '{target_id}' is not enabled in Thread '{}'",
                             owner.thread_id
                         ))
@@ -1252,7 +1250,7 @@ mod refresh_tests {
         );
         drop(command);
 
-        fixture.config.create_mcp_document(&pl_protocol::CreateMcpDocumentRequest {
+        fixture.config.create_mcp_document(&crate::CreateMcpDocumentRequest {
         scope: McpScope::Host,
         id: "slow".into(),
         raw_toml: "schema_version = 1\nid = 'slow'\nkind = 'server'\nenabled = true\ntransport = 'stdio'\ncommand = 'python3'\nargs = ['-c', 'import time; time.sleep(60)']\nstartup_timeout_secs = 30\n".into(),
@@ -1426,14 +1424,14 @@ mod refresh_tests {
         use super::{binding_host, mcp_stdio, owner};
         use crate::session::NativeResources;
         use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use crate::{
+            CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, UpdateMcpDocumentRequest,
+        };
         use pl_agent_tool::Tool;
         use pl_core::{
             model::DynModelSession,
             thread::{ThreadError, ThreadHandle},
             tool::opaque::ToolError,
-        };
-        use pl_protocol::{
-            CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, UpdateMcpDocumentRequest,
         };
         use pl_tool::{
             binding::{ToolCallPolicy, prepare_registration},
@@ -1702,6 +1700,7 @@ mod refresh_tests {
         use super::{binding_host, mcp_stdio, owner};
         use crate::session::NativeResources;
         use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
+        use crate::{CreateMcpDocumentRequest, McpScope};
         use anyhow::Context;
         use pl_core::{
             context::{ContextContent, ContextSource},
@@ -1709,7 +1708,6 @@ mod refresh_tests {
             thread::ThreadHandle,
             tool::opaque::Registration,
         };
-        use pl_protocol::{CreateMcpDocumentRequest, McpScope};
         use std::{sync::Arc, time::Duration};
         use tokio_util::sync::CancellationToken;
 
@@ -1949,7 +1947,7 @@ mod refresh_tests {
                 let snapshot = current.read_snapshot();
                 anyhow::ensure!(
                     snapshot.servers.iter().any(|server| server.id == "fixture"
-                        && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Unavailable),
+                        && server.lifecycle == crate::ThreadMcpLifecycleKind::Unavailable),
                     "next model preparation changed the failed target state: {snapshot:?}"
                 );
                 anyhow::ensure!(
@@ -1957,7 +1955,7 @@ mod refresh_tests {
                         .servers
                         .iter()
                         .any(|server| server.id == "unrelated"
-                            && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Available)
+                            && server.lifecycle == crate::ThreadMcpLifecycleKind::Available)
                 );
                 Ok::<_, anyhow::Error>(())
             }
@@ -2048,7 +2046,7 @@ mod refresh_tests {
                     if a.projection_ready.load(std::sync::atomic::Ordering::Acquire)
                         && ["fixture", "unrelated"].iter().all(|id| snapshot.servers.iter()
                             .any(|server| server.id == *id
-                                && server.lifecycle == pl_protocol::ThreadMcpLifecycleKind::Available))
+                                && server.lifecycle == crate::ThreadMcpLifecycleKind::Available))
                         && a.runtime.acquire_turn_lease().await?.generation() > a_before
                     {
                         break;
@@ -2129,7 +2127,7 @@ mod refresh_tests {
 pub(crate) mod tests {
     use super::*;
     use crate::studio::{StudioStore, agent_host::ThreadWriteBehindWriter};
-    use pl_protocol::{McpEffectiveSource, McpExecutionLocation};
+    use crate::{McpEffectiveSource, McpExecutionLocation};
     use pl_tool::mcp::McpConnector;
     use pl_tool::mcp::config::{
         EffectiveMcpServerConfig, McpExecutionContext, McpServerConfig, McpServerMutationPolicy,
@@ -2259,7 +2257,7 @@ pub(crate) mod tests {
             policies: BTreeMap::new(),
             project: WorkspaceRecord {
                 id: "early-close-project".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "early-close-project".into(),
                 path: root.to_string_lossy().into_owned(),
                 ssh_alias: None,

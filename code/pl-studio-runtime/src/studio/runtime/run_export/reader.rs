@@ -6,13 +6,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::{ChatContentRole, ContentTarget};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{
     ChatBudget, ChatCompletionCursor, ChatContentKey, ChatError, ChatItemHeader, ChatPageItem,
     ChatQuery, ContentDescriptor, ContentManifestRequest, ContentReadRequest, ContentRef,
     PayloadData, PayloadMode, ReadDemand, Session,
 };
-use pl_protocol::{ChatContentRole, ContentTarget};
 use sha2::{Digest, Sha256};
 
 use super::types::{
@@ -61,7 +61,7 @@ pub struct ExportedCompletionRecord {
     pub source: EventSourceV2,
     pub header: ChatItemHeaderExportV2,
     pub header_payload_fingerprint: String,
-    pub atom: pl_protocol::ChatAtom,
+    pub atom: crate::ChatAtom,
     pub payload: ExportedBlobV2,
     pub contents: Vec<ExportedContentV2>,
 }
@@ -211,7 +211,7 @@ async fn export_single_item<S: ContentBlobSink>(
             let blob = writer
                 .finish(infer_payload_media_type(bytes), encoding)
                 .await?;
-            let proto = pl_protocol::PayloadData::Inline {
+            let proto = crate::PayloadData::Inline {
                 bytes: bytes.to_vec(),
             };
             (blob, proto)
@@ -229,8 +229,8 @@ async fn export_single_item<S: ContentBlobSink>(
                 sink,
             )
             .await?;
-            let proto = pl_protocol::PayloadData::Deferred {
-                reference: pl_protocol::ContentRef {
+            let proto = crate::PayloadData::Deferred {
+                reference: crate::ContentRef {
                     database_id: resolved_db_id.to_string(),
                     target: ContentTarget::ItemPayload {
                         item_id: item_id.clone(),
@@ -302,10 +302,10 @@ async fn export_single_item<S: ContentBlobSink>(
         if seen_keys.contains(&key) {
             continue;
         }
-        let native_ref = pl_protocol::ContentRef {
+        let native_ref = crate::ContentRef {
             database_id: resolved_db_id.to_string(),
             target: ContentTarget::Body {
-                owner: pl_protocol::ContentOwner::Item {
+                owner: crate::ContentOwner::Item {
                     item_id: item.header.item_id.clone(),
                 },
                 key: key.key.clone(),
@@ -355,16 +355,16 @@ async fn export_single_item<S: ContentBlobSink>(
     })
 }
 
-fn completion_effect_seq(atom: &pl_protocol::ChatAtom) -> Option<u64> {
+fn completion_effect_seq(atom: &crate::ChatAtom) -> Option<u64> {
     match &atom.lifecycle {
-        pl_protocol::ChatAtomLifecycle::Terminal { ended, started, .. } => {
+        crate::ChatAtomLifecycle::Terminal { ended, started, .. } => {
             ended.or(*started).map(|pos| pos.effect_seq)
         }
-        pl_protocol::ChatAtomLifecycle::Active { started, .. } => started.map(|pos| pos.effect_seq),
+        crate::ChatAtomLifecycle::Active { started, .. } => started.map(|pos| pos.effect_seq),
     }
 }
 
-fn to_core_content_ref(reference: &pl_protocol::ContentRef) -> Result<ContentRef> {
+fn to_core_content_ref(reference: &crate::ContentRef) -> Result<ContentRef> {
     Ok(match &reference.target {
         ContentTarget::ItemPayload { item_id } => ContentRef::ItemPayload(item_id.clone()),
         ContentTarget::Body { owner, key } => ContentRef::Body(ChatContentKey {

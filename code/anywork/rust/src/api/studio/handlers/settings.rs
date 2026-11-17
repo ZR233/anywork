@@ -47,7 +47,7 @@ pub async fn apply_settings_field(
     Ok(settings_command_reply(
         bridge
             .studio
-            .apply_settings_field(pl_protocol::studio::UpdateSettingsFieldRequest {
+            .apply_settings_field(pl_studio_runtime::UpdateSettingsFieldRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
                 update: input.into(),
@@ -69,7 +69,7 @@ pub async fn remove_account_model(
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.remove_account_model(
-        pl_protocol::studio::RemoveAccountModelRequest {
+        pl_studio_runtime::RemoveAccountModelRequest {
             operation_id,
             expected_revision: expected_settings_revision,
             account_id,
@@ -88,7 +88,7 @@ pub async fn set_account_model_enabled(
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     Ok(settings_command_reply(
         active_bridge().await?.studio.set_account_model_enabled(
-            pl_protocol::studio::SetAccountModelEnabledRequest {
+            pl_studio_runtime::SetAccountModelEnabledRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
                 account_id,
@@ -107,12 +107,12 @@ pub async fn set_account_billing_kind(
     billing_kind: Option<BridgeBillingKind>,
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let billing_kind = match billing_kind {
-        Some(kind) => pl_protocol::studio::BillingKindIntent::set(kind.into()),
-        None => pl_protocol::studio::BillingKindIntent::clear(),
+        Some(kind) => pl_studio_runtime::BillingKindIntent::set(kind.into()),
+        None => pl_studio_runtime::BillingKindIntent::clear(),
     };
     Ok(settings_command_reply(
         active_bridge().await?.studio.set_account_billing_kind(
-            pl_protocol::studio::SetAccountBillingKindRequest {
+            pl_studio_runtime::SetAccountBillingKindRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
                 account_id,
@@ -142,7 +142,7 @@ pub async fn save_runtime_permission_mode(
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(
         bridge.studio.save_permission_settings(
-            pl_protocol::studio::UpdatePermissionSettingsRequest {
+            pl_studio_runtime::UpdatePermissionSettingsRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
                 mode,
@@ -176,7 +176,7 @@ pub async fn set_default_account(
 ) -> Result<BridgeSettingsCommandReply, BridgeError> {
     let bridge = active_bridge().await?;
     Ok(settings_command_reply(bridge.studio.set_default_account(
-        pl_protocol::studio::SetDefaultAccountRequest {
+        pl_studio_runtime::SetDefaultAccountRequest {
             operation_id,
             expected_revision: expected_settings_revision,
             account_id,
@@ -194,7 +194,7 @@ pub async fn remove_account(
     Ok(settings_command_reply(
         bridge
             .studio
-            .remove_account(pl_protocol::studio::RemoveAccountRequest {
+            .remove_account(pl_studio_runtime::RemoveAccountRequest {
                 operation_id,
                 expected_revision: expected_settings_revision,
                 account_id,

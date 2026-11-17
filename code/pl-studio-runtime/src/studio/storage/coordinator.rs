@@ -21,7 +21,7 @@ use crate::studio::storage::thread_writer::HistoryChannel;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ThreadPersistenceMetrics {
     pub(crate) fault_generation: u64,
-    pub(crate) fault: Option<pl_protocol::studio::HistoryFault>,
+    pub(crate) fault: Option<crate::HistoryFault>,
     pub(crate) state_dirty_revision: u64,
     pub(crate) state_saving_revision: u64,
     pub(crate) state_durable_revision: u64,
@@ -78,7 +78,7 @@ pub(crate) struct ThreadPersistenceSnapshot {
     pub(crate) in_flight_bytes: u64,
     pub(crate) oldest_pending_age_millis: Option<u64>,
     pub(crate) pressure_paused: bool,
-    pub(crate) threads: Vec<pl_protocol::ThreadPersistenceSnapshot>,
+    pub(crate) threads: Vec<crate::ThreadPersistenceSnapshot>,
     /// Newest call-write ticket admitted by the global call recorder.
     pub(crate) calls_admitted_ticket: u64,
     /// Newest call-write ticket processed, including explicit rejection; not proof of durability.
@@ -721,8 +721,7 @@ impl ThreadPersistenceCoordinator {
                     .is_some_and(|thread| {
                         thread.incarnations.values().any(|incarnation| {
                             incarnation.metrics.fault_generation <= generation
-                                && incarnation.metrics.fault
-                                    == Some(pl_protocol::studio::HistoryFault::QueueFull)
+                                && incarnation.metrics.fault == Some(crate::HistoryFault::QueueFull)
                         })
                     });
                 if !pending_reports {
@@ -788,10 +787,10 @@ impl ThreadPersistenceCoordinator {
     /// Process-wide persistence queue pressure with the real per-Thread watermarks behind it.
     ///
     /// Bridge/GUI publication is a later task; this is the canonical runtime value it maps onto
-    /// [`pl_protocol::PersistenceQueueSnapshot`], so the protocol fields never report placeholders.
-    pub(crate) fn queue_snapshot(&self) -> pl_protocol::PersistenceQueueSnapshot {
+    /// [`crate::PersistenceQueueSnapshot`], so the protocol fields never report placeholders.
+    pub(crate) fn queue_snapshot(&self) -> crate::PersistenceQueueSnapshot {
         let snapshot = self.0.state.borrow().clone();
-        pl_protocol::PersistenceQueueSnapshot {
+        crate::PersistenceQueueSnapshot {
             statistics_gap: snapshot.statistics_gap,
             pending_operations: snapshot
                 .pending_commits
@@ -1334,24 +1333,22 @@ fn aggregate(
             // 只有仍在运行的 writer 报告的水位才是当前已观测事实（含 0）；已停止的 incarnation
             // 只能说明它退出时的队列压力，因此水位保持 `None`（未知），不补零。
             let live = newest_live.is_some();
-            snapshot
-                .threads
-                .push(pl_protocol::ThreadPersistenceSnapshot {
-                    thread_id: id.clone(),
-                    fault_generation: metrics.fault_generation,
-                    fault: metrics.fault,
-                    state_dirty_revision: live.then_some(metrics.state_dirty_revision),
-                    state_saving_revision: live.then_some(metrics.state_saving_revision),
-                    state_durable_revision: live.then_some(metrics.state_durable_revision),
-                    history_admitted_sequence: live.then_some(metrics.history_admitted_sequence),
-                    history_durable_sequence: live.then_some(metrics.history_durable_sequence),
-                    pending_operations: metrics.pending_operations,
-                    pending_bytes: metrics.pending_bytes,
-                    oldest_pending_age_millis: metrics.oldest_pending_age_millis,
-                    in_flight_bytes: metrics.in_flight_bytes,
-                    last_error: failure.or_else(|| recovery.get(id).cloned()),
-                    pressure_paused: metrics.pressure_paused,
-                });
+            snapshot.threads.push(crate::ThreadPersistenceSnapshot {
+                thread_id: id.clone(),
+                fault_generation: metrics.fault_generation,
+                fault: metrics.fault,
+                state_dirty_revision: live.then_some(metrics.state_dirty_revision),
+                state_saving_revision: live.then_some(metrics.state_saving_revision),
+                state_durable_revision: live.then_some(metrics.state_durable_revision),
+                history_admitted_sequence: live.then_some(metrics.history_admitted_sequence),
+                history_durable_sequence: live.then_some(metrics.history_durable_sequence),
+                pending_operations: metrics.pending_operations,
+                pending_bytes: metrics.pending_bytes,
+                oldest_pending_age_millis: metrics.oldest_pending_age_millis,
+                in_flight_bytes: metrics.in_flight_bytes,
+                last_error: failure.or_else(|| recovery.get(id).cloned()),
+                pressure_paused: metrics.pressure_paused,
+            });
         }
     }
     // 只有 checkpoint 回退诊断、尚未报告过水位的 Thread 也必须可见；它没有 writer，
@@ -1360,13 +1357,11 @@ fn aggregate(
         if threads.contains_key(id) {
             continue;
         }
-        snapshot
-            .threads
-            .push(pl_protocol::ThreadPersistenceSnapshot {
-                thread_id: id.clone(),
-                last_error: Some(diagnostic.clone()),
-                ..Default::default()
-            });
+        snapshot.threads.push(crate::ThreadPersistenceSnapshot {
+            thread_id: id.clone(),
+            last_error: Some(diagnostic.clone()),
+            ..Default::default()
+        });
     }
     // 回退诊断只属于发生恢复的那个 Thread：它已作为该 Thread 的 `last_error` 发布，
     // 不是进程级 writer 失败，因此绝不写入 `snapshot.error`。把它升级为进程级阻塞错误

@@ -1,4 +1,5 @@
-use pl_protocol::{Message, ModelContextItem, PureError, Result};
+use crate::completion::{Message, ModelContextItem};
+use pl_protocol::{PureError, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
 

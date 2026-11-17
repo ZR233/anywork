@@ -1,6 +1,6 @@
 //! Shared bounded Chat observation and terminal-atom validation.
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatScope, ChatSourceId, ContentRange, ContentRef,
     ContentTarget, PayloadData, ReadDemand, TurnState,
 };
@@ -162,7 +162,7 @@ pub(crate) async fn chat_payload(
 /// must open their referenced Run to inspect all members.
 pub(crate) async fn completed_entry_payload(
     read: &crate::http::ChatRead,
-    entry: &pl_protocol::CompletedEntry,
+    entry: &pl_studio_runtime::CompletedEntry,
     remaining: &mut usize,
     deadline: Instant,
 ) -> Result<Option<serde_json::Value>> {
@@ -271,9 +271,12 @@ pub(crate) async fn completed_turn_records(
     turn_id: &str,
     remaining: &mut usize,
     deadline: Instant,
-) -> Result<(crate::http::ChatRead, Vec<pl_protocol::CompletedEntry>)> {
+) -> Result<(
+    crate::http::ChatRead,
+    Vec<pl_studio_runtime::CompletedEntry>,
+)> {
     let scope = ChatScope {
-        query_class: pl_protocol::ChatClassFilter::All {},
+        query_class: pl_studio_runtime::ChatClassFilter::All {},
         parent_id: Some(format!("{}:{turn_id}", turn_id.len())),
     };
     let (records_read, mut page) = tokio::time::timeout_at(

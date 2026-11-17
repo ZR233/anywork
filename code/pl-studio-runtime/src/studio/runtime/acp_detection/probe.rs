@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use pl_protocol::studio::{AcpLocalDetectionFailureKind as FailureKind, AcpLocalDetectionState};
+use crate::{AcpLocalDetectionFailureKind as FailureKind, AcpLocalDetectionState};
 use tokio::io::AsyncReadExt;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;

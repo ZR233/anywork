@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 use super::{
     CompletionResponse, Message, MessageContent, MessageRole, ModelContextItem, ToolCallKind,
 };
-use pl_protocol::{PureError, ResponsesContextItem, ResponsesContextItemKind, Result};
+use crate::completion::{ResponsesContextItem, ResponsesContextItemKind};
+use pl_protocol::{PureError, Result};
 
 /// Model-owned replay material. Open provider output fields stay opaque at this boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,7 +36,7 @@ impl AssistantReplay {
             }
             Self::Chat { content } => {
                 use super::CompletionPresentationItemKind::Text;
-                use pl_protocol::trace::TraceTextChannel::{Commentary, Final};
+                use crate::trace::TraceTextChannel::{Commentary, Final};
                 let segments =
                     super::stream::chat_presentation::completed_chat_presentation(content, None)?;
                 Ok(segments.iter().any(|item| item.kind == Text(Commentary))

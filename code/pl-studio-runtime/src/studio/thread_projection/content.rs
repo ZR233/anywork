@@ -1,11 +1,11 @@
 //! Text and attachment projection from immutable input facts, independent from current tool renderers.
+use crate::{MessagePresentation, ThreadAttachment};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::input::{
         CONTINUATION_PAYLOAD_FORMAT, CONTINUATION_PAYLOAD_VERSION, InputPurpose, InputRecord,
     },
 };
-use pl_protocol::{MessagePresentation, ThreadAttachment};
 use serde::Deserialize;
 
 #[derive(Debug, PartialEq)]
@@ -32,7 +32,7 @@ struct Prompt {
     attachments: Vec<crate::studio::AttachmentRecord>,
     // Admission metadata is validated but does not replace the saved display content.
     #[serde(rename = "request")]
-    _request: Option<pl_protocol::studio::StudioPromptInput>,
+    _request: Option<crate::StudioPromptInput>,
 }
 
 #[derive(Deserialize)]
@@ -201,7 +201,7 @@ pub(super) fn text_content(content: &[ContextContent]) -> String {
 /// 摘要只覆盖幂等受理真正比对的字段（原始 request 与 presentation），因此可以从保存的载荷
 /// 重新计算；它不覆盖框架路由回执、附件解析结果、序列号或展示正文。
 pub(in crate::studio) fn prompt_request_digest(
-    request: &pl_protocol::studio::StudioPromptInput,
+    request: &crate::StudioPromptInput,
     presentation: MessagePresentation,
 ) -> String {
     use sha2::{Digest, Sha256};

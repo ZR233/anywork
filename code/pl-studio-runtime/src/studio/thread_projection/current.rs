@@ -1,6 +1,7 @@
 //! Effect-local product current and its read owners. No completed-history mirror lives here.
 
 use super::FrozenCurrentProjection;
+use crate::protocol::*;
 use crate::studio::storage::history::conversation::current::{
     CurrentContentWrite, CurrentEntryWrite, PreparedCurrent,
 };
@@ -14,7 +15,6 @@ use pl_core::{
     model::ContentBlock,
     thread::ThreadSnapshot,
 };
-use pl_protocol::*;
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
@@ -960,6 +960,10 @@ mod tests {
 #[cfg(test)]
 mod business_tests {
     use super::*;
+    use crate::UserQuestion;
+    use crate::plan_tool::{
+        AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
+    };
     fn state(version: u64, text: &str) -> Result<ThreadSnapshot> {
         let plan = AgentSessionPlanState {
             revision: version,

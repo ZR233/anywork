@@ -1,7 +1,7 @@
 use super::super::StudioRuntime;
+use crate::protocol::*;
 use anyhow::Result;
 use pl_model::config::AccountId;
-use pl_protocol::studio::*;
 use url::Url;
 
 use crate::account_usage::account_usage_query_kind;
@@ -34,7 +34,7 @@ pub(super) fn read(
                         .transpose()?;
                     let default = desired
                         .mode_model_routes
-                        .get(&pl_protocol::ThreadModeId::simple())
+                        .get(&crate::mode::ThreadModeId::simple())
                         .map(|route| &route.account_id);
                     for (id, account) in &desired.models.accounts {
                         let usage = account

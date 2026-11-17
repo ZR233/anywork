@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fmt;
 
-use pl_protocol::{WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition};
+use crate::workflow_tool::{
+    WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition,
+};
 use serde::Serialize;
 
 use crate::hash::canonical_json_hash;

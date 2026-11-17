@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use pl_protocol::{
-    AttachmentModality, ContentPart, MessageContent, ModelContextItem, Result, ToolMediaContext,
+use crate::completion::{
+    AttachmentModality, ContentPart, MessageContent, ModelContextItem, ToolMediaContext,
 };
+use pl_protocol::Result;
 
 use crate::completion::{AttachmentRepresentation, CompletionRequest, ResolvedAttachment};
 use crate::model::info::{MediaMixPolicy, MediaRepresentation, MediaWireFormat, ModelInfo};

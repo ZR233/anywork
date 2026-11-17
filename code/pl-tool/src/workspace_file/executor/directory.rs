@@ -6,7 +6,7 @@ pub struct WorkspaceDirectoryReader {
     root: TargetPath,
 }
 impl WorkspaceDirectoryReader {
-    pub async fn next(&mut self) -> Result<Option<pl_protocol::remote::RemoteDirectoryEntry>> {
+    pub async fn next(&mut self) -> Result<Option<crate::remote::RemoteDirectoryEntry>> {
         let Some(entry) = self.reader.next().await.map_err(file_error)? else {
             return Ok(None);
         };
@@ -16,7 +16,7 @@ impl WorkspaceDirectoryReader {
             .relative_path(&self.root, &target)
             .map_err(file_error)?
             .ok_or_else(|| tool_error("file", "directory entry is outside workspace"))?;
-        Ok(Some(pl_protocol::remote::RemoteDirectoryEntry {
+        Ok(Some(crate::remote::RemoteDirectoryEntry {
             name: entry.name,
             path,
             is_directory: entry.is_dir,

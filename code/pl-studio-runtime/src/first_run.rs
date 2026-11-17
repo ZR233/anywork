@@ -6,13 +6,13 @@ use crate::{PureError, Result};
 use crate::config::{
     AccountId, ModelRouteConfig, ReasoningEffort, STUDIO_CONFIG_SCHEMA_VERSION, StudioConfig,
 };
+use crate::mode::ThreadModeId;
 use pl_model::config::{
     AccountConfig, AccountModelCatalogConfig, AccountTemplateId, AgentModelConfig,
     builtin_account_catalog,
 };
 use pl_model::model::ModelInfo;
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::ThreadModeId;
 
 /// Studio 使用的动态 account template 标识。
 ///

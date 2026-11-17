@@ -1,8 +1,8 @@
 //! Schema 23 -> 24：先核实事实去向和原件字节，再在原事务删除旧执行副本。
 use super::*;
 use crate::studio::storage::history::{execution_lifecycle, turns};
+use crate::{ChatAtom, ChatSourceId};
 use crate::{ExecutionItem, ExecutionShape};
-use pl_protocol::{ChatAtom, ChatSourceId};
 use sha2::{Digest, Sha256};
 
 pub(super) struct ExecutionFacts;
@@ -212,9 +212,9 @@ async fn lifecycle(db: &impl ConnectionTrait) -> Result<()> {
             ensure!(
                 atom.id == id
                     && match atom.lifecycle {
-                        pl_protocol::ChatAtomLifecycle::Active { .. } =>
+                        crate::ChatAtomLifecycle::Active { .. } =>
                             matches!(phase.as_str(), "start" | "legacyAdmission"),
-                        pl_protocol::ChatAtomLifecycle::Terminal { .. } =>
+                        crate::ChatAtomLifecycle::Terminal { .. } =>
                             matches!(phase.as_str(), "terminal" | "legacyAdmission"),
                     },
                 "legacy lifecycle phase identity conflict"
@@ -428,7 +428,7 @@ async fn old_items(db: &impl ConnectionTrait) -> Result<()> {
 async fn preserve_invocation(
     db: &impl ConnectionTrait,
     item: &ExecutionItem,
-    tool: &pl_protocol::ThreadToolItem,
+    tool: &crate::ThreadToolItem,
 ) -> Result<()> {
     let call = tool.invocation();
     let Some(row) = db
@@ -888,7 +888,7 @@ mod tests {
                     .read_legacy_evidence(
                         &head.evidence_id,
                         head.revision,
-                        pl_protocol::ContentRange {
+                        crate::ContentRange {
                             offset: bytes.len() as u64,
                             max_bytes: 2,
                         },

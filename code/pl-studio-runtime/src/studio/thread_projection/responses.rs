@@ -1,6 +1,7 @@
 //! Saved model output projection, without rerunning an adapter or advancing a session.
 use super::{ProjectionError, content::text_content};
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem};
 use pl_core::{
     context::ContextContent,
     model::{
@@ -13,7 +14,6 @@ use pl_model::completion::{
     CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
     CompletionPresentationPartKind,
 };
-use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Terminal streaming identities an attempt actually started.
@@ -199,13 +199,13 @@ pub(super) fn project_attempt(
         if let Some(output) = output {
             for content in &output.content {
                 payloads.push(match content {
-                    ContextContent::Text { text } => pl_protocol::ThreadRawPayload {
+                    ContextContent::Text { text } => crate::ThreadRawPayload {
                         format: "text/plain".into(),
                         version: 1,
                         content: text.to_string(),
                     },
                     ContextContent::Opaque { payload } => super::raw_payload(payload),
-                    ContextContent::Resource { reference } => pl_protocol::ThreadRawPayload {
+                    ContextContent::Resource { reference } => crate::ThreadRawPayload {
                         format: "pl.resource-reference".into(),
                         version: 1,
                         content: serde_json::to_string(reference)?,
@@ -221,9 +221,7 @@ pub(super) fn project_attempt(
             revision,
             created_at,
             updated_at,
-            ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
-                payloads, notice, updated_at,
-            )),
+            ExecutionShape::Raw(crate::ThreadRawItem::stored(payloads, notice, updated_at)),
         ));
         return Ok(items);
     }
@@ -538,11 +536,11 @@ fn project_presentation_items(
                     }),
                 ) => {
                     let channel = match channel {
-                        pl_protocol::trace::TraceTextChannel::User => ThreadTextChannel::User,
-                        pl_protocol::trace::TraceTextChannel::Commentary => {
+                        pl_model::trace::TraceTextChannel::User => ThreadTextChannel::User,
+                        pl_model::trace::TraceTextChannel::Commentary => {
                             ThreadTextChannel::Commentary
                         }
-                        pl_protocol::trace::TraceTextChannel::Final => ThreadTextChannel::Final,
+                        pl_model::trace::TraceTextChannel::Final => ThreadTextChannel::Final,
                     };
                     ExecutionShape::Text(ThreadTextItem::new(
                         channel,
@@ -731,19 +729,19 @@ fn inference_item(
     updated_at: i64,
     revision: u64,
 ) -> Result<ExecutionItem, ProjectionError> {
-    use pl_protocol::{ThreadInferenceItem, ThreadInferenceState as State};
+    use crate::{ThreadInferenceItem, ThreadInferenceState as State};
     let model = attempt
         .request_metadata
         .as_ref()
         .and_then(|payload| pl_model::runtime::model_request_receipt(payload).ok())
         .map_or_else(String::new, |receipt| receipt.binding.model_id);
     let state = match &attempt.outcome {
-        AttemptOutcome::Running => State::Running(pl_protocol::RunningThreadInference),
+        AttemptOutcome::Running => State::Running(crate::RunningThreadInference),
         AttemptOutcome::Committed(output) => {
             let usage = &output.usage;
-            State::Completed(pl_protocol::CompletedThreadInference::new(
+            State::Completed(crate::CompletedThreadInference::new(
                 updated_at,
-                pl_protocol::TokenUsageSnapshot {
+                crate::TokenUsageSnapshot {
                     prompt_tokens: usage.input_tokens.unwrap_or(0),
                     completion_tokens: usage.output_tokens.unwrap_or(0),
                     cached_prompt_tokens: usage.cache_read_tokens.unwrap_or(0),
@@ -762,25 +760,21 @@ fn inference_item(
                 },
             ))
         }
-        AttemptOutcome::Failed(error) => State::Failed(pl_protocol::FailedThreadInference::new(
+        AttemptOutcome::Failed(error) => State::Failed(crate::FailedThreadInference::new(
             updated_at,
             error.to_string(),
         )),
         AttemptOutcome::Rejected { reason, .. } => State::Failed(
-            pl_protocol::FailedThreadInference::new(updated_at, reason.to_string()),
+            crate::FailedThreadInference::new(updated_at, reason.to_string()),
         ),
-        AttemptOutcome::Cancelled { .. } => {
-            State::Cancelled(pl_protocol::CancelledThreadInference::new(
-                updated_at,
-                "Model execution cancelled".into(),
-            ))
-        }
-        AttemptOutcome::Interrupted => {
-            State::Cancelled(pl_protocol::CancelledThreadInference::new(
-                updated_at,
-                "Execution interrupted before recovery".into(),
-            ))
-        }
+        AttemptOutcome::Cancelled { .. } => State::Cancelled(crate::CancelledThreadInference::new(
+            updated_at,
+            "Model execution cancelled".into(),
+        )),
+        AttemptOutcome::Interrupted => State::Cancelled(crate::CancelledThreadInference::new(
+            updated_at,
+            "Execution interrupted before recovery".into(),
+        )),
     };
     Ok(ExecutionItem::new(
         super::order::response_id(&attempt.attempt_id, "inference"),
@@ -914,11 +908,11 @@ fn progress_content(
     })
 }
 
-fn trace_channel(channel: ModelTextChannel) -> pl_protocol::trace::TraceTextChannel {
+fn trace_channel(channel: ModelTextChannel) -> pl_model::trace::TraceTextChannel {
     match channel {
-        ModelTextChannel::User => pl_protocol::trace::TraceTextChannel::User,
-        ModelTextChannel::Commentary => pl_protocol::trace::TraceTextChannel::Commentary,
-        ModelTextChannel::Final => pl_protocol::trace::TraceTextChannel::Final,
+        ModelTextChannel::User => pl_model::trace::TraceTextChannel::User,
+        ModelTextChannel::Commentary => pl_model::trace::TraceTextChannel::Commentary,
+        ModelTextChannel::Final => pl_model::trace::TraceTextChannel::Final,
     }
 }
 

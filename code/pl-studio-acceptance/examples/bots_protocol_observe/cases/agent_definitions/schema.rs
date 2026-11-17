@@ -1,7 +1,7 @@
 //! Independent input-contract oracle, not generated from the producer schema.
 //! Descriptive annotations are irrelevant; every validation keyword is kept.
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode};
+use pl_studio_runtime::{AgentProfileSnapshot, AgentWorkspaceMode};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -127,7 +127,7 @@ impl ShutdownRun {
             let Some(_lifecycle_guard) = guard else {
                 let _ = report.send_replace(Some(StudioShutdownReport::deadline_exceeded(
                     "lifecycleLock",
-                    pl_protocol::studio::StudioError::internal().correlation_id,
+                    crate::StudioError::internal().correlation_id,
                 )));
                 return;
             };
@@ -456,8 +456,8 @@ impl ShutdownCollector {
     }
 
     fn record_timeout(&mut self, stage: &str, stage_elapsed_ms: u128) {
-        let mapped = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Busy,
+        let mapped = crate::StudioError::new(
+            crate::StudioErrorCode::Busy,
             "shutdown stage exceeded its time budget",
             true,
         );
@@ -487,8 +487,8 @@ impl ShutdownCollector {
     }
 
     fn record_skipped(&mut self, stage: &str, stage_elapsed_ms: u128) {
-        let mapped = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Busy,
+        let mapped = crate::StudioError::new(
+            crate::StudioErrorCode::Busy,
             "shutdown budget elapsed before this stage could be joined",
             true,
         );
@@ -572,7 +572,7 @@ impl ShutdownCollector {
 pub(super) fn redacted_chain(error: &anyhow::Error) -> String {
     let mut parts = Vec::new();
     for cause in error.chain() {
-        if let Some(studio) = cause.downcast_ref::<pl_protocol::studio::StudioError>() {
+        if let Some(studio) = cause.downcast_ref::<crate::StudioError>() {
             parts.push(format!("[{}] {}", studio.code.label(), studio.message));
         } else if let Some(io) = cause.downcast_ref::<std::io::Error>() {
             let os_code = io
@@ -964,7 +964,7 @@ impl StudioRuntime {
             Some(report) => report,
             None => StudioShutdownReport::deadline_exceeded(
                 "deadline",
-                pl_protocol::studio::StudioError::internal().correlation_id,
+                crate::StudioError::internal().correlation_id,
             ),
         }
     }
@@ -1808,7 +1808,7 @@ impl StudioRuntime {
             .apply(StudioRuntimeCommand::FailShutdown {
                 expected_revision: self.runtime_state.snapshot().revision,
                 at: unix_seconds(),
-                error: pl_protocol::StateError {
+                error: crate::StateError {
                     code: "studioShutdownDegraded".to_string(),
                     message,
                     retryable: true,

@@ -2,8 +2,8 @@
 //! The single Studio fold over canonical source facts. Completed members live in
 //! the original store and the incremental member index, never in this accumulator.
 use super::legacy_timeline_types::*;
+use crate::protocol::*;
 use crate::studio::thread_projection::ProjectionError;
-use pl_protocol::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::result::Result;

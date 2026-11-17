@@ -3,11 +3,11 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_core::context::ContextContent;
-use pl_protocol::{
-    ChatScope, ContentRange, PayloadData, ReadDemand, ThreadWorkspaceMode,
-    studio::{StudioPromptInput, SubmitPromptRequest},
-};
 use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
+use pl_studio_runtime::{
+    ChatScope, ContentRange, PayloadData, ReadDemand, StudioPromptInput, SubmitPromptRequest,
+    ThreadWorkspaceMode,
+};
 use pl_tool::file_display::{FileDisplayOrigin, FileDisplayResult, saved_file_display_receipt};
 use serde_json::json;
 

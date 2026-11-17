@@ -8,7 +8,7 @@ use pl_core::{
         opaque::{CallContext, ToolError},
     },
 };
-use pl_protocol::ToolSpec;
+use pl_model::completion::ToolSpec;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},

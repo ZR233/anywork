@@ -158,7 +158,7 @@ impl AcpResources {
     pub(crate) async fn prepare_host_mcp(
         &self,
         host: crate::thread_assembler::AgentHost,
-        caller: pl_protocol::AgentId,
+        caller: crate::AgentId,
         is_root: bool,
         frontend: Option<crate::host_mcp_assets::HostMcpAsset>,
     ) -> Result<pl_acp::session::schema::McpServer> {

@@ -1,11 +1,11 @@
 //! Product Mode changes are a single idle core transaction followed by directory projection.
 use super::StudioRuntime;
+use crate::mode::ThreadModeId;
 use anyhow::{Context, Result};
 use pl_core::thread::{
     ContextReplacementReason, IdleReconfiguration, ReplaceContext, RuntimeFact,
     extensions::{ApplicationUpdate, ExtensionMutation},
 };
-use pl_protocol::ThreadModeId;
 
 #[derive(Debug, thiserror::Error)]
 #[error(
@@ -19,7 +19,7 @@ struct ModeCandidateCleanupFailure {
 
 struct ModeCompletion {
     operation_id: String,
-    directory: pl_protocol::Thread,
+    directory: crate::Thread,
     binding: crate::studio::thread_factory::RefreshedToolBinding,
     _lifecycle: tokio::sync::OwnedMutexGuard<()>,
     _installation: tokio::sync::OwnedMutexGuard<()>,
@@ -52,7 +52,7 @@ impl StudioRuntime {
         operation_id: String,
         thread_id: &str,
         mode_id: ThreadModeId,
-    ) -> Result<pl_protocol::studio::ThreadModeCommandReply> {
+    ) -> Result<crate::ThreadModeCommandReply> {
         Self::validate_operation_id(&operation_id)?;
         let lifecycle = self.lifecycle_lock.clone().lock_owned().await;
         let record = self.read_owned_thread(thread_id).await?;
@@ -327,7 +327,7 @@ impl StudioRuntime {
             };
         }
         let operation = format!("reconfigure Mode {mode_id} for Thread {thread_id}");
-        let mut directory = pl_protocol::Thread::from(record);
+        let mut directory = crate::Thread::from(record);
         directory.mode = Some(mode_id);
         directory.updated_at = now;
         let completion = ModeCompletion {
@@ -371,7 +371,7 @@ impl StudioRuntime {
         thread: pl_core::thread::ThreadHandle,
         committed: pl_core::thread::ThreadSnapshot,
         completion: ModeCompletion,
-    ) -> Result<pl_protocol::studio::ThreadModeCommandReply> {
+    ) -> Result<crate::ThreadModeCommandReply> {
         let ModeCompletion {
             operation_id,
             directory,
@@ -405,7 +405,7 @@ impl StudioRuntime {
         let result = match (binding_error, directory_commit) {
             (None, Ok(directory_commit)) => self
                 .thread_directory_stamp(&directory_commit)
-                .map(|directory_stamp| pl_protocol::studio::ThreadModeCommandReply {
+                .map(|directory_stamp| crate::ThreadModeCommandReply {
                     receipt: self.command_receipt(
                         operation_id,
                         true,
@@ -416,7 +416,7 @@ impl StudioRuntime {
                             ),
                             directory_stamp,
                         ],
-                        pl_protocol::studio::CommandEffectPoint::Immediate,
+                        crate::CommandEffectPoint::Immediate,
                         false,
                     ),
                 }),

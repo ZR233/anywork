@@ -150,9 +150,9 @@ pub(super) async fn validate_originals(db: &impl ConnectionTrait) -> Result<()> 
 
 /// Migration-only relocation. No normal writer can take over an unfinished body.
 async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
+    use crate::{ChatAtom, ContentTarget};
     use conversation::content;
     use pl_core::chat::ChatKey;
-    use pl_protocol::{ChatAtom, ContentTarget};
 
     db.execute_unprepared(
         "
@@ -217,7 +217,7 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
                 let (domain, id, revision): (String, String, u64) = serde_json::from_str(encoded)?;
                 ensure!(
                     crate::studio::conversation_identity::content_owner_key(
-                        &pl_protocol::ContentOwner::Current {
+                        &crate::ContentOwner::Current {
                             domain,
                             id,
                             revision
@@ -339,6 +339,8 @@ async fn archive_unfinished_contents(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::UserQuestion;
+    use crate::protocol::*;
     use crate::studio::storage::history::{connect, conversation};
     use anyhow::Result;
     use pl_core::{
@@ -350,7 +352,6 @@ mod tests {
             interactions::{InteractionRecord, InteractionRequest, InteractionState},
         },
     };
-    use pl_protocol::*;
     use std::sync::Arc;
 
     const THREAD: &str = "completion-boundary-migration";
@@ -874,7 +875,7 @@ mod tests {
             let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
             eprintln!("tool recovery: runtime fixture ready");
             let result = async {
-        let mut thread = pl_protocol::Thread::from(env.runtime.create_thread(
+        let mut thread = crate::Thread::from(env.runtime.create_thread(
             &env.project.id, "migrated interrupted tool",
         ).await?);
         thread.id = THREAD.into();

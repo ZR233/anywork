@@ -47,8 +47,8 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::WorkspaceKind;
 use anyhow::{Result, bail, ensure};
-use pl_protocol::studio::WorkspaceKind;
 use version_migrate::Versioned;
 
 use crate::studio::records::WorkspaceRecord;

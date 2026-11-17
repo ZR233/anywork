@@ -309,7 +309,7 @@ async fn host_keeps_internal_id_distinct_and_only_explicitly_grants_completion()
     {
         let requests = requests.lock().unwrap();
         assert_eq!(requests[0].tools[0].tool_id, "example.add");
-        let spec: pl_protocol::ToolSpec =
+        let spec: pl_model::completion::ToolSpec =
             serde_json::from_str(requests[0].tools[0].declaration.content()).unwrap();
         assert_eq!(spec.name(), "add");
     }

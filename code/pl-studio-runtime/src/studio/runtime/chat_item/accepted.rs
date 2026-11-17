@@ -1,14 +1,14 @@
 //! Frozen facts from the original reliable admission. Consumption never changes this shape.
 use super::*;
 use crate::studio::thread_projection::{ContentError, InputView, ProjectionError, input_view};
+use crate::{
+    ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
+    MessagePresentation, Thread, ThreadContentLifecycle, ThreadTextChannel,
+};
 use crate::{ExecutionItem, ExecutionShape};
 use pl_core::{
     context::OpaquePayload,
     thread::{inbox::InboxRecord, input::InputRecord},
-};
-use pl_protocol::{
-    ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
-    MessagePresentation, Thread, ThreadContentLifecycle, ThreadTextChannel,
 };
 
 pub(in crate::studio) fn accepted_input_draft(
@@ -234,9 +234,9 @@ fn freeze_accepted(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ChatAtom, ChatAtomKind};
     use pl_core::thread::inbox::ThreadMessage;
     use pl_core::thread::input::{InputPurpose, InputState, ThreadInput};
-    use pl_protocol::{ChatAtom, ChatAtomKind};
 
     fn at() -> ChatFactPosition {
         ChatFactPosition {
@@ -410,7 +410,7 @@ mod tests {
         let attachment = crate::studio::AttachmentRecord {
             id: "asset".into(),
             thread_id: "thread".into(),
-            modality: pl_protocol::studio::StudioAttachmentModality::Image,
+            modality: crate::StudioAttachmentModality::Image,
             media_type: "image/png".into(),
             filename: Some("picture.png".into()),
             blob_relative_path: "attachments/asset".into(),

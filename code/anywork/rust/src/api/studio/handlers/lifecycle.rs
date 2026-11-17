@@ -397,7 +397,7 @@ fn bridge_issue(stage: &str, code: &str, message: &str, retryable: bool) -> Brid
         code: code.to_string(),
         message: message.to_string(),
         retryable,
-        correlation_id: pl_protocol::studio::StudioError::internal().correlation_id,
+        correlation_id: pl_studio_runtime::StudioError::internal().correlation_id,
     }
 }
 

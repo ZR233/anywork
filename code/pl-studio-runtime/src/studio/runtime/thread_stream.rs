@@ -1,14 +1,14 @@
 //! Point-in-time Thread snapshots and usage folds. Continuous State delivery lives in
 //! `conversation_state_feed` and does not activate execution.
 use super::StudioRuntime;
+use crate::ThreadBusinessRefs;
 use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, ThreadSnapshot};
-use pl_protocol::ThreadBusinessRefs;
 use std::num::NonZeroUsize;
 
 impl StudioRuntime {
     /// Reads live or cold facts without executing a model, tool or recovery continuation.
-    pub async fn thread_snapshot(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
+    pub async fn thread_snapshot(&self, thread_id: &str) -> Result<crate::ThreadSnapshot> {
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let slot = self.thread_observations.observation_slot(thread_id);
@@ -54,9 +54,9 @@ impl StudioRuntime {
         }
         if let Some(close) = self.store.agent_close(thread_id).await? {
             snapshot.thread.status = if close.execution_closed {
-                pl_protocol::ThreadStatus::Closed
+                crate::ThreadStatus::Closed
             } else {
-                pl_protocol::ThreadStatus::Closing
+                crate::ThreadStatus::Closing
             };
         }
         self.annotate_model_route(&mut snapshot)?;
@@ -84,13 +84,13 @@ impl StudioRuntime {
         current.business_refs_at(thread_id, state)
     }
 
-    fn annotate_mode_availability(&self, snapshot: &mut pl_protocol::ThreadSnapshot) {
+    fn annotate_mode_availability(&self, snapshot: &mut crate::ThreadSnapshot) {
         if let Some(runtime) = snapshot.runtime.as_mut() {
             self.annotate_runtime_mode_availability(runtime);
         }
     }
 
-    fn annotate_runtime_mode_availability(&self, runtime: &mut pl_protocol::ThreadRuntimeSnapshot) {
+    fn annotate_runtime_mode_availability(&self, runtime: &mut crate::ThreadRuntimeSnapshot) {
         if let Some(run) = runtime
             .workflow
             .as_mut()
@@ -102,12 +102,12 @@ impl StudioRuntime {
 
     /// 该 Thread 的 typed 持久化快照；没有登记过持久化的 Thread 为 `None`（未知不等于健康）。
     ///
-    /// 这是 [`pl_protocol::ThreadStorageState`] 的 typed 来源：故障类别、代数与水位都来自协调器
+    /// 这是 [`crate::ThreadStorageState`] 的 typed 来源：故障类别、代数与水位都来自协调器
     /// 的类型化值，不是错误文本的解析结果。
     pub(in crate::studio) fn thread_persistence_snapshot(
         &self,
         thread_id: &str,
-    ) -> Option<pl_protocol::ThreadPersistenceSnapshot> {
+    ) -> Option<crate::ThreadPersistenceSnapshot> {
         self.store
             .thread_persistence()
             .queue_snapshot()
@@ -197,7 +197,7 @@ impl StudioRuntime {
         Ok(checkpoint.state)
     }
 
-    fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<u64> {
+    fn annotate_model_route(&self, snapshot: &mut crate::ThreadSnapshot) -> Result<u64> {
         let (config, catalog) = self.config_runtime.read_with_catalog()?;
         crate::studio::model_route::annotate_availability(
             snapshot.model_route.as_mut(),

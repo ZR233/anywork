@@ -5,11 +5,12 @@ use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use pl_protocol::{
+use crate::mode::{
     ThreadModeCatalogSnapshot, ThreadModeDefinitionSnapshot, ThreadModeDocument, ThreadModeId,
-    ThreadModeValidationIssue, studio::StudioError, studio::StudioErrorCode,
+    ThreadModeValidationIssue,
 };
+use crate::{StudioError, StudioErrorCode};
+use anyhow::{Context, Result};
 
 use crate::config::{ConfigPaths, ConfigRuntimeError};
 use crate::mode::{
@@ -347,7 +348,7 @@ fn load_documents(paths: &ConfigPaths) -> Result<BTreeMap<ThreadModeId, ThreadMo
             "Thread Mode file {} exceeds the document byte limit",
             path.display()
         );
-        let pl_protocol::ThreadModeValidationResult { document, issues } =
+        let crate::mode::ThreadModeValidationResult { document, issues } =
             crate::mode::validate_mode_json(&json);
         let document = document.ok_or_else(|| mode_file_validation_error(&path, issues))?;
         let mode_id = document.definition.id.clone();

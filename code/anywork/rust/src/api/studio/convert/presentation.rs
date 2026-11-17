@@ -1,6 +1,6 @@
 //! Mechanical presentation mappings; membership and cuts belong to the runtime owner.
 
-use pl_protocol as protocol;
+use pl_studio_runtime as protocol;
 
 use super::chat;
 use crate::api::studio::types::*;

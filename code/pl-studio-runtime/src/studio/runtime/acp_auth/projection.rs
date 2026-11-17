@@ -5,11 +5,11 @@
 //! 的已观察事实完全匹配；缺失、退役或身份不符一律是陈旧快照，返回类型化 `StaleRevision` 由调用
 //! 方在 Settings command 边界内重读，而不是由投影补造或借用另一个身份的 revision。
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpAccountCatalog, AcpAccountSettings, AcpAccountTemplate, AcpProvider as AcpProviderWire,
     StudioErrorCode,
 };
+use anyhow::Result;
 
 use super::admission::AcpAuthRuntime;
 use super::mapping::acp_error;

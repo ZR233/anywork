@@ -1,7 +1,7 @@
 use super::SendAuthority;
 use super::owner::BotRuntime;
 use super::protocol::error::{FeishuError, FeishuErrorKind};
-use pl_protocol::studio::{
+use crate::{
     BotConnectionState, BotConversation, BotMessage, BotSendSegment, BotSendStatus,
     StudioCommandReceipt,
 };

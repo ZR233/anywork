@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use pl_protocol::{
+use crate::{
     AgentBinding, AgentDefinitionSnapshot, AgentProfile, AgentProfileSnapshot, AgentWorkspaceMode,
 };
 use serde::{Deserialize, Serialize};
@@ -120,7 +120,7 @@ impl AgentProfileCatalog {
 
     /// Derives the model-visible view from this scan, never a newer configuration read.
     /// Automatic mode needs enabled roles, not the availability of their fixed model routes.
-    pub(crate) fn executable(&self, mode: pl_protocol::DelegationMode) -> Result<Self> {
+    pub(crate) fn executable(&self, mode: crate::DelegationMode) -> Result<Self> {
         let mut catalog = self.enabled_for_dispatch()?;
         catalog.profiles.retain(|profile| {
             if matches!(profile.binding, AgentBinding::Acp(_))
@@ -129,13 +129,13 @@ impl AgentProfileCatalog {
                 return false;
             }
             // Automatic may replace a Native model route, never an ACP account definition.
-            (mode == pl_protocol::DelegationMode::Automatic
+            (mode == crate::DelegationMode::Automatic
                 && matches!(profile.binding, AgentBinding::Native(_)))
                 || !self
                     .unavailable_profiles
                     .contains(&profile.definition.definition_id)
         });
-        if mode == pl_protocol::DelegationMode::Automatic {
+        if mode == crate::DelegationMode::Automatic {
             catalog.diagnostics = self
                 .diagnostics
                 .iter()
@@ -448,7 +448,7 @@ pub(crate) fn effective_system_profile_route(
     let role = AgentRoleId::new(profile_id.to_owned())?;
     Ok(config.models.routes.get(&role).cloned().unwrap_or(
         config
-            .mode_model_route(&pl_protocol::ThreadModeId::simple())?
+            .mode_model_route(&crate::mode::ThreadModeId::simple())?
             .clone(),
     ))
 }
@@ -639,8 +639,8 @@ pub(crate) fn validate_user_agent_profile_id(profile_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::DelegationMode;
     use pl_model::{config::AccountConfig, model::ModelInfo, protocol::ProtocolEndpoint};
-    use pl_protocol::DelegationMode;
 
     #[test]
     fn automatic_profile_diagnostics_exclude_unused_native_routes() -> anyhow::Result<()> {

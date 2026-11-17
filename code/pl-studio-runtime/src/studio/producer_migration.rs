@@ -197,7 +197,7 @@ fn migrate_auxiliary(version: u32, content: &str) -> Result<String> {
     let encoded = serde_json::to_string(&object)?;
     let receipt: AuxiliaryBillingReceipt = serde_json::from_str(&encoded)?;
     ensure!(
-        version >= 3 || receipt.billing.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        version >= 3 || receipt.billing.accounting.pricing != crate::PricingOutcome::NoCharge,
         "no-charge accounting requires auxiliary billing version 3"
     );
     Ok(encoded)
@@ -217,13 +217,13 @@ fn migrate_compaction(version: u32, content: &str) -> Result<String> {
     if version < 4 {
         object.insert(
             "timing".into(),
-            to_raw_value(&Option::<pl_protocol::InferenceTiming>::None)?,
+            to_raw_value(&Option::<crate::InferenceTiming>::None)?,
         );
     }
     let encoded = serde_json::to_string(&object)?;
     let receipt: CompactionReceipt = serde_json::from_str(&encoded)?;
     ensure!(
-        version >= 3 || receipt.accounting.pricing != pl_protocol::PricingOutcome::NoCharge,
+        version >= 3 || receipt.accounting.pricing != crate::PricingOutcome::NoCharge,
         "no-charge accounting requires compaction receipt version 3"
     );
     Ok(encoded)
@@ -238,7 +238,7 @@ fn migrate_timing(object: &mut RawObject) -> Result<()> {
             put(
                 timing,
                 "firstOutputSource",
-                to_raw_value(&pl_protocol::FirstOutputSource::LegacyUnknown)?,
+                to_raw_value(&crate::FirstOutputSource::LegacyUnknown)?,
             )
         })?;
     }

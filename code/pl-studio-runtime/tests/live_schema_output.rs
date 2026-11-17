@@ -10,7 +10,7 @@ use pl_model::{
     protocol::WireApi,
     runtime::{ModelInvocationContext, ModelRuntime},
 };
-use pl_protocol::{ModelContextItem, ToolResultRecord};
+use pl_studio_runtime::{ModelContextItem, ToolResultRecord};
 use serde_json::json;
 
 fn message(role: MessageRole, text: &str) -> Message {

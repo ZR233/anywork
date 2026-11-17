@@ -53,15 +53,12 @@ impl DirectoryMember {
         })
     }
 
-    pub(in crate::studio) fn row(&self) -> pl_protocol::SessionDirectoryRow {
+    pub(in crate::studio) fn row(&self) -> crate::SessionDirectoryRow {
         row_projection(&self.session, &self.agent)
     }
 
     pub(in crate::studio) fn is_native(&self) -> bool {
-        matches!(
-            self.agent.backend,
-            pl_protocol::session::AgentBackend::Native { .. }
-        )
+        matches!(self.agent.backend, crate::AgentBackend::Native { .. })
     }
 }
 
@@ -80,10 +77,10 @@ pub(in crate::studio) struct SessionDirectoryRecord {
     /// 会话标题；不被子成员的任务摘要覆盖。
     pub(in crate::studio) title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::studio) native_mode: Option<pl_protocol::ThreadModeId>,
-    pub(in crate::studio) workspace_mode: pl_protocol::ThreadWorkspaceMode,
-    pub(in crate::studio) delegation_mode: pl_protocol::DelegationMode,
-    pub(in crate::studio) delegation_preference: pl_protocol::DelegationPreference,
+    pub(in crate::studio) native_mode: Option<crate::mode::ThreadModeId>,
+    pub(in crate::studio) workspace_mode: crate::ThreadWorkspaceMode,
+    pub(in crate::studio) delegation_mode: crate::DelegationMode,
+    pub(in crate::studio) delegation_preference: crate::DelegationPreference,
     pub(in crate::studio) workspace_path: String,
     pub(in crate::studio) created_at: i64,
     pub(in crate::studio) updated_at: i64,
@@ -121,19 +118,19 @@ pub(in crate::studio) struct AgentDirectoryRecord {
     /// child 创建期冻结的任务摘要标题；主成员省略（显示标题为会话标题）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::studio) title: Option<String>,
-    pub(in crate::studio) backend: pl_protocol::session::AgentBackend,
+    pub(in crate::studio) backend: crate::AgentBackend,
     pub(in crate::studio) explicitly_closed: bool,
     pub(in crate::studio) created_at: i64,
     pub(in crate::studio) updated_at: i64,
 }
 
 impl AgentDirectoryRecord {
-    pub(in crate::studio) fn native_status(&self) -> Option<pl_protocol::ThreadStatus> {
+    pub(in crate::studio) fn native_status(&self) -> Option<crate::ThreadStatus> {
         self.backend.native_status()
     }
 
-    pub(in crate::studio) fn set_native_status(&mut self, next: pl_protocol::ThreadStatus) {
-        if let pl_protocol::session::AgentBackend::Native { status, .. } = &mut self.backend {
+    pub(in crate::studio) fn set_native_status(&mut self, next: crate::ThreadStatus) {
+        if let crate::AgentBackend::Native { status, .. } = &mut self.backend {
             *status = next;
         }
     }
@@ -143,41 +140,37 @@ impl AgentDirectoryRecord {
     }
 
     /// 与 `CatalogEntry::projected_status` 相同的目录状态投影。
-    pub(in crate::studio) fn projected_backend(&self) -> pl_protocol::session::AgentBackend {
+    pub(in crate::studio) fn projected_backend(&self) -> crate::AgentBackend {
         match &self.backend {
-            pl_protocol::session::AgentBackend::Native { config, status } => {
-                pl_protocol::session::AgentBackend::Native {
-                    config: config.clone(),
-                    status: crate::studio::agent_close::directory_status(
-                        *status,
-                        self.explicitly_closed,
-                    ),
-                }
-            }
-            backend @ pl_protocol::session::AgentBackend::Acp { .. } => backend.clone(),
+            crate::AgentBackend::Native { config, status } => crate::AgentBackend::Native {
+                config: config.clone(),
+                status: crate::studio::agent_close::directory_status(
+                    *status,
+                    self.explicitly_closed,
+                ),
+            },
+            backend @ crate::AgentBackend::Acp { .. } => backend.clone(),
         }
     }
 
     /// Native 冻结模型身份摘要（binding 的只读投影）；ACP 成员没有该事实。
-    pub(in crate::studio) fn frozen_model(
-        &self,
-    ) -> Option<pl_protocol::studio::NewThreadModelRoute> {
+    pub(in crate::studio) fn frozen_model(&self) -> Option<crate::NewThreadModelRoute> {
         match &self.backend {
-            pl_protocol::session::AgentBackend::Native { config, .. } => config.route.clone(),
-            pl_protocol::session::AgentBackend::Acp { .. } => None,
+            crate::AgentBackend::Native { config, .. } => config.route.clone(),
+            crate::AgentBackend::Acp { .. } => None,
         }
     }
 }
 
-/// 从会话与成员目录事实投影 wire 目录行 [`pl_protocol::SessionDirectoryRow`]。
+/// 从会话与成员目录事实投影 wire 目录行 [`crate::SessionDirectoryRow`]。
 ///
 /// 目录帧、增量事件与元数据观察共用该投影：行身份是 typed 四元组，会话级事实
 /// 随行携带；root/child 判定只读 `parent_agent_id`。
 pub(in crate::studio) fn row_projection(
     session: &SessionDirectoryRecord,
     agent: &AgentDirectoryRecord,
-) -> pl_protocol::SessionDirectoryRow {
-    pl_protocol::SessionDirectoryRow {
+) -> crate::SessionDirectoryRow {
+    crate::SessionDirectoryRow {
         session_id: session.session_id.clone(),
         agent_id: agent.agent_id.clone(),
         parent_agent_id: agent.parent_agent_id.clone(),
@@ -204,7 +197,7 @@ pub(in crate::studio) fn row_projection(
     }
 }
 
-/// 从会话与成员目录事实投影 Native 执行域的 [`pl_protocol::Thread`]。
+/// 从会话与成员目录事实投影 Native 执行域的 [`crate::Thread`]。
 ///
 /// 投影只服务 Native 消费方；默认 Thread 地址由同一目录切面的成员解析，
 /// 不假定 Session、Agent 和 Thread 的 ID 字节相同。
@@ -212,12 +205,11 @@ pub(in crate::studio) fn thread_projection(
     session: &SessionDirectoryRecord,
     agent: &AgentDirectoryRecord,
     resolve_thread: impl Fn(&str) -> Option<String>,
-) -> anyhow::Result<pl_protocol::Thread> {
-    let pl_protocol::session::AgentBackend::Native { status, .. } = agent.projected_backend()
-    else {
+) -> anyhow::Result<crate::Thread> {
+    let crate::AgentBackend::Native { status, .. } = agent.projected_backend() else {
         return Err(
             crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             }
             .into(),
         );
@@ -237,7 +229,7 @@ pub(in crate::studio) fn thread_projection(
                 .ok_or_else(|| anyhow::anyhow!("directory parent member is missing"))
         })
         .transpose()?;
-    Ok(pl_protocol::Thread {
+    Ok(crate::Thread {
         id: agent.thread_id.clone(),
         workspace_id: session.workspace_id.clone(),
         title: agent.title.clone().unwrap_or_else(|| session.title.clone()),
@@ -268,7 +260,7 @@ pub(in crate::studio) fn thread_projection(
 /// child 只产生成员记录（其会话事实由同一测试先注册的父行建立）。
 #[cfg(test)]
 pub(in crate::studio) fn directory_facts_from_thread(
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
 ) -> (Option<SessionDirectoryRecord>, AgentDirectoryRecord) {
     let session = thread
         .parent_thread_id
@@ -298,8 +290,8 @@ pub(in crate::studio) fn directory_facts_from_thread(
             .parent_thread_id
             .is_some()
             .then(|| thread.title.clone()),
-        backend: pl_protocol::session::AgentBackend::Native {
-            config: pl_protocol::NativeAgentConfig {
+        backend: crate::AgentBackend::Native {
+            config: crate::NativeAgentConfig {
                 route: thread.frozen_model.clone(),
                 system_instructions: None,
             },
@@ -315,7 +307,7 @@ pub(in crate::studio) fn directory_facts_from_thread(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedAttachment {
     pub attachment_id: String,
-    pub modality: pl_protocol::AttachmentModality,
+    pub modality: crate::AttachmentModality,
     pub media_type: String,
     pub filename: Option<String>,
     pub data: String,
@@ -329,7 +321,7 @@ pub struct MaterializedAttachment {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceRecord {
     pub id: String,
-    pub kind: pl_protocol::studio::WorkspaceKind,
+    pub kind: crate::WorkspaceKind,
     pub name: String,
     pub path: String,
     pub ssh_alias: Option<String>,
@@ -342,12 +334,12 @@ pub struct ThreadRecord {
     pub id: String,
     pub workspace_id: String,
     pub title: String,
-    pub mode: Option<pl_protocol::ThreadModeId>,
+    pub mode: Option<crate::mode::ThreadModeId>,
     /// 会话工作区模式：Thread 的 canonical 产品事实，不由 GUI 或目录查询推导。
-    pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
-    pub delegation_mode: pl_protocol::DelegationMode,
-    pub delegation_preference: pl_protocol::DelegationPreference,
-    pub frozen_model: Option<pl_protocol::studio::NewThreadModelRoute>,
+    pub workspace_mode: crate::ThreadWorkspaceMode,
+    pub delegation_mode: crate::DelegationMode,
+    pub delegation_preference: crate::DelegationPreference,
+    pub frozen_model: Option<crate::NewThreadModelRoute>,
     /// 会话对外唯一 canonical 工作区地址，创建会话时写定、之后只读。
     pub workspace_path: String,
     pub created_at: i64,
@@ -361,7 +353,7 @@ pub struct ThreadRecord {
     pub thread_kind: ThreadKind,
     pub agent_path: String,
     pub role: String,
-    pub status: pl_protocol::ThreadStatus,
+    pub status: crate::ThreadStatus,
     pub summary: Option<String>,
     pub error: Option<String>,
     pub runtime_updated_at: Option<i64>,
@@ -369,7 +361,7 @@ pub struct ThreadRecord {
 
 impl ThreadRecord {
     /// 从目录事实构造记录（创建命令返回值用）；runtime 派生列取缺省值。
-    pub(in crate::studio) fn from_directory_thread(thread: pl_protocol::Thread) -> Self {
+    pub(in crate::studio) fn from_directory_thread(thread: crate::Thread) -> Self {
         let thread_kind = if thread.parent_thread_id.is_some() {
             ThreadKind::Agent
         } else {
@@ -406,7 +398,7 @@ impl ThreadRecord {
     }
 }
 
-impl From<ThreadRecord> for pl_protocol::Thread {
+impl From<ThreadRecord> for crate::Thread {
     fn from(value: ThreadRecord) -> Self {
         Self {
             id: value.id,
@@ -468,7 +460,7 @@ impl ThreadVisibility {
 pub struct AttachmentRecord {
     pub id: String,
     pub thread_id: String,
-    pub modality: pl_protocol::studio::StudioAttachmentModality,
+    pub modality: crate::StudioAttachmentModality,
     pub media_type: String,
     pub filename: Option<String>,
     /// POSIX blob reference relative to the owning session, never a host filesystem path.
@@ -486,6 +478,6 @@ pub struct AttachmentRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::studio) struct DirectoryState {
-    pub kind: pl_protocol::ThreadStatus,
+    pub kind: crate::ThreadStatus,
     pub error: Option<String>,
 }

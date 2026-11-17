@@ -1,5 +1,6 @@
 //! Read-only review admission consumes the execution binding and the existing disk owner.
 use super::{StudioThreadFactory, tool_bindings::ToolBinding};
+use crate::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, ThreadWorkspaceMode};
 use crate::{
     agent::worktree::{
         ExecutorWorktreeBackend, WorktreeBackend, WorktreeError, WorktreeHandle, WorktreeManager,
@@ -13,7 +14,6 @@ use crate::{
     },
     thread_assembler::ThreadAssemblyError,
 };
-use pl_protocol::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, ThreadWorkspaceMode};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -745,7 +745,7 @@ impl StudioThreadFactory {
 // Shared declaration rules are moved here from restore_child; restoration uses the same functions.
 pub(super) fn verify_worktree_declarations(
     lease: &WorktreeLease,
-    receipt: &pl_protocol::AgentWorktreeSnapshot,
+    receipt: &crate::AgentWorktreeSnapshot,
     owner: &ThreadRecord,
     project: &WorkspaceRecord,
     repository_root: &Path,

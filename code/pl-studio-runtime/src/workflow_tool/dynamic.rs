@@ -3,6 +3,7 @@ use super::machine::{
     EmptyInput, RestartInput, TransitionInput, WorkflowMachine, WorkflowOperation,
 };
 use crate::thread_assembler::ThreadAssemblyError;
+use crate::workflow_tool::WorkflowSessionState;
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
@@ -14,7 +15,6 @@ use pl_core::{
     },
 };
 use pl_model::completion::ToolCallPolicy;
-use pl_protocol::WorkflowSessionState;
 use pl_tool::binding::prepare_registration;
 use std::sync::Arc;
 

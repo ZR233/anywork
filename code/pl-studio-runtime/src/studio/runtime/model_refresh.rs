@@ -35,7 +35,7 @@ impl StudioRuntime {
             model,
         )
         .map_err(|error| {
-            pl_protocol::PureError::ConfigError(format!(
+            crate::PureError::ConfigError(format!(
                 "所选模型无法读取当前会话的附件，请选择支持这些附件的模型：{error}"
             ))
             .into()
@@ -73,7 +73,7 @@ impl StudioRuntime {
             let (_, selector) = crate::studio::model_route::route_record(&state, is_child)?
                 .context("Thread has no saved model route")?;
             let role = if is_child {
-                pl_protocol::AgentRoleId::new(record.role)?
+                crate::AgentRoleId::new(record.role)?
             } else {
                 crate::config::root_agent_route_id()
             };
