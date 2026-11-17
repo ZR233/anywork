@@ -75,6 +75,40 @@ schema and requires explicit catalogs, environment-only credentials and isolated
 homes. Do not invent benchmark-only TOML keys. Frozen history is a separate
 validated data snapshot, not an alternative configuration file.
 
+### ACP command-line sessions
+
+Use `anywk acp-options --studio-home <path> --cwd <path> --account <acp-id>`
+to open a real ACP draft, print its declared capabilities/configuration, then
+close cleanly without sending a prompt. The existing valid `config.toml` is still
+required. ACP accounts come from that home's `acp/<id>.toml`; they are not Native
+model accounts. The external agent uses its own existing login, not imported tokens.
+
+Use `anywk exec-acp` with the same three arguments, `--prompt-file <path>` (or `-`
+for UTF-8 stdin), and repeated `--config <id=value>` from the actual declarations.
+For example, when the server declares those exact IDs:
+
+```sh
+anywk exec-acp --studio-home /runs/profile --cwd /workspace/task \
+  --account local-agy --config model=gemini-4-hydrogen \
+  --config thought_level=high --prompt-file /runs/prompt.txt
+```
+
+Settings are applied in argument order and checked again before submission; invalid
+or changed selections fail without a model fallback. `--no-default-user-skills` and
+`--skill-dir` use the same runtime-only source policy as Native execution. The ACP
+commands do not accept Native `--model`, `--mode`, effort/step budgets or v2 exports.
+Permissions block with exit code 3 and are rejected, never auto-approved. Output is
+written only after clean, drained shutdown. Unpackaged execution requires the
+matching `pl-studio-mcp` on PATH, using the existing external asset source.
+
+Local and SSH ACP instances expose enabled host workspace and skill tools through
+`anywork_` names, using the same source and permission owners as ordinary sessions.
+LSP uses the actual execution workspace and shared language-service lease. The
+external agent's own local tools are not a sandboxed replacement for host tools.
+ACP `anywork_skill_manage` takes the complete original operation under `input`,
+for example `{"input":{"action":"delete","name":"example"}}`. Its schema is
+generated from the original argument type; Native `skill_manage` remains unchanged.
+
 ## Accounts and model routes
 
 This minimal API-account example requires a real credential supplied through the

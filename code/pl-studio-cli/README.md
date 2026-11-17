@@ -1,6 +1,6 @@
 # anywk 命令行
 
-在原生 Studio 运行时中执行一个任务，等待终态和资源关闭后输出最终助手文本。
+在 Studio 运行时中执行一个 Native 或 ACP 任务，等待终态和资源关闭后输出最终助手文本。
 
 从仓库根目录构建：
 
@@ -39,6 +39,25 @@ anywk exec --studio-home /runs/profile --cwd /workspace/task \
 
 标准输出仅为最终助手文本，诊断写标准错误。退出码：正常 0，输入/配置/路由 2，等待输入或审批 3，预算耗尽 4，任务失败 10，启动环境/内部错误 11，关闭失败 13，其他取消 14，SIGINT 130，SIGTERM 143。关闭失败优先；清理预算为 30 秒。Windows 原生监听 Ctrl+C，Unix 原生监听 SIGINT/SIGTERM。
 
-完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见 `anywk exec --help`。
+## ACP 会话
+
+使用已有 Studio home 中配置的 ACP 账号 ID；官方代理沿用自己的登录态。以下探测不发送任务，也不执行登录，清洁关闭后只输出服务端实际声明的能力与当前会话配置 JSON：
+
+```sh
+anywk acp-options --studio-home ./run-home --cwd ./task --account my-acp
+```
+
+按探测返回的配置 ID 和值 ID 执行任务，不能用显示名替代。配置依参数顺序设置，每次重新读取当前选项并核对回读；后续配置若改变此前明确请求的值，会在发送任务前失败：
+
+```sh
+anywk exec-acp --studio-home ./run-home --cwd ./task --account my-acp \
+  --prompt-file ./prompt.txt --config model=SERVER_MODEL_ID \
+  --config thought_level=SERVER_VALUE_ID --no-default-user-skills \
+  --skill-dir ./evaluation-skills
+```
+
+`--prompt-file -` 支持标准输入；路径和技能来源规则与 `exec` 相同。ACP 不接受 Native 的 `--model`、`--mode`、`--reasoning-effort`、`--max-model-steps` 或 `--output-dir`。非打包运行要求 PATH 中已有与源码匹配的 `pl-studio-mcp`。权限请求一律拒绝并返回 3，不自动批准；观察缺口、断连、失败与非正常停止不会输出成功文本。关闭预算 30 秒，关闭失败返回 13，信号返回 130/143。
+
+完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见各命令的 `--help`。
 
 真实账户的历史转换验证需要显式启用 `live-tests`，并指定 `ANYWK_HISTORY_LIVE_ACCOUNT`、`ANYWK_HISTORY_LIVE_MODEL`、`ANYWK_HISTORY_LIVE_PROJECT`、`ANYWK_HISTORY_LIVE_PROMPT` 和尚不存在的绝对输出目录 `ANYWK_HISTORY_LIVE_OUTPUT`；模型要求推理强度时另设 `ANYWK_HISTORY_LIVE_EFFORT`。随后运行 `cargo test --locked -p pl-studio-cli --features live-tests --test history_live -- --ignored --nocapture`。此入口通过产品配置接口读取现有账户的受保护凭据，仅在子进程环境中传递；独立配置与会话写入指定输出目录，并核对原配置未变。它验证真实执行、现役历史原件的分块复制及目标摘要，不启用 schema 25 生产写入，也不代替完整迁移验收。普通离线测试不调用该入口。

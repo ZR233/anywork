@@ -12,6 +12,10 @@ the requested feature; do not copy another client's JSON configuration into anyw
 This main document is an index: load the selected support file through the skill
 reader, not a guessed installation path.
 
+`anywk acp-options` discovers real ACP session options without a prompt;
+`anywk exec-acp` applies explicit service options and executes one task. See the
+CLI section of the main configuration reference; Native model flags do not apply.
+
 ACP programs and authentication remain on the Studio host for SSH projects too.
 Enabled ACP accounts prepare one shared background instance and check existing
 authentication without interactive login. Disabling or deleting an account stops
