@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../../../shared/composer_configuration_bar.dart';
 import '../../../status/session_selectors.dart';
 import '../state/composer_view_state.dart';
 import '../view_models/composer_view_model.dart';
@@ -25,23 +26,19 @@ class StartComposerSelectors extends ConsumerWidget {
     final mode = start.mode;
     final route = start.displayRoute(mode);
     final enabled = start.settingsLoaded && !start.submitting;
-    return Wrap(
-      key: StudioDriverKeys.startPageSelectors,
-      spacing: 6,
-      runSpacing: 4,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        SessionModeSelector(
-          catalog: state!.modeCatalog,
-          mode: mode,
-          enabled: enabled && start.project != null,
-          lockedHint: start.project == null
-              ? context.l10n.statusModeNeedsProject
-              : context.l10n.statusSelectorsNotReady,
-          onSelected: actions.setMode,
-        ),
-        StartModelSelector(workspaceId: workspaceId),
+    SessionModeSelector modeSelector(bool inMenu) => SessionModeSelector(
+      inMenu: inMenu,
+      catalog: state!.modeCatalog,
+      mode: mode,
+      enabled: enabled && start.project != null,
+      lockedHint: start.project == null
+          ? context.l10n.statusModeNeedsProject
+          : context.l10n.statusSelectorsNotReady,
+      onSelected: actions.setMode,
+    );
+    ReasoningEffortSelector effortSelector(bool inMenu) =>
         ReasoningEffortSelector(
+          inMenu: inMenu,
           accounts: start.accounts,
           accountId: route?.accountId ?? '',
           modelId: route?.modelId ?? '',
@@ -49,6 +46,30 @@ class StartComposerSelectors extends ConsumerWidget {
           enabled: enabled,
           pending: start.routePending(mode),
           onEffortSelected: actions.setEffort,
+        );
+    final inlineMode = modeSelector(false);
+    final inlineEffort = effortSelector(false);
+    return ComposerConfigurationBar(
+      key: StudioDriverKeys.startPageSelectors,
+      moreTooltip: context.l10n.acpConfigMoreLabel,
+      entries: [
+        ComposerConfigurationEntry(
+          id: 'native-mode',
+          inline: inlineMode,
+          measureInlineWidth: inlineMode.measureInlineWidth,
+          menuItem: modeSelector(true),
+        ),
+        startModelConfigurationEntry(
+          id: 'native-model',
+          context: context,
+          ref: ref,
+          workspaceId: workspaceId,
+        ),
+        ComposerConfigurationEntry(
+          id: 'native-effort',
+          inline: inlineEffort,
+          measureInlineWidth: inlineEffort.measureInlineWidth,
+          menuItem: effortSelector(true),
         ),
       ],
     );

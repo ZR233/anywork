@@ -1,6 +1,7 @@
 import 'package:anywork_client/studio_client.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:flutter/widget_previews.dart';
+import 'package:anywork/src/shared/composer_configuration_bar.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
@@ -9,20 +10,64 @@ import 'package:anywork/src/l10n/studio_l10n.dart';
 import 'package:anywork/src/platform/dropped_file.dart';
 import 'package:anywork/src/platform/external_url_launcher.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_input_state.dart';
+import 'package:anywork/src/features/conversation/composer/state/start_backend_view_state.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_actions.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/composer_submission_body.dart';
 import 'package:anywork/src/features/conversation/composer/views/composer_route_selectors.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/shared/composer_action_button.dart';
 
 @Preview(name: 'Composer / 可编辑纯输入', group: 'Composer', size: Size(760, 340))
 @Preview(name: 'Composer / 窄窗', group: 'Composer', size: Size(360, 460))
-Widget composerInputPreview() => _composerPreviewHost(const _PreviewInput());
+@Preview(
+  name: 'Composer / Native 运行期可编辑 · 2×字号压力',
+  group: 'Composer',
+  size: Size(380, 460),
+  textScaleFactor: 2,
+)
+Widget composerInputPreview() =>
+    _composerPreviewHost(const _PreviewInput(key: ValueKey('native-editable')));
+
+@Preview(
+  name: 'Composer / Native 新会话 · 宽窗',
+  group: 'Composer',
+  size: Size(760, 340),
+)
+@Preview(
+  name: 'Composer / 普通窄窗 · 280px',
+  group: 'Composer',
+  size: Size(280, 340),
+)
+@Preview(
+  name: 'Composer / 普通窄窗 · 340px',
+  group: 'Composer',
+  size: Size(340, 340),
+)
+@Preview(
+  name: 'Composer / 普通窄窗 · 360px',
+  group: 'Composer',
+  size: Size(360, 340),
+)
+@Preview(
+  name: 'Composer / Native 新会话 · 2×字号压力',
+  group: 'Composer',
+  size: Size(380, 460),
+  textScaleFactor: 2,
+)
+Widget composerCreationPreview() => _composerPreviewHost(
+  const _PreviewInput(
+    key: ValueKey('native-creation'),
+    newConversation: true,
+    initialText: '创建一个新会话，梳理当前项目的实现边界。',
+  ),
+);
 
 @Preview(name: 'Composer / 运行中停止', group: 'Composer', size: Size(1040, 220))
 Widget composerStopPreview() => _composerPreviewHost(
   const _PreviewInput(
+    key: ValueKey('native-running'),
     initialText: '',
     execution: AgentExecutionView(
       id: 'preview-run',
@@ -86,8 +131,9 @@ Widget composerActionStatesPreview() => _composerPreviewHost(
 );
 
 @Preview(name: 'Composer / 失败正文可选择复制', group: 'Composer', size: Size(760, 640))
-Widget composerSubmissionPreview() =>
-    _composerPreviewHost(const _PreviewInput(showSubmission: true));
+Widget composerSubmissionPreview() => _composerPreviewHost(
+  const _PreviewInput(key: ValueKey('native-submission'), showSubmission: true),
+);
 
 Widget _composerPreviewHost(Widget child) => MaterialApp(
   debugShowCheckedModeBanner: false,
@@ -109,11 +155,15 @@ Widget _composerPreviewHost(Widget child) => MaterialApp(
 
 class _PreviewInput extends StatefulWidget {
   const _PreviewInput({
+    required super.key,
     this.showSubmission = false,
+    this.newConversation = false,
     this.initialText = '输入下一条消息',
     this.execution,
   });
   final bool showSubmission;
+  // Preview-only distinction; production owns creation layout and controls.
+  final bool newConversation;
   final String initialText;
   final AgentExecutionView? execution;
   @override
@@ -150,7 +200,8 @@ class _PreviewInputState extends State<_PreviewInput>
         const SizedBox(height: 16),
       ],
       PromptComposerView(
-        targetKey: 'preview',
+        targetKey: widget.key!,
+        creationCard: widget.newConversation,
         actions: this,
         state: ComposerInputState(
           composer: ComposerThreadState.idle(draft: _text),
@@ -164,36 +215,77 @@ class _PreviewInputState extends State<_PreviewInput>
             ),
           ],
         ),
-        selectorBar: Wrap(
-          crossAxisAlignment: WrapCrossAlignment.center,
-          spacing: 2,
-          runSpacing: 4,
-          children: [
-            SessionModeSelector(
-              catalog: const ThreadModeCatalogView(),
-              mode: ThreadModeId.task,
-              enabled: widget.execution == null,
-              onSelected: (_) {},
+        selectorBar: ComposerConfigurationBar(
+          moreTooltip: context.l10n.acpConfigMoreLabel,
+          entries: [
+            ComposerConfigurationEntry(
+              id: 'mode',
+              inline: _modeSelector(false),
+              measureInlineWidth: _modeSelector(false).measureInlineWidth,
+              menuItem: _modeSelector(true),
             ),
-            ...modelRouteSelectorChildren(
-              accounts: _previewAccounts,
-              pending: false,
-              accountId: 'preview-account',
-              modelId: 'preview-model',
-              effort: 'high',
-              blockedReason: widget.execution == null
-                  ? null
-                  : context.l10n.statusModelSwitchWhileRunning,
-              unavailableReason:
-                  context.l10n.statusModelRouteUnavailableFallback,
-              onModelSelected: (_, _) {},
-              onEffortSelected: (_) {},
-            ),
+            if (widget.newConversation) ...[
+              ComposerConfigurationEntry(
+                id: 'native-model',
+                inline: _startModelSelector(false),
+                measureInlineWidth: _startModelSelector(false)
+                    .measureInlineWidth,
+                menuItem: _startModelSelector(true),
+              ),
+              ComposerConfigurationEntry(
+                id: 'native-effort',
+                inline: _startEffortSelector(false),
+                measureInlineWidth: _startEffortSelector(false)
+                    .measureInlineWidth,
+                menuItem: _startEffortSelector(true),
+              ),
+            ] else
+              ...modelRouteConfigurationEntries(
+                accounts: _previewAccounts,
+                pending: false,
+                accountId: 'preview-account',
+                modelId: 'preview-model',
+                effort: 'high',
+                blockedReason: widget.execution == null
+                    ? null
+                    : context.l10n.statusModelSwitchWhileRunning,
+                unavailableReason:
+                    context.l10n.statusModelRouteUnavailableFallback,
+                onModelSelected: (_, _) {},
+                onEffortSelected: (_) {},
+              ),
           ],
         ),
       ),
     ],
   );
+
+  SessionModeSelector _modeSelector(bool inMenu) => SessionModeSelector(
+    inMenu: inMenu,
+    catalog: const ThreadModeCatalogView(),
+    mode: ThreadModeId.task,
+    enabled: widget.execution == null,
+    onSelected: (_) {},
+  );
+
+  StartModelSelectorView _startModelSelector(bool inMenu) =>
+      StartModelSelectorView(
+        inMenu: inMenu,
+        state: _previewStartBackend,
+        onSelectModel: (_, _) {},
+        onSelectService: (_) {},
+        onManageServices: () {},
+      );
+
+  ReasoningEffortSelector _startEffortSelector(bool inMenu) =>
+      ReasoningEffortSelector(
+        inMenu: inMenu,
+        accounts: _previewAccounts,
+        accountId: 'preview-account',
+        modelId: 'preview-model',
+        effort: 'high',
+        onEffortSelected: (_) {},
+      );
 
   @override
   void updateText(String text) => setState(() => _text = text);
@@ -238,3 +330,20 @@ final _previewAccounts = [
     ],
   ),
 ];
+
+// Synthetic summaries only: no account configuration or service is accessed.
+final _previewStartBackend = StartBackendViewState(
+  modelAccounts: _previewAccounts,
+  modelAccountId: 'preview-account',
+  modelId: 'preview-model',
+  services: const [
+    StartBackendServiceItem(
+      id: 'preview-acp-service',
+      name: '合成 ACP 服务',
+      enabled: true,
+    ),
+  ],
+  nativeEnabled: true,
+  enabled: true,
+  loading: false,
+);

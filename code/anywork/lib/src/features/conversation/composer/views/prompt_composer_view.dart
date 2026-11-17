@@ -3,17 +3,12 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../domain/models/composer_primary_action.dart';
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../platform/desktop_drop_adapter.dart';
-import '../../../../platform/dropped_file.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/composer_action_button.dart';
+import '../../../../shared/conversation_composer.dart';
 import '../state/composer_input_state.dart';
 import '../view_models/composer_actions.dart';
-import '../widgets/composer_attachments.dart';
-import '../widgets/multiline_enter_shortcuts.dart';
-import '../widgets/composer_paste_action.dart';
 import 'composer_support_views.dart';
-import '../../../../shared/composer_input_frame.dart';
 
 /// 原因区的最大高度：三行文案在窄矮窗口里换行时改在区内滚动，不撑破底栏。
 const double _composerReasonMaxHeight = 84;
@@ -62,7 +57,7 @@ bool _sameRecoveryDiagnostic(
 bool _showRawComposerError(ComposerThreadState composer) =>
     _composerFailureRecoveryIssue(composer) == null;
 
-class PromptComposerView extends StatefulWidget {
+class PromptComposerView extends StatelessWidget {
   const PromptComposerView({
     required this.state,
     required this.actions,
@@ -80,176 +75,75 @@ class PromptComposerView extends StatefulWidget {
   final bool creationCard;
   final bool compact;
 
-  @override
-  State<PromptComposerView> createState() => PromptComposerViewState();
-}
+  ComposerPrimaryAction get _action => state.action;
+  bool get _stopUnconfirmed => state.stopUnconfirmed;
+  ComposerBlocker? get _stopFailure => state.stopFailure;
 
-class PromptComposerViewState extends State<PromptComposerView> {
-  late final TextEditingController _controller;
-  bool _dragging = false;
-  int _targetGeneration = 0;
-
-  ComposerPrimaryAction get _action => widget.state.action;
-  bool get _stopUnconfirmed => widget.state.stopUnconfirmed;
-  ComposerBlocker? get _stopFailure => widget.state.stopFailure;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: widget.state.text);
-  }
-
-  @override
-  void dispose() {
-    _targetGeneration++;
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  void didUpdateWidget(covariant PromptComposerView oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    final targetChanged = oldWidget.targetKey != widget.targetKey;
-    if (targetChanged) _targetGeneration++;
-    final nextText = widget.state.text;
-    if (targetChanged || nextText != _controller.text) {
-      _controller.value = TextEditingValue(
-        text: nextText,
-        selection: TextSelection.collapsed(offset: nextText.length),
-      );
-    }
-  }
-
-  /// 提交的唯一入口：主按钮与 Enter 提交共用同一准入判定。
-  ///
-  /// 编辑器持有输入法组词状态；未完成的组词不交给业务动作入口。
   void _submit() {
-    // 空输入继续只能由点击按钮发起：Enter 不触发无内容的继续操作。
-    if (!widget.state.enterSubmits) return;
-    // 中文/日文输入法组词期间的回车由平台确认候选，框架不参与提交。
-    if (_controller.value.composing.isValid) return;
-    widget.actions.submit();
-  }
-
-  bool Function() _captureOperationEligibility() {
-    final generation = _targetGeneration;
-    final targetKey = widget.targetKey;
-    return () =>
-        mounted &&
-        generation == _targetGeneration &&
-        targetKey == widget.targetKey;
-  }
-
-  void _pasteClipboard(Future<void> Function() pasteText) {
-    widget.actions.paste(
-      ComposerTextPaste(
-        invoke: pasteText,
-        isCurrent: _captureOperationEligibility(),
-      ),
-    );
-  }
-
-  Future<void> _pickLocalAttachments(
-    List<ModelInputCapabilityView> capabilities,
-  ) {
-    widget.actions.pickAttachments(
-      capabilities,
-      _captureOperationEligibility(),
-    );
-    return Future<void>.value();
-  }
-
-  Future<void> _dropAttachments(List<DroppedFileTransfer> files) {
-    return widget.actions.dropAttachments(
-      files,
-      _captureOperationEligibility(),
-    );
+    if (state.enterSubmits) actions.submit();
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final composer = widget.state.composer;
+    final composer = state.composer;
     final action = _action;
     final blocker = action.blocker;
-    final continuation = widget.state.continuation;
-    final continuationNote =
-        continuation != null && widget.state.execution == null
+    final continuation = state.continuation;
+    final continuationNote = continuation != null && state.execution == null
         ? context.composerContinuationReasonLabel(continuation.reason)
         : null;
     // 三类原因各自独立可见：canonical 阻塞决定准入，typed 失败说明上一次尝试，
     // 中断原因说明为什么这里可以继续/为什么执行停了；任一条存在都不丢弃其他两条。
     final showContinuationNote = continuationNote != null;
-    final localCapabilities = widget.state.inputCapabilities
+    final localCapabilities = state.inputCapabilities
         .where(
           (capability) =>
               capability.modality != ModelModalityView.text &&
               capability.supportsSource(ModelInputSourceView.local),
         )
         .toList();
-    final remoteCapabilities = widget.state.inputCapabilities
+    final remoteCapabilities = state.inputCapabilities
         .where(
           (capability) =>
               capability.modality != ModelModalityView.text &&
               capability.supportsSource(ModelInputSourceView.remoteUrl),
         )
         .toList();
-    final attachmentEnabled = widget.state.enabled;
-    final panel = ComposerInputFrame(
-      creationCard: widget.creationCard,
-      compact: widget.compact,
-      dragging: _dragging,
-      configuration: widget.selectorBar,
-      attachmentAction: AttachmentMenu(
-        enabled: attachmentEnabled,
-        localCapabilities: localCapabilities,
-        remoteCapabilities: remoteCapabilities,
-        onPickLocal: _pickLocalAttachments,
-        onAddUrl: _showUrlDialog,
+    final attachmentEnabled = state.enabled;
+    return ConversationComposer(
+      identity: targetKey,
+      text: state.text,
+      inputKey: StudioDriverKeys.composerInput,
+      enabled: state.enabled,
+      autofocus: creationCard,
+      creationCard: creationCard,
+      compact: compact,
+      configuration: selectorBar,
+      onTextChanged: actions.updateText,
+      onSubmit: state.enterSubmits ? actions.submit : null,
+      attachments: composer.attachments,
+      canAttach: attachmentEnabled,
+      localCapabilities: localCapabilities,
+      remoteCapabilities: remoteCapabilities,
+      onRemoveAttachment: attachmentEnabled ? actions.removeAttachment : null,
+      onPickLocal: (capabilities, isCurrent) async {
+        actions.pickAttachments(capabilities, isCurrent);
+      },
+      onAddUrl: (url, isCurrent) async {
+        if (isCurrent()) actions.addUrl(url);
+      },
+      onDropFiles: actions.dropAttachments,
+      onPaste: (pasteText, isCurrent) => actions.paste(
+        ComposerTextPaste(
+          invoke: () async {
+            if (isCurrent()) await pasteText();
+          },
+          isCurrent: isCurrent,
+        ),
       ),
       primaryAction: _primaryActionButton(context, action),
-      body: [
-        if (composer.attachments.isNotEmpty)
-          AttachmentDraftRail(
-            attachments: composer.attachments,
-            enabled: attachmentEnabled,
-            onRemove: (id) => widget.actions.removeAttachment(id),
-          ),
-        Actions(
-          actions: {
-            PasteTextIntent: ComposerPasteAction(
-              canPaste: () => widget.state.enabled,
-              paste: _pasteClipboard,
-            ),
-          },
-          // Enter 提交由文本框的 `TextInputAction.send` 交给平台文本输入完成，
-          // 与主按钮共用 [_submit] 的准入判定；Shift+Enter 是唯一的局部换行动作。
-          child: MultilineEnterShortcuts(
-            controller: _controller,
-            child: TextField(
-              key: StudioDriverKeys.composerInput,
-              controller: _controller,
-              autofocus: widget.creationCard,
-              enabled: widget.state.enabled,
-              minLines: widget.compact ? 2 : 3,
-              maxLines: 8,
-              textInputAction: TextInputAction.send,
-              onSubmitted: (_) => _submit(),
-              decoration: InputDecoration(
-                hintText: context.l10n.composerHint,
-                isDense: true,
-                filled: false,
-                contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                // 状态边框也显式关闭，避免再次继承主题形成内框。
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-              ),
-              onChanged: widget.actions.updateText,
-            ),
-          ),
-        ),
+      diagnostics: [
         if (composer.error != null && _showRawComposerError(composer))
           Align(
             alignment: Alignment.centerLeft,
@@ -263,9 +157,9 @@ class PromptComposerViewState extends State<PromptComposerView> {
               ),
             ),
           ),
-        if (widget.state.targetDiagnostic case final diagnostic?)
+        if (state.targetDiagnostic case final diagnostic?)
           ComposerTargetDiagnosticView(diagnostic: diagnostic),
-        for (final diagnostic in widget.state.additionalDiagnostics)
+        for (final diagnostic in state.additionalDiagnostics)
           ComposerTargetDiagnosticView(diagnostic: diagnostic),
         ?_reasonRegion(
           context,
@@ -273,15 +167,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
           continuationNote: showContinuationNote ? continuationNote : null,
         ),
       ],
-    );
-    return DesktopFileDropTarget(
-      enabled: attachmentEnabled && localCapabilities.isNotEmpty,
-      onEnter: () => setState(() => _dragging = true),
-      onLeave: () {
-        if (_dragging) setState(() => _dragging = false);
-      },
-      onDrop: _dropAttachments,
-      child: panel,
     );
   }
 
@@ -296,9 +181,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
     required String? continuationNote,
   }) {
     final stopFailure = _stopFailure;
-    final composerRecoveryIssue = _composerFailureRecoveryIssue(
-      widget.state.composer,
-    );
+    final composerRecoveryIssue = _composerFailureRecoveryIssue(state.composer);
     // 仅本次 build 内去重：完整语义相等的 Recovery issue 只渲染一次
     // （id/scope/category/impact/project/thread/detail/actions 全比较）；
     // 普通（非 Recovery）原因即使文案相同也各自保留，不做字符串去重。
@@ -325,7 +208,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
         ),
       // 上一次继续/提交被拒绝或结果未知的原因保留展示：它不改变 canonical 阻塞的
       // 准入判定；同一 Recovery 事实已被前一行认领时不再重复。
-      if (widget.state.failure case final failure?
+      if (state.failure case final failure?
           when claim(_recoveryIssueForBlocker(failure)))
         _reasonLine(
           context,
@@ -414,7 +297,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
   }
 
   /// 每种主动作占用同一个圆按钮槽，状态说明不挤占配置工具栏。
-  Widget _primaryActionButton(
+  ComposerActionPresentation _primaryActionButton(
     BuildContext context,
     ComposerPrimaryAction action,
   ) {
@@ -450,7 +333,7 @@ class PromptComposerViewState extends State<PromptComposerView> {
       ComposerPrimaryActionKind.readOnly =>
         context.l10n.composerAgentReadOnlyTitle,
     };
-    return ComposerActionButton(
+    return ComposerActionPresentation(
       buttonKey: key,
       progressKey: StudioDriverKeys.composerPending,
       tooltip: tooltip,
@@ -472,43 +355,12 @@ class PromptComposerViewState extends State<PromptComposerView> {
       onPressed: !enabled
           ? null
           : action.kind == ComposerPrimaryActionKind.stop
-          ? () => widget.actions.stop(widget.state.execution!.id)
+          ? () => actions.stop(state.execution!.id)
           : action.kind == ComposerPrimaryActionKind.continueConversation
-          ? widget.actions.continueConversation
+          ? actions.continueConversation
           : sendKind
           ? _submit
           : null,
     );
-  }
-
-  Future<void> _showUrlDialog() async {
-    final isCurrent = _captureOperationEligibility();
-    var draft = '';
-    final url = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        key: StudioDriverKeys.attachmentUrlDialog,
-        title: Text(context.l10n.composerAddUrlTitle),
-        content: TextField(
-          key: StudioDriverKeys.attachmentUrlInput,
-          autofocus: true,
-          onChanged: (value) => draft = value,
-          decoration: const InputDecoration(hintText: 'https://…'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(context.l10n.commonCancel),
-          ),
-          FilledButton(
-            key: StudioDriverKeys.attachmentUrlSubmit,
-            onPressed: () => Navigator.pop(context, draft.trim()),
-            child: Text(context.l10n.composerAddUrlConfirm),
-          ),
-        ],
-      ),
-    );
-    if (!isCurrent() || url == null || url.isEmpty) return;
-    widget.actions.addUrl(url);
   }
 }

@@ -5,7 +5,7 @@ import 'dart:async';
 import 'package:anywork/src/app/app_graph.dart';
 import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
-import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/accounts.dart';
@@ -158,7 +158,7 @@ Future<({AppGraph graph, _Transport transport, String workspaceId})> _mount(
 }
 
 Finder _backendButton() => find.descendant(
-  of: find.byType(StartModelSelector),
+  of: find.byType(StartModelSelectorView),
   matching: find.byType(TextButton),
 );
 

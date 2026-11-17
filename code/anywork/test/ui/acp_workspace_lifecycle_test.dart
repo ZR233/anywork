@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:anywork/src/shared/composer_configuration_bar.dart';
+
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_session_view_model.dart';
@@ -149,9 +151,7 @@ void main() {
     );
     Finder primaryAction() =>
         find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')));
-    IconButton sendButton() => tester.widget<IconButton>(
-      find.descendant(of: primaryAction(), matching: find.byType(IconButton)),
-    );
+    IconButton sendButton() => tester.widget<IconButton>(primaryAction());
     Future<void> flushUi() async {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 50));
@@ -165,14 +165,17 @@ void main() {
       final gate = Completer<void>();
       gates.add(gate);
       harness.port.configureResult = gate;
+      await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+      await tester.pumpAndSettle();
       if (grouped == null) {
-        await tester.tap(
-          find.descendant(of: booleanPill(), matching: find.byType(Switch)),
-        );
+        await tester.tap(booleanPill());
       } else {
         await tester.tap(selectAnchorButton(grouped));
         await tester.pumpAndSettle();
-        if (grouped) expect(find.text('服务端分组'), findsWidgets);
+        if (grouped) {
+          await tester.tap(find.text('服务端分组'));
+          await tester.pumpAndSettle();
+        }
         await tester.tap(
           find.byKey(
             ValueKey(
@@ -233,25 +236,40 @@ void main() {
       canonical: options(),
       retainedDraft: 'ACP 消息',
     );
-    expect(find.text('标准质量'), findsOneWidget);
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('标准质量'), findsOneWidget);
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     await configure(
       grouped: true,
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',
     );
-    expect(find.text('深入分析'), findsOneWidget);
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('深入分析'), findsOneWidget);
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     await configure(
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',
     );
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     expect(
       tester
-          .widget<Switch>(
-            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          .widget<CheckboxMenuButton>(
+            find.descendant(
+              of: booleanPill(),
+              matching: find.byType(CheckboxMenuButton),
+            ),
           )
           .onChanged,
       isNotNull,
     );
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(3),
@@ -283,23 +301,28 @@ void main() {
     expect(harness.owner.state.activeRun, run);
     expect(harness.owner.state.sendPending, isFalse);
     expect(harness.owner.state.configPending, isFalse);
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     expect(
       tester
-          .widget<Switch>(
-            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          .widget<CheckboxMenuButton>(
+            find.descendant(
+              of: booleanPill(),
+              matching: find.byType(CheckboxMenuButton),
+            ),
           )
           .onChanged,
       isNull,
     );
-    await tester.tap(
-      find.descendant(of: booleanPill(), matching: find.byType(Switch)),
-    );
+    await tester.tap(booleanPill());
     await flushUi();
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(configureCountBeforeRun),
     );
     expect(prompts, hasLength(1));
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     debugPrint('ACP configuration locked while generation is active');
 
     const permissions = [
@@ -521,10 +544,15 @@ void main() {
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(4),
     );
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
     expect(
       tester
-          .widget<Switch>(
-            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          .widget<CheckboxMenuButton>(
+            find.descendant(
+              of: booleanPill(),
+              matching: find.byType(CheckboxMenuButton),
+            ),
           )
           .value,
       isTrue,

@@ -2,13 +2,14 @@ import 'package:anywork_client/model_directory.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../shared/studio_menu_label.dart';
+import '../../../../shared/composer_configuration_bar.dart';
 import '../../../status/session_selectors.dart';
 
-List<Widget> modelRouteSelectorChildren({
+List<ComposerConfigurationEntry> modelRouteConfigurationEntries({
   required List<ModelSelectionAccount> accounts,
   required bool pending,
-  bool enabled = true,
   required String unavailableReason,
+  bool enabled = true,
   String? accountId,
   String? modelId,
   String? effort,
@@ -21,83 +22,69 @@ List<Widget> modelRouteSelectorChildren({
 }) {
   final hasRoute =
       accountId != null &&
-      modelId != null &&
       accountId.isNotEmpty &&
+      modelId != null &&
       modelId.isNotEmpty;
-  if (!hasRoute) {
-    return [
-      RouteUnavailableNotice(reason: unavailableReason),
-      ModelRoleSelector(
-        accounts: accounts,
-        accountId: accountId ?? '',
-        modelId: modelId ?? '',
-        effort: effort,
-        enabled: enabled,
-        pending: pending,
-        available: false,
-        unavailableReason: unavailableReason,
-        blockedReason: blockedReason,
-        onExplain: onExplain,
-        onModelSelected: onModelSelected,
-      ),
-      UnavailableEffortSelector(reason: unavailableReason),
-    ];
-  }
-  return [
-    ModelRoleSelector(
-      accounts: accounts,
-      accountId: accountId,
-      modelId: modelId,
-      effort: effort,
-      enabled: enabled,
-      pending: pending,
-      available: available,
-      unavailableReason: routeUnavailableReason,
-      blockedReason: blockedReason,
-      onExplain: onExplain,
-      onModelSelected: onModelSelected,
-    ),
-    ReasoningEffortSelector(
-      accounts: accounts,
-      accountId: accountId,
-      modelId: modelId,
-      effort: effort,
-      enabled: enabled,
-      pending: pending,
-      blockedReason: blockedReason,
-      onExplain: onExplain,
-      onEffortSelected: onEffortSelected,
-    ),
-  ];
-}
-
-class RouteUnavailableNotice extends StatelessWidget {
-  const RouteUnavailableNotice({required this.reason, super.key});
-
-  final String reason;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.warning_amber_outlined, size: 15, color: colors.error),
-        const SizedBox(width: 4),
-        ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 220),
-          child: Text(
-            reason,
-            key: const ValueKey('model-route-unavailable'),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: Theme.of(context).textTheme.bodySmall
-                ?.copyWith(color: colors.error),
-          ),
+  ModelRoleSelector model(bool inMenu) => ModelRoleSelector(
+    accounts: accounts,
+    accountId: accountId ?? '',
+    modelId: modelId ?? '',
+    effort: effort,
+    enabled: enabled,
+    inMenu: inMenu,
+    pending: pending,
+    available: hasRoute && available,
+    unavailableReason: routeUnavailableReason ?? unavailableReason,
+    blockedReason: blockedReason,
+    onExplain: onExplain,
+    onModelSelected: onModelSelected,
+  );
+  ReasoningEffortSelector reasoning(bool inMenu) => ReasoningEffortSelector(
+    accounts: accounts,
+    accountId: accountId ?? '',
+    modelId: modelId ?? '',
+    effort: effort,
+    enabled: enabled,
+    inMenu: inMenu,
+    pending: pending,
+    blockedReason: blockedReason,
+    onExplain: onExplain,
+    onEffortSelected: onEffortSelected,
+  );
+  final inlineModel = model(false);
+  final ComposerConfigurationEntry effortEntry;
+  if (hasRoute) {
+    final inlineEffort = reasoning(false);
+    effortEntry = ComposerConfigurationEntry(
+      id: 'native-effort',
+      inline: inlineEffort,
+      measureInlineWidth: inlineEffort.measureInlineWidth,
+      menuItem: reasoning(true),
+    );
+  } else {
+    final inlineEffort = UnavailableEffortSelector(reason: unavailableReason);
+    effortEntry = ComposerConfigurationEntry(
+      id: 'native-effort',
+      inline: inlineEffort,
+      measureInlineWidth: inlineEffort.measureInlineWidth,
+      menuItem: Tooltip(
+        message: unavailableReason,
+        child: MenuItemButton(
+          key: const ValueKey('effort-route-unavailable'),
+          child: Text(unavailableReason),
         ),
-      ],
+      ),
     );
   }
+  return [
+    ComposerConfigurationEntry(
+      id: 'native-model',
+      inline: inlineModel,
+      measureInlineWidth: inlineModel.measureInlineWidth,
+      menuItem: model(true),
+    ),
+    effortEntry,
+  ];
 }
 
 class UnavailableEffortSelector extends StatelessWidget {
@@ -105,16 +92,18 @@ class UnavailableEffortSelector extends StatelessWidget {
 
   final String reason;
 
+  StudioMenuLabel _inlineLabel() => StudioMenuLabel(
+    key: const ValueKey('effort-route-unavailable'),
+    label: reason,
+    enabled: false,
+    maxWidth: 160,
+  );
+
+  double measureInlineWidth(BuildContext context) =>
+      _inlineLabel().measureWidth(context);
+
   @override
   Widget build(BuildContext context) {
-    return Tooltip(
-      message: reason,
-      child: StudioMenuLabel(
-        key: const ValueKey('effort-route-unavailable'),
-        label: reason,
-        enabled: false,
-        maxWidth: 160,
-      ),
-    );
+    return Tooltip(message: reason, child: _inlineLabel());
   }
 }
