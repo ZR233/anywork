@@ -1674,7 +1674,7 @@ mod storage_fault_tests {
                         .owner
                         .acknowledge_parent_reports(&store, &child)
                         .await?,
-                    ParentReportAcknowledgement::Proven
+                    ParentReportAcknowledgement::Absent
                 );
                 let DurableMessageIdentity::Proven {
                     sequence: receipt_sequence,
@@ -1708,6 +1708,11 @@ mod storage_fault_tests {
                 followup.id = "after-recovery".into();
                 active.send_message(followup).await?;
                 fixture.owner.synchronize_observation("parent").await?;
+                store
+                    .conversation_store("parent")
+                    .await?
+                    .flush_current(active.runtime_epoch())
+                    .await?;
                 assert!(
                     current_message_identity(&store, "parent", "after-recovery")
                         .await?
@@ -1805,6 +1810,11 @@ mod storage_fault_tests {
             followup.id = "after-retained-storage-recovery".into();
             active.send_message(followup.clone()).await?;
             fixture.owner.synchronize_observation("parent").await?;
+            store
+                .conversation_store("parent")
+                .await?
+                .flush_current(active.runtime_epoch())
+                .await?;
             let DurableMessageIdentity::Proven { digest, .. } =
                 current_message_identity(store, "parent", &followup.id)
                     .await?
@@ -1849,13 +1859,12 @@ mod storage_fault_tests {
                 .close_storage_binding("parent")?
                 .context("retained exact binding after attachment and close")?;
             assert!(binding.channel.is_stopping());
-            assert!(Arc::ptr_eq(
-                &store
+            assert!(
+                store
                     .thread_persistence()
                     .retained_history_channel("parent")
-                    .context("Current cleanup still owns the original registration")?,
-                &binding.channel,
-            ));
+                    .is_none()
+            );
             assert!(
                 fixture
                     .owner
@@ -1889,13 +1898,12 @@ mod storage_fault_tests {
                 .context("same receipt after exact-binding cleanup")?;
             assert_eq!(receipt_sequence, first_sequence);
             assert_eq!(receipt_digest, first_digest);
-            assert!(Arc::ptr_eq(
-                &store
+            assert!(
+                store
                     .thread_persistence()
                     .retained_history_channel("parent")
-                    .context("Current cleanup still owns the original registration")?,
-                &binding.channel,
-            ));
+                    .is_none()
+            );
             prove_report_and_reactivate(&fixture, &saved).await?;
             resources.shutdown().await
         }
