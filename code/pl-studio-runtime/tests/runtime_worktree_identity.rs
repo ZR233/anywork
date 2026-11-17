@@ -1088,6 +1088,12 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                     .any(|thread| thread.thread_id == root.thread.id),
             "rejected input changed original history or activated execution"
         );
+        let after_rejected_input = support::saved(&env.home, &root.thread.id).await?;
+        ensure!(
+            serde_json::to_vec(&after_rejected_input.current)?
+                == serde_json::to_vec(&history.current)?,
+            "rejected input changed the saved Current"
+        );
         // Existing archive remains available for a missing worktree, but visibility restoration
         // must never recreate it or change the original path to the main project.
         env.runtime
@@ -1099,8 +1105,10 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             restored.workspace_path == root.thread.workspace_path
                 && !Path::new(&restored.workspace_path).exists()
         );
-        let retained = support::saved(&env.home, &root.thread.id).await?;
-        ensure!(serde_json::to_vec(&retained.current)? == serde_json::to_vec(&history.current)?);
+        ensure!(
+            public_history(&env.runtime, &root.thread.id).await? == original_page,
+            "archive/restore changed immutable history"
+        );
         ensure!(
             env.root_provider.recorded().len() == 1,
             "failed identity recovery executed a model request"

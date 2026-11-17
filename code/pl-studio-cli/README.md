@@ -60,4 +60,4 @@ anywk exec-acp --studio-home ./run-home --cwd ./task --account my-acp \
 
 完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见各命令的 `--help`。
 
-真实账户的历史转换验证需要显式启用 `live-tests`，并指定 `ANYWK_HISTORY_LIVE_ACCOUNT`、`ANYWK_HISTORY_LIVE_MODEL`、`ANYWK_HISTORY_LIVE_PROJECT`、`ANYWK_HISTORY_LIVE_PROMPT` 和尚不存在的绝对输出目录 `ANYWK_HISTORY_LIVE_OUTPUT`；模型要求推理强度时另设 `ANYWK_HISTORY_LIVE_EFFORT`。随后运行 `cargo test --locked -p pl-studio-cli --features live-tests --test history_live -- --ignored --nocapture`。此入口通过产品配置接口读取现有账户的受保护凭据，仅在子进程环境中传递；独立配置与会话写入指定输出目录，并核对原配置未变。它验证真实执行、schema 25 历史原件的分块复制及目标摘要，不代替完整迁移验收。普通离线测试不调用该入口。
+CLI 分别观察 Current 和 History：Current 的真实等待交互状态使非交互任务以退出码 `3` 结束；终态只从 History 的不可变 Turn 原件读取。等待交互不会被改写为历史完成事件，导出结果保留 `blockedOnInput` 的退出原因。

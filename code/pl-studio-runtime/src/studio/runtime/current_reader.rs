@@ -289,6 +289,11 @@ impl CurrentReader {
                     Some(saved) => CurrentState::from_saved(saved)?,
                     None => self.current(cancellation).await?,
                 };
+                ensure!(snapshot.revision == current.revision(), stale());
+                // Catalog identity is independent; its asynchronously updated status must not
+                // replace this Current owner's actual logical state in the same baseline.
+                let mut snapshot = snapshot;
+                snapshot.thread.status = current.projection().logical_status;
                 let view = CurrentView {
                     revision: CurrentRevision {
                         owner_id: current.owner_id().into(),
@@ -579,6 +584,9 @@ impl CurrentReader {
         let cancel = self.inner.cancel.child_token();
         let reader = self.clone();
         let preparation_cancel = cancel.clone();
+        // Subscribe before preparing Reset. A publication in that interval must still wake
+        // the forwarder even if it runs after the producer has already become idle.
+        let changes = self.changes();
         let (view, state) = self
             .run(async move { reader.baseline(demand, &preparation_cancel).await })
             .await?;
@@ -587,7 +595,7 @@ impl CurrentReader {
         let task_cancel = cancel.clone();
         let task = self.spawn(async move {
             let result = reader
-                .watch_frames(view, state, demand, &sender, &task_cancel)
+                .watch_frames(view, state, demand, &sender, &task_cancel, changes)
                 .await;
             if let Err(error) = result {
                 tokio::select! { biased; _ = task_cancel.cancelled() => {}, _ = sender.send(Err(error)) => {} }
@@ -607,7 +615,9 @@ impl CurrentReader {
         demand: ReadDemand,
         sender: &mpsc::Sender<Result<CurrentFrame>>,
         cancel: &CancellationToken,
+        changes: (watch::Receiver<u64>, Option<CurrentPublicationChanges>),
     ) -> Result<()> {
+        let (mut owner_changed, mut progress) = changes;
         enum Wake {
             Notification(Box<crate::ThreadNotificationEnvelope>),
             Projection,
@@ -615,7 +625,6 @@ impl CurrentReader {
         }
         let result = async {
             let mut frame = CurrentFrame::Reset { view: Box::new(view.clone()) };
-            let (mut owner_changed, mut progress) = self.changes();
             loop {
                 frame.validate_demand(demand)?;
                 tokio::select! { biased;
@@ -675,8 +684,8 @@ impl CurrentReader {
                         }
                     } else {
                         state.close().await?;
-                        (view, state) = self.baseline(demand, cancel).await?;
                         (owner_changed, progress) = self.changes();
+                        (view, state) = self.baseline(demand, cancel).await?;
                         frame = CurrentFrame::Reset { view: Box::new(view.clone()) };
                     }
                     break;
@@ -1072,6 +1081,93 @@ mod tests {
             Ok(())
         }
         .await;
+        env.finish(result).await
+    }
+    #[tokio::test]
+    async fn publication_after_reset_preparation_is_delivered_when_the_forwarder_starts_late()
+    -> Result<()> {
+        use crate::runtime_test_support::{
+            self as support, current_demand, held_reply, prompt_step, reached,
+        };
+        let stage = pl_provider_fixture::ReplyStage::new();
+        let env = Environment::new(
+            vec![prompt_step(
+                "late-forwarder",
+                0,
+                held_reply(&stage, "late-forwarder"),
+            )],
+            vec![],
+        )
+        .await?;
+        let result = async {
+            let started = env
+                .start(crate::ThreadWorkspaceMode::Local, "late-forwarder")
+                .await?;
+            let id = &started.thread.id;
+            reached(&stage).await?;
+            let reader = env
+                .runtime
+                .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+                .await?;
+            let cancel = reader.inner.cancel.child_token();
+            let changes = reader.changes();
+            let mut producer = changes
+                .1
+                .as_ref()
+                .context("original publication watch")?
+                .clone();
+            let (view, state) = reader.baseline(current_demand(), &cancel).await?;
+            ensure!(view.projection.execution_present);
+            stage.release();
+            support::completed_prompt(&env.runtime, id, "late-forwarder").await?;
+            tokio::time::timeout(support::integration_test_deadline()?, async {
+                loop {
+                    if reader.current(&cancel).await?.projection().active.is_none() {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    producer.changed().await?;
+                }
+            })
+            .await
+            .context("Current producer did not become idle")??;
+            // Start only after the real final publication. Its pending progress wake must survive
+            // even though no more model input, output, or metadata publication will be produced.
+            let (sender, mut receiver) = mpsc::channel(8);
+            let forwarding_reader = reader.clone();
+            let forwarding_cancel = cancel.clone();
+            let forwarding = tokio::spawn(async move {
+                forwarding_reader
+                    .watch_frames(
+                        view,
+                        state,
+                        current_demand(),
+                        &sender,
+                        &forwarding_cancel,
+                        changes,
+                    )
+                    .await
+            });
+            let observed = tokio::time::timeout(support::integration_test_deadline()?, async {
+                while let Some(frame) = receiver.recv().await {
+                    if let CurrentFrame::Projection { projection, .. } = frame?
+                        && projection.active.is_none()
+                    {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+                anyhow::bail!("Current forwarder ended before delivering the final projection")
+            })
+            .await
+            .context("final Current projection wake was lost");
+            cancel.cancel();
+            let joined = forwarding.await.context("join delayed Current forwarder")?;
+            reader.close().await?;
+            observed??;
+            joined?;
+            Ok(())
+        }
+        .await;
+        stage.release();
         env.finish(result).await
     }
 }

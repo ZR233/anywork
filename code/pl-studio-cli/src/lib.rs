@@ -21,7 +21,10 @@ use pl_studio_runtime::{
     StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
     StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
 };
-use pl_studio_runtime::{StudioPromptInput, ThreadWorkspaceMode, Turn, TurnCompletion, TurnState};
+use pl_studio_runtime::{
+    CURRENT_PROTOCOL_VERSION, ReadDemand, StudioPromptInput, ThreadStatus, ThreadWorkspaceMode,
+    Turn, TurnCompletion, TurnState,
+};
 use std::future::Future;
 use std::time::{Instant, SystemTime};
 
@@ -52,11 +55,19 @@ pub enum ExecutionError {
     Runtime(#[source] anyhow::Error),
 }
 
-/// Retains the actual task identity, native terminal, shutdown, and optional export report.
+/// Why the noninteractive CLI stopped observing its freshly submitted root input.
+/// Waiting belongs to Current and does not imply that a terminal History Turn exists.
+#[derive(Debug)]
+pub enum InputObservation {
+    Terminal(Turn),
+    WaitingForInteraction,
+}
+
+/// Retains the actual input observation, shutdown, and optional export report.
 #[derive(Debug)]
 pub struct ExecutionReport {
     pub submission: Option<pl_studio_runtime::StudioSubmitPromptResponse>,
-    pub turn: Option<Turn>,
+    pub observation: Option<InputObservation>,
     pub final_text: String,
     pub signal: Option<CancellationSignal>,
     pub error: Option<ExecutionError>,
@@ -66,6 +77,20 @@ pub struct ExecutionReport {
 }
 
 impl ExecutionReport {
+    pub fn turn(&self) -> Option<&Turn> {
+        match &self.observation {
+            Some(InputObservation::Terminal(turn)) => Some(turn),
+            Some(InputObservation::WaitingForInteraction) | None => None,
+        }
+    }
+
+    fn waiting_for_interaction(&self) -> bool {
+        matches!(
+            self.observation,
+            Some(InputObservation::WaitingForInteraction)
+        )
+    }
+
     fn shutdown_failed(&self) -> bool {
         let not_started_before_runtime = self.submission.is_none()
             && self.shutdown.outcome == StudioShutdownOutcome::NotStarted
@@ -115,7 +140,10 @@ impl ExecutionReport {
                 ExecutionError::Runtime(_) => 11,
             };
         }
-        match self.turn.as_ref().map(|turn| &turn.state) {
+        if self.waiting_for_interaction() {
+            return 3;
+        }
+        match self.turn().map(|turn| &turn.state) {
             Some(TurnState::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => 0,
                 TurnCompletion::InteractionRequested => 3,
@@ -147,7 +175,10 @@ impl ExecutionReport {
                 ExecutionError::Runtime(_) => ResultOutcome::Failed,
             };
         }
-        match self.turn.as_ref().map(|turn| &turn.state) {
+        if self.waiting_for_interaction() {
+            return ResultOutcome::BlockedOnInput;
+        }
+        match self.turn().map(|turn| &turn.state) {
             Some(TurnState::Completed(state)) => match state.completion() {
                 TurnCompletion::Normal => ResultOutcome::Completed,
                 TurnCompletion::InteractionRequested => ResultOutcome::BlockedOnInput,
@@ -160,7 +191,10 @@ impl ExecutionReport {
     }
 
     fn execution_outcome(&self) -> Option<ExecutionOutcome> {
-        if let Some(turn) = &self.turn {
+        if self.waiting_for_interaction() {
+            return Some(ExecutionOutcome::BlockedOnInput);
+        }
+        if let Some(turn) = self.turn() {
             return match &turn.state {
                 TurnState::Completed(state) => Some(match state.completion() {
                     TurnCompletion::Normal => ExecutionOutcome::Completed,
@@ -204,7 +238,7 @@ impl ExecutionReport {
                 },
             });
         }
-        if let Some(turn) = &self.turn
+        if let Some(turn) = self.turn()
             && let TurnState::Failed(failed) = &turn.state
         {
             let failure = failed.failure();
@@ -254,7 +288,7 @@ async fn execute_observed(
     let mut signal = std::pin::pin!(signal);
     let mut report = ExecutionReport {
         submission: None,
-        turn: None,
+        observation: None,
         final_text: String::new(),
         signal: None,
         error: None,
@@ -397,7 +431,7 @@ async fn execute_observed(
             caught = signal.as_mut() => report.signal = Some(caught),
             _ = export_cancelled => {}
             result = task => match result {
-                Ok(turn) => report.turn = Some(turn),
+                Ok(observation) => report.observation = Some(observation),
                 Err(error) => report.error = Some(ExecutionError::Runtime(error)),
             }
         }
@@ -407,7 +441,7 @@ async fn execute_observed(
         && !exporter
             .as_ref()
             .is_some_and(|exp| exp.cancellation().is_cancelled())
-        && let Some(turn) = &report.turn
+        && let Some(turn) = report.turn()
         && matches!(&turn.state, TurnState::Completed(state) if state.completion() == TurnCompletion::Normal)
     {
         tokio::select! { biased;
@@ -529,7 +563,7 @@ fn build_result_v1(
     let final_text = if report.error.is_none()
         && report.signal.is_none()
         && matches!(
-            report.turn.as_ref().map(|t| &t.state),
+            report.turn().map(|t| &t.state),
             Some(TurnState::Completed(state)) if state.completion() == TurnCompletion::Normal
         ) {
         Some(report.final_text.clone())
@@ -563,26 +597,83 @@ fn build_result_v1(
     }
 }
 
-async fn wait_for_input(runtime: &StudioRuntime, thread_id: &str, input_id: &str) -> Result<Turn> {
+async fn wait_for_input(
+    runtime: &StudioRuntime,
+    thread_id: &str,
+    input_id: &str,
+) -> Result<InputObservation> {
     let history = runtime
         .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
         .await?;
-    let result = async {
-        let mut cut = history.capture().await?;
-        loop {
-            if let Some(turn) =
-                terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await?
-            {
-                return Ok(turn);
-            }
-            // History owns its own terminal facts. A Current notification cannot prove that
-            // those facts are already queryable, and no later Current frame is owed to us.
-            cut = history.wait_changed(cut).await?;
-        }
+    let initial = async {
+        let cut = history.capture().await?;
+        let terminal = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await?;
+        Ok::<_, anyhow::Error>((cut, terminal))
     }
     .await;
+    let initial_cut = match initial {
+        Ok((cut, None)) => cut,
+        Ok((_, Some(turn))) => {
+            history.close().await;
+            return Ok(InputObservation::Terminal(turn));
+        }
+        Err(error) => {
+            history.close().await;
+            return Err(error);
+        }
+    };
+    let demand = ReadDemand {
+        max_items: 128,
+        max_bytes: 256 * 1024,
+    };
+    let current = match runtime
+        .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, demand)
+        .await
+    {
+        Ok(current) => current,
+        Err(error) => {
+            history.close().await;
+            return Err(error);
+        }
+    };
+    let result = async {
+        let watch = current.watch(None, demand).await?;
+        let observed = async {
+            let mut cut = initial_cut;
+            loop {
+                if let Some(turn) = terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await? {
+                    return Ok(InputObservation::Terminal(turn));
+                }
+                let view = current.snapshot(demand).await?;
+                if view.projection.logical_status == ThreadStatus::WaitingInteraction {
+                    // This CLI owns one freshly submitted root input. The owner can retain an
+                    // unanswered interaction after retiring its active Turn; do not invent one.
+                    return Ok(InputObservation::WaitingForInteraction);
+                }
+                // Either domain can change independently. Current can require a human while the
+                // Turn is still running; only History can establish its immutable terminal facts.
+                tokio::select! {
+                    changed = history.wait_changed(cut.clone()) => cut = changed?,
+                    frame = watch.next() => { ensure!(frame?.is_some(), "Current ended before the input settled"); }
+                }
+            }
+        }.await;
+        let closed = watch.close().await;
+        match (observed, closed) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close)) => Err(error.context(format!("Current watch close also failed: {close}"))),
+        }
+    }.await;
     history.close().await;
-    result
+    let closed = current.close().await;
+    match (result, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close)) => {
+            Err(error.context(format!("Current reader close also failed: {close}")))
+        }
+    }
 }
 
 fn is_target_terminal(turn: &Turn, input_id: &str) -> bool {
@@ -825,7 +916,7 @@ mod tests {
         assert!(is_target_terminal(&turn, "accepted"));
         let mut report = ExecutionReport {
             submission: None,
-            turn: Some(turn),
+            observation: Some(InputObservation::Terminal(turn)),
             final_text: "answer".into(),
             signal: None,
             error: None,
@@ -845,7 +936,7 @@ mod tests {
         report.shutdown.persistence = StudioPendingPersistence::Drained;
         report.shutdown.outcome = StudioShutdownOutcome::Degraded;
         assert_eq!(report.exit_code(), 13);
-        report.turn = None;
+        report.observation = None;
         report.signal = None;
         report.error = Some(ExecutionError::Input(anyhow::anyhow!("invalid route")));
         report.shutdown = StudioShutdownReport::not_started();
@@ -898,7 +989,7 @@ mod tests {
         // 1. Sealed trace with incomplete usage/cost keeps exit 0 + Completed.
         let mut report = ExecutionReport {
             submission: None,
-            turn: Some(completed_turn),
+            observation: Some(InputObservation::Terminal(completed_turn)),
             final_text: "ok".into(),
             signal: None,
             error: None,
@@ -941,7 +1032,7 @@ mod tests {
         // 5. Export start failure before runtime start exits 12 without tripping shutdownFailed(13).
         let start_fail_report = ExecutionReport {
             submission: None,
-            turn: None,
+            observation: None,
             final_text: String::new(),
             signal: None,
             error: None,
@@ -963,7 +1054,7 @@ mod tests {
         // 6. Cancellation before root creation with unsealed export (no failure) keeps 143 instead of 12.
         let pre_root_cancel_report = ExecutionReport {
             submission: None,
-            turn: None,
+            observation: None,
             final_text: String::new(),
             signal: Some(CancellationSignal::Terminate),
             error: None,

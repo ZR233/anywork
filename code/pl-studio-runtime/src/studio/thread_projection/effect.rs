@@ -424,7 +424,14 @@ pub(in crate::studio) fn project_effect_items(
     }
 
     for turn_id in turn_ids {
-        let Some(record) = state.turns.iter().find(|record| record.turn_id == turn_id) else {
+        // Current may already have retired a finished Turn. Its reliable effect is the
+        // original transition, independent of the resident Current retention window.
+        let Some(record) = effect
+            .turn
+            .as_ref()
+            .filter(|record| record.turn_id == turn_id)
+            .or_else(|| state.turns.iter().find(|record| record.turn_id == turn_id))
+        else {
             continue;
         };
         let id = order::turn_id(turn_id);
@@ -549,5 +556,58 @@ fn canonicalize(
         let (ordinal, created_at) = stamp(existing, reserved, &item.id, fallback);
         item.ordinal = ordinal;
         item.created_at = created_at;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_effect_remains_history_when_current_no_longer_retains_the_turn()
+    -> anyhow::Result<()> {
+        use pl_core::thread::{TurnOutcome, TurnRecord, TurnState};
+        for terminal in [
+            TurnState::Finished(TurnOutcome::WaitingInteraction),
+            TurnState::Finished(TurnOutcome::StepLimit),
+            TurnState::Cancelled,
+        ] {
+            let thread = crate::Thread::placeholder("retired-current-turn");
+            let state = ThreadSnapshot::default();
+            assert!(state.turns.is_empty());
+            let effect = ThreadEffectBatch {
+                sequence: 7,
+                committed_at: 17,
+                turn: Some(TurnRecord {
+                    turn_id: "original-turn".into(),
+                    input_id: None,
+                    state: terminal,
+                    model_steps: 1,
+                    elapsed_ms: Some(23),
+                }),
+                ..Default::default()
+            };
+            let projected = project_effect_items(
+                &thread,
+                &state,
+                &effect,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+            )?;
+            projected.ensure_complete()?;
+            let item = projected
+                .items
+                .first()
+                .expect("the reliable transition must remain queryable");
+            assert_eq!(projected.items.len(), 1);
+            assert_eq!(item.turn_id, "original-turn");
+            assert_eq!(item.updated_at, 17);
+            let ExecutionShape::Turn(turn) = item.state() else {
+                panic!("typed Turn detail")
+            };
+            assert!(turn.state().is_terminal());
+        }
+        Ok(())
     }
 }

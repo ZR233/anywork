@@ -4797,9 +4797,118 @@ fn match_step(
             _ => Reply::Sse(events),
         });
     }
-    let reply = script.steps[index].reply.clone();
+    let mut reply = script.steps[index].reply.clone();
+    bind_reply_task_receipts(&mut reply, body);
     script.cursor = index + 1;
     Ok(reply)
+}
+
+/// A simulated model must echo the opaque task identity from the accepted wire result.
+/// Script call ids identify fixture actions; they cannot predict runtime task ids across attempts.
+fn bind_reply_task_receipts(reply: &mut Reply, request: &Value) {
+    fn arguments(value: &mut Value, request: &Value) {
+        let Some(encoded) = value.as_str() else {
+            return;
+        };
+        let Ok(mut args) = serde_json::from_str::<Value>(encoded) else {
+            return;
+        };
+        let Some(tasks) = args.get_mut("taskIds").and_then(Value::as_array_mut) else {
+            return;
+        };
+        let mut changed = false;
+        for task in tasks {
+            if let Some(identity) = task
+                .as_str()
+                .and_then(|id| id.strip_prefix("task:"))
+                .and_then(|call| running_task_id(request, call))
+            {
+                *task = identity.into();
+                changed = true;
+            }
+        }
+        // Literal malformed/unknown targets remain the model's input for normal product
+        // validation. Only a real receipt authorizes replacing a fixture call reference.
+        if changed {
+            *value = args.to_string().into();
+        }
+    }
+
+    fn collect(value: &Value, ids: &mut HashSet<String>) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    collect(item, ids);
+                }
+            }
+            Value::Object(fields) => {
+                if fields.get("name").and_then(Value::as_str) == Some(TOOL_WAIT_NAME) {
+                    for key in ["call_id", "id"] {
+                        if let Some(id) = fields.get(key).and_then(Value::as_str) {
+                            ids.insert(id.into());
+                        }
+                    }
+                }
+                for value in fields.values() {
+                    collect(value, ids);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn event(value: &mut Value, ids: &HashSet<String>, request: &Value) {
+        match value {
+            Value::Array(items) => {
+                for item in items {
+                    event(item, ids, request);
+                }
+            }
+            Value::Object(fields) => {
+                let wait = fields.get("name").and_then(Value::as_str) == Some(TOOL_WAIT_NAME);
+                let argument_frame = fields
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.starts_with("response.function_call_arguments."))
+                    && ["call_id", "item_id"].iter().any(|key| {
+                        fields
+                            .get(*key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| ids.contains(id))
+                    });
+                for (key, value) in fields {
+                    if (wait || argument_frame) && (key == "arguments" || key == "delta") {
+                        arguments(value, request);
+                    } else {
+                        event(value, ids, request);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let frames: Vec<&mut Value> = match reply {
+        Reply::Sse(events)
+        | Reply::WebSocket(events)
+        | Reply::PacedEvents { events, .. }
+        | Reply::HangingSse(events) => events.iter_mut().collect(),
+        Reply::GatedSse { before, after, .. } => before.iter_mut().chain(after).collect(),
+        Reply::SegmentedSse { segments, .. } => segments.iter_mut().flatten().collect(),
+        Reply::WebSocketScript(actions) => actions
+            .iter_mut()
+            .filter_map(|action| match action {
+                WebSocketAction::Event(frame) => Some(frame),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut ids = HashSet::new();
+    for frame in &frames {
+        collect(frame, &mut ids);
+    }
+    for frame in frames {
+        event(frame, &ids, request);
+    }
 }
 
 /// Describes why a request failed the strict match without echoing its content.
@@ -5097,7 +5206,8 @@ fn tool_images_pending(
             }
             previous_media = Some(position);
             immediate_media.push(position);
-        } else if let Some(task_id) = running_task_id(body, &image.call_id) {
+        } else {
+            let task_id = running_task_id(body, &image.call_id)?;
             let lua = call_is_lua(body, &image.call_id);
             let tool = if lua { "exec" } else { "view_image" };
             let prefix = format!("Task {task_id} for tool {tool} finished: ");
@@ -5129,8 +5239,6 @@ fn tool_images_pending(
             }
             last_user_verified |= delivery_index == last_user;
             verified_deliveries.push(delivery_index);
-        } else {
-            return None;
         }
     }
     for &(message_index, part_index) in &immediate_media {

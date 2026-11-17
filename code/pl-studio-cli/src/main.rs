@@ -68,10 +68,16 @@ fn run_native(runtime: &tokio::runtime::Runtime, request: PreparedExec) -> ExitC
     if let Some(error) = &report.error {
         eprintln!("anywk: {error}");
     }
-    if let Some(turn) = &report.turn
+    if let Some(pl_studio_cli::InputObservation::Terminal(turn)) = &report.observation
         && !matches!(&turn.state, pl_studio_runtime::TurnState::Completed(_))
     {
         eprintln!("anywk: 任务终态 {:?}", turn.state);
+    }
+    if matches!(
+        &report.observation,
+        Some(pl_studio_cli::InputObservation::WaitingForInteraction)
+    ) {
+        eprintln!("anywk: 等待用户输入");
     }
     if let Some(export_error) = &report.export_error {
         eprintln!(

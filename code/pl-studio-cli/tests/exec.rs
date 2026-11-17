@@ -247,6 +247,10 @@ async fn production_cli_preserves_blocked_budget_and_model_failure_exits() -> Re
         .await?;
         let environment = Environment::new(&server.base_url())?;
         let mut command = environment.command();
+        let blocked_export = environment.temporary.path().join("blocked-export");
+        if expected == 3 {
+            command.arg("--output-dir").arg(&blocked_export);
+        }
         if let Some(steps) = steps {
             command.args(["--max-model-steps", steps]);
         }
@@ -258,6 +262,19 @@ async fn production_cli_preserves_blocked_budget_and_model_failure_exits() -> Re
             String::from_utf8_lossy(&result.stderr)
         );
         assert!(result.stdout.is_empty());
+        if expected == 3 {
+            let result: pl_studio_runtime::ResultV3 =
+                serde_json::from_slice(&std::fs::read(blocked_export.join("result.json"))?)?;
+            assert_eq!(
+                result.outcome,
+                pl_studio_runtime::ResultOutcome::BlockedOnInput
+            );
+            assert_eq!(
+                result.execution_outcome,
+                Some(pl_studio_runtime::ExecutionOutcome::BlockedOnInput)
+            );
+            assert!(result.error.is_none());
+        }
         server.finish().await?;
     }
     Ok(())
@@ -786,6 +803,17 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
     let mut seen_child_input = false;
     let mut seen_spawn_completion = false;
 
+    let spawn_call = events
+        .iter()
+        .find_map(|event| match &event.body {
+            EventBodyV3::Completion { atom, .. } => atom
+                .tool
+                .as_ref()
+                .filter(|tool| tool.name == "spawn_agent")
+                .map(|tool| tool.call_id.clone()),
+            _ => None,
+        })
+        .context("canonical parent spawn call")?;
     let (child_thread, parent_thread) = events
         .iter()
         .find_map(|event| match &event.body {
@@ -795,7 +823,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                 parent_agent_id: Some(_),
                 spawn_tool_call_id: Some(call),
                 ..
-            } if call == "spawn" => Some((thread_id, parent_thread)),
+            } if call == &spawn_call => Some((thread_id, parent_thread)),
             _ => None,
         })
         .context("registered child and its direct parent")?;
@@ -816,7 +844,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             } => {
                 seen_agents += 1;
                 if parent_agent_id.is_some() {
-                    assert_eq!(spawn_tool_call_id.as_deref(), Some("spawn"));
+                    assert_eq!(spawn_tool_call_id.as_deref(), Some(spawn_call.as_str()));
                     seen_child_spawn = true;
                 }
             }
@@ -865,7 +893,7 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                     && atom
                         .tool
                         .as_ref()
-                        .is_some_and(|tool| tool.call_id == "spawn")
+                        .is_some_and(|tool| tool.call_id == spawn_call)
                 {
                     seen_spawn_completion = true;
                 }

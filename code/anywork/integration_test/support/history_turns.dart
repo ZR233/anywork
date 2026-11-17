@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:anywork_client/conversation.dart';
 
 const _historyDemand = HistoryDemand(maxRows: 128, maxBytes: 1024 * 1024);
-const _currentDemand = ReadDemand(maxItems: 128, maxBytes: 512 * 1024);
+const _currentDemand = ReadDemand(maxItems: 128, maxBytes: 256 * 1024);
 const _maxHistoryPages = 1024;
 
 Future<CurrentView> readCurrentSnapshot({

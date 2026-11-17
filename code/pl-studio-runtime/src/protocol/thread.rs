@@ -162,7 +162,7 @@ pub struct ThreadSnapshot {
     /// 当前执行活动的权威小摘要；`None` 表示当前没有活动。
     ///
     /// 它是独立于 Timeline 内容的 typed 投影：内容只决定有哪些历史条目，活动只描述当前
-    /// 在做什么。完整正文通过同一会话 feed 的有界 ActivityContent 帧交付，不另作详情查询。
+    /// 在做什么。正文通过同一 Current owner 的类型化引用及有界 body read/watch 交付。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activity: Option<crate::ThreadActivity>,
     /// Thread 的存储状态；`None` 表示该投影没有可报告的存储事实（不是“健康”）。

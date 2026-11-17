@@ -283,6 +283,10 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
                 .is_none_or(|activity| activity.deferred.is_empty()),
             "live activity snapshot unexpectedly deferred a State field"
         );
+        ensure!(
+            live_view.state.thread.status == live_view.projection.logical_status,
+            "Current baseline used an older catalog status"
+        );
         let r1 = live_view.revision.owner_id;
         let body = reader
             .watch_body(
@@ -1057,181 +1061,189 @@ async fn budgets_and_authenticated_cursors_preserve_the_unreturned_candidate() -
 #[tokio::test]
 async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_group() -> Result<()>
 {
-    let temp = tempfile::tempdir()?;
-    let store = HistoryStore::open(
-        temp.path().join("h.sqlite"),
-        "groups",
-        HistoryLimits::default(),
-    )
-    .await?;
-    let run = RuntimeEpoch::new();
-    let reader = store.reader();
-    let mut classifier = HistoryClassifier::new(run);
-    let mut tool = entity("tool", run, true);
-    tool.kind = HistoryEntityKind::ToolCall;
-    tool.text_channel = None;
-    tool.tool = Some(HistoryToolIdentity {
-        call_id: "attempt-scoped-call".into(),
-        name: "terminal".into(),
-    });
-    let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
-    let atom = pl_studio_runtime::ChatAtom {
-        id: tool.entity_id.clone(),
-        completion_item_id: None,
-        completion_seq: None,
-        source: tool.source.clone(),
-        source_state: None,
-        source_order: None,
-        kind: tool.kind,
-        delivery: tool.delivery,
-        lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
-            status: ChatActiveStatus::Running,
-            started: None,
-        },
-        turn_id: Some("turn-a".into()),
-        attempt_id: tool.attempt_id.clone(),
-        tool: tool.tool.clone(),
-        wait: None,
-        text_channel: None,
-        started_at: tool.started_at,
-        finished_at: None,
-        content_present: tool.content_present,
-        contents: Vec::new(),
-        payload: None,
-    };
-    let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
-    assert_eq!(change.entity.started_at, Some(10_000));
-    tool = change.entity.clone();
-    let mut invalid_atom = atom.clone();
-    invalid_atom.finished_at = Some(i64::MAX);
-    assert!(matches!(
-        HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
-        Err(HistoryError::InvalidEvent(_))
-    ));
-    change.public_summary = Some("正在执行".into());
-    classifier.record(&store, &change).await?;
-    assert_eq!(
-        reader
-            .events_page(
-                HistoryEventsQuery::Turn {
-                    turn_id: "turn-a".into()
+    for (outcome, observed_output) in [
+        (
+            ChatTerminalOutcome::Completed,
+            b"completely different final".as_slice(),
+        ),
+        (
+            ChatTerminalOutcome::Cancelled,
+            b"interrupted prefix without a final result".as_slice(),
+        ),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            temp.path().join("h.sqlite"),
+            "groups",
+            HistoryLimits::default(),
+        )
+        .await?;
+        let run = RuntimeEpoch::new();
+        let reader = store.reader();
+        let mut classifier = HistoryClassifier::new(run);
+        let mut tool = entity("tool", run, true);
+        tool.kind = HistoryEntityKind::ToolCall;
+        tool.text_channel = None;
+        tool.tool = Some(HistoryToolIdentity {
+            call_id: "attempt-scoped-call".into(),
+            name: "terminal".into(),
+        });
+        let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
+        let atom = pl_studio_runtime::ChatAtom {
+            id: tool.entity_id.clone(),
+            completion_item_id: None,
+            completion_seq: None,
+            source: tool.source.clone(),
+            source_state: None,
+            source_order: None,
+            kind: tool.kind,
+            delivery: tool.delivery,
+            lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
+                status: ChatActiveStatus::Running,
+                started: None,
+            },
+            turn_id: Some("turn-a".into()),
+            attempt_id: tool.attempt_id.clone(),
+            tool: tool.tool.clone(),
+            wait: None,
+            text_channel: None,
+            started_at: tool.started_at,
+            finished_at: None,
+            content_present: tool.content_present,
+            contents: Vec::new(),
+            payload: None,
+        };
+        let mut change = HistoryEntityChange::from_atom(start, &atom, run)?;
+        assert_eq!(change.entity.started_at, Some(10_000));
+        tool = change.entity.clone();
+        let mut invalid_atom = atom.clone();
+        invalid_atom.finished_at = Some(i64::MAX);
+        assert!(matches!(
+            HistoryEntityHead::from_atom(&invalid_atom, Some(run.to_string())),
+            Err(HistoryError::InvalidEvent(_))
+        ));
+        change.public_summary = Some("正在执行".into());
+        classifier.record(&store, &change).await?;
+        assert_eq!(
+            reader
+                .events_page(
+                    HistoryEventsQuery::Turn {
+                        turn_id: "turn-a".into()
+                    },
+                    None,
+                    None,
+                    demand()
+                )
+                .await?
+                .entries[0]
+                .header
+                .event_id,
+            "tool-start"
+        );
+        let old_group = classifier.open_group().unwrap().to_owned();
+        let mut empty = entity("text", run, true);
+        empty.content_present = Some(false);
+        let before_empty = reader.capture().await?;
+        let mut unexpected = HistoryEvent::new(
+            "unexpected-boundary",
+            HistoryEventKind::BoundaryObserved,
+            11,
+        );
+        unexpected.bodies.push(HistoryBody::new(
+            "observed",
+            HistoryBodyRole::ToolOutput,
+            b"must not silently disappear".to_vec(),
+        ));
+        let mut empty_change = HistoryEntityChange {
+            event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
+            entity: empty.clone(),
+            placement: HistoryPlacement::Single,
+            boundary_observations: vec![HistoryBoundaryObservation {
+                event: unexpected,
+                entity: tool.clone(),
+            }],
+            public_summary: None,
+        };
+        assert!(matches!(
+            classifier.record(&store, &empty_change).await,
+            Err(HistoryError::InvalidEvent(_))
+        ));
+        assert_eq!(reader.capture().await?, before_empty);
+        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
+        empty_change.boundary_observations.clear();
+        classifier.record(&store, &empty_change).await?;
+        assert_eq!(classifier.open_group(), Some(old_group.as_str()));
+        let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
+        boundary.bodies.push(HistoryBody::new(
+            "partial",
+            HistoryBodyRole::ToolOutput,
+            b"old observed bytes".to_vec(),
+        ));
+        let mut observed_tool = tool.clone();
+        observed_tool.body_manifest_event_id = Some("boundary".into());
+        empty.content_present = Some(true);
+        let mut visible = HistoryEvent::new("visible", HistoryEventKind::ContentBecameVisible, 12);
+        visible.header.occurred_at = Some(12);
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: visible,
+                    entity: empty.clone(),
+                    placement: HistoryPlacement::Single,
+                    boundary_observations: vec![HistoryBoundaryObservation {
+                        event: boundary,
+                        entity: observed_tool,
+                    }],
+                    public_summary: Some("边界观察".into()),
                 },
-                None,
-                None,
-                demand()
             )
-            .await?
-            .entries[0]
-            .header
-            .event_id,
-        "tool-start"
-    );
-    let old_group = classifier.open_group().unwrap().to_owned();
-    let mut empty = entity("text", run, true);
-    empty.content_present = Some(false);
-    let before_empty = reader.capture().await?;
-    let mut unexpected = HistoryEvent::new(
-        "unexpected-boundary",
-        HistoryEventKind::BoundaryObserved,
-        11,
-    );
-    unexpected.bodies.push(HistoryBody::new(
-        "observed",
-        HistoryBodyRole::ToolOutput,
-        b"must not silently disappear".to_vec(),
-    ));
-    let mut empty_change = HistoryEntityChange {
-        event: HistoryEvent::new("text-start", HistoryEventKind::EntityStarted, 11),
-        entity: empty.clone(),
-        placement: HistoryPlacement::Single,
-        boundary_observations: vec![HistoryBoundaryObservation {
-            event: unexpected,
-            entity: tool.clone(),
-        }],
-        public_summary: None,
-    };
-    assert!(matches!(
-        classifier.record(&store, &empty_change).await,
-        Err(HistoryError::InvalidEvent(_))
-    ));
-    assert_eq!(reader.capture().await?, before_empty);
-    assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-    empty_change.boundary_observations.clear();
-    classifier.record(&store, &empty_change).await?;
-    assert_eq!(classifier.open_group(), Some(old_group.as_str()));
-    let mut boundary = HistoryEvent::new("boundary", HistoryEventKind::BoundaryObserved, 12);
-    boundary.bodies.push(HistoryBody::new(
-        "partial",
-        HistoryBodyRole::ToolOutput,
-        b"old observed bytes".to_vec(),
-    ));
-    let mut observed_tool = tool.clone();
-    observed_tool.body_manifest_event_id = Some("boundary".into());
-    empty.content_present = Some(true);
-    let mut visible = HistoryEvent::new("visible", HistoryEventKind::ContentBecameVisible, 12);
-    visible.header.occurred_at = Some(12);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: visible,
-                entity: empty.clone(),
-                placement: HistoryPlacement::Single,
-                boundary_observations: vec![HistoryBoundaryObservation {
-                    event: boundary,
-                    entity: observed_tool,
-                }],
-                public_summary: Some("边界观察".into()),
-            },
-        )
-        .await?;
-    assert!(classifier.open_group().is_none());
-    let old_cut = reader.capture().await?;
-    tool.state = HistoryEntityState::KnownTerminal {
-        outcome: ChatTerminalOutcome::Completed,
-    };
-    tool.finished_at = Some(15);
-    tool.body_manifest_event_id = Some("tool-end".into());
-    let mut end = HistoryEvent::new("tool-end", HistoryEventKind::EntityEnded, 15);
-    end.bodies.push(HistoryBody::new(
-        "final",
-        HistoryBodyRole::ToolOutput,
-        b"completely different final".to_vec(),
-    ));
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: end,
-                entity: tool,
-                placement: HistoryPlacement::Work,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
-    let new_group = classifier.open_group().unwrap().to_owned();
-    assert_ne!(old_group, new_group);
-    // Completing the already-visible text does not close a newer Work group.
-    empty.state = HistoryEntityState::KnownTerminal {
-        outcome: ChatTerminalOutcome::Completed,
-    };
-    empty.content_present = Some(false);
-    empty.finished_at = Some(16);
-    classifier
-        .record(
-            &store,
-            &HistoryEntityChange {
-                event: HistoryEvent::new("text-end", HistoryEventKind::EntityEnded, 16),
-                entity: empty,
-                placement: HistoryPlacement::Single,
-                boundary_observations: Vec::new(),
-                public_summary: None,
-            },
-        )
-        .await?;
-    assert_eq!(classifier.open_group(), Some(new_group.as_str()));
-    assert!(reader
+            .await?;
+        assert!(classifier.open_group().is_none());
+        let old_cut = reader.capture().await?;
+        tool.state = HistoryEntityState::KnownTerminal { outcome };
+        tool.finished_at = Some(15);
+        tool.body_manifest_event_id = Some("tool-end".into());
+        let mut end = HistoryEvent::new("tool-end", HistoryEventKind::EntityEnded, 15);
+        end.bodies.push(HistoryBody::new(
+            "observed-output",
+            HistoryBodyRole::ToolOutput,
+            observed_output.to_vec(),
+        ));
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: end,
+                    entity: tool,
+                    placement: HistoryPlacement::Work,
+                    boundary_observations: Vec::new(),
+                    public_summary: None,
+                },
+            )
+            .await?;
+        let new_group = classifier.open_group().unwrap().to_owned();
+        assert_ne!(old_group, new_group);
+        // Completing the already-visible text does not close a newer Work group.
+        empty.state = HistoryEntityState::KnownTerminal {
+            outcome: ChatTerminalOutcome::Completed,
+        };
+        empty.content_present = Some(false);
+        empty.finished_at = Some(16);
+        classifier
+            .record(
+                &store,
+                &HistoryEntityChange {
+                    event: HistoryEvent::new("text-end", HistoryEventKind::EntityEnded, 16),
+                    entity: empty,
+                    placement: HistoryPlacement::Single,
+                    boundary_observations: Vec::new(),
+                    public_summary: None,
+                },
+            )
+            .await?;
+        assert_eq!(classifier.open_group(), Some(new_group.as_str()));
+        assert!(reader
         .timeline_page(None, None, demand())
         .await?
         .entries
@@ -1239,56 +1251,72 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         .any(|entry| matches!(&entry.head, HistoryRowHead::Single(head)
             if head.entity_id == "text"
                 && head.single_visibility == Some(HistorySingleVisibility::FinalEmptyAfterContent))));
-    store.flush().await?;
-    let old = reader
-        .group_page(old_group.clone(), None, None, demand())
-        .await?;
-    let Some(HistoryRowHead::Member(old_head)) = old.members.first().map(|entry| &entry.head)
-    else {
-        panic!("old member")
-    };
-    assert!(matches!(
-        old_head.state,
-        HistoryEntityState::KnownActive { .. }
-    ));
-    assert!(matches!(
-        old_head.observation,
-        HistoryObservation::Boundary {
-            captured_at: Some(12)
-        }
-    ));
-    let body = reader
-        .list_bodies(
-            old_head.body_manifest_event_id.clone().unwrap(),
-            None,
-            demand(),
-        )
-        .await?
-        .entries[0]
-        .reference
-        .clone();
-    assert_eq!(
-        reader.read_body(body, 0, 64).await?.bytes,
-        b"old observed bytes"
-    );
-    assert_eq!(
-        reader
-            .group_page(new_group, None, None, demand())
+        store.flush().await?;
+        let old = reader
+            .group_page(old_group.clone(), None, None, demand())
+            .await?;
+        let Some(HistoryRowHead::Member(old_head)) = old.members.first().map(|entry| &entry.head)
+        else {
+            panic!("old member")
+        };
+        assert!(matches!(
+            old_head.state,
+            HistoryEntityState::KnownActive { .. }
+        ));
+        assert!(matches!(
+            old_head.observation,
+            HistoryObservation::Boundary {
+                captured_at: Some(12)
+            }
+        ));
+        let body = reader
+            .list_bodies(
+                old_head.body_manifest_event_id.clone().unwrap(),
+                None,
+                demand(),
+            )
             .await?
-            .members
-            .len(),
-        1
-    );
-    assert_eq!(
-        reader
-            .timeline_page(Some(old_cut), None, demand())
+            .entries[0]
+            .reference
+            .clone();
+        assert_eq!(
+            reader.read_body(body, 0, 64).await?.bytes,
+            b"old observed bytes"
+        );
+        let new = reader.group_page(new_group, None, None, demand()).await?;
+        assert_eq!(new.members.len(), 1);
+        let HistoryRowHead::Member(new_head) = &new.members[0].head else {
+            panic!("new member")
+        };
+        assert_eq!(
+            new_head.state,
+            HistoryEntityState::KnownTerminal { outcome }
+        );
+        let body = reader
+            .list_bodies(
+                new_head
+                    .body_manifest_event_id
+                    .clone()
+                    .context("new observation owner")?,
+                None,
+                demand(),
+            )
             .await?
-            .entries
-            .len(),
-        2
-    );
-    reader.close().await;
-    store.close().await?;
+            .entries[0]
+            .reference
+            .clone();
+        assert_eq!(reader.read_body(body, 0, 64).await?.bytes, observed_output);
+        assert_eq!(
+            reader
+                .timeline_page(Some(old_cut), None, demand())
+                .await?
+                .entries
+                .len(),
+            2
+        );
+        reader.close().await;
+        store.close().await?;
+    }
     Ok(())
 }
 
@@ -1554,4 +1582,196 @@ async fn streaming_conversion_copies_v24_original_bytes_without_activating_or_mu
     reader.close().await;
     reopened.close().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn restarted_current_has_a_new_owner_without_replaying_or_extending_the_old_work()
+-> Result<()> {
+    use pl_provider_fixture::{Reply, ReplyStage};
+    use pl_studio_runtime::{StudioPromptInput, SubmitPromptRequest, ThreadWorkspaceMode};
+    let first_stage = ReplyStage::new();
+    let second_stage = ReplyStage::new();
+    let staged = |name: &str, stage: &ReplyStage| -> Result<Reply> {
+        let mut frames = pl_provider_fixture::responses_reasoning_text(
+            &["original reasoning"],
+            &["original output"],
+            name,
+            support::MODEL,
+        );
+        let delta = frames
+            .iter()
+            .position(|frame| frame["type"] == "response.output_text.delta")
+            .context("fixture output delta")?;
+        let after = frames.split_off(delta + 1);
+        Ok(stage.gated(frames, after))
+    };
+    let mut env = Environment::new(
+        vec![
+            prompt_step("restart-r1", 0, staged("r1", &first_stage)?),
+            prompt_step("restart-r2", 1, staged("r2", &second_stage)?),
+        ],
+        vec![],
+    )
+    .await?;
+    let result = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let started = env.start(ThreadWorkspaceMode::Local, "restart-r1").await?;
+        let id = &started.thread.id;
+        let old = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let old_watch = old.watch(None, current_demand()).await?;
+        reached(&first_stage).await?;
+        let reference = loop {
+            let projection = match old_watch
+                .next()
+                .await?
+                .context("original Current watch ended")?
+            {
+                CurrentFrame::Reset { view } => view.projection,
+                CurrentFrame::Projection { projection, .. } => *projection,
+                CurrentFrame::Notification { .. } => continue,
+            };
+            if let Some(reference) = final_text_reference(&projection) {
+                break reference;
+            }
+        };
+        let r1 = old.snapshot(current_demand()).await?.revision.owner_id;
+        ensure!(reference.owner_id == r1);
+        ensure!(read_current_body(&old, &reference).await? == b"original output");
+        first_stage.release();
+        support::completed_prompt(&env.runtime, id, "restart-r1").await?;
+        env.restart().await?;
+        ensure!(
+            old_watch.next().await?.is_none(),
+            "retired owner still delivered metadata"
+        );
+        old_watch.close().await?;
+        old.close().await?;
+        let current = env
+            .runtime
+            .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
+            .await?;
+        let paused = current.snapshot(current_demand()).await?;
+        ensure!(paused.revision.owner_id == r1 && !paused.projection.execution_present);
+        ensure!(
+            !paused.projection.atoms.iter().any(|atom| matches!(
+                atom.kind,
+                pl_studio_runtime::ChatAtomKind::Text | pl_studio_runtime::ChatAtomKind::Reasoning
+            )),
+            "cold Current replayed completed history"
+        );
+        ensure!(env.root_provider.recorded().len() == 1);
+        let history = env
+            .runtime
+            .open_history_reader(id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let old_cut = history.capture().await?;
+        let old_page = history
+            .timeline_page(Some(old_cut.clone()), None, demand())
+            .await?;
+        let old_group = old_page
+            .entries
+            .iter()
+            .find_map(|entry| match &entry.head {
+                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r1.as_str()) => {
+                    Some(head.group_id.clone())
+                }
+                _ => None,
+            })
+            .context("original R1 work group")?;
+        let old_members = history
+            .group_page(old_group.clone(), Some(old_cut.clone()), None, demand())
+            .await?;
+        let route = paused.state.model_route.context("saved route")?.revision;
+        env.runtime
+            .submit_prompt_command(
+                id.clone(),
+                SubmitPromptRequest {
+                    input: StudioPromptInput {
+                        input_id: "input-restart-r2".into(),
+                        text: "restart-r2".into(),
+                        attachment_draft_ids: Vec::new(),
+                    },
+                    expected_model_route_revision: route,
+                },
+            )
+            .await?;
+        reached(&second_stage).await?;
+        let running = current.snapshot(current_demand()).await?;
+        let r2 = running.revision.owner_id;
+        ensure!(
+            r2 != r1 && running.projection.execution_present,
+            "new execution reused the saved owner or remained paused"
+        );
+        ensure!(running.state.thread.status == running.projection.logical_status);
+        let stale = current
+            .read_body(
+                reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        ensure!(
+            stale
+                .downcast_ref::<pl_studio_runtime::StudioError>()
+                .and_then(|error| error.reason())
+                == Some("staleCurrentReference"),
+            "old owner reference was accepted by R2"
+        );
+        let mut cut = history.capture().await?;
+        loop {
+            let page = history
+                .timeline_page(Some(cut.clone()), None, demand())
+                .await?;
+            if let Some(group) = page.entries.iter().find_map(|entry| match &entry.head {
+                HistoryRowHead::Work(head) if head.run_id.as_deref() == Some(r2.as_str()) => {
+                    Some(head)
+                }
+                _ => None,
+            }) {
+                ensure!(
+                    group.group_id != old_group,
+                    "R2 extended the saved R1 group"
+                );
+                break;
+            }
+            cut = history.wait_changed(cut).await?;
+        }
+        ensure!(
+            history
+                .timeline_page(Some(old_cut.clone()), None, demand())
+                .await?
+                == old_page
+        );
+        ensure!(
+            history
+                .group_page(old_group.clone(), Some(old_cut), None, demand())
+                .await?
+                == old_members
+        );
+        ensure!(
+            history
+                .group_page(old_group, None, None, demand())
+                .await?
+                .members
+                == old_members.members,
+            "R2 changed the original R1 members"
+        );
+        second_stage.release();
+        support::completed_prompt(&env.runtime, id, "restart-r2").await?;
+        ensure!(env.root_provider.recorded().len() == 2);
+        history.close().await;
+        current.close().await?;
+        Ok(())
+    })
+    .await
+    .context("restart owner integration watchdog")
+    .and_then(std::convert::identity);
+    first_stage.release();
+    second_stage.release();
+    env.finish(result).await
 }

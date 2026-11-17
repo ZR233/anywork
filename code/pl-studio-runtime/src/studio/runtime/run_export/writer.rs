@@ -193,7 +193,9 @@ async fn verify_existing_file_sha256(path: &Path, expected_sha256: &str) -> Resu
         .await
         .with_context(|| format!("open existing content blob {}", path.display()))?;
     let mut hasher = Sha256::new();
-    let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
+    // Keep the bounded chunk on the heap: this verifier is nested in the export task's
+    // async state machine, whose inline buffers otherwise multiply across polling frames.
+    let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
     loop {
         let n = file.read(&mut buf).await?;
         if n == 0 {
@@ -1364,7 +1366,7 @@ impl WriterWorker {
     async fn measure_events_file(&self) -> Result<(String, u64)> {
         let mut file = File::open(&self.events_path).await?;
         let mut hasher = Sha256::new();
-        let mut buf = [0_u8; VERIFY_CHUNK_BYTES];
+        let mut buf = vec![0_u8; VERIFY_CHUNK_BYTES];
         loop {
             let count = file.read(&mut buf).await?;
             if count == 0 {

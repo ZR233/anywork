@@ -174,7 +174,13 @@ impl LiveProjection {
         cuts: &BTreeMap<String, ProducerCut>,
         atom: &ChatAtom,
     ) -> Result<Observation> {
-        let item = self.items.get(&atom.id).filter(|item| !item.is_terminal());
+        // A question's tool execution may already have ended while its interaction is still
+        // pending. Use the same completion boundary as canonical publication: its retained
+        // questions are still an active producer cut until the interaction itself settles.
+        let item = self
+            .items
+            .get(&atom.id)
+            .filter(|item| !completion_ready(item));
         let cut = cuts.get(&atom.id);
         let preview = self
             .previews
@@ -259,8 +265,13 @@ impl LiveProjection {
         // Existing producers keep the cut captured before the effect changed this projection. Only
         // identities first started by the effect are added now; a terminal canonical result can
         // never replace an older member's boundary bytes.
-        for (id, input) in self.observation_inputs(thread_id, state)? {
-            before.entry(id).or_insert(input);
+        let cuts = producer_cuts(state);
+        for atom in self.atom_starts.values() {
+            if atom.kind == crate::ChatAtomKind::Compaction || before.contains_key(&atom.id) {
+                continue;
+            }
+            let input = self.observation_input(thread_id, &cuts, atom)?;
+            before.insert(atom.id.clone(), input);
         }
         Ok(Arc::new(before))
     }

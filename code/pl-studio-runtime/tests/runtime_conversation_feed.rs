@@ -25,6 +25,66 @@ fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContent
         .map(|content| content.reference.clone())
 }
 
+#[tokio::test]
+async fn closing_a_thread_waiting_for_input_drains_history_and_saves_current() -> Result<()> {
+    let env = Environment::new(
+        vec![prompt_step(
+            "waiting-close",
+            0,
+            support::tool_reply(
+                "request_user_input",
+                "ask",
+                serde_json::json!({"questions":[{"id":"choice","header":"Choice","question":"Choose?","isOther":true}]}),
+            ),
+        )],
+        vec![],
+    )
+    .await?;
+    let result = async {
+        let started = env
+            .start(ThreadWorkspaceMode::Local, "waiting-close")
+            .await?;
+        let reader = env
+            .runtime
+            .open_current_reader(
+                &started.thread.id,
+                CURRENT_PROTOCOL_VERSION,
+                current_demand(),
+            )
+            .await?;
+        let watch = reader.watch(None, current_demand()).await?;
+        tokio::time::timeout(support::integration_test_deadline()?, async {
+            while let Some(frame) = watch.next().await? {
+                let projection = match frame {
+                    CurrentFrame::Reset { view } => Some(view.projection),
+                    CurrentFrame::Projection { projection, .. } => Some(*projection),
+                    _ => None,
+                };
+                if projection.is_some_and(|projection| {
+                    projection.logical_status == pl_studio_runtime::ThreadStatus::WaitingInteraction
+                }) {
+                    return Ok::<_, anyhow::Error>(());
+                }
+            }
+            anyhow::bail!("Current closed before reporting the pending question")
+        })
+        .await??;
+        watch.close().await?;
+        reader.close().await?;
+        let shutdown = env.runtime.shutdown_runtime().await;
+        ensure!(
+            shutdown.is_ok(),
+            "shutdown={shutdown:?}; persistence={:#?}",
+            env.runtime.persistence_queue_snapshot()
+        );
+        support::saved(&env.home, &started.thread.id).await?;
+        ensure!(env.runtime.persistence_queue_snapshot().pending_operations == 0);
+        Ok(())
+    }
+    .await;
+    env.finish(result).await
+}
+
 async fn read_history_body(
     reader: &HistoryReader,
     reference: &HistoryEventBodyRef,
@@ -412,6 +472,8 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
         history.close().await;
 
         env.runtime.synchronize_thread_observation(id).await?;
+        // Current saves independently; closing the original owner provides its final save.
+        env.restart().await?;
         let saved = support::saved(&env.home, id).await?;
         ensure!(saved.current.saved_runtime_epoch.to_string() == owner);
         let current_bytes = std::fs::read(saved.root.join("current.json"))?;
@@ -430,7 +492,6 @@ async fn websocket_reconnect_is_durable_history_but_not_replayed_by_paused_curre
             "websocket reconnect changed request identity or admission"
         );
 
-        env.restart().await?;
         let paused = env
             .runtime
             .open_current_reader(id, CURRENT_PROTOCOL_VERSION, current_demand())
