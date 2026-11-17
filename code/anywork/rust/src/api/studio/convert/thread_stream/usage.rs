@@ -1,83 +1,83 @@
 use crate::api::studio::types::*;
 
-impl From<pl_protocol::UsageReportStatus> for BridgeUsageReportStatus {
-    fn from(value: pl_protocol::UsageReportStatus) -> Self {
+impl From<pl_studio_runtime::UsageReportStatus> for BridgeUsageReportStatus {
+    fn from(value: pl_studio_runtime::UsageReportStatus) -> Self {
         match value {
-            pl_protocol::UsageReportStatus::LegacyUnknown => Self::LegacyUnknown,
-            pl_protocol::UsageReportStatus::Missing => Self::Missing,
-            pl_protocol::UsageReportStatus::Partial => Self::Partial,
-            pl_protocol::UsageReportStatus::Reported => Self::Reported,
-            pl_protocol::UsageReportStatus::Invalid => Self::Invalid,
+            pl_studio_runtime::UsageReportStatus::LegacyUnknown => Self::LegacyUnknown,
+            pl_studio_runtime::UsageReportStatus::Missing => Self::Missing,
+            pl_studio_runtime::UsageReportStatus::Partial => Self::Partial,
+            pl_studio_runtime::UsageReportStatus::Reported => Self::Reported,
+            pl_studio_runtime::UsageReportStatus::Invalid => Self::Invalid,
         }
     }
 }
 
-impl From<pl_protocol::UsageTerminalStatus> for BridgeUsageTerminalStatus {
-    fn from(value: pl_protocol::UsageTerminalStatus) -> Self {
+impl From<pl_studio_runtime::UsageTerminalStatus> for BridgeUsageTerminalStatus {
+    fn from(value: pl_studio_runtime::UsageTerminalStatus) -> Self {
         match value {
-            pl_protocol::UsageTerminalStatus::Succeeded => Self::Succeeded,
-            pl_protocol::UsageTerminalStatus::Rejected => Self::Rejected,
-            pl_protocol::UsageTerminalStatus::Cancelled => Self::Cancelled,
-            pl_protocol::UsageTerminalStatus::Failed => Self::Failed,
-            pl_protocol::UsageTerminalStatus::Interrupted => Self::Interrupted,
+            pl_studio_runtime::UsageTerminalStatus::Succeeded => Self::Succeeded,
+            pl_studio_runtime::UsageTerminalStatus::Rejected => Self::Rejected,
+            pl_studio_runtime::UsageTerminalStatus::Cancelled => Self::Cancelled,
+            pl_studio_runtime::UsageTerminalStatus::Failed => Self::Failed,
+            pl_studio_runtime::UsageTerminalStatus::Interrupted => Self::Interrupted,
         }
     }
 }
 
-impl From<pl_protocol::UsageCounterField> for BridgeUsageCounterField {
-    fn from(value: pl_protocol::UsageCounterField) -> Self {
+impl From<pl_studio_runtime::UsageCounterField> for BridgeUsageCounterField {
+    fn from(value: pl_studio_runtime::UsageCounterField) -> Self {
         match value {
-            pl_protocol::UsageCounterField::Input => Self::Input,
-            pl_protocol::UsageCounterField::Output => Self::Output,
-            pl_protocol::UsageCounterField::CacheRead => Self::CacheRead,
-            pl_protocol::UsageCounterField::CacheWrite => Self::CacheWrite,
-            pl_protocol::UsageCounterField::Reasoning => Self::Reasoning,
-            pl_protocol::UsageCounterField::Total => Self::Total,
-            pl_protocol::UsageCounterField::InferenceCount => Self::InferenceCount,
-            pl_protocol::UsageCounterField::CachePair => Self::CachePair,
-            pl_protocol::UsageCounterField::ThroughputPair => Self::ThroughputPair,
+            pl_studio_runtime::UsageCounterField::Input => Self::Input,
+            pl_studio_runtime::UsageCounterField::Output => Self::Output,
+            pl_studio_runtime::UsageCounterField::CacheRead => Self::CacheRead,
+            pl_studio_runtime::UsageCounterField::CacheWrite => Self::CacheWrite,
+            pl_studio_runtime::UsageCounterField::Reasoning => Self::Reasoning,
+            pl_studio_runtime::UsageCounterField::Total => Self::Total,
+            pl_studio_runtime::UsageCounterField::InferenceCount => Self::InferenceCount,
+            pl_studio_runtime::UsageCounterField::CachePair => Self::CachePair,
+            pl_studio_runtime::UsageCounterField::ThroughputPair => Self::ThroughputPair,
         }
     }
 }
 
-impl From<pl_protocol::UsageGapReason> for BridgeUsageGapReason {
-    fn from(value: pl_protocol::UsageGapReason) -> Self {
+impl From<pl_studio_runtime::UsageGapReason> for BridgeUsageGapReason {
+    fn from(value: pl_studio_runtime::UsageGapReason) -> Self {
         match value {
-            pl_protocol::UsageGapReason::Unreported => Self::Unreported,
-            pl_protocol::UsageGapReason::Inconsistent => Self::Inconsistent,
-            pl_protocol::UsageGapReason::Overflow => Self::Overflow,
+            pl_studio_runtime::UsageGapReason::Unreported => Self::Unreported,
+            pl_studio_runtime::UsageGapReason::Inconsistent => Self::Inconsistent,
+            pl_studio_runtime::UsageGapReason::Overflow => Self::Overflow,
         }
     }
 }
 
-impl From<pl_protocol::MetricAvailability> for BridgeMetricAvailability {
-    fn from(value: pl_protocol::MetricAvailability) -> Self {
+impl From<pl_studio_runtime::MetricAvailability> for BridgeMetricAvailability {
+    fn from(value: pl_studio_runtime::MetricAvailability) -> Self {
         match value {
-            pl_protocol::MetricAvailability::Available => Self::Available,
-            pl_protocol::MetricAvailability::NotCollected => Self::NotCollected,
-            pl_protocol::MetricAvailability::NoVisibleOutput => Self::NoVisibleOutput,
-            pl_protocol::MetricAvailability::MissingOutput => Self::MissingOutput,
-            pl_protocol::MetricAvailability::ZeroOutput => Self::ZeroOutput,
-            pl_protocol::MetricAvailability::InvalidUsage => Self::InvalidUsage,
-            pl_protocol::MetricAvailability::InvalidTiming => Self::InvalidTiming,
-            pl_protocol::MetricAvailability::LegacyUnknown => Self::LegacyUnknown,
+            pl_studio_runtime::MetricAvailability::Available => Self::Available,
+            pl_studio_runtime::MetricAvailability::NotCollected => Self::NotCollected,
+            pl_studio_runtime::MetricAvailability::NoVisibleOutput => Self::NoVisibleOutput,
+            pl_studio_runtime::MetricAvailability::MissingOutput => Self::MissingOutput,
+            pl_studio_runtime::MetricAvailability::ZeroOutput => Self::ZeroOutput,
+            pl_studio_runtime::MetricAvailability::InvalidUsage => Self::InvalidUsage,
+            pl_studio_runtime::MetricAvailability::InvalidTiming => Self::InvalidTiming,
+            pl_studio_runtime::MetricAvailability::LegacyUnknown => Self::LegacyUnknown,
         }
     }
 }
 
-impl From<pl_protocol::FirstOutputSource> for BridgeFirstOutputSource {
-    fn from(value: pl_protocol::FirstOutputSource) -> Self {
+impl From<pl_studio_runtime::FirstOutputSource> for BridgeFirstOutputSource {
+    fn from(value: pl_studio_runtime::FirstOutputSource) -> Self {
         match value {
-            pl_protocol::FirstOutputSource::Unobserved => Self::Unobserved,
-            pl_protocol::FirstOutputSource::Incremental => Self::Incremental,
-            pl_protocol::FirstOutputSource::CompletedToolInput => Self::CompletedToolInput,
-            pl_protocol::FirstOutputSource::LegacyUnknown => Self::LegacyUnknown,
+            pl_studio_runtime::FirstOutputSource::Unobserved => Self::Unobserved,
+            pl_studio_runtime::FirstOutputSource::Incremental => Self::Incremental,
+            pl_studio_runtime::FirstOutputSource::CompletedToolInput => Self::CompletedToolInput,
+            pl_studio_runtime::FirstOutputSource::LegacyUnknown => Self::LegacyUnknown,
         }
     }
 }
 
-impl From<pl_protocol::UsageGapIssue> for BridgeUsageGapIssue {
-    fn from(value: pl_protocol::UsageGapIssue) -> Self {
+impl From<pl_studio_runtime::UsageGapIssue> for BridgeUsageGapIssue {
+    fn from(value: pl_studio_runtime::UsageGapIssue) -> Self {
         Self {
             field: value.field.into(),
             reason: value.reason.into(),
@@ -85,8 +85,8 @@ impl From<pl_protocol::UsageGapIssue> for BridgeUsageGapIssue {
     }
 }
 
-impl From<pl_protocol::UsageCallSnapshot> for BridgeUsageCallSnapshot {
-    fn from(value: pl_protocol::UsageCallSnapshot) -> Self {
+impl From<pl_studio_runtime::UsageCallSnapshot> for BridgeUsageCallSnapshot {
+    fn from(value: pl_studio_runtime::UsageCallSnapshot) -> Self {
         Self {
             thread_id: value.thread_id,
             call_id: value.call_id,
@@ -102,8 +102,8 @@ impl From<pl_protocol::UsageCallSnapshot> for BridgeUsageCallSnapshot {
     }
 }
 
-impl From<pl_protocol::UsageOutcomeCountSnapshot> for BridgeUsageOutcomeCountSnapshot {
-    fn from(value: pl_protocol::UsageOutcomeCountSnapshot) -> Self {
+impl From<pl_studio_runtime::UsageOutcomeCountSnapshot> for BridgeUsageOutcomeCountSnapshot {
+    fn from(value: pl_studio_runtime::UsageOutcomeCountSnapshot) -> Self {
         Self {
             outcome: value.outcome.into(),
             calls: value.calls,
@@ -112,8 +112,8 @@ impl From<pl_protocol::UsageOutcomeCountSnapshot> for BridgeUsageOutcomeCountSna
     }
 }
 
-impl From<pl_protocol::UsagePurposeCountSnapshot> for BridgeUsagePurposeCountSnapshot {
-    fn from(value: pl_protocol::UsagePurposeCountSnapshot) -> Self {
+impl From<pl_studio_runtime::UsagePurposeCountSnapshot> for BridgeUsagePurposeCountSnapshot {
+    fn from(value: pl_studio_runtime::UsagePurposeCountSnapshot) -> Self {
         Self {
             purpose: value.purpose,
             calls: value.calls,
@@ -122,8 +122,8 @@ impl From<pl_protocol::UsagePurposeCountSnapshot> for BridgeUsagePurposeCountSna
     }
 }
 
-impl From<pl_protocol::UsageIssueCountSnapshot> for BridgeUsageIssueCountSnapshot {
-    fn from(value: pl_protocol::UsageIssueCountSnapshot) -> Self {
+impl From<pl_studio_runtime::UsageIssueCountSnapshot> for BridgeUsageIssueCountSnapshot {
+    fn from(value: pl_studio_runtime::UsageIssueCountSnapshot) -> Self {
         Self {
             issue: value.issue.into(),
             calls: value.calls,
@@ -131,8 +131,8 @@ impl From<pl_protocol::UsageIssueCountSnapshot> for BridgeUsageIssueCountSnapsho
     }
 }
 
-impl From<pl_protocol::ThreadUsageDiagnostics> for BridgeThreadUsageDiagnostics {
-    fn from(value: pl_protocol::ThreadUsageDiagnostics) -> Self {
+impl From<pl_studio_runtime::ThreadUsageDiagnostics> for BridgeThreadUsageDiagnostics {
+    fn from(value: pl_studio_runtime::ThreadUsageDiagnostics) -> Self {
         Self {
             incomplete_calls: value.incomplete_calls,
             missing_calls: value.missing_calls,
@@ -151,8 +151,8 @@ impl From<pl_protocol::ThreadUsageDiagnostics> for BridgeThreadUsageDiagnostics 
     }
 }
 
-impl From<pl_protocol::UsageReport> for BridgeUsageReport {
-    fn from(value: pl_protocol::UsageReport) -> Self {
+impl From<pl_studio_runtime::UsageReport> for BridgeUsageReport {
+    fn from(value: pl_studio_runtime::UsageReport) -> Self {
         Self {
             input_tokens: value.input_tokens,
             output_tokens: value.output_tokens,

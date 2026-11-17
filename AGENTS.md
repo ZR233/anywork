@@ -116,7 +116,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 ### 官方 Flutter / Dart 技能与快速迭代
 
 - 通用 Flutter / Dart 技能从用户级 `~/.agents/skills/` 发现，官方来源为 `flutter/agent-plugins` 和 `dart-lang/skills`；项目不复制或维护这些技能。缺少时读取对应官方文档，安装或更新按用户授权进行。本仓库技能只补充项目架构、构建和验收约定。
-- 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束，测试必要性由 `test-quality` 判断。
+- 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束。
 - 上游技能中的 CLI 示例映射到本项目入口：应用命令使用 `cargo flutter` / `cargo dart`，纯 Client 使用 `verify-client`，生成使用 `generate-gui`，原生启动使用 `run-gui`，桌面测试使用 `test-project`。保留 Riverpod、typed GoRouter、Client/FRB 和既有生成模型；通用示例不要求换状态库、手改锁文件或绑定、增加依赖、开启实验语法或全仓应用自动修复。
 - 人工实验统一按 `flutter-studio-build` 的[实验指南](.agents/skills/flutter-studio-build/references/experiments.md)操作。纯界面开发、局部交互和截图默认使用 `cargo xtask preview-gui --headless --no-devtools`，**不编译 Rust bridge**，不启动模型服务；可重复断言用相关 `test/ui`。只有持久化、模型调用或原生资源才选择隔离原生应用及官方 Dart MCP，不把全部层级排成必跑清单。
 - `preview-gui` 只准备预览包及 scaffold 的 Pub 依赖，再透传参数和终端输入输出给官方 `widget-preview start`；发现、浏览器及热更新均由 Flutter 管理。预览包使用自己的标准 Pub 配置，不能把整个应用作为预览扫描根；不复制 UI、不手改 SDK 或缓存 manifest。依赖已准备后也可在 `code/anywork_previews` 直接使用官方 Flutter 命令；具体适配与故障恢复见构建技能。
@@ -183,7 +183,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 质量技能入口
 
-Rust 单元测试放在所属源码文件尾部的 `#[cfg(test)]` 模块中；集成测试放在 crate 的 `tests/`，只通过公开接口验证行为，不为测试扩大生产接口的可见性，也不通过 `#[path]` 或 `include!` 重新编译生产实现。共享环境夹具可以放在 `tests/support/` 或仅在 `cfg(test)` 下编译的模块中。
+涉及功能开发中的测试取舍、缺陷回归、测试编写/修改/审查/清理，以及测试准备或执行成本优化时，必须先读取并使用内置 [test-quality](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。该技能适用于任何编程语言，统一维护开发轨道、行为边界、失败判定和清理方法；本仓库直接使用这一份，项目技能不重复声明或引用，不保留同名副本或转发技能。
+
+具体语言、框架、命令和运行前提由当前项目约定提供。本仓库的执行入口见本文件、`flutter-studio-build` 和 [测试与人工验收](design/24-testing.md)；领域技能只补充对应协议、安全、所有权与迁移风险，不复制通用测试政策。
 
 通用设计、实现与测试规则由以下技能维护，本文件只规定项目约束。按任务语义选择，不以文件名或改动规模代替判断；多个边界同时涉及时组合使用，不把普通改动扩展为无关专项审计。
 
@@ -195,9 +197,8 @@ Rust 单元测试放在所属源码文件尾部的 `#[cfg(test)]` 模块中；�
 | 公共接口、类型、错误、模块、依赖与协议 | `rust-api-design` |
 | 同步、异步取消、回调与资源生命周期 | `rust-concurrency-safety` |
 | unsafe、FFI、外部句柄与安全证明 | `rust-unsafe-safety` |
-| 测试设计、回归、层级、必要性与去重 | `test-quality` |
 
-质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护；运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
+Rust 质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护。运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
 
 ### Rust 异步接口约定
 
@@ -215,8 +216,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 ## 检查与观察入口
 
-- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本文件不规定测试目录或类型白名单，也不另设开发、审查或返修流程。可按任务目标和实际影响选择验证，通用方法使用 `test-quality` 技能，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
-- 验证报告区分实际执行、有效复用、失败和未验证；排队、运行中、零用例、采集完成或模型自述都不能冒充通过。环境或权限阻塞保留原始错误，不伪报完成。
+- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本节只提供项目执行入口，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 常用入口（`PUB_HOSTED_URL` 及镜像行为由 Flutter/Dart 自身处理，xtask 不改写已跟踪的 `pubspec.lock`）：

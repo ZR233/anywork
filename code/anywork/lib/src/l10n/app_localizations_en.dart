@@ -7032,4 +7032,7 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get timelineLspStateMissingCommand => 'Missing command';
+
+  @override
+  String get acpDraftUseCurrentConfiguration => 'Use current configuration';
 }

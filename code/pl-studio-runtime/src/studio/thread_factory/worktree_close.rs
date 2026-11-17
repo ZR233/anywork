@@ -1,5 +1,6 @@
 //! One explicit child close owns only its frozen Git worktree, never its history or SessionFiles.
 use super::StudioThreadFactory;
+use crate::Thread;
 use crate::{
     agent::worktree::{
         ExecutorWorktreeBackend, WorktreeBackend, WorktreeHandle, WorktreeManager,
@@ -12,7 +13,6 @@ use crate::{
     },
 };
 use anyhow::{Context, Result, ensure};
-use pl_protocol::Thread;
 use pl_tool::collaboration::control::{AgentCloseResult, AgentWorktreeCleanup};
 use std::{
     path::{Path, PathBuf},
@@ -23,7 +23,7 @@ impl StudioThreadFactory {
     pub(crate) async fn finish_child_worktree_cleanup(
         &self,
         thread: &Thread,
-    ) -> Result<(AgentCloseResult, Option<pl_protocol::StateError>)> {
+    ) -> Result<(AgentCloseResult, Option<crate::StateError>)> {
         let mut record = self
             .services
             .store

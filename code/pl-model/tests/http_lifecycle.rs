@@ -1,10 +1,10 @@
+use pl_model::trace::{AgentEvent, InMemoryTraceEventSink, TracePartKind};
 use pl_model::{
     completion::{CompletionRequest, Message, MessageContent, MessageRole},
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
     runtime::{ModelInvocationContext, ModelRuntime, ModelSession},
 };
-use pl_protocol::trace::{AgentEvent, InMemoryTraceEventSink, TracePartKind};
 use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
 use serde_json::json;
 use std::sync::Arc;
@@ -166,7 +166,7 @@ async fn fragmented_completion_and_native_compaction_survive_active_reads_beyond
                     .unwrap();
                 assert!(matches!(
                     response.item,
-                    pl_protocol::ModelContextItem::Compaction { .. }
+                    pl_model::completion::ModelContextItem::Compaction { .. }
                 ));
             } else {
                 assert_eq!(
@@ -283,8 +283,8 @@ async fn http_read_idle_is_bounded_and_preserves_an_unsafe_attempt_without_repla
     .unwrap();
     let runtime = runtime(fixture.base_url(), false);
     let mut input = request();
-    input.tools.push(pl_protocol::ToolSpec::WebSearch {
-        options: pl_protocol::HostedWebSearchOptions::OpenAi {
+    input.tools.push(pl_model::completion::ToolSpec::WebSearch {
+        options: pl_model::completion::HostedWebSearchOptions::OpenAi {
             external_web_access: false,
             indexed_web_access: None,
             filters: None,
@@ -366,7 +366,7 @@ async fn stalled_authentication_error_body_keeps_status_and_finishes_within_15_s
 
 fn traced(
     session: ModelSession,
-    events: pl_protocol::trace::AgentEventSender,
+    events: pl_model::trace::AgentEventSender,
 ) -> ModelInvocationContext {
     ModelInvocationContext::new(session)
         .with_events(events)
@@ -380,7 +380,7 @@ fn traced(
         )
 }
 
-async fn wait_text(received: &mut pl_protocol::trace::AgentEventReceiver) {
+async fn wait_text(received: &mut pl_model::trace::AgentEventReceiver) {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if let AgentEvent::TracePartDelta { event } = received.recv().await.unwrap()

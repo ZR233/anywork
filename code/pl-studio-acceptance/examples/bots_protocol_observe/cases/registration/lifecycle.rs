@@ -14,13 +14,13 @@ use crate::http;
 use crate::report::{self, CaseResult};
 use crate::topic::{self, BotsTopicWatch};
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::{
-    BotRegistrationAttempt, BotRegistrationStatus, CommandDisposition, StartBotRegistrationRequest,
-    StudioErrorCode,
-};
 use pl_provider_fixture::feishu::{
     CallKind, REGISTERED_APP_ID, RegistrationPollScript, RegistrationTenantBrand,
     TRUSTED_USER_OPEN_ID,
+};
+use pl_studio_runtime::{
+    BotRegistrationAttempt, BotRegistrationStatus, CommandDisposition, StartBotRegistrationRequest,
+    StudioErrorCode,
 };
 use std::time::Instant;
 

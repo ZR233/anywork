@@ -1,4 +1,5 @@
-use pl_protocol::{ObservedResource, SessionDirectoryRow, ThreadModeCatalogSnapshot};
+use crate::mode::ThreadModeCatalogSnapshot;
+use crate::{ObservedResource, SessionDirectoryRow};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -31,23 +32,23 @@ pub enum StudioProductEventKind {
     SettingsConfigStateChanged(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalogStateChanged(Box<StudioModelCatalogStateSnapshot>),
     RecoveryStateChanged(StudioRecoveryStateSnapshot),
-    McpCatalogChanged(pl_protocol::McpCatalogSnapshot),
-    ThreadMcpStateChanged(pl_protocol::ThreadMcpStateSnapshot),
+    McpCatalogChanged(crate::McpCatalogSnapshot),
+    ThreadMcpStateChanged(crate::ThreadMcpStateSnapshot),
     ThreadLspStateChanged(crate::protocol::StudioThreadLspStateSnapshot),
     LspStateChanged(StudioLspStateSnapshot),
     SkillsStateChanged(StudioSkillsStateSnapshot),
     ThreadModeCatalogChanged(ThreadModeCatalogSnapshot),
     AccountUsageStateChanged(AccountUsageStateSnapshot),
-    AcpAuthStateChanged(Box<pl_protocol::studio::AcpAuthSnapshot>),
-    AcpInstallStateChanged(Box<pl_protocol::studio::AcpInstallSnapshot>),
-    AcpLocalDetectionStateChanged(Box<pl_protocol::studio::AcpLocalDetectionSnapshot>),
+    AcpAuthStateChanged(Box<crate::AcpAuthSnapshot>),
+    AcpInstallStateChanged(Box<crate::AcpInstallSnapshot>),
+    AcpLocalDetectionStateChanged(Box<crate::AcpLocalDetectionSnapshot>),
     ModelPerformanceStateChanged(StudioModelPerformanceSnapshot),
     SessionCostsChanged(StudioSessionCostsState),
     UpdaterStateChanged(StudioUpdateStateSnapshot),
     PersistenceStateChanged(PersistenceStateSnapshot),
     PersistenceQueueStateChanged(StudioPersistenceQueueStateSnapshot),
     AgentProfilesStateChanged(Box<StudioAgentProfilesStateSnapshot>),
-    BotsStateChanged(pl_protocol::studio::BotsStateSnapshot),
+    BotsStateChanged(crate::BotsStateSnapshot),
     ChildInteractionsChanged(StudioChildInteractionsState),
 }
 
@@ -59,7 +60,7 @@ pub enum StudioProductEventKind {
 #[serde(rename_all = "camelCase")]
 pub struct StudioChildInteractionsState {
     pub host_thread_id: String,
-    pub state: ObservedResource<Vec<pl_protocol::ChildInteractionSummary>>,
+    pub state: ObservedResource<Vec<crate::ChildInteractionSummary>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -129,13 +130,13 @@ pub struct StudioAgentDirectoryData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioSettingsConfigStateSnapshot {
-    pub state: ObservedResource<pl_protocol::studio::SettingsConfigSnapshot>,
+    pub state: ObservedResource<crate::SettingsConfigSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioModelCatalogStateSnapshot {
-    pub state: ObservedResource<pl_protocol::studio::ModelCatalogSnapshot>,
+    pub state: ObservedResource<crate::ModelCatalogSnapshot>,
 }
 
 /// 一个根会话的作用域费用事实；revision 按 root 独立单调。
@@ -166,7 +167,7 @@ pub struct StudioSessionCostsState {
 pub struct StudioPersistenceQueueStateSnapshot {
     pub revision: u64,
     pub updated_at: i64,
-    pub queue: pl_protocol::PersistenceQueueSnapshot,
+    pub queue: crate::PersistenceQueueSnapshot,
 }
 
 /// 配置级 Agent Profiles 的 canonical 资源快照（完整配置与逐文件诊断）。
@@ -181,7 +182,7 @@ pub struct StudioAgentProfilesStateSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioAgentProfilesData {
-    pub profiles: Vec<pl_protocol::AgentProfile>,
+    pub profiles: Vec<crate::AgentProfile>,
     pub diagnostics: Vec<StudioAgentProfileDiagnostic>,
 }
 
@@ -198,7 +199,7 @@ pub struct StudioAgentProfileDiagnostic {
 pub struct StudioSessionCostSnapshot {
     pub root_thread_id: String,
     pub purpose_costs: Vec<StudioPurposeCostSnapshot>,
-    pub estimated_costs: Vec<pl_protocol::RuntimeCostAmount>,
+    pub estimated_costs: Vec<crate::RuntimeCostAmount>,
     pub has_unpriced_usage: bool,
 }
 
@@ -206,7 +207,7 @@ pub struct StudioSessionCostSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct StudioPurposeCostSnapshot {
     pub purpose: Option<String>,
-    pub estimated_costs: Vec<pl_protocol::RuntimeCostAmount>,
+    pub estimated_costs: Vec<crate::RuntimeCostAmount>,
     pub has_unpriced_usage: bool,
 }
 
@@ -263,7 +264,7 @@ pub struct StudioStateSnapshot {
     pub settings_config: StudioSettingsConfigStateSnapshot,
     pub model_catalog: StudioModelCatalogStateSnapshot,
     pub recovery: StudioRecoveryStateSnapshot,
-    pub host_mcp_catalog: pl_protocol::McpCatalogSnapshot,
+    pub host_mcp_catalog: crate::McpCatalogSnapshot,
     pub lsp: StudioLspStateSnapshot,
     pub skills_by_project: Vec<StudioSkillsStateSnapshot>,
     pub thread_mode_catalog: ThreadModeCatalogSnapshot,
@@ -273,5 +274,5 @@ pub struct StudioStateSnapshot {
     pub persistence: PersistenceStateSnapshot,
     pub persistence_queue: StudioPersistenceQueueStateSnapshot,
     pub agent_profiles: StudioAgentProfilesStateSnapshot,
-    pub bots: pl_protocol::studio::BotsStateSnapshot,
+    pub bots: crate::BotsStateSnapshot,
 }

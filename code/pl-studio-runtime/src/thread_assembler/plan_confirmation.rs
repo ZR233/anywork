@@ -3,6 +3,9 @@ use super::SessionRuntime;
 use crate::plan_tool::{
     PLAN_EXTENSION, PlanConfirmationPrompt, decode_plan_state, encode_plan_state,
 };
+use crate::{
+    InteractionCommand, InteractionRequest, InteractionScope, ResolveUserInput, UserInputResolution,
+};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{
@@ -13,9 +16,6 @@ use pl_core::{
             InteractionState,
         },
     },
-};
-use pl_protocol::{
-    InteractionCommand, InteractionRequest, InteractionScope, ResolveUserInput, UserInputResolution,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -37,9 +37,9 @@ pub enum PlanInteractionError {
     #[error("invalid Plan confirmation answer: {0}")]
     Answer(String),
     #[error("Plan confirmation was rejected: {0:?}")]
-    Rejected(pl_protocol::AgentSessionPlanResultCode),
+    Rejected(crate::plan_tool::AgentSessionPlanResultCode),
     #[error("Plan interaction transition failed")]
-    Projection(#[from] pl_protocol::InteractionTransitionError),
+    Projection(#[from] crate::InteractionTransitionError),
     #[error("Plan state could not be decoded or frozen")]
     State(#[from] pl_core::tool::opaque::ToolError),
     #[error("Plan state transition failed")]
@@ -71,7 +71,7 @@ fn prompt(record: &InteractionRecord) -> Result<PlanConfirmationPrompt, PlanInte
         crate::plan_tool::PLAN_CONFIRMATION_FORMAT,
     )?;
     if prompt.expected_plan_revision == 0
-        || prompt.question.id != pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+        || prompt.question.id != crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
         || pl_core::context::content_hash(prompt.question.question.as_bytes()) != prompt.plan_hash
     {
         return Err(PlanInteractionError::Identity);
@@ -82,9 +82,9 @@ fn prompt(record: &InteractionRecord) -> Result<PlanConfirmationPrompt, PlanInte
 /// 由已校验的确认请求读取当时文档身份；缺失的旧版本不会由当前计划补齐。
 pub(crate) fn document_identity(
     record: &InteractionRecord,
-) -> Result<pl_protocol::ThreadPlanDocumentIdentity, PlanInteractionError> {
+) -> Result<crate::ThreadPlanDocumentIdentity, PlanInteractionError> {
     let prompt = prompt(record)?;
-    Ok(pl_protocol::ThreadPlanDocumentIdentity {
+    Ok(crate::ThreadPlanDocumentIdentity {
         version: prompt.document_version,
         content_hash: prompt.plan_hash,
     })
@@ -108,8 +108,8 @@ pub fn project_plan_confirmation(
             item_id: None,
             tool_id: None,
             agent_path: Some(thread_id.into()),
-            purpose: pl_protocol::InteractionPurpose::AgentSessionPlanConfirmation(
-                pl_protocol::AgentSessionPlanConfirmationPurpose {
+            purpose: crate::InteractionPurpose::AgentSessionPlanConfirmation(
+                crate::plan_tool::AgentSessionPlanConfirmationPurpose {
                     expected_revision: prompt.expected_plan_revision - 1,
                     operation_id: record.request.id.clone(),
                     argument_hash: pl_core::context::content_hash(
@@ -122,8 +122,8 @@ pub fn project_plan_confirmation(
         vec![prompt.question],
         record.created_at,
     )
-    .with_continuation(pl_protocol::InteractionContinuationPreset::question(
-        pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID,
+    .with_continuation(crate::InteractionContinuationPreset::question(
+        crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID,
         prompt.presentation,
     ));
     projected.revision = 1;
@@ -140,15 +140,13 @@ pub fn project_plan_confirmation(
                 answers: answer.answers,
             }))
         }
-        InteractionState::Cancelled => {
-            Some(InteractionCommand::Cancel(pl_protocol::CancelInteraction {
-                interaction_id: wire_id.clone(),
-                expected_revision: 1,
-                operation_id: format!("cancel:{}", record.request.id),
-                reason: "Plan confirmation was cancelled.".into(),
-                cancelled_at: record.updated_at,
-            }))
-        }
+        InteractionState::Cancelled => Some(InteractionCommand::Cancel(crate::CancelInteraction {
+            interaction_id: wire_id.clone(),
+            expected_revision: 1,
+            operation_id: format!("cancel:{}", record.request.id),
+            reason: "Plan confirmation was cancelled.".into(),
+            cancelled_at: record.updated_at,
+        })),
     };
     if let Some(command) = command {
         let decision = projected.decide(command)?;
@@ -163,7 +161,7 @@ pub fn project_plan_confirmation(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OrderedAnswer<'a> {
-    answers: BTreeMap<&'a str, &'a pl_protocol::UserInputAnswer>,
+    answers: BTreeMap<&'a str, &'a crate::UserInputAnswer>,
     /// 该决议的操作身份；随决定一起冻结，重放与冲突裁决都读它。
     #[serde(skip_serializing_if = "Option::is_none")]
     operation_id: Option<String>,
@@ -234,7 +232,7 @@ fn prepare_resolution(
     #[serde(rename_all = "camelCase")]
     struct Continuation<'a> {
         interaction_id: &'a str,
-        presentation: pl_protocol::MessagePresentation,
+        presentation: crate::MessagePresentation,
     }
     let continuation_payload = OpaquePayload::new(
         "pl.studio.interaction-continuation",

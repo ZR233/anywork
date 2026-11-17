@@ -29,6 +29,10 @@ done
 test -z "$(dpkg --audit)"
 test "$(readlink /usr/bin/anywork)" = /opt/anywork/anywork
 test -x /usr/bin/anywork
+test "$(readlink /usr/bin/anywk)" = /opt/anywork/bin/anywk
+test -x /usr/bin/anywk
+test "$(env -u LD_LIBRARY_PATH -u LD_PRELOAD anywk --version)" = "anywk $version"
+env -u LD_LIBRARY_PATH -u LD_PRELOAD anywk --help
 test -s /usr/share/applications/io.github.zr233.anywork.desktop
 test -s /usr/share/icons/hicolor/512x512/apps/io.github.zr233.anywork.png
 test -s /opt/anywork/LICENSE
@@ -72,6 +76,11 @@ for file in "${elfs[@]}"; do
   echo "ELF ABI evidence: $file"
   readelf --file-header --version-info "$file"
 done > /evidence/elf-versions.log
+cli_linkage=$(readelf --wide --program-headers --dynamic /opt/anywork/bin/anywk)
+if grep -Eq '^[[:space:]]*INTERP[[:space:]]|\(NEEDED\)' <<< "$cli_linkage"; then
+  printf 'anywk must be statically linked:\n%s\n' "$cli_linkage" >&2
+  exit 1
+fi
 
 export HOME=/tmp/anywork-smoke/home
 export ANYWORK_HOME=/tmp/anywork-smoke/data

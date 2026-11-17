@@ -1,5 +1,5 @@
 use anyhow::Result;
-use pl_protocol::{
+use pl_studio_runtime::{
     CancelledInteractionState, ChildInteractionSummary, ExpiredInteractionState,
     InteractionContent, InteractionRequest, ToolApprovalResolution, ToolApprovalState,
     UserInputState, UserQuestion,
@@ -99,7 +99,7 @@ fn cancelled_tool_approval(
 }
 
 fn sorted_answers(
-    value: &std::collections::HashMap<String, pl_protocol::UserInputAnswer>,
+    value: &std::collections::HashMap<String, pl_studio_runtime::UserInputAnswer>,
 ) -> Vec<BridgeUserInputAnswer> {
     let mut answers = value
         .iter()

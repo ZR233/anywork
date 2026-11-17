@@ -84,7 +84,7 @@ impl NoteTool {
                 "unsupported saved note format or version",
             )));
         }
-        let mut note = pl_protocol::SessionNote {
+        let mut note = crate::session_note::SessionNote {
             revision: previous.map_or(0, |record| record.revision),
             content: previous
                 .map_or_else(String::new, |record| record.payload.content().to_owned()),

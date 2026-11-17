@@ -369,7 +369,7 @@ impl SessionRuntime {
     /// History; recipient deliveries and source-owned review decisions are classified by kind.
     pub(super) async fn pending_native_deliveries(
         &self,
-        recipient: &pl_protocol::Thread,
+        recipient: &crate::Thread,
     ) -> Result<Vec<PendingNativeDelivery>> {
         let services = self
             .0
@@ -397,7 +397,7 @@ impl SessionRuntime {
     /// Replays only explicit Current markers through the storage-only recipient path.
     pub(super) async fn recover_pending_native_deliveries(
         &self,
-        recipient: &pl_protocol::Thread,
+        recipient: &crate::Thread,
     ) -> Result<usize> {
         let pending = self
             .pending_native_deliveries(recipient)
@@ -470,9 +470,10 @@ pub(super) async fn complete_pending_native_delivery(
             sequence: saved,
             digest,
         }) if saved == sequence && digest == pending.message_digest.as_str() => {
-            // The marker was already flushed before the message. Removing it now is a separate
-            // Current transition, so a crash after inbox persistence can only cause another no-op
-            // admission and marker cleanup.
+            // The marker was flushed before admission, so a crash before this cleanup leaves the
+            // obligation retryable. Current's inbox/consumed ledger proves the duplicate receipt;
+            // atomically combining acceptance with marker deletion still requires a Core owner
+            // command because the current handle API publishes them separately.
         }
         Some(DurableMessageIdentity::Proven { .. }) => {
             anyhow::bail!("pending Native delivery changed its admission identity")

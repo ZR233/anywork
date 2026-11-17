@@ -4,6 +4,7 @@ use super::{
     restart::PlanRestartInput,
     submit::{PlanSubmitInput, confirmation_question},
 };
+use crate::plan_tool::AgentSessionPlanState;
 use crate::plan_tool::state::{
     AgentSessionPlanMachine, AgentSessionPlanOptions, AgentSessionPlanRestartCommand,
     AgentSessionPlanSubmitCommand,
@@ -20,7 +21,6 @@ use pl_core::{
     },
 };
 use pl_model::completion::ToolCallPolicy;
-use pl_protocol::AgentSessionPlanState;
 use pl_tool::binding::prepare_registration;
 use std::sync::Arc;
 
@@ -70,14 +70,14 @@ pub fn decode_plan_state(payload: &OpaquePayload) -> Result<AgentSessionPlanStat
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PlanConfirmationPrompt {
-    pub question: pl_protocol::UserQuestion,
+    pub question: crate::UserQuestion,
     pub expected_plan_revision: u64,
     pub plan_hash: String,
     /// 保存于确认请求自身；读取历史不查询当前 Plan。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub document_version: Option<u64>,
     pub created_at: i64,
-    pub presentation: pl_protocol::MessagePresentation,
+    pub presentation: crate::MessagePresentation,
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -118,7 +118,7 @@ pub(super) async fn wait_cancelled_turn(
     session: &Session,
     thread_id: &str,
     turn_id: &str,
-) -> Result<pl_protocol::CancelledTurnState> {
+) -> Result<pl_studio_runtime::CancelledTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
         let mut remaining = HISTORY_OBSERVATION_BYTES;
@@ -130,7 +130,7 @@ pub(super) async fn wait_cancelled_turn(
                     .await?
                     .state
                 {
-                    pl_protocol::TurnState::Cancelled(state) => return Ok(state),
+                    pl_studio_runtime::TurnState::Cancelled(state) => return Ok(state),
                     outcome if outcome.is_terminal() => {
                         anyhow::bail!("Turn {turn_id} ended without cancellation: {outcome:?}")
                     }
@@ -166,7 +166,7 @@ pub(super) async fn wait_running_turn(
     session: &Session,
     thread_id: &str,
     turn_id: &str,
-) -> Result<pl_protocol::RunningTurnState> {
+) -> Result<pl_studio_runtime::RunningTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
         let current = open_current(session.http()?, thread_id).await?;
@@ -180,7 +180,7 @@ pub(super) async fn wait_running_turn(
                     .filter(|turn| turn.id == turn_id)
                 {
                     match &turn.state {
-                        pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
+                        pl_studio_runtime::TurnState::Running(state) => return Ok(state.clone()),
                         terminal if terminal.is_terminal() => anyhow::bail!(
                             "Turn {turn_id} must still be running when the stop happens, but it is \
                              already terminal: {terminal:?}"

@@ -11,13 +11,13 @@
 //! （见 design/06 §6.13）。
 use super::ProjectionError;
 use crate::resource_store::FileResourceStore;
+use crate::{AttachmentModality, ThreadAttachment};
 use anyhow::Context;
 use pl_core::{
     context::{ContextContent, ResourceReader, ResourceReference},
     thread::ToolDelivery,
     tool::opaque::ToolError,
 };
-use pl_protocol::{AttachmentModality, ThreadAttachment};
 use tokio_util::sync::CancellationToken;
 
 /// One archived media variant referenced by a persisted tool delivery.

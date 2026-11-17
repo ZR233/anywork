@@ -236,7 +236,7 @@ fn bridge_child_interactions_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{
+    use pl_studio_runtime::{
         ChildInteractionSummary, InteractionRequest, InteractionScope, UserQuestion,
     };
     use pl_studio_runtime::{StudioChildInteractionsState, StudioProductTopic};
@@ -266,7 +266,7 @@ mod tests {
         interaction.revision = 23;
         let state = StudioChildInteractionsState {
             host_thread_id: "root".into(),
-            state: pl_protocol::ObservedResource::ready(
+            state: pl_studio_runtime::ObservedResource::ready(
                 7,
                 43,
                 vec![ChildInteractionSummary::new(interaction)],
@@ -323,7 +323,7 @@ mod tests {
 
         let empty = bridge_child_interactions_state(StudioChildInteractionsState {
             host_thread_id: "root".into(),
-            state: pl_protocol::ObservedResource::ready(8, 49, vec![]),
+            state: pl_studio_runtime::ObservedResource::ready(8, 49, vec![]),
         })?;
         let BridgeChildInteractionsResource::Ready { resource, value } = empty.state else {
             anyhow::bail!("committed empty collection lost its Ready state");
@@ -337,7 +337,7 @@ mod tests {
     fn child_interactions_without_committed_state_cannot_masquerade_as_empty() -> Result<()> {
         let result = bridge_child_interactions_state(StudioChildInteractionsState {
             host_thread_id: "root".into(),
-            state: pl_protocol::ObservedResource::uninitialized(0),
+            state: pl_studio_runtime::ObservedResource::uninitialized(0),
         });
         let result = result?;
         assert_eq!(result.host_thread_id, "root");

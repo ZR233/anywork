@@ -3420,7 +3420,7 @@ mod atomic_tests {
 
     #[tokio::test]
     async fn atomic_timeline_backfill_order_content_and_frozen_reads() -> Result<()> {
-        use pl_protocol::{
+        use crate::{
             AttachmentModality, QueuedThreadTool, ThreadAttachment, ThreadContentLifecycle,
             ThreadTextChannel, ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation,
             ThreadToolItem, ThreadToolState, ThreadToolUserInput, ThreadToolUserInputState,

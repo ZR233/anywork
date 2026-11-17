@@ -521,7 +521,7 @@ mod tests {
         events.initialize_directories().await?;
         let project = crate::WorkspaceRecord {
             id: "registered-project".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name: "registered project".into(),
             path: temp.path().to_string_lossy().into_owned(),
             ssh_alias: None,

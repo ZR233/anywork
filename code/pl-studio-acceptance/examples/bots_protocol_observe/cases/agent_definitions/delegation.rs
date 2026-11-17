@@ -4,8 +4,8 @@
 use super::{Observation, config, http, saved, wire};
 use crate::support::{HISTORY_OBSERVATION_BYTES, assert_completed_turn, open_current};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
+use pl_studio_runtime::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
 use std::time::Instant;
 
 impl Observation<'_> {
@@ -257,7 +257,7 @@ impl Observation<'_> {
                     if let Some(turn) = snapshot.active_turn.as_ref()
                         && view.projection.atoms.iter().any(|atom| {
                             atom.turn_id.as_deref() == Some(turn.id.as_str())
-                                && atom.kind == pl_protocol::ChatAtomKind::ToolCall
+                                && atom.kind == pl_studio_runtime::ChatAtomKind::ToolCall
                                 && atom
                                     .tool
                                     .as_ref()

@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 
+use crate::{ChildInteractionSummary, InteractionKind, InteractionResolution};
 use pl_core::thread::ThreadSnapshot;
-use pl_protocol::{ChildInteractionSummary, InteractionKind, InteractionResolution};
 
 use super::super::StudioRuntime;
 
@@ -160,7 +160,7 @@ impl StudioRuntime {
             let Some(record) = self.store.read_thread(&child_id).await? else {
                 continue;
             };
-            let thread = pl_protocol::Thread::from(record);
+            let thread = crate::Thread::from(record);
             let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
                 &self.store,
                 &thread,
@@ -183,7 +183,7 @@ impl StudioRuntime {
         &self,
         interaction: &crate::InteractionRequest,
     ) -> anyhow::Result<()> {
-        if interaction.status() == pl_protocol::InteractionStatus::Pending {
+        if interaction.status() == crate::InteractionStatus::Pending {
             return Ok(());
         }
         let owner = self.read_owned_thread(&interaction.scope.thread_id).await?;
@@ -268,16 +268,16 @@ fn redacted_outcome(interaction: &crate::InteractionRequest) -> (&'static str, s
     match (interaction.status(), interaction.resolution()) {
         // A cancelled or expired request produced no user decision at all; the notice must not imply
         // that the child has an answer or a permission it never received.
-        (pl_protocol::InteractionStatus::Cancelled, _) => ("cancelled", serde_json::Value::Null),
-        (pl_protocol::InteractionStatus::Expired, _) => ("expired", serde_json::Value::Null),
-        (pl_protocol::InteractionStatus::Pending, _) => ("pending", serde_json::Value::Null),
+        (crate::InteractionStatus::Cancelled, _) => ("cancelled", serde_json::Value::Null),
+        (crate::InteractionStatus::Expired, _) => ("expired", serde_json::Value::Null),
+        (crate::InteractionStatus::Pending, _) => ("pending", serde_json::Value::Null),
         (
-            pl_protocol::InteractionStatus::Resolved,
+            crate::InteractionStatus::Resolved,
             Some(InteractionResolution::UserInput(resolution)),
         ) => {
             let questions = match &interaction.content {
-                pl_protocol::InteractionContent::UserInput(value) => value.questions(),
-                pl_protocol::InteractionContent::ToolApproval(_) => &[],
+                crate::InteractionContent::UserInput(value) => value.questions(),
+                crate::InteractionContent::ToolApproval(_) => &[],
             };
             let answers = questions
                 .iter()
@@ -287,9 +287,9 @@ fn redacted_outcome(interaction: &crate::InteractionRequest) -> (&'static str, s
                         return None;
                     }
                     let projected = if question.is_secret {
-                        pl_protocol::ThreadToolUserInputAnswer::redacted(question.id.clone())
+                        crate::ThreadToolUserInputAnswer::redacted(question.id.clone())
                     } else {
-                        pl_protocol::ThreadToolUserInputAnswer::new(
+                        crate::ThreadToolUserInputAnswer::new(
                             question.id.clone(),
                             answer.answers.clone(),
                         )
@@ -308,14 +308,14 @@ fn redacted_outcome(interaction: &crate::InteractionRequest) -> (&'static str, s
         // A permission decision carries no user content of its own; the decision itself is the fact
         // the main session needs, never the tool arguments.
         (
-            pl_protocol::InteractionStatus::Resolved,
+            crate::InteractionStatus::Resolved,
             Some(InteractionResolution::ToolApproval(resolution)),
         ) => (
             "resolved",
             serde_json::json!({
                 "decision": match resolution.decision {
-                    pl_protocol::ToolApprovalResolution::Approved => "approved",
-                    pl_protocol::ToolApprovalResolution::Denied => "denied",
+                    crate::ToolApprovalResolution::Approved => "approved",
+                    crate::ToolApprovalResolution::Denied => "denied",
                 },
             }),
         ),

@@ -1,8 +1,8 @@
 //! Shared bounded collection selection over an owner cut, including passive checkpoint-derived cuts.
 use super::{CurrentState, current::CurrentPositionIndex};
+use crate::*;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
-use pl_protocol::*;
 
 pub(in crate::studio) fn current_page(
     state: &CurrentState,

@@ -27,19 +27,15 @@ pub struct HistoryEntityChange {
     pub public_summary: Option<String>,
 }
 
-/// Native producer conversion uses the original timestamps and rejects overflow.
-pub trait NativeHistoryEntity {
-    fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<HistoryEntityHead>;
-}
-impl NativeHistoryEntity for HistoryEntityHead {
+impl HistoryEntityHead {
     /// Native atomic timestamps use seconds; history heads use UTC milliseconds.
     /// Legacy absence stays unknown, and out-of-range timestamps are rejected.
-    fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<Self> {
+    pub fn from_atom(atom: &crate::ChatAtom, run: Option<String>) -> Result<Self> {
         let state = match atom.lifecycle {
-            pl_protocol::ChatAtomLifecycle::Active { status, .. } => {
+            crate::ChatAtomLifecycle::Active { status, .. } => {
                 HistoryEntityState::KnownActive { status }
             }
-            pl_protocol::ChatAtomLifecycle::Terminal { outcome, .. } => {
+            crate::ChatAtomLifecycle::Terminal { outcome, .. } => {
                 HistoryEntityState::KnownTerminal { outcome }
             }
         };
@@ -75,7 +71,7 @@ impl NativeHistoryEntity for HistoryEntityHead {
 impl HistoryEntityChange {
     pub fn from_atom(
         mut event: HistoryEvent,
-        atom: &pl_protocol::ChatAtom,
+        atom: &crate::ChatAtom,
         run: RuntimeEpoch,
     ) -> Result<Self> {
         event.header.turn_id = atom.turn_id.clone();
@@ -414,14 +410,14 @@ fn fit_wait(
     let wait = entity.wait.take();
     if let Some(HistoryWaitHead::Inline { presentation }) = wait {
         let intent = match presentation.intent() {
-            pl_protocol::ThreadWaitIntent::Events {
+            crate::ThreadWaitIntent::Events {
                 targets,
                 timeout_ms,
             } => HistoryWaitIntentHead::Events {
                 target_count: targets.len() as u64,
                 timeout_ms: *timeout_ms,
             },
-            pl_protocol::ThreadWaitIntent::Timer { duration_ms } => HistoryWaitIntentHead::Timer {
+            crate::ThreadWaitIntent::Timer { duration_ms } => HistoryWaitIntentHead::Timer {
                 duration_ms: *duration_ms,
             },
         };

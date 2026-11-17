@@ -114,6 +114,33 @@ pub(super) fn admit_message(
 }
 
 impl Owner {
+    pub(super) fn receive_message_with_extensions(
+        &mut self,
+        message: ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+    ) -> Result<u64, ThreadError> {
+        if self.state.lifecycle != ThreadLifecycle::Open {
+            return Err(ThreadError::Closed);
+        }
+        if message.id.is_empty() || message.source_id.is_empty() {
+            return Err(ThreadError::InvalidIdentity);
+        }
+        if message.payload.format() == input::CONTINUATION_PAYLOAD_FORMAT {
+            return Err(ThreadError::InvalidControlInput);
+        }
+        let previous = self.accepted_message_receipt(&message)?;
+        let mut candidate = self.state.clone();
+        extensions::stage_extensions(&mut candidate, mutations)?;
+        let sequence = match previous {
+            Some(sequence) => sequence,
+            None => admit_message(&mut candidate, message)?,
+        };
+        self.state = candidate;
+        self.publish()?;
+        self.publish_snapshot();
+        Ok(sequence)
+    }
+
     /// Resolves an already accepted message identity to its original admission receipt.
     ///
     /// A message's stable identity is its `id`; its frozen body is the stored content digest. The

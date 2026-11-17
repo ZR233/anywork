@@ -47,7 +47,7 @@ impl StudioThreadFactory {
                 "child role is retired: planner".into(),
             ));
         }
-        let protocol_thread: pl_protocol::Thread = thread.clone().into();
+        let protocol_thread: crate::Thread = thread.clone().into();
         if let Some(proof) = &verified {
             proof
                 .recheck()
@@ -110,7 +110,7 @@ impl StudioThreadFactory {
             .ok_or_else(|| {
                 ThreadAssemblyError::Identity(format!("child {id} has no workspace receipt"))
             })?;
-        let assignment: pl_protocol::AgentWorkspaceAssignmentSnapshot =
+        let assignment: crate::AgentWorkspaceAssignmentSnapshot =
             crate::studio::workspace_receipt::from_payload(&saved.payload)
                 .map_err(|error| resource_error("decode saved workspace binding", error))?;
         if let Some(proof) = &verified {
@@ -225,15 +225,14 @@ impl StudioThreadFactory {
         }
         let mut verified_lease = verified.as_ref().and_then(|proof| proof.verified_lease());
         match assignment.mode {
-            pl_protocol::AgentWorkspaceMode::Unrestricted
-            | pl_protocol::AgentWorkspaceMode::Directory
+            crate::AgentWorkspaceMode::Unrestricted | crate::AgentWorkspaceMode::Directory
                 if std::path::Path::new(&assignment.root) == session_root
                     && assignment.worktree.is_none() => {}
-            pl_protocol::AgentWorkspaceMode::Review => {
+            crate::AgentWorkspaceMode::Review => {
                 // Explicit activation prepares its real connection below, then validates the
                 // borrowed owner through the same factory boundary as hot review admission.
             }
-            pl_protocol::AgentWorkspaceMode::Worktree => {
+            crate::AgentWorkspaceMode::Worktree => {
                 let receipt = assignment
                     .worktree
                     .as_ref()
@@ -261,8 +260,7 @@ impl StudioThreadFactory {
                     verified_lease = Some(verified);
                 }
             }
-            pl_protocol::AgentWorkspaceMode::Unrestricted
-            | pl_protocol::AgentWorkspaceMode::Directory => {
+            crate::AgentWorkspaceMode::Unrestricted | crate::AgentWorkspaceMode::Directory => {
                 return Err(ThreadAssemblyError::Identity(
                     "invalid saved child workspace assignment".into(),
                 ));
@@ -310,7 +308,7 @@ impl StudioThreadFactory {
                 resource_error("confirm restricted local binding provenance", error)
             })?;
         }
-        let review_check = if assignment.mode == pl_protocol::AgentWorkspaceMode::Review {
+        let review_check = if assignment.mode == crate::AgentWorkspaceMode::Review {
             Some(
                 self.verify_review_workspace(id, &assignment)
                     .await
@@ -388,7 +386,7 @@ impl StudioThreadFactory {
     /// Verifies and reuses the original child site; missing or cleaned sites are never rebuilt.
     async fn ensure_restored_child_worktree(
         &self,
-        receipt: &pl_protocol::AgentWorktreeSnapshot,
+        receipt: &crate::AgentWorktreeSnapshot,
         thread: &crate::studio::ThreadRecord,
         project: &crate::studio::WorkspaceRecord,
     ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease, ThreadAssemblyError> {

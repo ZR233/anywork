@@ -3,12 +3,12 @@ use super::owner::{
     ClaimGuard, ReplyRun, Step, attention, hint_key, interaction_hint, recoverable,
 };
 use super::projection::ReplyProjection;
+use crate::InteractionStatus;
 use crate::bots::InboundWorkOutcome;
 use crate::bots::owner::BotRuntime;
 use crate::bots::storage::{MarkOutcome, card::CardLifecycle};
 use crate::bots::{BotInteractionKind, BotInteractionRead, SendAuthority};
 use crate::studio::StudioRuntime;
-use pl_protocol::InteractionStatus;
 use std::collections::BTreeSet;
 use tokio_util::sync::CancellationToken;
 

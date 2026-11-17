@@ -351,7 +351,7 @@ async fn runtime_stop_inner(
     // different cancellation path pass as this case's graceful stop, so the expected
     // cause is exact rather than a whitelist.
     ensure!(
-        cause == pl_protocol::TurnCancellationCause::Unspecified,
+        cause == pl_studio_runtime::TurnCancellationCause::Unspecified,
         "the graceful SIGINT close must project the stopped Turn as Cancelled/Unspecified, got {cause:?}"
     );
 

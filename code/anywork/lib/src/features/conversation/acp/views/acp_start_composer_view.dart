@@ -1,10 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
+
 import '../../../../l10n/studio_l10n.dart';
-import '../../../../shared/account_brand.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../composer/widgets/composer_attachments.dart';
+import '../../../../shared/composer_input_frame.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
 import '../state/acp_view_state.dart';
 
@@ -17,6 +18,9 @@ class AcpStartComposerView extends StatefulWidget {
     required this.onDraftChanged,
     required this.onSubmit,
     this.modelSelector,
+    this.configurationBar,
+    this.onRetryPreparation,
+    this.onAcceptConfiguration,
     this.onRemoveAttachment,
   });
 
@@ -24,6 +28,9 @@ class AcpStartComposerView extends StatefulWidget {
   final ValueChanged<String> onDraftChanged;
   final VoidCallback onSubmit;
   final Widget? modelSelector;
+  final Widget? configurationBar;
+  final VoidCallback? onRetryPreparation;
+  final VoidCallback? onAcceptConfiguration;
   final ValueChanged<String>? onRemoveAttachment;
 
   @override
@@ -31,7 +38,6 @@ class AcpStartComposerView extends StatefulWidget {
 }
 
 class _AcpStartComposerViewState extends State<AcpStartComposerView> {
-  final _focus = FocusNode();
   late TextEditingController _controller = TextEditingController(
     text: widget.state.text,
   );
@@ -66,14 +72,12 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
   @override
   void dispose() {
     _controller.dispose();
-    _focus.dispose();
     super.dispose();
   }
 
   void _submit() {
     if (!widget.state.canCreate || _controller.value.composing.isValid) return;
     widget.onSubmit();
-    _focus.requestFocus();
   }
 
   @override
@@ -82,122 +86,93 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
     final state = widget.state;
     final colors = context.colors;
 
-    return StudioPanel(
-      backgroundColor: colors.surfaceContainerLowest,
-      borderColor: colors.outlineVariant,
-      radius: StudioRadii.md,
-      padding: const EdgeInsets.fromLTRB(14, 12, 12, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    return ComposerInputFrame(
+      creationCard: true,
+      configuration: Column(
         mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          if (state.stagedAttachments.isNotEmpty) ...[
-            AttachmentDraftRail(
-              attachments: state.stagedAttachments,
-              enabled: !state.submitting && widget.onRemoveAttachment != null,
-              onRemove: (id) => widget.onRemoveAttachment?.call(id),
-            ),
-            const SizedBox(height: 6),
-          ],
-          MultilineEnterShortcuts(
-            controller: _controller,
-            child: TextField(
-              key: ValueKey(AcpViewKeyValues.startInput(state.workspaceId)),
-              controller: _controller,
-              focusNode: _focus,
-              autofocus: true,
-              enabled: state.canEditDraft,
-              minLines: 3,
-              maxLines: 8,
-              textInputAction: TextInputAction.send,
-              onChanged: widget.onDraftChanged,
-              onSubmitted: (_) => _submit(),
-              style: context.text.bodyMedium?.copyWith(height: 1.5),
-              decoration: InputDecoration(
-                hintText: l10n.composerHint,
-                hintStyle: context.text.bodyMedium?.copyWith(
-                  color: colors.onSurfaceVariant.withValues(alpha: 0.72),
-                ),
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-                isDense: true,
-                contentPadding: const EdgeInsets.symmetric(vertical: 4),
-              ),
-            ),
-          ),
-          const SizedBox(height: 10),
-          if (state.failureMessage case final failure?) ...[
-            StudioInlineMessage(
-              icon: Icons.error_outline_rounded,
-              message: failure,
-              color: colors.error,
-            ),
-            const SizedBox(height: 8),
-          ],
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Spacer(),
-              if (widget.modelSelector case final selector?)
-                Flexible(child: selector)
-              else if (state.serviceName case final name? when name.isNotEmpty)
-                Flexible(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AccountBrandMark(
-                        fallbackName: name,
-                        iconKey: state.brandKey,
-                        size: 18,
-                        active: state.serviceEnabled,
-                      ),
-                      const SizedBox(width: 6),
-                      Flexible(
-                        child: Text(
-                          name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              const SizedBox(width: 8),
-              SizedBox.square(
-                dimension: 34,
-                child: IconButton.filled(
-                  key: ValueKey(
-                    AcpViewKeyValues.startSubmit(state.workspaceId),
-                  ),
-                  tooltip: state.submitting
-                      ? l10n.acpStartCreatingAction
-                      : l10n.composerSend,
-                  onPressed: state.canCreate ? _submit : null,
-                  style: IconButton.styleFrom(shape: const CircleBorder()),
-                  icon: state.submitting
-                      ? SizedBox.square(
-                          dimension: 14,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: colors.onSurfaceVariant,
-                          ),
-                        )
-                      : Icon(
-                          Icons.arrow_upward_rounded,
-                          size: 18,
-                          color: state.canCreate
-                              ? colors.onPrimary
-                              : colors.onSurfaceVariant.withValues(alpha: 0.38),
-                        ),
-                ),
-              ),
-            ],
-          ),
+          if (widget.modelSelector != null) widget.modelSelector!,
+          if (widget.configurationBar != null) widget.configurationBar!,
         ],
       ),
+      primaryAction: IconButton.filled(
+        key: ValueKey(AcpViewKeyValues.startSubmit(state.workspaceId)),
+        tooltip: state.preparing
+            ? l10n.acpComposerBlockerInitializing
+            : state.submitting
+            ? l10n.acpStartCreatingAction
+            : l10n.composerSend,
+        onPressed: state.canCreate ? _submit : null,
+        padding: EdgeInsets.zero,
+        style: IconButton.styleFrom(
+          shape: const CircleBorder(),
+          minimumSize: const Size.square(34),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        ),
+        icon: state.submitting || state.preparing
+            ? const SizedBox.square(
+                dimension: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.arrow_upward_rounded, size: 18),
+      ),
+      body: [
+        if (state.stagedAttachments.isNotEmpty)
+          AttachmentDraftRail(
+            attachments: state.stagedAttachments,
+            enabled: !state.submitting && widget.onRemoveAttachment != null,
+            onRemove: (id) => widget.onRemoveAttachment?.call(id),
+          ),
+        MultilineEnterShortcuts(
+          controller: _controller,
+          child: TextField(
+            key: ValueKey(AcpViewKeyValues.startInput(state.workspaceId)),
+            controller: _controller,
+            autofocus: true,
+            enabled: state.canEditDraft,
+            minLines: 3,
+            maxLines: 8,
+            textInputAction: TextInputAction.send,
+            onChanged: widget.onDraftChanged,
+            onSubmitted: (_) => _submit(),
+            style: context.text.bodyMedium?.copyWith(height: 1.5),
+            decoration: InputDecoration(
+              hintText: l10n.composerHint,
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              isDense: true,
+              filled: false,
+              contentPadding: const EdgeInsets.symmetric(vertical: 8),
+            ),
+          ),
+        ),
+        if (state.failureMessage case final failure?)
+          Row(
+            children: [
+              Expanded(
+                child: StudioInlineMessage(
+                  icon: Icons.error_outline_rounded,
+                  message: failure,
+                  color: colors.error,
+                ),
+              ),
+              if (widget.onRetryPreparation != null)
+                IconButton(
+                  tooltip: l10n.composerRetrySubmission,
+                  onPressed: widget.onRetryPreparation,
+                  icon: const Icon(Icons.refresh),
+                ),
+              if (widget.onAcceptConfiguration != null)
+                TextButton(
+                  onPressed: widget.onAcceptConfiguration,
+                  child: Text(l10n.acpDraftUseCurrentConfiguration),
+                ),
+            ],
+          ),
+      ],
     );
   }
 }

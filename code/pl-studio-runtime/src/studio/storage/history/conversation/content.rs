@@ -198,7 +198,7 @@ async fn write_chunks(
 #[cfg(test)]
 pub(in crate::studio::storage::history) fn current_owner(
     key: &ChatKey,
-) -> Result<Option<pl_protocol::ContentOwner>> {
+) -> Result<Option<crate::ContentOwner>> {
     let (length, rest) = key
         .as_str()
         .split_once(':')
@@ -211,7 +211,7 @@ pub(in crate::studio::storage::history) fn current_owner(
         return Ok(None);
     }
     let (domain, id, revision): (String, String, u64) = serde_json::from_str(id)?;
-    let owner = pl_protocol::ContentOwner::Current {
+    let owner = crate::ContentOwner::Current {
         domain,
         id,
         revision,

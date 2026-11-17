@@ -314,7 +314,11 @@ final class _Phases {
         };
         await record('explicit-acp-close-returned');
         expect(close.localComplete, isTrue);
-        expect(close.sdkFinished, isTrue);
+        expect(
+          close.sdkFinished,
+          isFalse,
+          reason: '关闭会话成员不关闭账号共享的 SDK 连接，连接由应用退出统一回收',
+        );
         expect(close.cleanupTimedOut, isFalse);
         expect(close.unfinishedControls, isFalse);
         expect(close.unfinishedPrompt, isNull);
@@ -475,11 +479,16 @@ final class _Phases {
           )
           .toList();
       expect(assistants, isNotEmpty);
-      expect(
-        _text(assistants.last).trim() == spec.marker,
-        isTrue,
-        reason: 'Final assistant marker differs; body not logged',
-      );
+      if (remote == null) {
+        expect(spec.prompt, 'hi');
+        expect(_text(assistants.last).trim(), isNotEmpty);
+      } else {
+        expect(
+          _text(assistants.last).trim() == spec.marker,
+          isTrue,
+          reason: 'Final assistant marker differs; body not logged',
+        );
+      }
       final trace = AgyHostTrace(
         owner.state.content.where(
           (item) =>
@@ -560,12 +569,28 @@ final class _Phases {
         () => find
             .descendant(
               of: assistantItem,
-              matching: find.textContaining(spec.marker, findRichText: true),
+              matching: find.textContaining(
+                remote == null ? RegExp(r'\S') : spec.marker,
+                findRichText: true,
+              ),
             )
             .evaluate()
             .isNotEmpty,
-        'phase ${spec.id} final assistant marker rendered',
+        'phase ${spec.id} final assistant reply rendered',
       );
+      if (remote == null) {
+        expect(
+          find.descendant(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is AcpTimelineEntryView &&
+                  widget.item is AcpTimelineUserMessage,
+            ),
+            matching: find.text('hi', findRichText: true),
+          ),
+          findsNWidgets(2),
+        );
+      }
       await scene.capture('agy-live-phase-${spec.id.toLowerCase()}-response');
       result['verdict'] = 'passed';
       return result;

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-pub use pl_protocol::history::*;
+pub use crate::protocol::history::*;
 
 pub const BODY_CHUNK_BYTES: usize = 64 * 1024;
 pub const HEAD_MAX_BYTES: usize = 16 * 1024;

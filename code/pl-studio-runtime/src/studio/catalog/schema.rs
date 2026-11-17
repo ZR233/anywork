@@ -8,8 +8,9 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
+use crate::mode::ThreadModeId;
+use crate::{ThreadStatus, ThreadWorkspaceMode};
 use anyhow::{Result, ensure};
-use pl_protocol::{ThreadModeId, ThreadStatus, ThreadWorkspaceMode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
@@ -170,13 +171,13 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
             !agent.agent_id.trim().is_empty() && !agent.thread_id.trim().is_empty(),
             "Studio catalog member identity is incomplete"
         );
-        if let pl_protocol::session::AgentBackend::Native { config: native, .. } = &agent.backend {
+        if let crate::AgentBackend::Native { config: native, .. } = &agent.backend {
             ensure!(
                 native.system_instructions.is_none(),
                 "Studio catalog cannot contain Native instruction bodies"
             );
         }
-        if let pl_protocol::session::AgentBackend::Acp { reference } = &agent.backend {
+        if let crate::AgentBackend::Acp { reference } = &agent.backend {
             ensure!(
                 !reference.account_id.trim().is_empty()
                     && !reference.acp_session_id.trim().is_empty()
@@ -225,10 +226,7 @@ pub(super) fn validate(document: &CatalogDocument) -> Result<()> {
         if let Some(root) = root {
             ensure!(
                 session.native_mode.is_some()
-                    == matches!(
-                        root.backend,
-                        pl_protocol::session::AgentBackend::Native { .. }
-                    ),
+                    == matches!(root.backend, crate::AgentBackend::Native { .. }),
                 "Studio catalog root Native mode does not match its backend"
             );
         }
@@ -469,7 +467,7 @@ pub(super) struct CatalogAgentV6 {
     updated_at: i64,
 }
 
-/// 成员 backend 绑定的冻结 wire 形状；与 `pl_protocol::AgentBinding` 的
+/// 成员 backend 绑定的冻结 wire 形状；与 `crate::AgentBinding` 的
 /// internally-tagged 形状保持一致，但字段固定在迁移边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -730,27 +728,27 @@ impl FrozenThreadStatus {
 }
 
 impl FrozenDelegationMode {
-    fn current(self) -> pl_protocol::DelegationMode {
+    fn current(self) -> crate::DelegationMode {
         match self {
-            Self::Profile => pl_protocol::DelegationMode::Profile,
-            Self::Automatic => pl_protocol::DelegationMode::Automatic,
+            Self::Profile => crate::DelegationMode::Profile,
+            Self::Automatic => crate::DelegationMode::Automatic,
         }
     }
 }
 
 impl FrozenDelegationPreference {
-    fn current(self) -> pl_protocol::DelegationPreference {
+    fn current(self) -> crate::DelegationPreference {
         match self {
-            Self::Economy => pl_protocol::DelegationPreference::Economy,
-            Self::Balanced => pl_protocol::DelegationPreference::Balanced,
-            Self::Fast => pl_protocol::DelegationPreference::Fast,
+            Self::Economy => crate::DelegationPreference::Economy,
+            Self::Balanced => crate::DelegationPreference::Balanced,
+            Self::Fast => crate::DelegationPreference::Fast,
         }
     }
 }
 
 impl FrozenModelRoute {
-    fn current(self) -> pl_protocol::studio::NewThreadModelRoute {
-        pl_protocol::studio::NewThreadModelRoute {
+    fn current(self) -> crate::NewThreadModelRoute {
+        crate::NewThreadModelRoute {
             account_id: self.account_id,
             model_id: self.model_id,
             effort: self.effort,
@@ -1019,15 +1017,13 @@ impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
             role: agent.role,
             title: agent.title,
             backend: match agent.backend {
-                FrozenBackendV7::Native { config, status } => {
-                    pl_protocol::session::AgentBackend::Native {
-                        config: pl_protocol::NativeAgentConfig {
-                            route: config.route.map(FrozenModelRoute::current),
-                            system_instructions: None,
-                        },
-                        status: status.current(),
-                    }
-                }
+                FrozenBackendV7::Native { config, status } => crate::AgentBackend::Native {
+                    config: crate::NativeAgentConfig {
+                        route: config.route.map(FrozenModelRoute::current),
+                        system_instructions: None,
+                    },
+                    status: status.current(),
+                },
                 FrozenBackendV7::Acp { reference } => {
                     ensure!(
                         !reference.account_id.trim().is_empty()
@@ -1035,8 +1031,8 @@ impl TryFrom<CatalogAgentV7> for AgentDirectoryRecord {
                             && !reference.cwd.trim().is_empty(),
                         "Studio catalog ACP reference is incomplete"
                     );
-                    pl_protocol::session::AgentBackend::Acp {
-                        reference: pl_protocol::session::AcpSessionReference {
+                    crate::AgentBackend::Acp {
+                        reference: crate::AcpSessionReference {
                             account_id: reference.account_id,
                             acp_session_id: reference.acp_session_id,
                             cwd: reference.cwd,
@@ -1131,7 +1127,7 @@ mod tests {
         assert_eq!(current.sessions[0].session_id, "thread-a");
         assert_eq!(
             current.sessions[0].delegation_mode,
-            pl_protocol::DelegationMode::Automatic
+            crate::DelegationMode::Automatic
         );
         assert_eq!(current.agents.len(), 1);
         assert!(!current.agents[0].explicitly_closed);
@@ -1141,7 +1137,7 @@ mod tests {
         );
         assert_eq!(
             current.agents[0].frozen_model(),
-            Some(pl_protocol::studio::NewThreadModelRoute {
+            Some(crate::NewThreadModelRoute {
                 account_id: "acc".into(),
                 model_id: "model".into(),
                 effort: Some("high".into()),
@@ -1482,11 +1478,11 @@ mod tests {
         assert!(!loaded.document.agents[0].explicitly_closed);
         assert_eq!(
             loaded.document.sessions[0].delegation_mode,
-            pl_protocol::DelegationMode::Profile
+            crate::DelegationMode::Profile
         );
         assert_eq!(
             loaded.document.sessions[0].delegation_preference,
-            pl_protocol::DelegationPreference::Balanced
+            crate::DelegationPreference::Balanced
         );
         assert_eq!(loaded.document.sessions[0].last_user_message_at, None);
         assert_eq!(loaded.document.agents[0].frozen_model(), None);

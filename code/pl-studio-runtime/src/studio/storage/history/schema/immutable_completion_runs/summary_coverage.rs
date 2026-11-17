@@ -8,8 +8,8 @@ use crate::studio::storage::history::{
         legacy_timeline_types::TimelineItem,
     },
 };
+use crate::{ChatAtomKind, ChatContentRole, ContentTarget};
 use pl_core::chat::ChatContentKey;
-use pl_protocol::{ChatAtomKind, ChatContentRole, ContentTarget};
 
 pub(super) async fn prove(
     db: &impl ConnectionTrait,

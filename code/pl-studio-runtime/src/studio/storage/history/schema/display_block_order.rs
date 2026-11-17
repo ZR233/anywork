@@ -231,7 +231,7 @@ pub(super) async fn validate_display(db: &impl ConnectionTrait) -> Result<()> {
 mod tests {
     use super::super::v24_presentation_types::{DisplayBlockBody, DisplayBlockRef, WorkTiming};
     use super::*;
-    use pl_protocol::ChatSourceId;
+    use crate::ChatSourceId;
     use std::sync::Arc;
 
     const THREAD: &str = "display-snapshot-migration";
@@ -320,15 +320,15 @@ mod tests {
             .try_get::<String>("", "database_id")?;
         // Encode the published v4 observation shape directly. Original payload/body storage is
         // shared by both schemas; the retired runtime fold is intentionally not recreated here.
-        use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-        use pl_protocol::{
+        use crate::{
             ChatActiveStatus, ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle,
             ChatContentRole, ChatFactPosition, ContentOwner, ContentRef, ContentTarget,
         };
+        use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
         let mut atom: ChatAtom =
             serde_json::from_slice(&conversation::tests::metadata("observed-tool"))?;
         atom.kind = ChatAtomKind::ToolCall;
-        atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+        atom.delivery = crate::ChatDeliveryKind::Foreground;
         atom.source = ChatSourceId::ForegroundTurn {
             turn_id: "observed-turn".into(),
         };

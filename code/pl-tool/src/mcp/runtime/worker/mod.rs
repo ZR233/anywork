@@ -8,10 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
+use crate::mcp::{McpAvailabilityDescriptor, McpHealthSnapshot};
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
-use pl_protocol::{McpAvailabilityDescriptor, McpHealthSnapshot, PureError, Result};
+use pl_protocol::{PureError, Result};
 use rmcp::model::Tool;
 use tokio::sync::{broadcast, mpsc};
 

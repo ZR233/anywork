@@ -5,10 +5,10 @@ impl From<pl_studio_runtime::WorkspaceRecord> for ProjectDto {
         Self {
             id: project.id,
             kind: match project.kind {
-                pl_protocol::studio::WorkspaceKind::Project => {
+                pl_studio_runtime::WorkspaceKind::Project => {
                     crate::api::studio::types::BridgeWorkspaceKind::Project
                 }
-                pl_protocol::studio::WorkspaceKind::Standalone => {
+                pl_studio_runtime::WorkspaceKind::Standalone => {
                     crate::api::studio::types::BridgeWorkspaceKind::Standalone
                 }
             },
@@ -20,6 +20,8 @@ impl From<pl_studio_runtime::WorkspaceRecord> for ProjectDto {
     }
 }
 
-pub(crate) fn thread_from_record(value: pl_studio_runtime::ThreadRecord) -> pl_protocol::Thread {
+pub(crate) fn thread_from_record(
+    value: pl_studio_runtime::ThreadRecord,
+) -> pl_studio_runtime::Thread {
     value.into()
 }

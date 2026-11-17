@@ -2365,11 +2365,12 @@ extension BridgeAcpOpenIntentPatterns on BridgeAcpOpenIntent {
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpOpenIntent_New value)?  new_,TResult Function( BridgeAcpOpenIntent_Load value)?  load,TResult Function( BridgeAcpOpenIntent_Resume value)?  resume,required TResult orElse(),}){
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpOpenIntent_New value)?  new_,TResult Function( BridgeAcpOpenIntent_Draft value)?  draft,TResult Function( BridgeAcpOpenIntent_Load value)?  load,TResult Function( BridgeAcpOpenIntent_Resume value)?  resume,required TResult orElse(),}){
 final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New() when new_ != null:
-return new_(_that);case BridgeAcpOpenIntent_Load() when load != null:
+return new_(_that);case BridgeAcpOpenIntent_Draft() when draft != null:
+return draft(_that);case BridgeAcpOpenIntent_Load() when load != null:
 return load(_that);case BridgeAcpOpenIntent_Resume() when resume != null:
 return resume(_that);case _:
   return orElse();
@@ -2389,11 +2390,12 @@ return resume(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpOpenIntent_New value)  new_,required TResult Function( BridgeAcpOpenIntent_Load value)  load,required TResult Function( BridgeAcpOpenIntent_Resume value)  resume,}){
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpOpenIntent_New value)  new_,required TResult Function( BridgeAcpOpenIntent_Draft value)  draft,required TResult Function( BridgeAcpOpenIntent_Load value)  load,required TResult Function( BridgeAcpOpenIntent_Resume value)  resume,}){
 final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New():
-return new_(_that);case BridgeAcpOpenIntent_Load():
+return new_(_that);case BridgeAcpOpenIntent_Draft():
+return draft(_that);case BridgeAcpOpenIntent_Load():
 return load(_that);case BridgeAcpOpenIntent_Resume():
 return resume(_that);}
 }
@@ -2409,11 +2411,12 @@ return resume(_that);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpOpenIntent_New value)?  new_,TResult? Function( BridgeAcpOpenIntent_Load value)?  load,TResult? Function( BridgeAcpOpenIntent_Resume value)?  resume,}){
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpOpenIntent_New value)?  new_,TResult? Function( BridgeAcpOpenIntent_Draft value)?  draft,TResult? Function( BridgeAcpOpenIntent_Load value)?  load,TResult? Function( BridgeAcpOpenIntent_Resume value)?  resume,}){
 final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New() when new_ != null:
-return new_(_that);case BridgeAcpOpenIntent_Load() when load != null:
+return new_(_that);case BridgeAcpOpenIntent_Draft() when draft != null:
+return draft(_that);case BridgeAcpOpenIntent_Load() when load != null:
 return load(_that);case BridgeAcpOpenIntent_Resume() when resume != null:
 return resume(_that);case _:
   return null;
@@ -2432,10 +2435,11 @@ return resume(_that);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  new_,TResult Function( BridgeAcpRemoteSessionId sessionId)?  load,TResult Function( BridgeAcpRemoteSessionId sessionId)?  resume,required TResult orElse(),}) {final _that = this;
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  new_,TResult Function( BridgeAcpWorkspaceMode workspaceMode,  BridgeDelegationMode? delegationMode,  BridgeDelegationPreference? delegationPreference)?  draft,TResult Function( BridgeAcpRemoteSessionId sessionId)?  load,TResult Function( BridgeAcpRemoteSessionId sessionId)?  resume,required TResult orElse(),}) {final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New() when new_ != null:
-return new_();case BridgeAcpOpenIntent_Load() when load != null:
+return new_();case BridgeAcpOpenIntent_Draft() when draft != null:
+return draft(_that.workspaceMode,_that.delegationMode,_that.delegationPreference);case BridgeAcpOpenIntent_Load() when load != null:
 return load(_that.sessionId);case BridgeAcpOpenIntent_Resume() when resume != null:
 return resume(_that.sessionId);case _:
   return orElse();
@@ -2455,10 +2459,11 @@ return resume(_that.sessionId);case _:
 /// }
 /// ```
 
-@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  new_,required TResult Function( BridgeAcpRemoteSessionId sessionId)  load,required TResult Function( BridgeAcpRemoteSessionId sessionId)  resume,}) {final _that = this;
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  new_,required TResult Function( BridgeAcpWorkspaceMode workspaceMode,  BridgeDelegationMode? delegationMode,  BridgeDelegationPreference? delegationPreference)  draft,required TResult Function( BridgeAcpRemoteSessionId sessionId)  load,required TResult Function( BridgeAcpRemoteSessionId sessionId)  resume,}) {final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New():
-return new_();case BridgeAcpOpenIntent_Load():
+return new_();case BridgeAcpOpenIntent_Draft():
+return draft(_that.workspaceMode,_that.delegationMode,_that.delegationPreference);case BridgeAcpOpenIntent_Load():
 return load(_that.sessionId);case BridgeAcpOpenIntent_Resume():
 return resume(_that.sessionId);}
 }
@@ -2474,10 +2479,11 @@ return resume(_that.sessionId);}
 /// }
 /// ```
 
-@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  new_,TResult? Function( BridgeAcpRemoteSessionId sessionId)?  load,TResult? Function( BridgeAcpRemoteSessionId sessionId)?  resume,}) {final _that = this;
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  new_,TResult? Function( BridgeAcpWorkspaceMode workspaceMode,  BridgeDelegationMode? delegationMode,  BridgeDelegationPreference? delegationPreference)?  draft,TResult? Function( BridgeAcpRemoteSessionId sessionId)?  load,TResult? Function( BridgeAcpRemoteSessionId sessionId)?  resume,}) {final _that = this;
 switch (_that) {
 case BridgeAcpOpenIntent_New() when new_ != null:
-return new_();case BridgeAcpOpenIntent_Load() when load != null:
+return new_();case BridgeAcpOpenIntent_Draft() when draft != null:
+return draft(_that.workspaceMode,_that.delegationMode,_that.delegationPreference);case BridgeAcpOpenIntent_Load() when load != null:
 return load(_that.sessionId);case BridgeAcpOpenIntent_Resume() when resume != null:
 return resume(_that.sessionId);case _:
   return null;
@@ -2518,6 +2524,78 @@ String toString() {
 
 
 
+
+/// @nodoc
+
+
+class BridgeAcpOpenIntent_Draft extends BridgeAcpOpenIntent {
+  const BridgeAcpOpenIntent_Draft({required this.workspaceMode, this.delegationMode, this.delegationPreference}): super._();
+
+
+ final  BridgeAcpWorkspaceMode workspaceMode;
+ final  BridgeDelegationMode? delegationMode;
+ final  BridgeDelegationPreference? delegationPreference;
+
+/// Create a copy of BridgeAcpOpenIntent
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpOpenIntent_DraftCopyWith<BridgeAcpOpenIntent_Draft> get copyWith => _$BridgeAcpOpenIntent_DraftCopyWithImpl<BridgeAcpOpenIntent_Draft>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpOpenIntent_Draft&&(identical(other.workspaceMode, workspaceMode) || other.workspaceMode == workspaceMode)&&(identical(other.delegationMode, delegationMode) || other.delegationMode == delegationMode)&&(identical(other.delegationPreference, delegationPreference) || other.delegationPreference == delegationPreference));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,workspaceMode,delegationMode,delegationPreference);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpOpenIntent.draft(workspaceMode: $workspaceMode, delegationMode: $delegationMode, delegationPreference: $delegationPreference)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpOpenIntent_DraftCopyWith<$Res> implements $BridgeAcpOpenIntentCopyWith<$Res> {
+  factory $BridgeAcpOpenIntent_DraftCopyWith(BridgeAcpOpenIntent_Draft value, $Res Function(BridgeAcpOpenIntent_Draft) _then) = _$BridgeAcpOpenIntent_DraftCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAcpWorkspaceMode workspaceMode, BridgeDelegationMode? delegationMode, BridgeDelegationPreference? delegationPreference
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpOpenIntent_DraftCopyWithImpl<$Res>
+    implements $BridgeAcpOpenIntent_DraftCopyWith<$Res> {
+  _$BridgeAcpOpenIntent_DraftCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpOpenIntent_Draft _self;
+  final $Res Function(BridgeAcpOpenIntent_Draft) _then;
+
+/// Create a copy of BridgeAcpOpenIntent
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? workspaceMode = null,Object? delegationMode = freezed,Object? delegationPreference = freezed,}) {
+  return _then(BridgeAcpOpenIntent_Draft(
+workspaceMode: null == workspaceMode ? _self.workspaceMode : workspaceMode // ignore: cast_nullable_to_non_nullable
+as BridgeAcpWorkspaceMode,delegationMode: freezed == delegationMode ? _self.delegationMode : delegationMode // ignore: cast_nullable_to_non_nullable
+as BridgeDelegationMode?,delegationPreference: freezed == delegationPreference ? _self.delegationPreference : delegationPreference // ignore: cast_nullable_to_non_nullable
+as BridgeDelegationPreference?,
+  ));
+}
+
+
+}
 
 /// @nodoc
 

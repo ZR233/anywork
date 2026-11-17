@@ -4,7 +4,6 @@
 //! first publishes a self-contained current file and a logical backup, and only then lets the
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
-use super::NativeHistoryEntity;
 use super::{
     BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBodyRole, HistoryEntityHead, HistoryError,
     HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation, HistoryRowHead,
@@ -18,13 +17,13 @@ use super::{
     schema,
 };
 use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
+use crate::{
+    ChatAtom, ChatAtomLifecycle, ChatSourceLifecycle, ContentOwner, ContentRef, ContentTarget,
+    PayloadData, Turn,
+};
 use pl_core::{
     context::OpaquePayload,
     thread::current::{RuntimeEpoch, ThreadCurrent, ThreadCurrentState},
-};
-use pl_protocol::{
-    ChatAtom, ChatAtomLifecycle, ChatSourceLifecycle, ContentOwner, ContentRef, ContentTarget,
-    PayloadData, Turn,
 };
 use sea_orm::{ConnectionTrait, DatabaseConnection};
 use serde::{Deserialize, Serialize};
@@ -1081,7 +1080,7 @@ fn canonical_kind(atom: &ChatAtom) -> HistoryEventKind {
         return HistoryEventKind::LegacyObserved;
     }
     match (&atom.kind, &atom.lifecycle) {
-        (pl_protocol::ChatAtomKind::Input, ChatAtomLifecycle::Terminal { .. }) => {
+        (crate::ChatAtomKind::Input, ChatAtomLifecycle::Terminal { .. }) => {
             HistoryEventKind::InputAccepted
         }
         (_, ChatAtomLifecycle::Terminal { .. }) => HistoryEventKind::EntityEnded,
@@ -1153,14 +1152,14 @@ async fn fit_entity_head<C: ConnectionTrait>(
         ));
     };
     let intent = match presentation.intent() {
-        pl_protocol::ThreadWaitIntent::Events {
+        crate::ThreadWaitIntent::Events {
             targets,
             timeout_ms,
         } => HistoryWaitIntentHead::Events {
             target_count: targets.len() as u64,
             timeout_ms: *timeout_ms,
         },
-        pl_protocol::ThreadWaitIntent::Timer { duration_ms } => HistoryWaitIntentHead::Timer {
+        crate::ThreadWaitIntent::Timer { duration_ms } => HistoryWaitIntentHead::Timer {
             duration_ms: *duration_ms,
         },
     };
@@ -1296,20 +1295,20 @@ fn display_member_event_id(block_id: &str, member_key: &str) -> String {
 #[derive(Debug, Serialize)]
 struct LifecycleRow {
     identity: String,
-    kind: pl_protocol::ChatAtomKind,
+    kind: crate::ChatAtomKind,
     source_kind: String,
     source_identity: String,
     turn_id: Option<String>,
     attempt_id: Option<String>,
     call_id: Option<String>,
     tool_name: Option<String>,
-    text_channel: Option<pl_protocol::ThreadTextChannel>,
-    delivery: pl_protocol::ChatDeliveryKind,
+    text_channel: Option<crate::ThreadTextChannel>,
+    delivery: crate::ChatDeliveryKind,
     source_order: Option<u64>,
     execution_order: Option<u64>,
     started_at: Option<i64>,
     finished_at: Option<i64>,
-    outcome: Option<pl_protocol::ChatTerminalOutcome>,
+    outcome: Option<crate::ChatTerminalOutcome>,
     completion_item_id: Option<String>,
 }
 
@@ -1319,7 +1318,7 @@ struct TurnRow {
     turn_id: String,
     turn_order: u64,
     payload: Turn,
-    context_disposition: pl_protocol::ThreadContextDisposition,
+    context_disposition: crate::ThreadContextDisposition,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1329,7 +1328,7 @@ struct SourceRow {
     started_at: Option<i64>,
     ended_at: Option<i64>,
     active_observed: Option<u64>,
-    outcome: Option<pl_protocol::ChatTerminalOutcome>,
+    outcome: Option<crate::ChatTerminalOutcome>,
 }
 
 async fn read_legacy_product_blob(
@@ -1380,10 +1379,10 @@ async fn read_legacy_product_blob(
 struct DisplayHeaderRow {
     version: u32,
     id: String,
-    source: pl_protocol::ChatSourceId,
+    source: crate::ChatSourceId,
     block_order: u64,
-    boundary: Option<pl_protocol::ChatFactPosition>,
-    first_content_at: Option<pl_protocol::ChatFactPosition>,
+    boundary: Option<crate::ChatFactPosition>,
+    first_content_at: Option<crate::ChatFactPosition>,
     sealed: bool,
     unfinished: u64,
     next_member: u64,
@@ -1608,7 +1607,7 @@ async fn import_turns<C: ConnectionTrait>(
             let id =
                 deterministic_event_id("history_turns", &[turn.turn_id.clone().into()], "anchor");
             let rolled_back =
-                turn.context_disposition == pl_protocol::ThreadContextDisposition::RolledBack;
+                turn.context_disposition == crate::ThreadContextDisposition::RolledBack;
             let head = HistoryRowHead::Turn(super::HistoryTurnHead {
                 turn_id: turn.payload.id.clone(),
                 input_id: turn.payload.input_id.clone(),
@@ -1617,7 +1616,7 @@ async fn import_turns<C: ConnectionTrait>(
                 phase: turn.payload.state.phase(),
                 context_disposition: turn.context_disposition,
                 queued_at: milliseconds(
-                    matches!(turn.payload.state, pl_protocol::TurnState::Queued(_))
+                    matches!(turn.payload.state, crate::TurnState::Queued(_))
                         .then_some(turn.payload.updated_at),
                 )?,
                 started_at: milliseconds(turn.payload.started_at())?,
@@ -1658,14 +1657,14 @@ async fn import_turns<C: ConnectionTrait>(
     Ok(())
 }
 
-fn history_turn_state(state: &pl_protocol::TurnState) -> HistoryTurnState {
+fn history_turn_state(state: &crate::TurnState) -> HistoryTurnState {
     match state {
-        pl_protocol::TurnState::Queued(_) => HistoryTurnState::Queued,
-        pl_protocol::TurnState::Running(_) => HistoryTurnState::Running,
-        pl_protocol::TurnState::Completed(_) => HistoryTurnState::Completed,
-        pl_protocol::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
-        pl_protocol::TurnState::Failed(_) => HistoryTurnState::Failed,
-        pl_protocol::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
+        crate::TurnState::Queued(_) => HistoryTurnState::Queued,
+        crate::TurnState::Running(_) => HistoryTurnState::Running,
+        crate::TurnState::Completed(_) => HistoryTurnState::Completed,
+        crate::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
+        crate::TurnState::Failed(_) => HistoryTurnState::Failed,
+        crate::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
     }
 }
 
@@ -3406,6 +3405,11 @@ mod migration_tests {
         },
     };
     use crate::{
+        AttachmentModality, ChatAtom, ChatAtomContent, ChatClassFilter, ChatContentRole, ChatScope,
+        ChatSourceId, ContentOwner, PayloadData, ThreadContentLifecycle, ThreadContextDisposition,
+        ThreadTextChannel, ThreadTextItem, Turn,
+    };
+    use crate::{
         ExecutionItem, ExecutionShape,
         history::{
             HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore as CurrentHistoryStore,
@@ -3425,11 +3429,6 @@ mod migration_tests {
             task::{TaskRecord, TaskStatus},
         },
         tool::ToolOutput,
-    };
-    use pl_protocol::{
-        AttachmentModality, ChatAtom, ChatAtomContent, ChatClassFilter, ChatContentRole, ChatScope,
-        ChatSourceId, ContentOwner, PayloadData, ThreadContentLifecycle, ThreadContextDisposition,
-        ThreadTextChannel, ThreadTextItem, Turn,
     };
     use sea_orm::ConnectionTrait;
 
@@ -3732,9 +3731,9 @@ mod migration_tests {
                     ))
                     .await?;
                 }
-                let host_reference = pl_protocol::ContentRef {
+                let host_reference = crate::ContentRef {
                     database_id: database_id.clone(),
-                    target: pl_protocol::ContentTarget::Body {
+                    target: crate::ContentTarget::Body {
                         owner: owner.clone(),
                         key: "tool.output-artifacts".into(),
                     },
@@ -3758,9 +3757,9 @@ mod migration_tests {
             atom.source_order = Some(if item_id == "original-large" { 1 } else { 2 });
             atom.contents = vec![ChatAtomContent {
                 role: ChatContentRole::Body,
-                reference: pl_protocol::ContentRef {
+                reference: crate::ContentRef {
                     database_id: database_id.clone(),
-                    target: pl_protocol::ContentTarget::Body {
+                    target: crate::ContentTarget::Body {
                         owner: owner.clone(),
                         key: "body".into(),
                     },
@@ -3910,9 +3909,9 @@ mod migration_tests {
                 crate::studio::conversation_identity::content_owner_key(&observation_owner)
                     .map_err(|error| HistoryError::Storage(error.into()))?;
             let observation_body = b"frozen body \xF0\x9F\xA6\x80";
-            let body_reference = pl_protocol::ContentRef {
+            let body_reference = crate::ContentRef {
                 database_id: database_id.clone(),
-                target: pl_protocol::ContentTarget::Body {
+                target: crate::ContentTarget::Body {
                     owner: observation_owner.clone(),
                     key: "body".into(),
                 },
@@ -3977,9 +3976,9 @@ mod migration_tests {
                 reference: body_reference,
             }];
             frozen_atom.payload = Some(PayloadData::Deferred {
-                reference: pl_protocol::ContentRef {
+                reference: crate::ContentRef {
                     database_id: database_id.clone(),
-                    target: pl_protocol::ContentTarget::Body {
+                    target: crate::ContentTarget::Body {
                         owner: observation_owner,
                         key: "display.payload".into(),
                     },
@@ -4336,7 +4335,12 @@ mod migration_tests {
                 )
             })
             .ok_or_else(|| HistoryError::NotFound("frozen observation".into()))?;
-        let boundary_payload = reader.read_event(display_member_event_id("work-1", "member-1"), HistoryDemand::default()).await?
+        let boundary_payload = reader
+            .read_event(
+                display_member_event_id("work-1", "member-1"),
+                HistoryDemand::default(),
+            )
+            .await?
             .payload_ref
             .clone()
             .ok_or_else(|| HistoryError::Integrity("frozen payload is missing".into()))?;

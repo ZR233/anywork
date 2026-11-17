@@ -1,6 +1,6 @@
 use pl_agent_tool::ToolDefinition;
 use pl_model::completion::{ToolCallPolicy, ToolSpec, tool_definition_to_spec};
-use pl_protocol::{ToolCallerMode, ToolFormat};
+use pl_model::completion::{ToolCallerMode, ToolFormat};
 use serde_json::json;
 
 #[test]

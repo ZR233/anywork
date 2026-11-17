@@ -9,11 +9,11 @@
 //! confirms `image_type=message`, `file_type=stream`, form names and limits.
 
 use super::http::FeishuHttp;
+use crate::AttachmentModality;
 use crate::channel_output::{
     ChannelAdapter, ChannelError, ChannelTarget, FileCapabilities, FileDelivery, PlatformMessageId,
     UploadHandle,
 };
-use pl_protocol::AttachmentModality;
 use reqwest::{
     Method,
     multipart::{Form, Part},

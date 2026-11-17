@@ -14,7 +14,7 @@ use super::protocol::error::{FeishuError, FeishuErrorKind};
 use super::protocol::token::TokenLease;
 use super::storage::BotStateStore;
 use crate::studio::new_id;
-use pl_protocol::studio::{
+use crate::{
     BotCredentialAvailability, BotCredentialOperation, BotDiagnostic,
     BotPendingCredentialOperation, BotSecretUpdate, BotsCommandReply, SaveBotRequest,
 };
@@ -252,7 +252,7 @@ struct SaveFingerprint {
     secret: SecretFingerprint,
     enabled: bool,
     tools_enabled: bool,
-    model_route: Option<pl_protocol::studio::BotModelRoute>,
+    model_route: Option<crate::BotModelRoute>,
 }
 
 #[derive(Clone, PartialEq, Eq)]

@@ -472,7 +472,7 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         "response.completed must still be withheld while the item is already done"
     );
     ensure!(
-        matches!(turn_state, Some(pl_protocol::TurnState::Running(_))),
+        matches!(turn_state, Some(pl_studio_runtime::TurnState::Running(_))),
         "after output_item.done the target Turn must still be running, got {turn_state:?}"
     );
     let item_done_status = inbound_status(session, &bot_id, MESSAGE_STREAM).await?;
@@ -1443,7 +1443,7 @@ async fn wait_preview_observation(session: &Session, marker: &str) -> Result<Car
 async fn active_turn_state(
     session: &Session,
     bot_id: &str,
-) -> Result<Option<pl_protocol::TurnState>> {
+) -> Result<Option<pl_studio_runtime::TurnState>> {
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
     let current = crate::support::open_current(session.http()?, &thread_id).await?;
     let observed = current
@@ -1735,7 +1735,7 @@ async fn inbound_target_timeline(
             original.head.kind == HistoryEntityKind::Input
                 && matches!(
                     &original.head.source,
-                    pl_protocol::ChatSourceId::Input { input_id: source_input }
+                    pl_studio_runtime::ChatSourceId::Input { input_id: source_input }
                         if source_input == &input_id
                 )
         });
@@ -1829,7 +1829,7 @@ async fn assert_canonical_final_blank(
             {
                 continue;
             }
-            if item.head.text_channel != Some(pl_protocol::ThreadTextChannel::Final) {
+            if item.head.text_channel != Some(pl_studio_runtime::ThreadTextChannel::Final) {
                 continue;
             }
             let Some(body) = item.text_body()? else {
@@ -1902,8 +1902,8 @@ async fn final_total_bytes(target: &mut TargetChat) -> Result<u64> {
 fn unique_channel_item(target: &TargetChat, channel: &str) -> Result<HistoryOriginal> {
     let turn_id = &target.turn_id;
     let expected_channel = match channel {
-        "commentary" => pl_protocol::ThreadTextChannel::Commentary,
-        "final" => pl_protocol::ThreadTextChannel::Final,
+        "commentary" => pl_studio_runtime::ThreadTextChannel::Commentary,
+        "final" => pl_studio_runtime::ThreadTextChannel::Final,
         _ => anyhow::bail!("unsupported Timeline text channel {channel:?}"),
     };
     let mut items = target.originals.iter().filter(|original| {

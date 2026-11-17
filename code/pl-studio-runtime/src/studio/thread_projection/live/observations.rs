@@ -1,9 +1,8 @@
 //! Immutable producer cuts retained before a terminal can retire its live body.
 use super::*;
-use crate::history::NativeHistoryEntity;
+use crate::{ChatAtom, ChatAtomLifecycle, ContentTarget};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-use pl_protocol::{ChatAtom, ChatAtomLifecycle, ContentTarget};
 
 #[derive(Debug, Clone)]
 pub(in crate::studio) struct Observation {
@@ -203,7 +202,10 @@ impl LiveProjection {
             atom: atom.clone(),
             thread_id: thread_id.into(),
             shape: Some(shape),
-            bodies: bodies.into_iter().map(|(key, block)| (key.as_key().to_owned(), block)).collect(),
+            bodies: bodies
+                .into_iter()
+                .map(|(key, block)| (key.as_key().to_owned(), block))
+                .collect(),
         })
     }
     pub(super) fn observation_inputs(

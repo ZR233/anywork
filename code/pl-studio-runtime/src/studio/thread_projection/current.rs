@@ -5,13 +5,13 @@ use crate::studio::{
     conversation_identity::content_owner_key,
     runtime::chat_item::{BodyKey, TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD},
 };
+use crate::*;
 use anyhow::{Result, ensure};
 use pl_core::{
     chat::{ChatContent, ChatContentKey, ChatContents, ContentData, ContentDescriptor},
     model::ContentBlock,
     thread::ThreadSnapshot,
 };
-use pl_protocol::*;
 use std::{
     collections::BTreeMap,
     sync::{Arc, OnceLock},
@@ -371,7 +371,10 @@ impl CurrentOwner {
             collection: "interactions".into(),
             // The original Core owner versions both transfer and resident slices.
             // Reopening or observing progress must never allocate a resource version.
-            revision: super::collection_revision(state.interaction_collection_revision, self.cold_revision.is_some())?,
+            revision: super::collection_revision(
+                state.interaction_collection_revision,
+                self.cold_revision.is_some(),
+            )?,
         });
         let (mut entries, mut by_position, interactions, mut business_bytes) =
             if let Some(previous) = cached_business {
@@ -836,12 +839,8 @@ impl CurrentState {
     ) -> Result<Arc<Self>> {
         let mut owner = CurrentOwner::default();
         owner.cold_revision = Some(sequence);
-        owner
-            .resource_versions
-            .insert("atoms", sequence);
-        owner
-            .resource_versions
-            .insert("sources", sequence);
+        owner.resource_versions.insert("atoms", sequence);
+        owner.resource_versions.insert("sources", sequence);
         owner.bind(database)?;
         let current = owner.observe(&Thread::placeholder(thread_id), state, sequence, [])?;
         let mut projection = current.projection().clone();

@@ -207,7 +207,7 @@ pub(super) async fn backfill_legacy_hidden_inputs(db: &impl ConnectionTrait) -> 
                     let prompt: crate::plan_tool::PlanConfirmationPrompt =
                         serde_json::from_str(record.request.payload.content())
                             .context("legacy Plan confirmation cannot be decoded")?;
-                    prompt.presentation == pl_protocol::MessagePresentation::Hidden
+                    prompt.presentation == crate::MessagePresentation::Hidden
                 }
                 _ => false,
             };

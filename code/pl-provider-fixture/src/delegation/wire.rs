@@ -569,7 +569,6 @@ impl Report {
 #[serde(rename_all = "camelCase")]
 pub(super) struct ModelList {
     pub models: Vec<Model>,
-    pub next_cursor: Option<String>,
     pub catalog_revision: u64,
 }
 
@@ -581,9 +580,7 @@ pub(super) struct Model {
     pub context_window: Option<u64>,
     #[serde(default)]
     pub reasoning_efforts: Vec<String>,
-    pub pricing: Option<ReferencePricing>,
     pub billing_kind: String,
-    pub performance: Performance,
 }
 
 impl Model {

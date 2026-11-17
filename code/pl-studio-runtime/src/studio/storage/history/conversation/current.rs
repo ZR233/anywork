@@ -1,7 +1,7 @@
 //! Same-cut transport metadata and the independent reliable facts prepared by its owner.
 use super::*;
+use crate::CurrentProjection;
 use crate::studio::thread_projection::FrozenCurrentProjection;
-use pl_protocol::CurrentProjection;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CurrentContentWrite {
@@ -12,7 +12,7 @@ pub(crate) struct CurrentContentWrite {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedCurrent {
-    pub(in crate::studio) recovery_interruption: Option<(String, pl_protocol::ChatFactPosition)>,
+    pub(in crate::studio) recovery_interruption: Option<(String, crate::ChatFactPosition)>,
     /// Actual accepted start/terminal facts, frozen by the existing execution owner.
     pub(in crate::studio) lifecycle:
         Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
@@ -20,7 +20,7 @@ pub(crate) struct PreparedCurrent {
     revision: u64,
     owner_id: Option<String>,
     pub contents: Arc<[CurrentContentWrite]>,
-    pub source_changes: Arc<[pl_protocol::ChatSourceState]>,
+    pub source_changes: Arc<[crate::ChatSourceState]>,
 }
 
 impl PreparedCurrent {

@@ -2,7 +2,7 @@ use crate::api::studio::types::{
     BridgeCommandDisposition, BridgeCommandEffectPoint, BridgeResourceStamp,
     BridgeSettingsCommandReply, BridgeStudioCommandReceipt,
 };
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     CommandDisposition, CommandEffectPoint, SettingsCommandReply, StudioCommandReceipt,
 };
 
@@ -41,7 +41,7 @@ pub(crate) fn settings_command_reply(value: SettingsCommandReply) -> BridgeSetti
 }
 
 pub(crate) fn rename_thread_command_reply(
-    thread: pl_protocol::SessionDirectoryRow,
+    thread: pl_studio_runtime::SessionDirectoryRow,
     receipt: StudioCommandReceipt,
 ) -> crate::api::studio::types::BridgeRenameThreadCommandReply {
     crate::api::studio::types::BridgeRenameThreadCommandReply {
@@ -53,7 +53,7 @@ pub(crate) fn rename_thread_command_reply(
 pub(crate) fn archive_thread_command_reply(
     archived_root_id: String,
     removed_thread_ids: Vec<String>,
-    next_root: Option<pl_protocol::SessionDirectoryRow>,
+    next_root: Option<pl_studio_runtime::SessionDirectoryRow>,
     receipt: StudioCommandReceipt,
 ) -> crate::api::studio::types::BridgeArchiveThreadCommandReply {
     crate::api::studio::types::BridgeArchiveThreadCommandReply {
@@ -69,7 +69,7 @@ pub(crate) fn archive_thread_command_reply(
 pub(crate) fn delete_thread_command_reply(
     deleted_root_id: String,
     deleted_thread_ids: Vec<String>,
-    next_root: Option<pl_protocol::SessionDirectoryRow>,
+    next_root: Option<pl_studio_runtime::SessionDirectoryRow>,
     receipt: StudioCommandReceipt,
 ) -> crate::api::studio::types::BridgeDeleteThreadCommandReply {
     crate::api::studio::types::BridgeDeleteThreadCommandReply {
@@ -86,11 +86,11 @@ pub(crate) fn delete_thread_command_reply(
 mod tests {
     use super::*;
     use crate::api::studio::types::{BridgeAgentBackend, BridgeSessionDirectoryRow};
-    use pl_protocol::session::{AcpSessionReference, AgentBackend};
-    use pl_protocol::studio::{CommandDisposition, CommandEffectPoint, ResourceStamp};
+    use pl_studio_runtime::{AcpSessionReference, AgentBackend};
+    use pl_studio_runtime::{CommandDisposition, CommandEffectPoint, ResourceStamp};
 
-    fn row() -> pl_protocol::SessionDirectoryRow {
-        pl_protocol::SessionDirectoryRow {
+    fn row() -> pl_studio_runtime::SessionDirectoryRow {
+        pl_studio_runtime::SessionDirectoryRow {
             session_id: "product-session".into(),
             agent_id: "product-agent".into(),
             parent_agent_id: None,
@@ -98,9 +98,9 @@ mod tests {
             workspace_id: "workspace".into(),
             title: "Peer conversation".into(),
             mode: None,
-            workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
-            delegation_mode: pl_protocol::DelegationMode::Profile,
-            delegation_preference: pl_protocol::DelegationPreference::Balanced,
+            workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Local,
+            delegation_mode: pl_studio_runtime::DelegationMode::Profile,
+            delegation_preference: pl_studio_runtime::DelegationPreference::Balanced,
             workspace_path: "/workspace path".into(),
             role: "root-profile".into(),
             backend: AgentBackend::Acp {

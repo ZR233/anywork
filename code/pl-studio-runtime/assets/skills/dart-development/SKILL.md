@@ -42,7 +42,7 @@ Prefer the platform and project's existing components, and consult official API
 contracts before integrating dependencies. Use relevant Dart/Flutter specialty
 skills when available without assuming they are installed or loading all of them.
 
-Validate changes with the smallest sufficient project analysis/test entry.
+Select the project analysis/test entry from the affected package and behavior.
 Use widget/runtime tools when that behavior is affected; do not apply unrelated
 workspace-wide fixes or regenerate unrelated code. Report source locations,
 actual evidence and uncovered behavior; navigation alone does not prove runtime

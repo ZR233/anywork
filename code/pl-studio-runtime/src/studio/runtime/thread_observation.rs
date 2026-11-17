@@ -48,7 +48,7 @@ const LIVE_FEED_FRAMES: usize = 512;
 pub(in crate::studio) enum ThreadLiveEvent {
     BusinessRefs {
         sequence: u64,
-        references: pl_protocol::ThreadBusinessRefs,
+        references: crate::ThreadBusinessRefs,
     },
     /// Changes produced by committed effect `sequence`.
     ///
@@ -71,8 +71,8 @@ pub(in crate::studio) enum ThreadLiveEvent {
     Runtime {
         observation_revision: u64,
         catalog_revision: u64,
-        runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
-        model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+        runtime: Arc<crate::ThreadRuntimeSnapshot>,
+        model_route: Option<crate::ThreadModelRouteSnapshot>,
     },
     /// Current execution activity of the Thread; `None` means no activity.
     ///
@@ -83,7 +83,7 @@ pub(in crate::studio) enum ThreadLiveEvent {
     /// the body must stay cheap to clone and must not bloat the frame every other variant shares.
     Activity {
         observation_revision: u64,
-        activity: Option<Arc<pl_protocol::ThreadActivity>>,
+        activity: Option<Arc<crate::ThreadActivity>>,
     },
 }
 
@@ -91,14 +91,14 @@ pub(in crate::studio) enum ThreadLiveEvent {
 pub(super) struct RuntimeStateCut {
     pub(super) observation_revision: u64,
     pub(super) catalog_revision: u64,
-    pub(super) runtime: Arc<pl_protocol::ThreadRuntimeSnapshot>,
-    pub(super) model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    pub(super) runtime: Arc<crate::ThreadRuntimeSnapshot>,
+    pub(super) model_route: Option<crate::ThreadModelRouteSnapshot>,
 }
 
 #[derive(Clone)]
 pub(super) struct StateActivityCut {
     pub(super) observation_revision: u64,
-    pub(super) activity: Option<Arc<pl_protocol::ThreadActivity>>,
+    pub(super) activity: Option<Arc<crate::ThreadActivity>>,
 }
 
 /// A bounded State observation, cancelled with its owner.
@@ -160,7 +160,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// state from its own copies. A storage pause changes neither the content nor the activity, so
     /// the value is watched on its own instead of riding the content feed: a subscriber parked on
     /// the feed still learns about a pause the moment the owner publishes it.
-    storage: watch::Sender<Option<pl_protocol::ThreadStorageState>>,
+    storage: watch::Sender<Option<crate::ThreadStorageState>>,
     /// Newest terminal Turn this owner projected, published by this owner only.
     ///
     /// A subscription's authoritative snapshot carries only the *active* Turn, and `turnCompleted`
@@ -171,7 +171,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// from the timeline window, re-reading SQL, or caching the `running` state it happened to see.
     /// It is a watch rather than a feed frame precisely because it has to outlive the broadcast: a
     /// fact nobody was subscribed for is still the fact the next subscriber must start from.
-    last_turn: watch::Sender<Option<Arc<pl_protocol::Turn>>>,
+    last_turn: watch::Sender<Option<Arc<crate::Turn>>>,
     /// Latest shared current content, never a queue of deltas. Subscribers derive their own bounded
     /// increments from these canonical blocks, so coalescing a wakeup cannot drop text.
     conversation: Mutex<Arc<publication::ConversationPublication>>,
@@ -183,7 +183,7 @@ pub(in crate::studio) struct ThreadLiveFeed {
     /// Original State activity event retained for subscribers opening after its broadcast.
     latest_activity: Mutex<Option<StateActivityCut>>,
     /// 现役 State 协议的通知去重，不拥有业务内容或读取资格。
-    latest_business_refs: Mutex<Option<pl_protocol::ThreadBusinessRefs>>,
+    latest_business_refs: Mutex<Option<crate::ThreadBusinessRefs>>,
     state_resources: Mutex<state_resources::StateResources>,
 }
 
@@ -244,7 +244,7 @@ impl ThreadLiveFeed {
     pub(super) fn publish_test_state_activity(
         &self,
         observation_revision: u64,
-        activity: Option<pl_protocol::ThreadActivity>,
+        activity: Option<crate::ThreadActivity>,
     ) {
         self.publish(|| ThreadLiveEvent::Activity {
             observation_revision,
@@ -264,7 +264,7 @@ impl ThreadLiveFeed {
         Ok(())
     }
 
-    fn publish_business_refs(&self, sequence: u64, references: pl_protocol::ThreadBusinessRefs) {
+    fn publish_business_refs(&self, sequence: u64, references: crate::ThreadBusinessRefs) {
         let mut previous = self
             .latest_business_refs
             .lock()
@@ -279,7 +279,7 @@ impl ThreadLiveFeed {
     }
 
     pub(super) fn new(
-        storage: Option<pl_protocol::ThreadStorageState>,
+        storage: Option<crate::ThreadStorageState>,
         owner_progress: watch::Receiver<Progress>,
         delivery_closed: tokio_util::sync::CancellationToken,
     ) -> Self {
@@ -332,8 +332,8 @@ impl ThreadLiveFeed {
 
     fn compact_runtime(
         &self,
-        runtime: pl_protocol::ThreadRuntimeSnapshot,
-    ) -> Result<pl_protocol::ThreadRuntimeSnapshot> {
+        runtime: crate::ThreadRuntimeSnapshot,
+    ) -> Result<crate::ThreadRuntimeSnapshot> {
         self.state_resources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -342,8 +342,8 @@ impl ThreadLiveFeed {
 
     fn compact_activity(
         &self,
-        activity: Option<pl_protocol::ThreadActivity>,
-    ) -> Result<Option<pl_protocol::ThreadActivity>> {
+        activity: Option<crate::ThreadActivity>,
+    ) -> Result<Option<crate::ThreadActivity>> {
         self.state_resources
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -363,7 +363,7 @@ impl ThreadLiveFeed {
 
     /// Watches the newest terminal Turn this owner projected, so a subscriber that registers after
     /// that commit never has to derive the fact from the window or from SQL.
-    pub(in crate::studio) fn last_turn(&self) -> watch::Receiver<Option<Arc<pl_protocol::Turn>>> {
+    pub(in crate::studio) fn last_turn(&self) -> watch::Receiver<Option<Arc<crate::Turn>>> {
         self.last_turn.subscribe()
     }
 
@@ -375,7 +375,7 @@ impl ThreadLiveFeed {
     /// this owner *after* a newer one — a deferred admission that storage pressure released late is
     /// taken over behind the live stream — so the retained fact only ever moves forward and the newest
     /// terminal Turn is never replaced by an older one.
-    fn publish_last_turn(&self, turn: Arc<pl_protocol::Turn>) {
+    fn publish_last_turn(&self, turn: Arc<crate::Turn>) {
         if self.is_delivery_closed() {
             return;
         }
@@ -395,14 +395,12 @@ impl ThreadLiveFeed {
     }
 
     /// Watches the owner's typed storage state, so a subscriber only mirrors it.
-    pub(in crate::studio) fn storage(
-        &self,
-    ) -> watch::Receiver<Option<pl_protocol::ThreadStorageState>> {
+    pub(in crate::studio) fn storage(&self) -> watch::Receiver<Option<crate::ThreadStorageState>> {
         self.storage.subscribe()
     }
 
     /// Publishes the owner's newly derived typed storage state.
-    fn publish_storage(&self, storage: Option<pl_protocol::ThreadStorageState>) {
+    fn publish_storage(&self, storage: Option<crate::ThreadStorageState>) {
         self.publication().metadata_changed();
         self.storage.send_replace(storage);
     }
@@ -534,12 +532,6 @@ impl Drop for Observation {
 }
 
 impl Observation {
-    /// Subscribe to the original writer incarnation before reading terminal reports.
-    /// A Turn notification alone precedes persistence and is not a readability fence.
-    pub(crate) fn report_changes(&self) -> watch::Receiver<HistoryStatus> {
-        self.state.channel.subscribe()
-    }
-
     async fn join(&self) -> Result<()> {
         self.join_for_purpose(crate::thread_assembler::ClosePurpose::Preserve)
             .await
@@ -1099,7 +1091,7 @@ impl ThreadObservations {
             .context("missing parent Thread record")?;
         services
             .require_session(parent)?
-            .recover_saved_review_deliveries(&pl_protocol::Thread::from(parent_record))
+            .recover_saved_review_deliveries(&crate::Thread::from(parent_record))
             .await?;
         for member in services.store.read_directory_tree(parent).await? {
             if !member.is_native() || member.parent_thread_id.as_deref() != Some(parent) {
@@ -1127,12 +1119,11 @@ impl ThreadObservations {
             }
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            let Some(current) =
-                crate::studio::thread_factory::recovery::load_current_for_recovery(
-                    &services.store,
-                    &child,
-                )
-                .await?
+            let Some(current) = crate::studio::thread_factory::recovery::load_current_for_recovery(
+                &services.store,
+                &child,
+            )
+            .await?
             else {
                 continue;
             };
@@ -1269,18 +1260,18 @@ struct LiveOwner {
     /// The Thread's only activity projection: the same owner derives it from the snapshot it just
     /// published, so activity never becomes a second fact source and never reads SQL.
     /// Last activity already broadcast, so an unchanged projection does not produce a frame.
-    activity_published: Option<pl_protocol::ThreadActivity>,
-    runtime_published: Option<pl_protocol::ThreadRuntimeSnapshot>,
-    model_route_published: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    activity_published: Option<crate::ThreadActivity>,
+    runtime_published: Option<crate::ThreadRuntimeSnapshot>,
+    model_route_published: Option<crate::ThreadModelRouteSnapshot>,
     /// Last typed storage state this owner published to its feed.
     ///
     /// The owner derives it from the owner snapshot plus the coordinator's typed watch, so a
     /// subscriber mirrors the value instead of recomputing it from its own copies. It is kept as one
     /// value so a change of fault kind, generation, watermark or phase is all one comparison.
-    storage_published: Option<pl_protocol::ThreadStorageState>,
+    storage_published: Option<crate::ThreadStorageState>,
     /// The Thread's reliable admission channel, shared with the history writer.
     channel: Arc<HistoryChannel>,
-    thread: pl_protocol::Thread,
+    thread: crate::Thread,
     feed: Arc<ThreadLiveFeed>,
     /// The one committed batch this owner prepared but has not handed to the writer yet; see
     /// [`PendingHandoff`].
@@ -1442,10 +1433,10 @@ impl LiveOwner {
         projector: &ObservationServices,
         handle: &ThreadHandle,
         snapshot: &ThreadSnapshot,
-        thread: pl_protocol::Thread,
+        thread: crate::Thread,
         feed: Arc<ThreadLiveFeed>,
         state: Arc<WorkerState>,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<Self> {
         let channel = state.channel.clone();
         let id = thread.id.as_str();
@@ -1792,7 +1783,9 @@ impl LiveOwner {
         self.prepare_terminal_delivery(services)?;
         self.prepare_handoff(services, snapshot)?;
         if let Some(binding) = &self.binding {
-            binding.conversation.admit_prepared(binding, &self.channel, &mut self.retained)?;
+            binding
+                .conversation
+                .admit_prepared(binding, &self.channel, &mut self.retained)?;
         }
         #[cfg(test)]
         if self.binding.is_none() {
@@ -2116,7 +2109,7 @@ impl LiveOwner {
             }) {
                 if matches!(
                     change.entity.kind,
-                    pl_protocol::ChatAtomKind::Text | pl_protocol::ChatAtomKind::ToolCall
+                    crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
                 ) {
                     let item = crate::studio::runtime::chat_item::frozen_execution_item(
                         &change.event,
@@ -2351,7 +2344,7 @@ impl LiveOwner {
     fn observe_storage(
         &mut self,
         snapshot: &ThreadSnapshot,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) {
         if let Some(through) = persistence.and_then(|detail| detail.history_durable_sequence) {
             self.retained.projection.confirm_sources(through);
@@ -2485,14 +2478,19 @@ async fn run(
         let mut current_close = if current.lifecycle == ThreadLifecycle::Closed {
             if let Some(live) = worker.live.as_ref() {
                 Some(live.retained.store.close_current(&worker.thread).await)
-            } else { None }
-        } else { None };
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut result =
             std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
-        if current.lifecycle == ThreadLifecycle::Closed && current_close.is_none()
+        if current.lifecycle == ThreadLifecycle::Closed
+            && current_close.is_none()
             && let Some(live) = worker.live.as_ref()
         {
             current_close = Some(live.retained.store.close_current(&worker.thread).await);
@@ -2500,7 +2498,9 @@ async fn run(
         if let Some(Err(close)) = current_close {
             result = Err(match result {
                 Ok(()) => close,
-                Err(archive) => archive.context(format!("independent Current close also failed: {close:#}")),
+                Err(archive) => {
+                    archive.context(format!("independent Current close also failed: {close:#}"))
+                }
             });
         }
         match result {
@@ -2809,7 +2809,7 @@ async fn turn_result(
             };
             if !matches!(
                 original.original_kind,
-                pl_protocol::ChatAtomKind::Text | pl_protocol::ChatAtomKind::ToolCall
+                crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
             ) {
                 if let Some(entity) = detail.header.entity_id {
                     result.observe_identity(&entity);
@@ -2915,10 +2915,7 @@ async fn await_settled_target(
 /// branch drains the accepted directory writes first. The target is fixed at admission time and later
 /// unrelated writes do not extend the wait. Only the first install and a product refresh resolve this
 /// DTO: a streaming preview belongs to the owner already installed and never reads the directory.
-async fn product_association(
-    services: &ObservationServices,
-    id: &str,
-) -> Result<pl_protocol::Thread> {
+async fn product_association(services: &ObservationServices, id: &str) -> Result<crate::Thread> {
     if let Some(thread) = services.events.thread_snapshot(id)? {
         return Ok(thread);
     }
@@ -2929,7 +2926,7 @@ async fn product_association(
         .read_thread_association(id)
         .await?
         .context("observed Thread has no product association")?;
-    Ok(pl_protocol::Thread::from(association))
+    Ok(crate::Thread::from(association))
 }
 
 // The worker carries the projection owner, its feed and the product watermark across one projection;
@@ -2952,7 +2949,7 @@ impl ProjectionWorker {
         &mut self,
         snapshot: &ThreadSnapshot,
         products: bool,
-        persistence: Option<&pl_protocol::ThreadPersistenceSnapshot>,
+        persistence: Option<&crate::ThreadPersistenceSnapshot>,
     ) -> Result<()> {
         let Self {
             services,

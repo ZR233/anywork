@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::ObservedResource;
 use crate::studio::ids::unix_seconds;
 use anyhow::{Context, Result};
-use pl_protocol::ObservedResource;
 use pl_tool::skill::{
     FileSystemSkillProvider, FrozenSkillCatalog, SkillProviderRegistration, SkillRegistry,
     SkillSummary,
@@ -189,10 +189,7 @@ mod tests {
                 .is_err()
         );
         let snapshot = owner.read("project").await;
-        assert_eq!(
-            snapshot.state.kind(),
-            pl_protocol::ObservedResourceKind::Degraded
-        );
+        assert_eq!(snapshot.state.kind(), crate::ObservedResourceKind::Degraded);
         assert!(
             snapshot.state.value().is_some(),
             "Settings may still display last-good data"
@@ -211,7 +208,7 @@ mod tests {
         );
         assert_eq!(
             owner.read("new-project").await.state.kind(),
-            pl_protocol::ObservedResourceKind::Failed
+            crate::ObservedResourceKind::Failed
         );
         Ok(())
     }

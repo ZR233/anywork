@@ -1,12 +1,12 @@
 //! Decode retired formats only inside the official migration transaction.
 use super::*;
+use crate::ChatAtom;
 use crate::studio::storage::history::schema::v24_presentation::{
     DisplayMemberWrite, lightweight, member_key, record,
 };
 use crate::studio::storage::history::schema::v24_presentation_types::{
     DisplayBlockBody, DisplayBlockRef, DisplayMemberHead, SingleVisibility, WorkTiming,
 };
-use pl_protocol::ChatAtom;
 use serde_json::{Value, json};
 
 pub(super) async fn upgrade(db: &impl ConnectionTrait) -> Result<()> {
@@ -163,10 +163,10 @@ pub(super) async fn backfill(db: &impl ConnectionTrait) -> Result<()> {
             let item_id: String = row.try_get("", "item_id")?;
             atom.completion_item_id = Some(item_id.clone());
             atom.completion_seq = Some(u64::try_from(after)?);
-            atom.payload = Some(pl_protocol::PayloadData::Deferred {
-                reference: pl_protocol::ContentRef {
+            atom.payload = Some(crate::PayloadData::Deferred {
+                reference: crate::ContentRef {
                     database_id: database.clone(),
-                    target: pl_protocol::ContentTarget::ItemPayload { item_id },
+                    target: crate::ContentTarget::ItemPayload { item_id },
                 },
                 byte_length: u64::try_from(row.try_get::<i64>("", "byte_length")?)?,
             });

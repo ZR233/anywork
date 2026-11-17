@@ -1,8 +1,8 @@
 use std::path::Path;
 
+use crate::NewThreadModelRoute;
+use crate::{AcpAgentConfig, AgentBinding, NativeAgentConfig};
 use anyhow::Result;
-use pl_protocol::studio::NewThreadModelRoute;
-use pl_protocol::{AcpAgentConfig, AgentBinding, NativeAgentConfig};
 use serde::{Deserialize, Serialize};
 use version_migrate::{IntoDomain, MigratesTo, Migrator, Versioned};
 
@@ -398,10 +398,7 @@ mod tests {
         assert!(migrated.migrated);
         let profile = migrated.document.into_profile().unwrap();
         assert!(!profile.enabled);
-        assert_eq!(
-            profile.workspace_mode,
-            pl_protocol::AgentWorkspaceMode::Worktree
-        );
+        assert_eq!(profile.workspace_mode, crate::AgentWorkspaceMode::Worktree);
         let AgentBinding::Native(native) = profile.binding else {
             panic!("V1 must migrate to Native");
         };

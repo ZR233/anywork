@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use pl_protocol::studio::{
+use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpInstallRelease,
     AcpInstallStage, AcpInstallState, AcpInstalledServer, AcpProvider,
 };

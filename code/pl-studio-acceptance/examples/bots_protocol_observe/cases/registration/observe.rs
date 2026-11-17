@@ -5,12 +5,12 @@ use crate::http;
 use crate::report::CaseResult;
 use crate::topic::{self, BotsTopicWatch};
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use pl_protocol::studio::{
+use pl_provider_fixture::feishu::{CallKind, PollObservation, REGISTERED_APP_ID};
+use pl_studio_runtime::{
     BotConnectionState, BotCredentialAvailability, BotCredentialOperation, BotRegistrationAttempt,
     BotRegistrationStatus, BotsCommandReply, BotsStateSnapshot, CancelBotRegistrationRequest,
     StartBotRegistrationRequest, StudioError,
 };
-use pl_provider_fixture::feishu::{CallKind, PollObservation, REGISTERED_APP_ID};
 use reqwest::Url;
 use std::time::{Duration, Instant};
 

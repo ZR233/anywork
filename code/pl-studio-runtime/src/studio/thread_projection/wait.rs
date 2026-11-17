@@ -4,13 +4,13 @@
 //! parameters leave the field absent so the original tool card remains. A succeeded wait whose
 //! delivered view cannot be decoded also stays untyped. Target names and statuses come from the
 //! resident snapshot or the official wait view; history never scans other items to fill them.
+use crate::{
+    ACTIVITY_SUMMARY_LIMIT, ThreadToolState, ThreadWaitIntent, ThreadWaitPresentation,
+    ThreadWaitState, ThreadWaitTarget, ThreadWaitTargetStatus,
+};
 use pl_core::thread::{
     ThreadSnapshot,
     task::{TaskRecord, TaskStatus},
-};
-use pl_protocol::{
-    ACTIVITY_SUMMARY_LIMIT, ThreadToolState, ThreadWaitIntent, ThreadWaitPresentation,
-    ThreadWaitState, ThreadWaitTarget, ThreadWaitTargetStatus,
 };
 use pl_tool::session::SleepInput;
 use pl_tool::task_control::{WaitTasksInput, WaitTasksView};

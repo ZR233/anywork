@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use pl_protocol::studio::{
+use crate::{
     CommandEffectPoint, ContinuationOperationState, ContinuationOperationView,
     ContinueThreadRequest, ContinueThreadResponse, ResourceStamp, StopThreadRequest,
     StopThreadResponse, StudioError, StudioErrorCode, StudioErrorReason,
@@ -749,9 +749,9 @@ impl std::error::Error for AcceptedIdentityPending {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ThreadWorkspaceMode;
     use crate::runtime_test_support as support;
     use anyhow::{Context, ensure};
-    use pl_protocol::ThreadWorkspaceMode;
     use pl_provider_fixture::ReplyStage;
 
     async fn settled(

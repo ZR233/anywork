@@ -8,11 +8,12 @@ mod models;
 
 pub use feed::{
     StatisticsEffortPage, StatisticsError, StatisticsFeed, StatisticsFeedHeader,
-    StatisticsHistoryPage, StatisticsReadScope, StatisticsSummary, StatisticsSummaryPage,
+    StatisticsHistoryPage, StatisticsPublisher, StatisticsReadScope, StatisticsSummary,
+    StatisticsSummaryPage,
 };
 pub use models::{
-    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
-    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+    MetricAvailability, ModelMatchState, StudioModelPerformanceEffortSummary,
+    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+    UsageReportStatus,
 };
-
-pub use feed::StatisticsPublisher;
+pub use pl_protocol::FirstOutputSource;

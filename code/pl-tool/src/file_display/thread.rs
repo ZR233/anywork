@@ -17,7 +17,7 @@ use pl_core::{
         opaque::{CallContext, ToolError},
     },
 };
-use pl_protocol::AttachmentModality;
+use pl_model::completion::AttachmentModality;
 use pl_tool_media::show_files as domain;
 use std::sync::Arc;
 

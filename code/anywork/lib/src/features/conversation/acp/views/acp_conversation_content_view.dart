@@ -296,69 +296,16 @@ class _EmptySessionState extends StatelessWidget {
               ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 6),
-            Text(
-              l10n.acpSessionConnectingSubtitle,
-              style: context.text.bodySmall?.copyWith(
-                color: context.colors.onSurfaceVariant,
-              ),
-              textAlign: TextAlign.center,
-            ),
           ],
         ),
       );
     }
 
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 460),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          StudioEmptyState(
-            icon: Icons.hub_outlined,
-            title: l10n.acpSessionReadyEmptyTitle,
-            message: l10n.acpSessionReadyEmptySubtitle,
-            maxWidth: 420,
-          ),
-          if (header.capabilities.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              alignment: WrapAlignment.center,
-              children: [
-                for (final cap in header.capabilities)
-                  StudioPill(
-                    icon: _capabilityIcon(cap),
-                    label: _capabilityLabel(context, cap),
-                  ),
-              ],
-            ),
-          ],
-        ],
-      ),
+    return StudioEmptyState(
+      icon: Icons.hub_outlined,
+      title: l10n.acpSessionReadyEmptyTitle,
+      maxWidth: 420,
     );
-  }
-
-  IconData _capabilityIcon(AcpCapabilityKind cap) => switch (cap) {
-    AcpCapabilityKind.image => Icons.image_outlined,
-    AcpCapabilityKind.audio => Icons.graphic_eq_rounded,
-    AcpCapabilityKind.embeddedContext => Icons.attach_file_rounded,
-    AcpCapabilityKind.loadSession => Icons.history_rounded,
-    AcpCapabilityKind.resumeSession => Icons.play_circle_outline_rounded,
-    AcpCapabilityKind.listSessions => Icons.storage_rounded,
-  };
-
-  String _capabilityLabel(BuildContext context, AcpCapabilityKind cap) {
-    final l10n = context.l10n;
-    return switch (cap) {
-      AcpCapabilityKind.image => l10n.acpCapabilityImage,
-      AcpCapabilityKind.audio => l10n.acpCapabilityAudio,
-      AcpCapabilityKind.embeddedContext => l10n.acpCapabilityEmbeddedContext,
-      AcpCapabilityKind.loadSession => l10n.acpCapabilityLoadSession,
-      AcpCapabilityKind.resumeSession => l10n.acpCapabilityResumeSession,
-      AcpCapabilityKind.listSessions => l10n.acpCapabilityListSessions,
-    };
   }
 }
 

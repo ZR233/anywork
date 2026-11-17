@@ -31,11 +31,11 @@ mod mode_migration_tests {
 
     fn legacy_state(manager: &ThreadModeManager) -> Result<ThreadSnapshot> {
         let mut definition = crate::studio::thread::task::REGISTRATION.to_registration()?;
-        definition.id = pl_protocol::ThreadModeId::new("mode.migration")?;
+        definition.id = crate::mode::ThreadModeId::new("mode.migration")?;
         let source = ThreadModeSource::external(ThreadModeSourceId::new("migration-fixture")?);
         let registry = manager.replace_source(source, [definition])?;
         let mode = registry
-            .mode(&pl_protocol::ThreadModeId::new("mode.migration")?)
+            .mode(&crate::mode::ThreadModeId::new("mode.migration")?)
             .context("registered mode")?;
         let workflow = crate::mode::reconcile_workflow_for_turn(None, &mode, "migration", 1)?
             .context("workflow")?;
@@ -243,8 +243,8 @@ mod mode_migration_tests {
             upgrade_legacy_history_to_current(&path, "migration", directory.path()).await?;
         assert_eq!(current.state.extensions["studio.workflow"], workflow);
         assert_eq!(current.state.context, original.context);
-        let restored =
-            crate::mode::saved_registered_mode(&current.state.to_paused_snapshot())?.context("current saved Mode")?;
+        let restored = crate::mode::saved_registered_mode(&current.state.to_paused_snapshot())?
+            .context("current saved Mode")?;
         assert_eq!(restored.prompt(), "保存的原始 Prompt");
         assert_eq!(restored.definition(), saved.definition);
         Ok(())
@@ -296,7 +296,7 @@ mod mode_migration_tests {
             } else {
                 let mut definition = manager
                     .snapshot()
-                    .mode(&pl_protocol::ThreadModeId::new("mode.migration")?)
+                    .mode(&crate::mode::ThreadModeId::new("mode.migration")?)
                     .context("mode")?
                     .definition();
                 definition.workflow.as_mut().unwrap().goal =
@@ -403,8 +403,8 @@ mod mode_migration_tests {
         )?)
     }
 
-    fn migration_child_profile() -> pl_protocol::AgentProfileSnapshot {
-        pl_protocol::AgentProfileSnapshot {
+    fn migration_child_profile() -> crate::AgentProfileSnapshot {
+        crate::AgentProfileSnapshot {
             profile_id: "reviewer".into(),
             display_name: "Reviewer".into(),
             description: String::new(),
@@ -418,7 +418,7 @@ mod mode_migration_tests {
             content_hash: String::new(),
             system: true,
             enabled: true,
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Unrestricted,
+            workspace_mode: crate::AgentWorkspaceMode::Unrestricted,
         }
     }
 
@@ -1077,7 +1077,7 @@ mod mode_migration_tests {
         let manager = ThreadModeManager::default();
         let registry = crate::studio::thread::register_builtins(&manager)?;
         let mode = registry
-            .mode(&pl_protocol::ThreadModeId::simple())
+            .mode(&crate::mode::ThreadModeId::simple())
             .context("built-in simple Mode")?;
         let mut model_info = ModelInfo::compatible("migration-model");
         model_info.base_instructions = "frozen migration base".into();
@@ -1449,7 +1449,7 @@ mod mode_migration_tests {
             .set_thread_mode(
                 "same-mode-without-binding".into(),
                 &thread.id,
-                pl_protocol::ThreadModeId::simple(),
+                crate::mode::ThreadModeId::simple(),
             )
             .await?;
         runtime.shutdown_runtime().await?;
@@ -1584,7 +1584,7 @@ mod mode_migration_tests {
             .set_thread_mode(
                 "changed-mode-with-unknown-binding".into(),
                 &thread.id,
-                pl_protocol::ThreadModeId::task(),
+                crate::mode::ThreadModeId::task(),
             )
             .await?;
         runtime.shutdown_runtime().await?;
@@ -2458,7 +2458,7 @@ mod mode_migration_tests {
                 .payload
                 .content(),
         )?;
-        assert_eq!(project.kind, pl_protocol::studio::WorkspaceKind::Project);
+        assert_eq!(project.kind, crate::WorkspaceKind::Project);
         assert_eq!(project.path, "/workspace");
         assert_eq!(project.updated_at, 19);
         let mut expected = before;
@@ -2736,8 +2736,8 @@ mod mode_migration_tests {
         .await?)
     }
 
-    fn bound_thread(thread_id: &str) -> pl_protocol::Thread {
-        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+    fn bound_thread(thread_id: &str) -> crate::Thread {
+        let mut thread = crate::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
@@ -2746,12 +2746,12 @@ mod mode_migration_tests {
 
     async fn register_test_thread(
         store: &crate::studio::StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
                 ssh_alias: None,
@@ -2771,7 +2771,7 @@ mod mode_migration_tests {
 
     async fn registered_history(
         store: &crate::studio::StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<HistoryStore> {
         register_test_thread(store, thread).await?;
         let path = store
@@ -3521,7 +3521,7 @@ mod mode_migration_tests {
         assert_eq!(recovered.state.context, original.context);
         assert_eq!(
             crate::studio::delegation::saved(&recovered.state)?,
-            Some(pl_protocol::DelegationSettings::default())
+            Some(crate::DelegationSettings::default())
         );
         let durable = history.checkpoint().await?.context("durable checkpoint")?;
         assert_eq!(
@@ -3547,7 +3547,7 @@ mod mode_migration_tests {
                 .context("reopened current")?;
         assert_eq!(
             crate::studio::delegation::saved(&saved.state.to_paused_snapshot())?,
-            Some(pl_protocol::DelegationSettings::default())
+            Some(crate::DelegationSettings::default())
         );
         assert_eq!(
             saved.state.extensions["studio.model-route"]
@@ -3788,7 +3788,7 @@ mod mode_migration_tests {
     }
 
     fn legacy_native_context(inference_id: &str, sealed: &str) -> Result<ContextRecord> {
-        let item = pl_protocol::ModelContextItem::Compaction {
+        let item = crate::ModelContextItem::Compaction {
             encrypted_content: sealed.into(),
         };
         Ok(ContextRecord {

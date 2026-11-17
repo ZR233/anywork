@@ -1,8 +1,8 @@
 //! Current Workspace/Thread identity manifests. Legacy formats are decoded only by layout migration.
 use std::path::Path;
 
+use crate::{ThreadWorkspaceMode, WorkspaceKind};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ThreadWorkspaceMode, studio::WorkspaceKind};
 use serde::{Deserialize, Serialize};
 
 use super::StudioStore;

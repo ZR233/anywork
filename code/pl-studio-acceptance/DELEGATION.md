@@ -110,9 +110,9 @@ home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束
 账号 ID 带本次 PID 与隔离环境随机名，重开沿用原配置；A/B 都有同一个
 `delegation-shared`，分别指向
 `/v1/delegation-a/responses`、`/v1/delegation-b/responses`；A 另有
-`delegation-other`、十个合法分页样例和四个不可选边界。第三个官方协议账号没有凭据。
+`delegation-other`、十个合法目录样例和四个不可选边界。第三个官方协议账号没有凭据。
 资料与基准保持未知，不借全局内置目录补齐。A 显式订阅，B 显式不计费；两者共享型号和
-`delegation-other` 带明确标注的合成 USD 参考价，其他分页样例价格未知，不能当作零价。
+`delegation-other` 带明确标注的合成 USD 参考价，其他目录样例价格未知，不能当作零价。
 `delegation-other` 仅声明 `max_context_window=1000000`，另有 700000 的压缩阈值，生产
 候选列表与 `minContextWindow=900000` 筛选都必须消费 1000000 的 canonical 容量。
 普通选择器不应显示已禁用、不支持文本或
@@ -130,10 +130,10 @@ home 导致工作区绝对路径失效。重开仍需原 fixture 端口；结束
 连接的多个名字当 OR，也没有可传入的分页/limit。生产端最多返回20个 `toolIds`。
 
 - automatic root 使用合法共同子串 `delegation_model`，typed 读取必填 `toolIds: String[]`，
-  要求结果实际含 list_delegation_models 与 get_delegation_model，且下一次请求两工具确已
+  要求结果实际含 list_delegation_models 与 get_delegation_models，且下一次请求两工具确已
   出现在声明中；空结果不能代表揭示成功，不能绕过 discover 直接发模型查询。
 - child 保留初始及发现后的 root-only 声明检查，依次用四个单名字 query：spawn_agent、
-  list_delegation_models、get_delegation_model、evaluate_agent。每次都必须是 typed 空数组，
+  list_delegation_models、get_delegation_models、evaluate_agent。每次都必须是 typed 空数组，
   每步后四个 root-only 声明均仍缺席；非空结果（包括20条截断结果）不能证明隔离。
 - 发现回执的 missing/null/非数组、空或重复 ID、超过20条均失败；原 callId/name/query
   参数必须对应，不复用旧多词查询结果。没有空 query、通配或一次截断列表的漏检捷径。
@@ -218,16 +218,13 @@ call ID、tool 名、参数和 task 身份精确关联；受理回执及被其�
 | 自动 / 快速 | `[[delegation:routing:fast]]` |
 
 主模型保持 A/shared。固定 root 的 explorer 必须使用已配置 A/other/high，不接受 root 路由
-冒充 Profile 路由。自动 root 从真实 `discover_tools`、有界模型查询、详情的结果选取
+冒充 Profile 路由。自动 root 从真实 `discover_tools`、完整模型查询、详情的结果选取
 A/shared、A/other/low、B/shared，逐一真实 spawn→终态报告→绑定真实 child 的独立审查→
 最终评价→close（固定模式也实际调用评价工具）；不是从
 fixture 的期望清单重新实现候选路由器。第一个自动 child 使用 `obsolete_route` 角色，
 其旧固定路由刻意禁用，证明角色资格与选择模型分离。它仍受原 Profile 工作区权限约束。
 
-检查并保存：省略 limit 且有后续页时首屏必须恰好 5 条（本场景有超过 10 个合格样例），
-后续尾页只要求不超过 5 条；显式 max 10 另行断言。另核对生产游标稳定分页、0/11 limit 真实拒绝、未知 task category
-适配标签不做硬排除、disabled/no-text/unknown-context/no-tools 和缺 credentials 的详情
-`available=false` 与 reason、撤下型号 NotFound；未知价格/计费/未采样速度不冒充免费、
+检查并保存：单次查询返回全部超过 10 个合格样例，身份稳定且唯一；旧 limit/cursor 参数真实拒绝。最低有效窗口过滤不误排只声明最大窗口的模型。批量详情按输入顺序保留逐项 NotFound，不丢弃其他成功结果；disabled/no-text/unknown-context/no-tools 和缺 credentials 的详情保持 available=false 与 reason。未知价格/计费/未采样速度不冒充免费、
 套餐或零延迟。每个 root 实际请求仅有自己当前那段短偏好，固定没有偏好；不注入完整
 目录描述/评价评论。偏好只影响提示词，本脚本不声称真实模型一定按某种偏好选中特定型号。
 
@@ -328,7 +325,7 @@ child，最多同时 2 个 Open child）。覆盖：
 两个自动 root，A/shared 为在途 root、A/other 为观察 root；不能在一个运行中的 root 改
 冻结路由。账号启用开关使用真实 GUI（必要时滚动定位），不是直接写 config/数据库。
 
-1. A/other 观察 root 先提交 `[[delegation:before-disable]]`，保留真实分页游标；从真实全局
+1. A/other 观察 root 先提交 `[[delegation:before-disable]]`，保留真实完整目录及水位；从真实全局
    候选选出 B/shared，再用该实际账号查询其候选和详情，记录它原本确实合格、descriptor
    enabled=true、available=true。后续只从原 root 的真实工具历史恢复这份身份与证据，
    不从 fixture 清单或 A 的账号字符串推造 B。随后 A/shared root 提交
@@ -337,7 +334,7 @@ child，最多同时 2 个 Open child）。覆盖：
    请求到达，不能用 sleep 推断。
 2. 账号 A/shared 开关关闭即保存，无额外“保存”。取 canonical revision、enabled、pending、
    error，打开/返回再读；暂不释放供应商。A/other 观察 root 提交
-   `[[delegation:inspect-disabled]]`，旧目录水位游标必须真实拒绝，新的 query 必须排除
+   `[[delegation:inspect-disabled]]`，新目录水位必须提升，新的 query 必须排除
    A/shared，详情 false/reason。
 3. UI 关闭 B/shared，A/other root 提交 `[[delegation:no-candidates]]`：B 的真实过滤查询
    为空，原 B/shared 的详情仍存在、descriptor enabled=false、available=false，且完整
@@ -373,7 +370,7 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
 
 此独立场景验证 [12](../../design/12-collaboration.md) 的关闭意图区分，不修改原 lifecycle
 的三位 fresh reviewer / executor revision 2 / 冷关闭无 child 请求 oracle，也不修改 window
-最近 10 条与 routing 分页。Core `Closed` 只表示上一个 owner 已关闭；不能仅从冷列表的
+最近 10 条与 routing 完整目录。Core `Closed` 只表示上一个 owner 已关闭；不能仅从冷列表的
 该值推断 child 被持久禁止恢复。只有真实 `close_agent` 成功收据证明本场景的显式关闭。
 生产恢复修复经独立审查后才由 root 运行本场景，静态检查和 fixture 回放不算 GUI 通过。
 
@@ -444,7 +441,7 @@ CAS 冲突/快速开关必须由 UI canonical 观察或允许的真实 settings 
   已显式关闭 reviewer 的新输入目标计数在拒绝前后必须都是 0；root 正常 completion 不计入。
   `observation.continuation` 仍只在实际 final 响应时记录。
 - recovery 和 lifecycle 的关闭负例共用严格消费边界：已消费同一直接父子、冻结 route 的真实
-  执行已关闭且顶层无错误的 close 收据，且真实 get_delegation_model 仍确认原账号/型号 available，排除
+  执行已关闭且顶层无错误的 close 收据，且真实 get_delegation_models 仍确认原账号/型号 available，排除
   本场景意外修改账号/凭据/启用状态后造成的准入前置失败；send 的精确 callId/name 与原
   target/message 参数一致；输出不是
   typed Sent 或其他 JSON 成功/ACK，原任务必须实际 Failed，且匹配上述永久关闭错误及其

@@ -4,6 +4,12 @@ mod content;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::{
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionPurpose,
+    InteractionRequest, InteractionResolution, InteractionStatus, ToolApprovalResolution,
+    ToolApprovalResolutionPayload, UserInputAnswer, UserInputResolution,
+};
+use crate::{ThreadDirectoryFilter, ThreadDirectoryQuery};
 use anyhow::{Context, Result, ensure};
 use pl_agent_tool::{Tool, ToolDefinition, ToolHandle};
 use pl_core::context::{ContextContent, OpaquePayload};
@@ -12,12 +18,6 @@ use pl_core::tool::{
     opaque::{CallContext, Registration, ToolError},
 };
 use pl_model::completion::ToolCallPolicy;
-use pl_protocol::studio::{ThreadDirectoryFilter, ThreadDirectoryQuery};
-use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionPurpose,
-    InteractionRequest, InteractionResolution, InteractionStatus, ToolApprovalResolution,
-    ToolApprovalResolutionPayload, UserInputAnswer, UserInputResolution,
-};
 use pl_tool::binding::prepare_registration;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -602,17 +602,15 @@ impl StudioRuntime {
                 pl_tool::workspace::write_file_atomically(&output, &bytes)
             })
             .await??;
-            sources.push(
-                pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
-                    path: destination.to_string_lossy().into_owned(),
-                },
-            );
+            sources.push(crate::StudioAttachmentDraftSource::LocalFile {
+                path: destination.to_string_lossy().into_owned(),
+            });
         }
         let drafts = if sources.is_empty() {
             Vec::new()
         } else {
-            self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-                context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
+            self.admit_attachment_drafts(crate::AdmitAttachmentDraftsRequest {
+                context: crate::StudioAttachmentAdmissionContext::ExistingThread {
                     thread_id: args.session_id.clone(),
                 },
                 sources,
@@ -628,7 +626,7 @@ impl StudioRuntime {
         } else {
             self.submit_prompt(super::super::StudioSubmitPromptRequest {
                 thread_id: args.session_id.clone(),
-                input: pl_protocol::studio::StudioPromptInput {
+                input: crate::StudioPromptInput {
                     input_id: input_id.clone(),
                     text: format!("[机器人代发 · {bot_id} · 来源会话 {source}]\n{}", args.text),
                     attachment_draft_ids: draft_ids.clone(),

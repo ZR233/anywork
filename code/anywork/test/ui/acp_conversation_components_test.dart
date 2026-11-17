@@ -34,6 +34,100 @@ IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
 }
 
 void main() {
+  testWidgets('ACP 回显丢失标注时仍展示真实提交的 hi，协议原文完整保留', (tester) async {
+    final harness = await AcpComponentHarness.create();
+    harness.port.run = AcpRunIdView(instance: BigInt.one, sequence: BigInt.one);
+    addTearDown(() => harness.close(tester));
+    await tester.pumpWidget(
+      harness.scope(const AcpTimelineConnector(threadId: 'thread')),
+    );
+    await harness.owner.send([const AcpTextContentView(text: 'hi')]);
+    harness.update(
+      const AcpUserMessageChunkView(
+        AcpContentChunkView(
+          content: AcpTextContentView(text: 'Host instructions\n'),
+        ),
+      ),
+    );
+    harness.update(
+      const AcpUserMessageChunkView(
+        AcpContentChunkView(content: AcpTextContentView(text: 'hi')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('hi'), findsOneWidget);
+    expect(find.textContaining('Host instructions'), findsNothing);
+    final user = harness.owner.state.content
+        .whereType<AcpConversationMessageItem>()
+        .single;
+    expect(
+      user.chunks.map((chunk) => (chunk.content as AcpTextContentView).text),
+      ['Host instructions\n', 'hi'],
+    );
+  });
+
+  testWidgets('ACP 消息遵循受众标注，隐藏宿主上下文且保留原始协议块', (tester) async {
+    final hidden = AcpContentChunkView(
+      content: AcpTextContentView(
+        text: 'Host instructions',
+        annotations: AcpAnnotationsView(
+          audience: [AcpContentRoleView.assistant],
+        ),
+      ),
+    );
+    final harness = await AcpComponentHarness.create(
+      updates: [AcpUserMessageChunkView(hidden)],
+    );
+    addTearDown(() => harness.close(tester));
+    await tester.pumpWidget(
+      harness.scope(const AcpTimelineConnector(threadId: 'thread')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Host instructions'), findsNothing);
+    expect(
+      find.byType(AcpTimelineEntryView),
+      findsNothing,
+      reason: '仅助手可见的内容不能留下空白气泡',
+    );
+    harness.update(
+      const AcpUserMessageChunkView(
+        AcpContentChunkView(content: AcpTextContentView(text: 'hi')),
+      ),
+    );
+    harness.update(
+      AcpAgentMessageChunkView(
+        AcpContentChunkView(
+          content: AcpTextContentView(
+            text: '你好！',
+            annotations: AcpAnnotationsView(
+              audience: [AcpContentRoleView.user, AcpContentRoleView.assistant],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('hi'), findsOneWidget);
+    expect(find.text('你好！'), findsOneWidget);
+    final user = harness.owner.state.content
+        .whereType<AcpConversationMessageItem>()
+        .first;
+    expect(user.chunks, [same(hidden), isA<AcpContentChunkView>()]);
+    harness.update(
+      const AcpUserMessageChunkView(
+        AcpContentChunkView(
+          content: AcpTextContentView(text: 'Host instructions'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Host instructions'),
+      findsOneWidget,
+      reason: '用户输入相同文字仍原样显示，不按内容猜测是否为宿主指令',
+    );
+  });
+
   testWidgets('ACP 发送中提示仅保留无障碍图标，停止原位切换且错误不丢失', (tester) async {
     var interrupts = 0;
     Widget composer(AcpComposerViewState state) => acpTestApp(
@@ -356,8 +450,6 @@ void main() {
     field.controller!.selection = const TextSelection.collapsed(offset: 2);
     final configuration = Completer<void>();
     harness.port.configureResult = configuration;
-    await tester.tap(find.byTooltip('更多设置'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byType(Switch));
     await tester.pump();
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
@@ -457,16 +549,13 @@ void main() {
       );
       final originalRect = tester.getRect(action);
       expect(originalRect.size, const Size(34, 34));
-      final tuning = find.descendant(
-        of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
-        matching: find.byType(TextButton),
-      );
+      final tuning = find.byType(Switch);
       final tuningSize = tester.getSize(tuning);
       await tester.tap(action);
       await tester.pump();
       expect(tester.widget<TextField>(input).enabled, isNot(false));
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       await tester.enterText(input, '下一条草稿');
       await tester.pump();
       final controller = tester.widget<TextField>(input).controller!;
@@ -483,7 +572,7 @@ void main() {
       expect(controller.selection.baseOffset, 3);
       expect(tester.getRect(action), originalRect);
       expect(tester.getSize(tuning), tuningSize);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       await tester.testTextInput.receiveAction(TextInputAction.send);
       expect(
         harness.port.calls.where((call) => call.$1 == 'prompt'),
@@ -523,7 +612,7 @@ void main() {
       }
       await tester.pump();
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       expect(tester.getRect(action), originalRect);
       if (completionFirst) {
         interrupting.complete();
@@ -533,7 +622,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(harness.owner.state.activeRun, isNull);
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNotNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNotNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNotNull);
       expect(draft.state.draft, '停止时继续编辑');
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
@@ -559,8 +648,6 @@ void main() {
     );
     await tester.pumpAndSettle();
     harness.port.commandError = StateError('server rejected config');
-    await tester.tap(find.byTooltip('更多设置'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
     expect(find.textContaining('配置失败：'), findsWidgets);
@@ -569,7 +656,7 @@ void main() {
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 
-  testWidgets('ACP 输入不因相同草稿刷新而重置选择和输入法组合', (tester) async {
+  testWidgets('ACP 输入保留编辑值并遵循平台提交与焦点行为', (tester) async {
     var submissions = 0;
     Widget input() => acpTestApp(
       AcpConversationComposerView(
@@ -599,16 +686,17 @@ void main() {
     await tester.pumpWidget(input());
     expect(controller.selection.baseOffset, 3);
     expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    await tester.testTextInput.receiveAction(TextInputAction.send);
-    expect(submissions, 0);
-    expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    controller.value = controller.value.copyWith(composing: TextRange.empty);
+    // The platform confirms composition before reporting a send action.
+    tester.testTextInput.updateEditingValue(
+      controller.value.copyWith(composing: TextRange.empty),
+    );
     await tester.testTextInput.receiveAction(TextInputAction.send);
     expect(submissions, 1);
     expect(
       tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
-      isTrue,
+      isFalse,
     );
+    await tester.showKeyboard(find.byType(TextField));
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);

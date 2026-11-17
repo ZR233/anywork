@@ -7,7 +7,7 @@ mod notification;
 use crate::api::studio::types::*;
 pub(crate) use config::{protocol_config_value, protocol_list};
 pub(crate) use content::{content, protocol_content};
-use pl_protocol::studio::{self as p, acp_schema as s};
+use pl_studio_runtime::{self as p, acp_schema as s};
 pub(crate) type R<T> = Result<T, BridgeAcpBusinessError>;
 
 pub(super) fn unsupported(name: &str) -> BridgeAcpBusinessError {
@@ -77,12 +77,24 @@ impl From<BridgeOpenAcpSessionRequest> for p::OpenAcpSessionRequest {
             thread_id: v.thread_id,
             intent: match v.intent {
                 BridgeAcpOpenIntent::New => p::AcpOpenIntent::New,
-                BridgeAcpOpenIntent::Load { session_id } => {
-                    p::AcpOpenIntent::Load(session_id.value)
-                }
-                BridgeAcpOpenIntent::Resume { session_id } => {
-                    p::AcpOpenIntent::Resume(session_id.value)
-                }
+                BridgeAcpOpenIntent::Draft {
+                    workspace_mode,
+                    delegation_mode,
+                    delegation_preference,
+                } => p::AcpOpenIntent::Draft {
+                    workspace_mode: match workspace_mode {
+                        BridgeAcpWorkspaceMode::Local => p::ThreadWorkspaceMode::Local,
+                        BridgeAcpWorkspaceMode::Worktree => p::ThreadWorkspaceMode::Worktree,
+                    },
+                    delegation_mode: delegation_mode.map(Into::into),
+                    delegation_preference: delegation_preference.map(Into::into),
+                },
+                BridgeAcpOpenIntent::Load { session_id } => p::AcpOpenIntent::Load {
+                    session_id: session_id.value,
+                },
+                BridgeAcpOpenIntent::Resume { session_id } => p::AcpOpenIntent::Resume {
+                    session_id: session_id.value,
+                },
             },
         }
     }
@@ -900,7 +912,12 @@ mod tests {
         }
         .into();
         assert_eq!(request.thread_id.as_deref(), Some("product-thread"));
-        assert_eq!(request.intent, p::AcpOpenIntent::Load("remote-id".into()));
+        assert_eq!(
+            request.intent,
+            p::AcpOpenIntent::Load {
+                session_id: "remote-id".into()
+            }
+        );
         let (mapped_target, request) = protocol_list(BridgeAcpListRequest {
             target: target().into(),
             cwd: Some("/a literal path".into()),

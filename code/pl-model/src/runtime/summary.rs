@@ -1,8 +1,7 @@
 //! Text summarization with frozen history and an independent physical session.
 use super::{ModelInvocationContext, ModelRuntime, ModelSession};
-use crate::completion::{
-    CompletionFailure, CompletionRequest, InferenceAccounting, PureError, summary_request,
-};
+use crate::completion::{CompletionFailure, CompletionRequest, PureError, summary_request};
+use crate::model::InferenceAccounting;
 
 /// Supplied model-visible prefix and the host's summary requirement.
 #[derive(Debug)]
@@ -17,7 +16,7 @@ pub struct TextSummaryRequest<'a> {
 /// Actual summary text and service accounting, before any history replacement.
 #[derive(Debug)]
 pub struct TextSummary {
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub timing: Option<crate::completion::InferenceTiming>,
     pub text: String,
     pub accounting: InferenceAccounting,
     pub model_observation: Option<crate::completion::InferenceModelObservation>,

@@ -4,7 +4,7 @@ mod thread;
 
 pub use pl_core::context::ResourceReference;
 use pl_core::{context::OpaquePayload, tool::opaque::ToolError};
-pub use pl_protocol::AttachmentModality;
+pub use pl_model::completion::AttachmentModality;
 pub use pl_tool_media::show_files::{Input as ShowFilesInput, Source as ShowFileSource};
 pub use thread::ThreadShowFilesTool;
 

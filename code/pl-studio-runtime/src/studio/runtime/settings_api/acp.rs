@@ -4,12 +4,12 @@
 //! 返回 canonical 设置，绝不等待进程或登录。检查连接、登录与取消是独立的认证操作命令，返回
 //! 受理身份后由 owner 在后台推进（见 design/20 §20.2、design/28 §28.2）。
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpAccountCatalog, AcpAuthCommandReply, AcpAuthSnapshot, CancelAcpAuthRequest,
     CommandEffectPoint, ContinueAcpAuthRequest, RemoveAcpAccountRequest, SettingsCommandReply,
     StartAcpAuthRequest, UpdateAcpAccountRequest,
 };
+use anyhow::Result;
 
 use crate::config::AcpProvider as ConfigAcpProvider;
 use crate::config::acp::{
@@ -172,8 +172,8 @@ impl StudioRuntime {
 }
 
 /// wire 接入类型到配置类型的穷尽映射；两种表示刻意分离，避免协议类型进入配置文件。
-fn config_provider(provider: pl_protocol::studio::AcpProvider) -> ConfigAcpProvider {
+fn config_provider(provider: crate::AcpProvider) -> ConfigAcpProvider {
     match provider {
-        pl_protocol::studio::AcpProvider::Antigravity => ConfigAcpProvider::Antigravity,
+        crate::AcpProvider::Antigravity => ConfigAcpProvider::Antigravity,
     }
 }

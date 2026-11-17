@@ -11,7 +11,7 @@ use super::{
     db::{self, statement},
     deterministic_body_id, legacy_content_role, plan_identity, validate_typed_reference,
 };
-use pl_protocol::PayloadData;
+use crate::PayloadData;
 use sea_orm::ConnectionTrait;
 const DECLARATION_PAGE: i64 = 128;
 

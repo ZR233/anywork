@@ -1,12 +1,12 @@
 use super::super::*;
 use super::{record, wait_initial_turn, wait_notified_turn};
-use pl_protocol::{ChatAtomKind, ChatSourceId};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
 use pl_studio_runtime::history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead};
+use pl_studio_runtime::{ChatAtomKind, ChatSourceId};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -203,7 +203,7 @@ async fn seed_batches(
                     text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().label().into(),
+                mode: pl_studio_runtime::ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -220,7 +220,7 @@ async fn seed_batches(
     inventory.thread_id = Some(id.clone());
     let demand = current_demand();
     let current = runtime
-        .open_current_reader(&id, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)
+        .open_current_reader(&id, pl_studio_runtime::CURRENT_PROTOCOL_VERSION, demand)
         .await?;
     let mut watch = match current.watch(None, demand).await {
         Ok(watch) => watch,

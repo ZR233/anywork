@@ -43,8 +43,8 @@ or cfg values to conceal an incomplete environment.
 Follow ownership, invariants, error propagation and affected callers rather than
 introducing parallel abstractions. Prefer standard libraries and existing project
 components; consult official API contracts before integrating dependencies.
-Use relevant quality/testing skills when available, without assuming every
-specialty is installed or loading them all for a small question.
+Use relevant quality skills when available, without assuming every specialty is
+installed or loading them all for a small question.
 
 Choose checks for the changed behavior using the same toolchain, platform and
 feature selection as the analysis. Preserve lockfiles and repository build

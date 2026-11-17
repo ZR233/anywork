@@ -4,13 +4,6 @@ use crate::support::{
     read_original, scan_main, turn_detail, turn_head_for_input,
 };
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::{
-    AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
-    CreateThreadRequest, ModelConnectionIntent, NewThreadModelRoute, PatchAccountRequest,
-    SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
-    StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
-};
-use pl_protocol::{ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -18,6 +11,13 @@ use pl_provider_fixture::{
     },
     feishu::{ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event},
 };
+use pl_studio_runtime::{
+    AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
+    CreateThreadRequest, ModelConnectionIntent, NewThreadModelRoute, PatchAccountRequest,
+    SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
+    StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
+};
+use pl_studio_runtime::{ThreadStatus, TurnState};
 use std::time::Instant;
 
 impl Observation<'_> {
@@ -51,9 +51,9 @@ impl Observation<'_> {
                         model_id: ROOT_MODEL.into(),
                         effort: None,
                     },
-                    delegation_mode: Some(pl_protocol::DelegationMode::Profile),
-                    delegation_preference: Some(pl_protocol::DelegationPreference::Balanced),
-                    workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+                    delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
+                    delegation_preference: Some(pl_studio_runtime::DelegationPreference::Balanced),
+                    workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Local,
                 },
             )
             .await?;
@@ -427,7 +427,7 @@ impl Observation<'_> {
         let cold_user_inputs = cold_timeline
             .iter()
             .filter(|original| {
-                original.head.text_channel == Some(pl_protocol::ThreadTextChannel::User)
+                original.head.text_channel == Some(pl_studio_runtime::ThreadTextChannel::User)
                     && original.payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             })
             .collect::<Vec<_>>();
@@ -462,16 +462,17 @@ impl Observation<'_> {
             ensure!(
                 matches!(
                     channel,
-                    pl_protocol::ThreadTextChannel::User
-                        | pl_protocol::ThreadTextChannel::Commentary
-                        | pl_protocol::ThreadTextChannel::Final
-                        | pl_protocol::ThreadTextChannel::ParentAgent
+                    pl_studio_runtime::ThreadTextChannel::User
+                        | pl_studio_runtime::ThreadTextChannel::Commentary
+                        | pl_studio_runtime::ThreadTextChannel::Final
+                        | pl_studio_runtime::ThreadTextChannel::ParentAgent
                 ),
                 "unknown cold text channel {channel:?}"
             );
             if !matches!(
                 channel,
-                pl_protocol::ThreadTextChannel::User | pl_protocol::ThreadTextChannel::Final
+                pl_studio_runtime::ThreadTextChannel::User
+                    | pl_studio_runtime::ThreadTextChannel::Final
             ) {
                 continue;
             }
@@ -479,9 +480,9 @@ impl Observation<'_> {
                 .text_body()?
                 .context("cold text omitted its typed History body")?;
             let text = body_text(&cold_read, body, &mut cold_remaining, cold_deadline).await?;
-            user_marker |= channel == pl_protocol::ThreadTextChannel::User
+            user_marker |= channel == pl_studio_runtime::ThreadTextChannel::User
                 && text == AgentPhase::ColdFeishu.marker();
-            final_marker |= channel == pl_protocol::ThreadTextChannel::Final
+            final_marker |= channel == pl_studio_runtime::ThreadTextChannel::Final
                 && text == "Agent observation ColdFeishu complete.";
         }
         ensure!(
@@ -607,8 +608,10 @@ impl Observation<'_> {
                         .next(deadline)
                         .await?
                         .context("Current watch ended before the submitted Turn completed")?;
-                    if let pl_protocol::CurrentFrame::Notification { notification, .. } = frame {
-                        if let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                    if let pl_studio_runtime::CurrentFrame::Notification { notification, .. } =
+                        frame
+                    {
+                        if let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
                             notification.notification
                             && turn.input_id.as_deref() == Some(input_id.as_str())
                         {
@@ -770,7 +773,7 @@ impl Observation<'_> {
                 operation_id: format!("agent-{operation}"),
                 expected_revision: current.config.revision,
                 account_id: config::CHILD_ACCOUNT.into(),
-                authentication: pl_protocol::studio::AccountAuthenticationIntent::Keep,
+                authentication: pl_studio_runtime::AccountAuthenticationIntent::Keep,
                 name: AccountTextPatch::Keep,
                 base_url: AccountTextPatch::Keep,
                 template_id: AccountTextPatch::Keep,
@@ -902,8 +905,8 @@ impl Observation<'_> {
         let receipt = &reply.receipt;
         ensure!(
             receipt.operation_id == operation
-                && receipt.disposition == pl_protocol::studio::CommandDisposition::Applied
-                && receipt.effect == pl_protocol::studio::CommandEffectPoint::Immediate
+                && receipt.disposition == pl_studio_runtime::CommandDisposition::Applied
+                && receipt.effect == pl_studio_runtime::CommandEffectPoint::Immediate
                 && receipt.effective,
             "Mode change has no effective applied receipt: {receipt:?}"
         );
@@ -1069,7 +1072,7 @@ impl Observation<'_> {
                         .await?;
                 let mut found_tool = false;
                 for entry in entries {
-                    if entry.head.kind != pl_protocol::ChatAtomKind::ToolCall
+                    if entry.head.kind != pl_studio_runtime::ChatAtomKind::ToolCall
                         || entry.payload["type"] != "tool"
                     {
                         continue;
@@ -1100,7 +1103,7 @@ impl Observation<'_> {
                         metadata["failedAt"]
                             .as_i64()
                             .context("failed spawn omitted failedAt")?;
-                        serde_json::from_value::<pl_protocol::ThreadToolFailure>(
+                        serde_json::from_value::<pl_studio_runtime::ThreadToolFailure>(
                             metadata
                                 .get("failure")
                                 .context("failed spawn omitted failure")?
@@ -1156,7 +1159,7 @@ async fn cold_main_chat(
             );
             let mut originals = Vec::new();
             for head in main.entities {
-                if head.kind != pl_protocol::ChatAtomKind::Text {
+                if head.kind != pl_studio_runtime::ChatAtomKind::Text {
                     continue;
                 }
                 let original = read_original(&read, &head, remaining, deadline).await?;

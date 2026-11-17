@@ -7,12 +7,12 @@ use super::{
     thread_observation::{StateReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
+use crate::{
+    THREAD_SCHEMA_VERSION, ThreadActivity, ThreadBusinessRefs, ThreadNotification,
+    ThreadNotificationEnvelope, ThreadStorageState, ThreadSubscriptionUpdate,
+};
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
-use pl_protocol::{
-    THREAD_SCHEMA_VERSION, ThreadActivity, ThreadBusinessRefs,
-    ThreadNotification, ThreadNotificationEnvelope, ThreadStorageState, ThreadSubscriptionUpdate,
-};
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
     sync::{broadcast, watch},
@@ -33,7 +33,7 @@ pub struct ConversationStateFeed {
     observation_due: Option<Instant>,
     state: Option<StateReceiver>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
-    last_turn: Option<watch::Receiver<Option<Arc<pl_protocol::Turn>>>>,
+    last_turn: Option<watch::Receiver<Option<Arc<crate::Turn>>>>,
     slot_changed: watch::Receiver<u64>,
     slot_epoch: u64,
     applied: u64,
@@ -44,8 +44,8 @@ pub struct ConversationStateFeed {
     runtime_floor: (u64, u64),
     activity_floor: u64,
     activity: Option<ThreadActivity>,
-    runtime: Option<pl_protocol::ThreadRuntimeSnapshot>,
-    model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    runtime: Option<crate::ThreadRuntimeSnapshot>,
+    model_route: Option<crate::ThreadModelRouteSnapshot>,
     storage_state: Option<ThreadStorageState>,
     active_turn: Option<String>,
     delivered_terminal: Option<(String, u64)>,
@@ -66,13 +66,13 @@ impl std::fmt::Debug for ConversationStateFeed {
 }
 
 fn resync() -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Busy,
+    crate::StudioError::new(
+        crate::StudioErrorCode::Busy,
         "Current source continuity changed; open a new handle",
         true,
     )
     .with_reason(
-        pl_protocol::studio::StudioErrorReason::ConversationResyncRequired,
+        crate::StudioErrorReason::ConversationResyncRequired,
         serde_json::Value::Null,
     )
     .into()
@@ -192,7 +192,12 @@ impl StudioRuntime {
             annotate_route = true;
             let saved = match saved_current {
                 Some(saved) => Some(saved),
-                None => self.store.state_for(&thread.workspace_id, thread_id)?.load_current().await?.map(Arc::new),
+                None => self
+                    .store
+                    .state_for(&thread.workspace_id, thread_id)?
+                    .load_current()
+                    .await?
+                    .map(Arc::new),
             };
             ensure!(slot.is_current(position.epoch), resync());
             match saved {
@@ -208,9 +213,11 @@ impl StudioRuntime {
                         thread.updated_at,
                         &snapshot.usage_summary,
                     )?;
-                    let mut resources = super::thread_observation::state_resources::StateResources::cold(
-                        current.owner_id().into(), saved.snapshot_revision,
-                    );
+                    let mut resources =
+                        super::thread_observation::state_resources::StateResources::cold(
+                            current.owner_id().into(),
+                            saved.snapshot_revision,
+                        );
                     runtime = Some(resources.runtime(projected)?);
                     (
                         saved.snapshot_revision,
@@ -239,7 +246,7 @@ impl StudioRuntime {
         let storage_state = storage
             .as_mut()
             .and_then(|storage| storage.borrow_and_update().clone());
-        let snapshot = pl_protocol::ThreadSnapshot {
+        let snapshot = crate::ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
             revision: effect_cut,
             thread,
@@ -293,18 +300,6 @@ impl StudioRuntime {
 }
 
 impl ConversationStateFeed {
-    pub fn thread_id(&self) -> &str {
-        &self.thread_id
-    }
-    pub fn subscription_id(&self) -> &str {
-        &self.subscription_id
-    }
-    pub fn cancellation_token(&self) -> CancellationToken {
-        self.cancel.clone()
-    }
-    pub fn request_close(&self) {
-        self.cancel.cancel();
-    }
     pub async fn close(&mut self) -> Result<()> {
         self.finish();
         Ok(())
@@ -321,7 +316,7 @@ impl ConversationStateFeed {
         self.ended = true;
     }
 
-    fn terminal_delivered(&self, turn: &pl_protocol::Turn) -> bool {
+    fn terminal_delivered(&self, turn: &crate::Turn) -> bool {
         self.delivered_terminal
             .as_ref()
             .is_some_and(|(id, revision)| id == &turn.id && *revision >= turn.revision)
@@ -337,7 +332,7 @@ impl ConversationStateFeed {
         self.reflect_terminal((*turn).clone())
     }
 
-    fn reflect_terminal(&mut self, turn: pl_protocol::Turn) -> Result<()> {
+    fn reflect_terminal(&mut self, turn: crate::Turn) -> Result<()> {
         if turn.revision > self.applied
             || self.active_turn.is_some()
             || self.terminal_delivered(&turn)
@@ -447,7 +442,7 @@ impl ConversationStateFeed {
                 if self.terminal_delivered(&turn) {
                     return Ok(());
                 }
-                if matches!(&turn.state, pl_protocol::TurnState::Running(_)) {
+                if matches!(&turn.state, crate::TurnState::Running(_)) {
                     self.active_turn = Some(turn.id.clone());
                 } else if turn.state.is_terminal() {
                     self.delivered_terminal = Some((turn.id.clone(), turn.revision));
@@ -567,7 +562,7 @@ impl ConversationStateFeed {
                     notification.notification,
                     ThreadNotification::ThreadRuntimeUpdated { ref runtime, .. }
                         if runtime.live_usage.as_ref().is_some_and(|usage| {
-                            usage.state == pl_protocol::ThreadRuntimeUsageState::Live
+                            usage.state == crate::ThreadRuntimeUsageState::Live
                         })
                 ))
             })
@@ -765,10 +760,7 @@ enum Wake {
     Closed,
 }
 
-fn annotate_runtime_mode(
-    runtime: &StudioRuntime,
-    snapshot: &mut pl_protocol::ThreadRuntimeSnapshot,
-) {
+fn annotate_runtime_mode(runtime: &StudioRuntime, snapshot: &mut crate::ThreadRuntimeSnapshot) {
     if let Some(run) = snapshot
         .workflow
         .as_mut()
@@ -780,8 +772,8 @@ fn annotate_runtime_mode(
 
 /// Live runtime observations may replace only an observation for the same model attempt.
 pub(in crate::studio::runtime) fn same_live_runtime_identity(
-    incoming: &pl_protocol::ThreadRuntimeSnapshot,
-    previous: &pl_protocol::ThreadRuntimeSnapshot,
+    incoming: &crate::ThreadRuntimeSnapshot,
+    previous: &crate::ThreadRuntimeSnapshot,
 ) -> bool {
     let Some(incoming_usage) = incoming.live_usage.as_ref() else {
         return false;
@@ -789,8 +781,8 @@ pub(in crate::studio::runtime) fn same_live_runtime_identity(
     let Some(previous_usage) = previous.live_usage.as_ref() else {
         return false;
     };
-    incoming_usage.state == pl_protocol::ThreadRuntimeUsageState::Live
-        && previous_usage.state == pl_protocol::ThreadRuntimeUsageState::Live
+    incoming_usage.state == crate::ThreadRuntimeUsageState::Live
+        && previous_usage.state == crate::ThreadRuntimeUsageState::Live
         && incoming_usage.turn_id == previous_usage.turn_id
         && incoming_usage.attempt_id == previous_usage.attempt_id
 }
@@ -803,7 +795,7 @@ mod storage_fault_tests {
     #[test]
     fn state_baseline_carries_qualified_plan_and_rejects_mixed_business_slice() -> Result<()> {
         use crate::studio::thread_projection::CurrentState;
-        use pl_protocol::{AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState};
+        use crate::{AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState};
 
         let text = "# The saved Plan\n\nKeep the business references consistent.";
         let mut plan = AgentSessionPlanState {
@@ -824,7 +816,7 @@ mod storage_fault_tests {
                 payload: crate::plan_tool::encode_plan_state(&plan)?,
             },
         );
-        let thread = pl_protocol::Thread::placeholder("state-baseline");
+        let thread = crate::Thread::placeholder("state-baseline");
         let current = CurrentState::cold("state-db".into(), thread.id.clone(), 7, &state)?;
         let references = current.business_refs_at(&thread.id, &state)?;
         let snapshot = crate::studio::thread_projection::project_snapshot(

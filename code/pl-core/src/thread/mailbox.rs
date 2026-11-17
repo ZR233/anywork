@@ -184,6 +184,11 @@ pub(super) enum MailboxCommand {
         Option<input::InputDriverOptions>,
         oneshot::Sender<Result<u64, ThreadError>>,
     ),
+    MessageWithExtensions {
+        message: inbox::ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+        reply: oneshot::Sender<Result<u64, ThreadError>>,
+    },
     WakeAcceptedMessage {
         id: String,
         sequence: u64,
@@ -593,6 +598,18 @@ impl Owner {
                     Err(ThreadError::Closed)
                 } else {
                     self.receive_message(message, drive, None)
+                };
+                let _ = reply.send(result);
+            }
+            MailboxCommand::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            } => {
+                let result = if self.interrupt.is_closing() {
+                    Err(ThreadError::Closed)
+                } else {
+                    self.receive_message_with_extensions(message, mutations)
                 };
                 let _ = reply.send(result);
             }

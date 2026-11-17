@@ -4,7 +4,7 @@ use crate::api::studio::{
     convert::commands::settings_command_reply,
     types::{AccountSecretInput, BridgeError, BridgeSettingsCommandReply},
 };
-use pl_protocol::studio as p;
+use pl_studio_runtime as p;
 
 pub async fn patch_account(
     operation_id: String,

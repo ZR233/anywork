@@ -137,7 +137,7 @@
               "properties": {
                 "queryClass": { "type": "string" },
                 "parentId": { "type": ["string", "null"] },
-                "originalKind": { "type": "string" },
+                "originalKind": { "$ref": "#/$defs/ChatAtomKind" },
                 "toolName": { "type": ["string", "null"] }
               }
             },
@@ -162,13 +162,218 @@
       }
     },
     "HistoryBodyRole": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "enum": ["canonicalPayload", "canonicalMetadata", "body", "reasoningSummary", "toolArguments", "toolOutput", "attachment", "waitPresentation"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "const": "other" },
+            "name": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "ChatAtomKind": {
+      "enum": ["input", "text", "reasoning", "toolCall", "fileChange", "skill", "interaction", "plan", "compaction", "turnReceipt", "receipt", "raw", "agent", "inference", "unknown"]
+    },
+    "HistoryEntityState": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "unknown" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "status"],
+          "properties": {
+            "kind": { "const": "knownActive" },
+            "status": { "enum": ["running", "waiting"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "outcome"],
+          "properties": {
+            "kind": { "const": "knownTerminal" },
+            "outcome": { "enum": ["completed", "failed", "cancelled", "transferred"] }
+          }
+        }
+      ]
+    },
+    "HistoryObservation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "original" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "capturedAt"],
+          "properties": {
+            "kind": { "const": "boundary" },
+            "capturedAt": { "type": ["integer", "null"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "capturedAt"],
+          "properties": {
+            "kind": { "const": "unavailableLegacy" },
+            "capturedAt": { "type": ["integer", "null"] }
+          }
+        }
+      ]
+    },
+    "HistoryToolIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": ["callId", "name"],
       "properties": {
-        "kind": { "enum": ["canonicalPayload", "canonicalMetadata", "body", "reasoningSummary", "toolArguments", "toolOutput", "attachment", "waitPresentation", "other"] },
-        "name": { "type": "string" }
+        "callId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
       }
+    },
+    "SingleVisibility": {
+      "enum": ["content", "finalEmptyAfterContent"]
+    },
+    "ThreadWaitTargetStatus": {
+      "enum": ["running", "succeeded", "failed", "cancelled", "interrupted"]
+    },
+    "ThreadWaitTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskId"],
+      "properties": {
+        "taskId": { "type": "string", "minLength": 1 },
+        "toolName": { "type": "string" },
+        "summary": { "type": "string" },
+        "summaryTruncated": { "type": "boolean" },
+        "status": { "$ref": "#/$defs/ThreadWaitTargetStatus" }
+      }
+    },
+    "ThreadWaitIntent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "events" },
+            "data": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["targets", "timeoutMs"],
+              "properties": {
+                "targets": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/ThreadWaitTarget" }
+                },
+                "timeoutMs": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "data"],
+          "properties": {
+            "kind": { "const": "timer" },
+            "data": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["durationMs"],
+              "properties": {
+                "durationMs": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ThreadWaitState": {
+      "enum": ["waiting", "ready", "timedOut", "elapsed", "cancelled", "failed", "interrupted"]
+    },
+    "ThreadWaitPresentation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "state"],
+      "properties": {
+        "intent": { "$ref": "#/$defs/ThreadWaitIntent" },
+        "state": { "$ref": "#/$defs/ThreadWaitState" },
+        "messagesReady": { "type": "boolean" }
+      }
+    },
+    "HistoryWaitIntentHead": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "targetCount", "timeoutMs"],
+          "properties": {
+            "kind": { "const": "events" },
+            "targetCount": { "type": "integer", "minimum": 0 },
+            "timeoutMs": { "type": "integer", "minimum": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "durationMs"],
+          "properties": {
+            "kind": { "const": "timer" },
+            "durationMs": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "HistoryWaitHead": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "presentation"],
+          "properties": {
+            "kind": { "const": "inline" },
+            "presentation": { "$ref": "#/$defs/ThreadWaitPresentation" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "intent", "state", "messagesReady", "presentation"],
+          "properties": {
+            "kind": { "const": "deferred" },
+            "intent": { "$ref": "#/$defs/HistoryWaitIntentHead" },
+            "state": { "$ref": "#/$defs/ThreadWaitState" },
+            "messagesReady": { "type": ["boolean", "null"] },
+            "presentation": { "$ref": "#/$defs/HistoryEventBodyRef" }
+          }
+        }
+      ]
     },
     "HistoryEntityHead": {
       "type": "object",
@@ -179,17 +384,17 @@
         "runId": { "type": ["string", "null"] },
         "attemptId": { "type": ["string", "null"] },
         "source": { "$ref": "native.schema.json#/$defs/ChatSourceId" },
-        "kind": { "type": "string" },
-        "delivery": { "type": "string" },
-        "state": { "type": "object" },
+        "kind": { "$ref": "#/$defs/ChatAtomKind" },
+        "delivery": { "enum": ["foreground", "backgroundHandoff", "independent"] },
+        "state": { "$ref": "#/$defs/HistoryEntityState" },
         "startedAt": { "type": ["integer", "null"] },
         "finishedAt": { "type": ["integer", "null"] },
-        "textChannel": { "type": ["string", "null"] },
-        "tool": { "type": ["object", "null"] },
-        "wait": { "type": ["object", "null"] },
+        "textChannel": { "anyOf": [{ "enum": ["user", "parentAgent", "commentary", "final"] }, { "type": "null" }] },
+        "tool": { "anyOf": [{ "$ref": "#/$defs/HistoryToolIdentity" }, { "type": "null" }] },
+        "wait": { "anyOf": [{ "$ref": "#/$defs/HistoryWaitHead" }, { "type": "null" }] },
         "contentPresent": { "type": ["boolean", "null"] },
-        "singleVisibility": { "type": ["string", "null"] },
-        "observation": { "type": "object" },
+        "singleVisibility": { "anyOf": [{ "$ref": "#/$defs/SingleVisibility" }, { "type": "null" }] },
+        "observation": { "$ref": "#/$defs/HistoryObservation" },
         "presentationContract": { "type": ["string", "null"] },
         "detailEventId": { "type": ["string", "null"] },
         "inputManifestEventId": { "type": ["string", "null"] },

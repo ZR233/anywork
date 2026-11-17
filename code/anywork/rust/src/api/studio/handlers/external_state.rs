@@ -127,14 +127,14 @@ pub async fn reset_lsp(input: LspScopeInput) -> Result<BridgeLspStateSnapshot, B
         LspScopeInput::Server {
             workspace_id,
             server_id,
-        } => pl_protocol::studio::LspResetRequest::Server {
+        } => pl_studio_runtime::LspResetRequest::Server {
             workspace_id,
             server_id,
         },
         LspScopeInput::Workspace { workspace_id } => {
-            pl_protocol::studio::LspResetRequest::Workspace { workspace_id }
+            pl_studio_runtime::LspResetRequest::Workspace { workspace_id }
         }
-        LspScopeInput::All => pl_protocol::studio::LspResetRequest::All,
+        LspScopeInput::All => pl_studio_runtime::LspResetRequest::All,
     };
     bridge.studio.reset_lsp_request(request).await?;
     read_lsp_state().await

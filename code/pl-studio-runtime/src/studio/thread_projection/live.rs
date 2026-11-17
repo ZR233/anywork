@@ -24,6 +24,15 @@ use std::{
     sync::Arc,
 };
 
+use crate::{
+    InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
+    SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
+    ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
+    ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem,
+    ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
+    TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
+    UserQuestion, UserQuestionOption,
+};
 use pl_core::{
     chat::{ChatDraft, PresentationPart},
     model::{
@@ -32,15 +41,6 @@ use pl_core::{
     },
     thread::current::RuntimeEpoch,
     thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
-};
-use pl_protocol::{
-    InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
-    SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
-    ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
-    ThreadRawItem, ThreadSkillItem, ThreadTextChannel, ThreadTextItem, ThreadThinkingItem,
-    ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
-    TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
-    UserQuestion, UserQuestionOption,
 };
 
 use super::ProjectionError;
@@ -64,7 +64,7 @@ fn completion_ready(item: &ExecutionItem) -> bool {
         && !matches!(
             item.state(),
             ExecutionShape::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
-                input.state(), pl_protocol::ThreadToolUserInputState::Pending
+                input.state(), crate::ThreadToolUserInputState::Pending
             ))
         )
 }
@@ -323,7 +323,7 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) boundary_inputs: Arc<BTreeMap<String, observations::Observation>>,
     pub(in crate::studio) history_changes: Arc<[HistoryEntityChange]>,
     pub(in crate::studio) history_turns: Arc<[HistoryTurnHead]>,
-    pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, pl_protocol::Turn>>,
+    pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
     pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
@@ -339,7 +339,7 @@ fn prepared_turns(
     items: &[ExecutionItem],
     run: RuntimeEpoch,
     effect: u64,
-) -> Result<(Vec<HistoryTurnHead>, BTreeMap<String, pl_protocol::Turn>), ProjectionError> {
+) -> Result<(Vec<HistoryTurnHead>, BTreeMap<String, crate::Turn>), ProjectionError> {
     fn millis(at: i64) -> Result<i64, ProjectionError> {
         crate::history::milliseconds_from_seconds(at)
             .map_err(|error| ProjectionError::History(error.to_string()))
@@ -353,15 +353,15 @@ fn prepared_turns(
         let started_at = turn.state().started_at().map(millis).transpose()?;
         let finished_at = turn.state().completed_at().map(millis).transpose()?;
         let state = match turn.state() {
-            pl_protocol::TurnState::Queued(_) => HistoryTurnState::Queued,
-            pl_protocol::TurnState::Running(_) => HistoryTurnState::Running,
-            pl_protocol::TurnState::Completed(_) => HistoryTurnState::Completed,
-            pl_protocol::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
-            pl_protocol::TurnState::Failed(_) => HistoryTurnState::Failed,
-            pl_protocol::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
+            crate::TurnState::Queued(_) => HistoryTurnState::Queued,
+            crate::TurnState::Running(_) => HistoryTurnState::Running,
+            crate::TurnState::Completed(_) => HistoryTurnState::Completed,
+            crate::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
+            crate::TurnState::Failed(_) => HistoryTurnState::Failed,
+            crate::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
         };
         let queued_at = match turn.state() {
-            pl_protocol::TurnState::Queued(state) => Some(millis(state.queued_at())?),
+            crate::TurnState::Queued(state) => Some(millis(state.queued_at())?),
             _ => None,
         };
         heads.push(HistoryTurnHead {
@@ -370,7 +370,7 @@ fn prepared_turns(
             run_id: Some(run.to_string()),
             state,
             phase: turn.state().phase(),
-            context_disposition: pl_protocol::ThreadContextDisposition::Active,
+            context_disposition: crate::ThreadContextDisposition::Active,
             queued_at,
             started_at,
             finished_at,
@@ -379,7 +379,7 @@ fn prepared_turns(
         });
         details.insert(
             item.turn_id.clone(),
-            pl_protocol::Turn {
+            crate::Turn {
                 input_id: turn.input_id().map(str::to_owned),
                 id: item.turn_id.clone(),
                 thread_id: item.thread_id.clone(),
@@ -393,7 +393,7 @@ fn prepared_turns(
 }
 
 fn history_entity_change(
-    atom: &pl_protocol::ChatAtom,
+    atom: &crate::ChatAtom,
     drafts: &[ChatDraft],
     run: RuntimeEpoch,
     effect: &ThreadEffectBatch,
@@ -404,20 +404,17 @@ fn history_entity_change(
             .map_err(|error| ProjectionError::History(error.to_string()))
     };
     let draft_id = atom.completion_item_id.as_deref().unwrap_or(&atom.id);
-    let draft = matches!(
-        atom.lifecycle,
-        pl_protocol::ChatAtomLifecycle::Terminal { .. }
-    )
-    .then(|| drafts.iter().find(|draft| draft.item_id == draft_id))
-    .flatten();
+    let draft = matches!(atom.lifecycle, crate::ChatAtomLifecycle::Terminal { .. })
+        .then(|| drafts.iter().find(|draft| draft.item_id == draft_id))
+        .flatten();
     let mut event = HistoryEvent::new(
         draft.map_or_else(
             || format!("entity:{run}:{}:{}", effect.sequence, atom.id),
             |draft| draft.item_id.clone(),
         ),
         match atom.lifecycle {
-            pl_protocol::ChatAtomLifecycle::Active { .. } => HistoryEventKind::EntityStarted,
-            pl_protocol::ChatAtomLifecycle::Terminal { .. } => HistoryEventKind::EntityEnded,
+            crate::ChatAtomLifecycle::Active { .. } => HistoryEventKind::EntityStarted,
+            crate::ChatAtomLifecycle::Terminal { .. } => HistoryEventKind::EntityEnded,
         },
         millis(effect.committed_at)?,
     );
@@ -451,7 +448,7 @@ fn history_entity_change(
     Ok(change)
 }
 
-fn history_sources(sources: &[pl_protocol::ChatSourceState]) -> Vec<HistorySourceHead> {
+fn history_sources(sources: &[crate::ChatSourceState]) -> Vec<HistorySourceHead> {
     sources
         .iter()
         .map(|source| HistorySourceHead {
@@ -743,9 +740,9 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
     bytes
 }
 
-fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
+fn wait_bytes(wait: &crate::ThreadWaitPresentation) -> u64 {
     match wait.intent() {
-        pl_protocol::ThreadWaitIntent::Events { targets, .. } => {
+        crate::ThreadWaitIntent::Events { targets, .. } => {
             targets
                 .iter()
                 .fold(RETAINED_ENTRY_OVERHEAD, |total, target| {
@@ -756,7 +753,7 @@ fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
                         .saturating_add(RETAINED_ENTRY_OVERHEAD)
                 })
         }
-        pl_protocol::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
+        crate::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
     }
 }
 
@@ -788,7 +785,7 @@ fn user_questions_bytes(questions: &[UserQuestion]) -> u64 {
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
-fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
+fn user_input_bytes(user_input: &crate::ThreadToolUserInput) -> u64 {
     let questions = user_questions_bytes(user_input.questions()).saturating_add(
         user_input.plan_document().map_or(0, |identity| {
             (identity.content_hash.len() as u64).saturating_add(RETAINED_ENTRY_OVERHEAD)
@@ -915,11 +912,11 @@ fn skill_bytes(skill: &ThreadSkillItem) -> u64 {
 /// The state's scalar shell is already part of `Turn`'s inline layout, so only owned strings are
 /// charged: a failed Turn's structured failure, a coalesced cancellation's target identity and a
 /// budget rollover's error. Every other variant carries only timestamps and copied discriminants.
-fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
+fn turn_state_bytes(state: &crate::TurnState) -> u64 {
     match state {
-        pl_protocol::TurnState::Queued(_) | pl_protocol::TurnState::Running(_) => 0,
-        pl_protocol::TurnState::Completed(_) => 0,
-        pl_protocol::TurnState::Cancelled(state) => match state.cause() {
+        crate::TurnState::Queued(_) | crate::TurnState::Running(_) => 0,
+        crate::TurnState::Completed(_) => 0,
+        crate::TurnState::Cancelled(state) => match state.cause() {
             TurnCancellationCause::Coalesced { target_turn_id } => target_turn_id.len() as u64,
             TurnCancellationCause::Unspecified
             | TurnCancellationCause::UserRequested
@@ -928,11 +925,11 @@ fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
             | TurnCancellationCause::Interrupted
             | TurnCancellationCause::Recovery => 0,
         },
-        pl_protocol::TurnState::Failed(state) => {
+        crate::TurnState::Failed(state) => {
             let failure = state.failure();
             optional_bytes(failure.code.as_deref()).saturating_add(failure.message.len() as u64)
         }
-        pl_protocol::TurnState::BudgetLimited(state) => match state.rollover() {
+        crate::TurnState::BudgetLimited(state) => match state.rollover() {
             TurnRolloverOutcome::Failed { error } => error.len() as u64,
             TurnRolloverOutcome::NotAttempted | TurnRolloverOutcome::Succeeded => 0,
         },
@@ -1308,8 +1305,8 @@ mod provenance;
 pub(in crate::studio) struct LiveProjection {
     #[cfg(test)]
     pub(in crate::studio) fail_after_project: bool,
-    atom_starts: BTreeMap<String, pl_protocol::ChatAtom>,
-    source_states: BTreeMap<pl_protocol::ChatSourceId, pl_protocol::ChatSourceState>,
+    atom_starts: BTreeMap<String, crate::ChatAtom>,
+    source_states: BTreeMap<crate::ChatSourceId, crate::ChatSourceState>,
     provenance_restored: bool,
     /// Canonical payloads of identities that can still change.
     ///
@@ -1333,7 +1330,7 @@ pub(in crate::studio) struct LiveProjection {
     /// the projection emit a `turnUpdated` frame for each real phase transition instead of leaving
     /// the activity row at the phase captured when the Turn started.
     turn_phases: BTreeMap<String, TurnPhase>,
-    turn_failures: BTreeMap<String, pl_protocol::TurnFailure>,
+    turn_failures: BTreeMap<String, crate::TurnFailure>,
     /// Identity of the attempt the resident streaming previews belong to.
     ///
     /// A new attempt uses entirely new observation identities, so the caches of the previous one no
@@ -1483,7 +1480,7 @@ impl LiveProjection {
     #[cfg(test)]
     pub(in crate::studio) fn observe_test_current(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         active: Vec<super::current::ActiveText>,
     ) -> Result<(), ProjectionError> {
         self.current
@@ -1491,7 +1488,7 @@ impl LiveProjection {
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         Ok(())
     }
-    pub(in crate::studio) fn current_activity(&self) -> Option<pl_protocol::ThreadActivity> {
+    pub(in crate::studio) fn current_activity(&self) -> Option<crate::ThreadActivity> {
         self.current.activity()
     }
 
@@ -1662,7 +1659,7 @@ impl LiveProjection {
     /// instead of writing a timeline with a hole.
     pub(in crate::studio) async fn prepare(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
@@ -1758,7 +1755,7 @@ impl LiveProjection {
     /// Same as [`LiveProjection::prepare`].
     pub(in crate::studio) async fn prepare_committed(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
@@ -1839,7 +1836,7 @@ impl LiveProjection {
     /// the same Turn resolves them without a second projection or a storage lookup.
     async fn project(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<
@@ -1864,7 +1861,7 @@ impl LiveProjection {
         let mut hidden_inputs = self.hidden_inputs.clone();
         for change in effect.inputs.iter() {
             if let pl_core::thread::input::InputChange::Accepted(record) = change
-                && super::input_presentation(record) == pl_protocol::MessagePresentation::Hidden
+                && super::input_presentation(record) == crate::MessagePresentation::Hidden
             {
                 hidden_inputs.insert(record.input.id.clone());
             }
@@ -1995,15 +1992,15 @@ impl LiveProjection {
         });
         for item in &mut items {
             if let crate::ExecutionShape::Turn(turn) = item.state()
-                && let pl_protocol::TurnState::Failed(failed) = turn.state()
+                && let crate::TurnState::Failed(failed) = turn.state()
                 && let Some(failure) = turn_failures.get(&item.turn_id)
             {
-                let state = pl_protocol::TurnState::Failed(pl_protocol::FailedTurnState::new(
+                let state = crate::TurnState::Failed(crate::FailedTurnState::new(
                     failed.started_at(),
                     failed.completed_at(),
                     failure.clone(),
                 ));
-                let turn = pl_protocol::ThreadTurnItem::new(state)
+                let turn = crate::ThreadTurnItem::new(state)
                     .with_input_id(turn.input_id().map(str::to_owned));
                 *item = item.clone().with_state(crate::ExecutionShape::Turn(turn));
             }
@@ -2140,7 +2137,7 @@ impl LiveProjection {
     /// published.
     async fn prepare_completion_drafts(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
         items: &[ExecutionItem],
@@ -2158,7 +2155,7 @@ impl LiveProjection {
                 && let Some(draft) = crate::studio::runtime::chat_item::accepted_input_draft(
                     thread,
                     record,
-                    pl_protocol::ChatFactPosition {
+                    crate::ChatFactPosition {
                         effect_seq: effect.sequence,
                         suborder: u32::try_from(
                             index.checked_add(1).ok_or(ProjectionError::Count)?,
@@ -2185,7 +2182,7 @@ impl LiveProjection {
             if let Some(draft) = crate::studio::runtime::chat_item::accepted_inbox_draft(
                 thread,
                 record,
-                pl_protocol::ChatFactPosition {
+                crate::ChatFactPosition {
                     effect_seq: effect.sequence,
                     suborder: u32::try_from(
                         effect
@@ -2236,8 +2233,7 @@ impl LiveProjection {
             drafts.push(draft);
         }
         for item in items {
-            if crate::studio::runtime::chat_item::atom(item).kind
-                == pl_protocol::ChatAtomKind::Input
+            if crate::studio::runtime::chat_item::atom(item).kind == crate::ChatAtomKind::Input
                 || state.inputs.iter().any(|record| record.input.id == item.id)
                 || effect.inputs.iter().any(|change| match change {
                     pl_core::thread::input::InputChange::Accepted(record) => {
@@ -2334,7 +2330,7 @@ impl LiveProjection {
     /// move.
     pub(in crate::studio) async fn stream(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
         self.ensure_current_owner().await?;
@@ -2350,7 +2346,7 @@ impl LiveProjection {
 
     async fn stream_model_progress(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
         let Some(preview) = state.model_progress.as_ref() else {
@@ -2462,7 +2458,7 @@ impl LiveProjection {
 
     fn stream_observation_parts(
         &mut self,
-        _thread: &pl_protocol::Thread,
+        _thread: &crate::Thread,
         attempt: &pl_core::thread::RequestAttempt,
         generation: u32,
         parts: &pl_core::model::ModelParts,
@@ -2765,7 +2761,7 @@ impl LiveProjection {
     /// Reads canonical identities without assigning placement or changing the index.
     async fn resolve(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         ids: impl IntoIterator<Item = String>,
         terminal_turns: &BTreeSet<String>,
         effect: u64,
@@ -2972,7 +2968,7 @@ impl LiveProjection {
     /// a live subscriber and durable history describe one commit rather than two drifting views.
     fn prepare_turn_frames(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
@@ -3004,7 +3000,7 @@ impl LiveProjection {
 
     fn emit_frames(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         mut turns: BTreeMap<String, Turn>,
@@ -3768,7 +3764,7 @@ mod append_only_history_tests {
         use pl_model::runtime::{ModelMemberReceipt, ModelMemberState};
 
         let directory = tempfile::tempdir()?;
-        let thread = pl_protocol::Thread::placeholder("boundary-owner");
+        let thread = crate::Thread::placeholder("boundary-owner");
         let history = HistoryStore::open(
             directory.path().join("history.sqlite"),
             &thread.id,
@@ -4023,6 +4019,7 @@ mod append_only_history_tests {
     #[tokio::test]
     async fn nested_task_invocation_is_projected_from_the_task_without_a_context_copy() -> Result<()>
     {
+        use crate::{ChatAtomKind, ChatAtomLifecycle};
         use pl_core::{
             model::ModelToolCall,
             thread::{
@@ -4030,10 +4027,9 @@ mod append_only_history_tests {
                 task::{TaskRecord, TaskStatus},
             },
         };
-        use pl_protocol::{ChatAtomKind, ChatAtomLifecycle};
 
         let directory = tempfile::tempdir()?;
-        let thread = pl_protocol::Thread::placeholder("nested-task");
+        let thread = crate::Thread::placeholder("nested-task");
         let history = HistoryStore::open(
             directory.path().join("nested-task.sqlite"),
             &thread.id,
@@ -4121,15 +4117,15 @@ mod append_only_history_tests {
 
     #[tokio::test]
     async fn compaction_current_settles_each_real_outcome_without_a_history_item() -> Result<()> {
+        use crate::{
+            ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
+        };
         use pl_core::thread::{
             ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome,
         };
-        use pl_protocol::{
-            ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
-        };
 
         let directory = tempfile::tempdir()?;
-        let thread = pl_protocol::Thread::placeholder("compaction-current");
+        let thread = crate::Thread::placeholder("compaction-current");
         for (case, outcome, terminal, associated) in [
             (
                 "changed",

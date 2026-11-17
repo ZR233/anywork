@@ -261,6 +261,10 @@ impl Environment {
         StudioRuntimeOptions {
             studio_home: Some(home.into()),
             host: StudioHostKind::Test,
+            skill_search: pl_studio_runtime::SkillSearchOptions {
+                include_default_user_dir: false,
+                additional_dirs: Vec::new(),
+            },
             ..StudioRuntimeOptions::desktop()
         }
     }

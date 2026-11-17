@@ -1,9 +1,9 @@
 //! Thread-tool reads over independent Current and History ports.
 
 use super::{StudioRuntime, output};
+use crate::{ChatScope, ContentRange, CurrentCollectionRef, CurrentContentRef, ReadDemand};
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
-use pl_protocol::{ChatScope, ContentRange, CurrentCollectionRef, CurrentContentRef, ReadDemand};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -61,13 +61,13 @@ impl Default for ReadOwners {
 }
 
 fn stale_scope() -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::StaleRevision,
+    crate::StudioError::new(
+        crate::StudioErrorCode::StaleRevision,
         "Tool read scope is unknown or retired",
         false,
     )
     .with_reason(
-        pl_protocol::studio::StudioErrorReason::StaleReadScope,
+        crate::StudioErrorReason::StaleReadScope,
         serde_json::Value::Null,
     )
     .into()
@@ -127,7 +127,7 @@ impl ReadOwners {
         let current = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
             _=cancelled(cancel)=>return Err(search_cancelled()),
-            result=runtime.open_current_reader(session, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)=>result?
+            result=runtime.open_current_reader(session, crate::CURRENT_PROTOCOL_VERSION, demand)=>result?
         };
         let history_result = tokio::select! { biased;
             _=self.stopping.cancelled()=>return Err(stale_scope()),
@@ -257,8 +257,8 @@ pub(super) struct ReadInput {
 pub(super) fn read_schema() -> serde_json::Value {
     let mut schema = pl_agent_tool::typed::input_schema_for::<ReadInput>();
     schema["properties"]["demand"] = serde_json::json!({"anyOf":[{"type":"object","required":["maxItems","maxBytes"],"additionalProperties":false,"properties":{
-        "maxItems":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_READ_MAX_ITEMS},
-        "maxBytes":{"type":"integer","minimum":1,"maximum":pl_protocol::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
+        "maxItems":{"type":"integer","minimum":1,"maximum":crate::CHAT_READ_MAX_ITEMS},
+        "maxBytes":{"type":"integer","minimum":1,"maximum":crate::CHAT_BATCH_MAX_BYTES}}},{"type":"null"}]});
     schema["properties"]["reference"] = serde_json::json!({"anyOf":[{"type":"object","description":"Copy a CurrentContentRef unchanged."},{"type":"null"}]});
     schema["properties"]["scope"]["description"] = serde_json::json!(
         "History original scope for a new read. Existing readScope continues the same immutable cut."
@@ -326,10 +326,10 @@ pub(super) async fn get(
             pending_has_more = page.continuation.is_some();
             for entry in page.entries {
                 pending.push(match entry.payload {
-                    pl_protocol::CurrentPayloadData::Inline { bytes } => {
+                    crate::CurrentPayloadData::Inline { bytes } => {
                         serde_json::from_slice::<serde_json::Value>(&bytes)?
                     }
-                    pl_protocol::CurrentPayloadData::Deferred { reference, .. } => {
+                    crate::CurrentPayloadData::Deferred { reference, .. } => {
                         serde_json::json!({"id":entry.id,"detailsDeferred":true,"reference":reference})
                     }
                 });
@@ -523,7 +523,7 @@ pub(super) async fn search(
             let page = search_read(
                 cancel,
                 runtime.agent_facility.product_events.query_threads(
-                    &pl_protocol::studio::ThreadDirectoryQuery {
+                    &crate::ThreadDirectoryQuery {
                         workspace_id: args.workspace_id.clone(),
                         archived: args.archived,
                         ..Default::default()

@@ -3,7 +3,7 @@
 //! 仅在可靠完成或观察封存时序列化；历史读取透传已冻结的 JSON，不反序列化这些类型。
 //! 发布过的旧格式解码独立留在 storage 的迁移边界，不能借用本模块。
 
-use pl_protocol::{
+use crate::{
     BudgetLimitedTurnState, CancelledThreadAgent, CancelledThreadContent, CancelledThreadInference,
     CancelledTurnState, CompletedThreadContent, CompletedThreadInference, CompletedTurnState,
     DeniedThreadAgent, FailedThreadAgent, FailedThreadContent, FailedThreadInference,
@@ -46,7 +46,7 @@ pub(super) struct ThinkingDescriptor {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum ContentOutcome {
-    Streaming(pl_protocol::StreamingThreadContent),
+    Streaming(crate::StreamingThreadContent),
     Completed(CompletedThreadContent),
     Failed(FailedThreadContent),
     Cancelled(CancelledThreadContent),
@@ -62,8 +62,8 @@ pub(super) struct AgentDescriptor {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum AgentOutcome {
-    Queued(pl_protocol::QueuedThreadAgent),
-    Running(pl_protocol::RunningThreadAgent),
+    Queued(crate::QueuedThreadAgent),
+    Running(crate::RunningThreadAgent),
     Succeeded(SucceededThreadAgent),
     Denied(DeniedThreadAgent),
     Cancelled(CancelledThreadAgent),
@@ -80,8 +80,8 @@ pub(super) struct TurnDescriptor {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum TurnOutcome {
-    Queued(pl_protocol::QueuedTurnState),
-    Running(pl_protocol::RunningTurnState),
+    Queued(crate::QueuedTurnState),
+    Running(crate::RunningTurnState),
     Completed(CompletedTurnState),
     Failed(FailedTurnState),
     Cancelled(CancelledTurnState),
@@ -99,7 +99,7 @@ pub(super) struct InferenceDescriptor {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub(super) enum InferenceOutcome {
-    Running(pl_protocol::RunningThreadInference),
+    Running(crate::RunningThreadInference),
     Completed(CompletedThreadInference),
     Failed(FailedThreadInference),
     Cancelled(CancelledThreadInference),
@@ -167,12 +167,12 @@ pub(super) struct ToolInvocation {
 )]
 pub(super) enum ToolState {
     Queued,
-    Cancelling(pl_protocol::CancellingThreadTool),
+    Cancelling(crate::CancellingThreadTool),
     Started,
     Streaming,
     AwaitingApproval,
     Approved,
-    Running(pl_protocol::RunningThreadTool),
+    Running(crate::RunningThreadTool),
     Interrupted {
         interrupted_at: i64,
         reason: String,

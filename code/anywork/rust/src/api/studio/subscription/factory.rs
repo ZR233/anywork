@@ -84,7 +84,7 @@ mod tests {
             let state = factory
                 .open_current(
                     env.thread_id.clone(),
-                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
                     demand,
                 )
                 .await?;
@@ -137,8 +137,8 @@ mod tests {
 
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
-        use pl_protocol::{ReadDemand, ThreadNotification, TurnState};
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
+        use pl_studio_runtime::{ReadDemand, ThreadNotification, TurnState};
         use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
 
         let stage = ReplyStage::new();
@@ -158,7 +158,7 @@ mod tests {
             let bridge_state = factory
                 .open_current(
                     env.thread_id.clone(),
-                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
                     ReadDemand {
                         max_items: 16,
                         max_bytes: 64 * 1024,
@@ -174,7 +174,7 @@ mod tests {
                 .runtime
                 .open_current_reader(
                     &env.thread_id,
-                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
                     demand,
                 )
                 .await?;
@@ -210,14 +210,14 @@ mod tests {
             let completed_id = loop {
                 let update = state.next().await?.context("Current watch ended")?;
                 let turn = match update {
-                    pl_protocol::CurrentFrame::Reset { view } => view.state.active_turn,
-                    pl_protocol::CurrentFrame::Notification { notification, .. } => {
+                    pl_studio_runtime::CurrentFrame::Reset { view } => view.state.active_turn,
+                    pl_studio_runtime::CurrentFrame::Notification { notification, .. } => {
                         match notification.notification {
                             ThreadNotification::TurnCompleted { turn } => Some(turn),
                             _ => None,
                         }
                     }
-                    pl_protocol::CurrentFrame::Projection { .. } => None,
+                    pl_studio_runtime::CurrentFrame::Projection { .. } => None,
                 };
                 if let Some(turn) = turn
                     && turn.id == active.id
@@ -245,14 +245,14 @@ mod tests {
                 .runtime
                 .open_history_reader(
                     &env.thread_id,
-                    pl_protocol::history::HISTORY_PROTOCOL_VERSION,
+                    pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION,
                 )
                 .await?;
             let page = history
                 .turns_page(
                     None,
                     None,
-                    pl_protocol::history::HistoryDemand {
+                    pl_studio_runtime::history::HistoryDemand {
                         max_rows: 100,
                         max_bytes: 256 * 1024,
                     },
@@ -262,7 +262,7 @@ mod tests {
                 page.entries.iter().any(|entry| {
                     matches!(
                         &entry.head,
-                        pl_protocol::history::HistoryRowHead::Turn(turn)
+                        pl_studio_runtime::history::HistoryRowHead::Turn(turn)
                             if turn.turn_id == completed_id
                     )
                 }),

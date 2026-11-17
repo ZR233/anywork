@@ -18,7 +18,7 @@ use crate::studio::runtime::acp_business::AcpResources;
 use crate::studio::runtime::acp_worker::{
     AcpSpawnError, AcpSpawnRequest, AcpWorker, PROCESS_CLEANUP_LIMIT, Reclaim,
 };
-use pl_protocol::studio::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, StartAcpAuthRequest};
+use crate::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, StartAcpAuthRequest};
 
 #[derive(Clone)]
 pub(crate) struct PreparedConnection {
@@ -158,9 +158,9 @@ impl AccountConnection {
 
     pub(crate) async fn ready_business(
         &self,
-    ) -> Result<PreparedConnection, pl_protocol::studio::AcpBusinessFailure> {
+    ) -> Result<PreparedConnection, crate::AcpBusinessFailure> {
         self.launched().await.map_err(|failure| {
-            use pl_protocol::studio::{AcpBusinessFailure, AcpBusinessFailureKind as Kind};
+            use crate::{AcpBusinessFailure, AcpBusinessFailureKind as Kind};
             let kind = match failure.code {
                 AcpAuthFailureCode::PreparationRequired => Kind::InstallRequired,
                 AcpAuthFailureCode::InstallationInvalid => Kind::InstallationInvalid,
@@ -688,9 +688,10 @@ fn spawn_failure(error: AcpSpawnError) -> AcpFailure {
 mod tests {
     use super::*;
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
+    use crate::protocol::*;
     use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
+    use anyhow::Result;
     use futures::FutureExt;
-    use pl_protocol::studio::*;
     use std::time::Duration;
 
     async fn with_cleanup(
@@ -828,9 +829,7 @@ mod tests {
             let first_owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    first.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(first.target.session_id.clone())?)
                 .expect("first session is resident");
             let first_resources = first_owner
                 .resident_acp(&first.target.thread_id)?
@@ -886,9 +885,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    anchor.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(anchor.target.session_id.clone())?)
                 .expect("anchor session is resident");
             let resources = owner
                 .resident_acp(&anchor.target.thread_id)?

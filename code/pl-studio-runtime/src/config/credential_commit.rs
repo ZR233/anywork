@@ -1,11 +1,9 @@
 //! Credential participation in the configuration coordinator: frozen bindings, protected
 //! snapshots and versioned recovery. No plaintext token payload enters filesystem journals.
 use super::{ConfigStore, StudioConfig};
+use crate::{AccountAuthenticationIntent, AccountAuthenticationMethod, ChatGptAccountInfo};
 use crate::{PureError, Result};
 use pl_model::protocol::chatgpt::ChatGptCredentialRecord;
-use pl_protocol::studio::{
-    AccountAuthenticationIntent, AccountAuthenticationMethod, ChatGptAccountInfo,
-};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1120,7 +1118,7 @@ mod tests {
         store.save(&baseline)?;
         let mut record = record("windows-codex-registration");
         record.account.client_id = pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into();
-        record.account.codex = Some(pl_protocol::studio::CodexAccountInfo {
+        record.account.codex = Some(crate::CodexAccountInfo {
             account_id: "verified-workspace".into(),
             plan_type: Some("plus".into()),
         });

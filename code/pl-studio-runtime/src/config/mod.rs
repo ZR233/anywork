@@ -27,8 +27,9 @@ mod store;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::mode::ThreadModeId;
 use crate::{PureError, Result};
-use pl_protocol::{ThreadModeId, search::WebSearchConfig};
+use pl_tool::search::WebSearchConfig;
 
 use pl_tool::skill::SkillsConfig;
 
@@ -100,14 +101,14 @@ pub(crate) fn root_agent_route_id() -> AgentRoleId {
     AgentRoleId::new(ROOT_AGENT_ROUTE_KEY).expect("reserved root Agent route id must be valid")
 }
 
-pub use pl_protocol::WebSearchContextSize;
-pub use pl_protocol::search::{WebSearchLocation, WebSearchMode};
+pub use pl_model::completion::WebSearchContextSize;
+pub use pl_tool::search::{WebSearchLocation, WebSearchMode};
 
 /// Studio UI 本地偏好，由 [`ConfigRuntime`] 与其余 desired settings 一起持有。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StudioUiConfig {
     #[serde(default)]
-    pub language: pl_protocol::studio::StudioUiLanguage,
+    pub language: crate::StudioUiLanguage,
     #[serde(default = "default_true")]
     pub follow_active_turn: bool,
     #[serde(default)]
@@ -123,7 +124,7 @@ pub struct StudioUiConfig {
 impl Default for StudioUiConfig {
     fn default() -> Self {
         Self {
-            language: pl_protocol::studio::StudioUiLanguage::System,
+            language: crate::StudioUiLanguage::System,
             follow_active_turn: true,
             compact_timeline: false,
             sidebar_width: None,
@@ -168,7 +169,7 @@ pub struct StudioConfig {
     pub schema_version: u32,
     pub models: AgentModelConfig,
     #[serde(default)]
-    pub delegation: pl_protocol::DelegationSettings,
+    pub delegation: crate::DelegationSettings,
     #[serde(default)]
     pub mode_model_routes: BTreeMap<ThreadModeId, ModelRouteConfig>,
     /// Rust 内置 Agent 只能在这里禁用；其余字段不可覆盖，也不存在删除语义。
@@ -201,7 +202,7 @@ impl StudioConfig {
         };
         Ok(Self {
             schema_version: STUDIO_CONFIG_SCHEMA_VERSION,
-            delegation: pl_protocol::DelegationSettings::default(),
+            delegation: crate::DelegationSettings::default(),
             models: AgentModelConfig {
                 accounts: BTreeMap::from([(account_id, account)]),
                 routes: BTreeMap::new(),

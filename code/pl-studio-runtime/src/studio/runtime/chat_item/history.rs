@@ -2,16 +2,16 @@
 use super::*;
 use crate::history::{
     HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEntityState, HistoryEvent,
-    HistoryEventBodyRef, NativeHistoryEntity,
+    HistoryEventBodyRef,
 };
 use anyhow::Context as _;
 
 fn role(key: &str) -> HistoryBodyRole {
     match atom_content_role_by_key(key) {
-        Some(pl_protocol::ChatContentRole::Body) => HistoryBodyRole::Body,
-        Some(pl_protocol::ChatContentRole::ReasoningSummary) => HistoryBodyRole::ReasoningSummary,
-        Some(pl_protocol::ChatContentRole::ToolArguments) => HistoryBodyRole::ToolArguments,
-        Some(pl_protocol::ChatContentRole::ToolOutput) => HistoryBodyRole::ToolOutput,
+        Some(crate::ChatContentRole::Body) => HistoryBodyRole::Body,
+        Some(crate::ChatContentRole::ReasoningSummary) => HistoryBodyRole::ReasoningSummary,
+        Some(crate::ChatContentRole::ToolArguments) => HistoryBodyRole::ToolArguments,
+        Some(crate::ChatContentRole::ToolOutput) => HistoryBodyRole::ToolOutput,
         None if key == "tool.output-artifacts" => HistoryBodyRole::Attachment,
         None => HistoryBodyRole::Other {
             name: "producer_detail".into(),
@@ -132,7 +132,7 @@ pub(in crate::studio) fn freeze_history_original(
         ordered.len() == draft.contents.len(),
         "canonical content is not declared by its producer"
     );
-    let atom: pl_protocol::ChatAtom = serde_json::from_slice(&draft.metadata)?;
+    let atom: crate::ChatAtom = serde_json::from_slice(&draft.metadata)?;
     if let Some(order) = atom.source_order {
         envelope.insert(
             "sourceOrder".into(),
@@ -148,7 +148,7 @@ pub(in crate::studio) fn freeze_history_observation(
     event: &mut HistoryEvent,
     entity: &mut HistoryEntityHead,
     state: &ExecutionShape,
-    atom: &pl_protocol::ChatAtom,
+    atom: &crate::ChatAtom,
     thread_id: &str,
     contents: Vec<Arc<ChatContent>>,
     database_id: &str,
@@ -293,7 +293,7 @@ fn execution_from_parts(
     let revision = envelope
         .source_effect_seq
         .context("canonical producer revision is unknown")?;
-    let atom = pl_protocol::ChatAtom {
+    let atom = crate::ChatAtom {
         id: head.entity_id.clone(),
         source: head.source,
         source_state: None,
@@ -301,13 +301,11 @@ fn execution_from_parts(
         kind: head.kind,
         delivery: head.delivery,
         lifecycle: match head.state {
-            HistoryEntityState::KnownTerminal { outcome } => {
-                pl_protocol::ChatAtomLifecycle::Terminal {
-                    outcome,
-                    started: None,
-                    ended: None,
-                }
-            }
+            HistoryEntityState::KnownTerminal { outcome } => crate::ChatAtomLifecycle::Terminal {
+                outcome,
+                started: None,
+                ended: None,
+            },
             _ => anyhow::bail!("canonical execution has no terminal evidence"),
         },
         turn_id: header.turn_id.clone(),

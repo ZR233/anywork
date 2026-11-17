@@ -150,13 +150,6 @@ pub(crate) struct CurrentSaveState {
     pub(crate) last_successful_capture_at: Option<i64>,
 }
 
-impl CurrentSaveState {
-    pub(crate) fn current_snapshot_age_ms(&self) -> Option<i64> {
-        self.last_successful_capture_at
-            .map(|at| utc_millis().saturating_sub(at).max(0))
-    }
-}
-
 struct State {
     view: CurrentSaveState,
     capture: Option<CancellationToken>,
@@ -287,10 +280,6 @@ impl CurrentWriter {
     pub(crate) fn snapshot(&self) -> CurrentSaveState {
         self.shared.read(|s| s.view.clone())
     }
-    pub(crate) fn subscribe(&self) -> watch::Receiver<CurrentSaveState> {
-        self.shared.changed.subscribe()
-    }
-
     /// Compare-and-replace admission prevents a delayed old owner's offer from reviving its epoch.
     /// The writer processes this only after the previous capture/encode/file operation has ended.
     pub(crate) async fn activate(
@@ -312,10 +301,6 @@ impl CurrentWriter {
         result
             .await
             .context("current writer stopped before epoch admission")?
-    }
-
-    pub(crate) fn mark_dirty(&self, epoch: RuntimeEpoch) {
-        self.shared.mark_dirty(epoch, None);
     }
 
     pub(crate) async fn flush(&self, epoch: RuntimeEpoch) -> Result<CurrentSaveReceipt> {

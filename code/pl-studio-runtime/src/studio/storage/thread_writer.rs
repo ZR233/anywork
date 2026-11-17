@@ -7,7 +7,10 @@
 use crate::ExecutionItem;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -851,7 +854,7 @@ impl RuntimeOrderIndex {
             stamp.revision,
             stamp.created_at,
             stamp.updated_at,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(
                 Vec::new(),
                 "Pending execution body belongs to its prepared batch.",
                 stamp.created_at,
@@ -1096,7 +1099,7 @@ struct Progress {
     /// durable with an effect is exactly the one this field advances to on that same commit.
     usage: UsageSummary,
     error: Option<String>,
-    fault: Option<pl_protocol::studio::HistoryFault>,
+    fault: Option<crate::HistoryFault>,
     fault_generation: u64,
     /// Whether the newest fault generation's retry has been verified as really landed.
     ///
@@ -1210,7 +1213,7 @@ impl OperationOutput {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct HistoryStatus {
     pub(crate) fault_generation: u64,
-    pub(crate) fault: Option<pl_protocol::studio::HistoryFault>,
+    pub(crate) fault: Option<crate::HistoryFault>,
     pub(crate) error: Option<String>,
     pub(crate) admitted_sequence: u64,
     pub(crate) committed_sequence: u64,
@@ -1232,15 +1235,12 @@ enum Step {
 #[derive(Debug, thiserror::Error)]
 #[error("{source}")]
 struct ClassifiedWriteError {
-    kind: pl_protocol::studio::HistoryFault,
+    kind: crate::HistoryFault,
     #[source]
     source: anyhow::Error,
 }
 
-fn classified(
-    kind: pl_protocol::studio::HistoryFault,
-    source: impl Into<anyhow::Error>,
-) -> anyhow::Error {
+fn classified(kind: crate::HistoryFault, source: impl Into<anyhow::Error>) -> anyhow::Error {
     ClassifiedWriteError {
         kind,
         source: source.into(),
@@ -2039,24 +2039,6 @@ impl HistoryChannel {
             .map(|queued| queued.write.clone())
     }
 
-    /// Captures the bounded, ordered projection backlog for one observer initialization.
-    /// Only immutable handles are cloned under the queue lock; history reads happen afterwards.
-    pub(in crate::studio) fn unprojected_writes(&self) -> Vec<Arc<HistoryExport>> {
-        let progress = self
-            .progress
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let offset = progress
-            .next_unprojected_offset()
-            .unwrap_or(progress.effects.len());
-        progress
-            .effects
-            .iter()
-            .skip(offset)
-            .map(|queued| queued.write.clone())
-            .collect()
-    }
-
     /// Publishes the failure of one admitted fact's projection.
     ///
     /// The writer never projects an effect itself, so a fact the projection owner cannot project is
@@ -2079,7 +2061,7 @@ impl HistoryChannel {
                 progress.retry_requested = false;
             }
             progress.fault_target = progress.fault_target.max(sequence);
-            progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+            progress.fault = Some(crate::HistoryFault::WriteFailed);
             progress.error = Some(message);
             progress.fault_recovered = false;
             progress.saving_revision = 0;
@@ -2088,7 +2070,7 @@ impl HistoryChannel {
                     &progress,
                     Instant::now(),
                     "projection_prepare",
-                    pl_protocol::studio::HistoryFault::WriteFailed,
+                    crate::HistoryFault::WriteFailed,
                     &["projection_failed"],
                 );
                 self.report(&progress);
@@ -2177,7 +2159,7 @@ impl HistoryChannel {
         if progress.error.is_none() {
             progress.fault_generation = progress.fault_generation.saturating_add(1);
         }
-        progress.fault = Some(pl_protocol::studio::HistoryFault::WriterUnavailable);
+        progress.fault = Some(crate::HistoryFault::WriterUnavailable);
         progress.error = Some("history writer unavailable; queued facts retained".to_owned());
         progress.fault_recovered = false;
         progress.retry_requested = false;
@@ -2312,7 +2294,7 @@ impl HistoryChannel {
             return;
         }
         progress.fault_generation = progress.fault_generation.saturating_add(1);
-        progress.fault = Some(pl_protocol::studio::HistoryFault::NoProgress);
+        progress.fault = Some(crate::HistoryFault::NoProgress);
         progress.fault_target = progress
             .effects
             .back()
@@ -2324,7 +2306,7 @@ impl HistoryChannel {
             &progress,
             now,
             "watchdog",
-            pl_protocol::studio::HistoryFault::NoProgress,
+            crate::HistoryFault::NoProgress,
             &["no_progress"],
         );
         self.report(&progress);
@@ -2337,7 +2319,7 @@ impl HistoryChannel {
         progress: &Progress,
         now: Instant,
         source: &str,
-        kind: pl_protocol::studio::HistoryFault,
+        kind: crate::HistoryFault,
         reasons: &[&str],
     ) {
         let head = progress.effects.front();
@@ -2385,7 +2367,7 @@ impl std::fmt::Debug for HistoryChannel {
 
 struct Inner {
     store: StudioStore,
-    thread: pl_protocol::Thread,
+    thread: crate::Thread,
     conversation: Arc<crate::studio::conversation_store::ConversationStore>,
     /// This writer incarnation's coordinator identity; see [`NEXT_WRITER_INCARNATION`].
     owner: usize,
@@ -2602,10 +2584,7 @@ fn clear_recovered_fault(progress: &mut Progress) -> bool {
 }
 
 impl ThreadStorageSink {
-    pub(crate) async fn new(
-        store: StudioStore,
-        thread: pl_protocol::Thread,
-    ) -> Result<Self> {
+    pub(crate) async fn new(store: StudioStore, thread: crate::Thread) -> Result<Self> {
         let catalog = store.catalog();
         let registered = catalog
             .agent_by_thread(&thread.id)
@@ -2743,7 +2722,7 @@ impl ThreadStorageSink {
                     let progress = lock_progress(&inner);
                     progress.error.is_some()
                         && !progress.retry_requested
-                        && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+                        && progress.fault != Some(crate::HistoryFault::QueueFull)
                 };
                 if paused {
                     // 通道可以把一个本 incarnation 自己没失败过的 Thread 标成失败：投影无法完成的
@@ -2792,9 +2771,7 @@ impl ThreadStorageSink {
                         {
                             let kind = error
                                 .downcast_ref::<ClassifiedWriteError>()
-                                .map_or(pl_protocol::studio::HistoryFault::WriteFailed, |typed| {
-                                    typed.kind
-                                });
+                                .map_or(crate::HistoryFault::WriteFailed, |typed| typed.kind);
                             record_error(
                                 &inner,
                                 kind,
@@ -2843,7 +2820,7 @@ async fn step(inner: &Inner) -> Result<Step> {
         // The pre-lock loop check is not permission to retry that newly published generation.
         if progress.error.is_some()
             && !progress.retry_requested
-            && progress.fault != Some(pl_protocol::studio::HistoryFault::QueueFull)
+            && progress.fault != Some(crate::HistoryFault::QueueFull)
         {
             return Ok(Step::Idle);
         }
@@ -2962,13 +2939,12 @@ async fn publish_accounting(inner: &Inner, history: &HistoryStore) {
             .max(costs.iter().map(|cost| cost.updated_at).max().unwrap_or(0))
             as u64;
         let mut purposes =
-            std::collections::BTreeMap::<Option<String>, Vec<pl_protocol::RuntimeCostAmount>>::new(
-            );
+            std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
         for cost in costs {
             purposes
                 .entry(cost.purpose)
                 .or_default()
-                .push(pl_protocol::RuntimeCostAmount {
+                .push(crate::RuntimeCostAmount {
                     currency: cost.currency,
                     amount: cost.cost_total,
                 });
@@ -3087,7 +3063,7 @@ enum FaultTarget {
 
 fn record_error(
     inner: &Inner,
-    kind: pl_protocol::studio::HistoryFault,
+    kind: crate::HistoryFault,
     target: FaultTarget,
     message: String,
     reasons: &[&str],
@@ -3117,7 +3093,7 @@ fn record_error(
         inner.channel.diagnose(
             &progress,
             Instant::now(),
-            if kind == pl_protocol::studio::HistoryFault::BlobFailed {
+            if kind == crate::HistoryFault::BlobFailed {
                 "blob_fence"
             } else {
                 "history_writer"
@@ -3284,9 +3260,9 @@ impl ThreadStorageSink {
             record_error(
                 &self.0,
                 if error.is::<ExecutionIndexBudgetFull>() {
-                    pl_protocol::studio::HistoryFault::QueueFull
+                    crate::HistoryFault::QueueFull
                 } else {
-                    pl_protocol::studio::HistoryFault::WriteFailed
+                    crate::HistoryFault::WriteFailed
                 },
                 FaultTarget::Queued,
                 error.to_string(),
@@ -3380,7 +3356,7 @@ impl ThreadStorageSink {
             // with the error this call returns instead of letting the latch look recovered.
             record_error(
                 &self.0,
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 FaultTarget::NextWrite,
                 "Thread persistence ticket mismatch".to_owned(),
                 &["ticket_mismatch"],
@@ -3419,7 +3395,7 @@ impl ThreadStorageSink {
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+                progress.fault = Some(crate::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 report(&self.0, &progress);
@@ -3521,7 +3497,7 @@ impl ThreadStorageSink {
                     progress.retry_requested = false;
                 }
                 progress.fault_target = progress.fault_target.max(sequence);
-                progress.fault = Some(pl_protocol::studio::HistoryFault::WriteFailed);
+                progress.fault = Some(crate::HistoryFault::WriteFailed);
                 progress.error = Some(message.clone());
                 progress.fault_recovered = false;
                 drop(index);
@@ -3668,11 +3644,9 @@ fn storage_error(message: &str) -> Arc<ColdStoreError> {
 ///
 /// Both sides are already typed values: this is a rename, not a classification. Core therefore never
 /// sees an error string that it would have to interpret to know what failed.
-fn storage_fault_kind(
-    fault: pl_protocol::studio::HistoryFault,
-) -> pl_core::thread::cold::StorageFaultKind {
+fn storage_fault_kind(fault: crate::HistoryFault) -> pl_core::thread::cold::StorageFaultKind {
+    use crate::HistoryFault;
     use pl_core::thread::cold::StorageFaultKind;
-    use pl_protocol::studio::HistoryFault;
     match fault {
         HistoryFault::QueueFull => StorageFaultKind::QueueFull,
         HistoryFault::WriteFailed => StorageFaultKind::WriteFailed,
@@ -3694,21 +3668,64 @@ impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
         match crate::studio::thread_projection::PreparedAccounting::prepare(effect) {
             Ok(accounting) => accounting.fold_into(summary),
-            Err(error) => record_error(&self.0, pl_protocol::studio::HistoryFault::WriteFailed,
-                FaultTarget::NextWrite, error.to_string(), &["accounting_contract"]),
+            Err(error) => record_error(
+                &self.0,
+                crate::HistoryFault::WriteFailed,
+                FaultTarget::NextWrite,
+                error.to_string(),
+                &["accounting_contract"],
+            ),
         }
     }
-    fn reserve_observed_item(&self, thread: &str, attempt: &str, item: &str) -> Result<(), ColdStoreError> { ThreadStorageSink::reserve_observed_item(self, thread, attempt, item) }
-    fn reserve_operation_output(&self, thread: &str, operation: &str, max: u64) -> Result<u64, ColdStoreError> { ThreadStorageSink::reserve_operation_output(self, thread, operation, max) }
-    fn charge_operation_output(&self, thread: &str, operation: &str, bytes: u64) -> Result<(), ColdStoreError> { ThreadStorageSink::charge_operation_output(self, thread, operation, bytes) }
-    fn release_operation_output(&self, thread: &str, operation: &str) { ThreadStorageSink::release_operation_output(self, thread, operation) }
-    fn pressure(&self, thread: &str) -> StoragePressure { ThreadStorageSink::pressure(self, thread) }
-    fn idle_status(&self, thread: &str) -> StorageIdleStatus { ThreadStorageSink::idle_status(self, thread) }
-    fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> { ThreadStorageSink::subscribe_pressure(self, thread) }
-    fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> { self.admit_export(thread, export) }
-    fn read_tool_task(&self, thread: &str, task: &str) -> impl std::future::Future<Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>> + Send { ThreadStorageSink::read_tool_task(self, thread, task) }
+    fn reserve_observed_item(
+        &self,
+        thread: &str,
+        attempt: &str,
+        item: &str,
+    ) -> Result<(), ColdStoreError> {
+        ThreadStorageSink::reserve_observed_item(self, thread, attempt, item)
+    }
+    fn reserve_operation_output(
+        &self,
+        thread: &str,
+        operation: &str,
+        max: u64,
+    ) -> Result<u64, ColdStoreError> {
+        ThreadStorageSink::reserve_operation_output(self, thread, operation, max)
+    }
+    fn charge_operation_output(
+        &self,
+        thread: &str,
+        operation: &str,
+        bytes: u64,
+    ) -> Result<(), ColdStoreError> {
+        ThreadStorageSink::charge_operation_output(self, thread, operation, bytes)
+    }
+    fn release_operation_output(&self, thread: &str, operation: &str) {
+        ThreadStorageSink::release_operation_output(self, thread, operation)
+    }
+    fn pressure(&self, thread: &str) -> StoragePressure {
+        ThreadStorageSink::pressure(self, thread)
+    }
+    fn idle_status(&self, thread: &str) -> StorageIdleStatus {
+        ThreadStorageSink::idle_status(self, thread)
+    }
+    fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> {
+        ThreadStorageSink::subscribe_pressure(self, thread)
+    }
+    fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> {
+        self.admit_export(thread, export)
+    }
+    fn read_tool_task(
+        &self,
+        thread: &str,
+        task: &str,
+    ) -> impl std::future::Future<
+        Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>,
+    > + Send {
+        ThreadStorageSink::read_tool_task(self, thread, task)
+    }
 }
-
 
 #[cfg(test)]
 pub(crate) mod storage_fault_tests {
@@ -3740,8 +3757,8 @@ pub(crate) mod storage_fault_tests {
         }
     }
 
-    pub(super) fn test_thread(thread_id: &str) -> pl_protocol::Thread {
-        let mut thread = pl_protocol::Thread::placeholder(thread_id);
+    pub(super) fn test_thread(thread_id: &str) -> crate::Thread {
+        let mut thread = crate::Thread::placeholder(thread_id);
         thread.workspace_id = "project-test".into();
         thread.agent_path = thread_id.to_owned();
         thread.root_thread_id = thread_id.to_owned();
@@ -3750,12 +3767,12 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) async fn register_test_thread(
         store: &StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<()> {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: thread.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Test".into(),
                 path: "/tmp/project-test".into(),
                 ssh_alias: None,
@@ -3907,10 +3924,7 @@ pub(crate) mod storage_fault_tests {
         spawn_projection(store, thread)
     }
 
-    fn spawn_projection(
-        store: StudioStore,
-        thread: pl_protocol::Thread,
-    ) -> tokio::task::JoinHandle<()> {
+    fn spawn_projection(store: StudioStore, thread: crate::Thread) -> tokio::task::JoinHandle<()> {
         let channel = store.thread_persistence().history_channel(&thread.id);
         tokio::spawn(async move {
             let mut projection = crate::studio::thread_projection::LiveProjection::new();
@@ -3976,7 +3990,7 @@ pub(crate) mod storage_fault_tests {
 
     async fn saved_current(
         store: &StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<Option<pl_core::thread::current::ThreadCurrent>> {
         let paths = store.registered_session_paths(&thread.id)?;
         Ok(store
@@ -4004,7 +4018,7 @@ pub(crate) mod storage_fault_tests {
 
     pub(crate) async fn save_terminal_report(
         store: &StudioStore,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         message: pl_core::thread::inbox::ThreadMessage,
     ) -> Result<()> {
         let saved = saved_current(store, thread).await?;
@@ -4662,8 +4676,7 @@ mod batch_window_tests {
                 }
                 "pressure" => lock_progress(&fixture.sink.0).pressure_paused = true,
                 "queue-full" => {
-                    lock_progress(&fixture.sink.0).fault =
-                        Some(pl_protocol::studio::HistoryFault::QueueFull)
+                    lock_progress(&fixture.sink.0).fault = Some(crate::HistoryFault::QueueFull)
                 }
                 "gap" => fixture.sink.admit(&id, ticket(&id, 2))?,
                 _ => unreachable!(),
@@ -4775,10 +4788,7 @@ mod watchdog_tests {
         let retained = sink.pressure(id).thread_bytes;
         channel.detect_stall_at(admitted_at + NO_PROGRESS_WINDOW);
         let failed = channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::NoProgress)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
         assert_eq!(failed.committed_sequence, 0);
         assert_eq!(failed.queued_records, 4);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
@@ -4894,10 +4904,7 @@ mod watchdog_tests {
         assert!(channel.subscribe().borrow().fault.is_none());
         channel.detect_stall_at(started + NO_PROGRESS_WINDOW);
         let failed = channel.subscribe().borrow().clone();
-        assert_eq!(
-            failed.fault,
-            Some(pl_protocol::studio::HistoryFault::NoProgress)
-        );
+        assert_eq!(failed.fault, Some(crate::HistoryFault::NoProgress));
         assert_eq!(failed.committed_sequence, 0);
         assert_eq!(failed.queued_records, 1);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
@@ -5047,7 +5054,7 @@ mod execution_index_tests {
             9,
             10,
             20,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(Vec::new(), "done", 20)),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         index.materialize(&item, 7)?;
         index.mark_completion("completed", true);
@@ -5101,7 +5108,7 @@ mod execution_index_tests {
             9,
             10,
             20,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(Vec::new(), "done", 20)),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
         let rejected = index.materialize(&large, u64::MAX).unwrap_err();
         assert!(
@@ -5127,7 +5134,7 @@ mod execution_index_tests {
             2,
             10,
             20,
-            crate::ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(Vec::new(), "body", 20)),
+            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "body", 20)),
         );
         let (entered, materialize_entered) = tokio::sync::oneshot::channel();
         let (release, materialize_release) = std::sync::mpsc::channel();
@@ -5296,7 +5303,7 @@ mod execution_index_tests {
         let channel = &sink.0.channel;
         record_error(
             &sink.0,
-            pl_protocol::studio::HistoryFault::WriteFailed,
+            crate::HistoryFault::WriteFailed,
             FaultTarget::NextWrite,
             "first failure".into(),
             &["redacted_error"],
@@ -5304,7 +5311,7 @@ mod execution_index_tests {
         let first = channel.subscribe().borrow().fault_generation;
         record_error(
             &sink.0,
-            pl_protocol::studio::HistoryFault::WriteFailed,
+            crate::HistoryFault::WriteFailed,
             FaultTarget::NextWrite,
             "newer failure".into(),
             &["redacted_error"],

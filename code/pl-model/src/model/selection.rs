@@ -9,7 +9,39 @@
 //! 或无法核实的不保留分数。别名版本不冒充精确版本，不同测量口径不合成网络总分。社区反馈
 //! 只作为个体经验参考。
 
-use pl_protocol::AgentTaskCategory;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+/// 任务类别；用于选模参考标注与评价分类，不覆盖真实能力判定。
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, ToSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentTaskCategory {
+    Reasoning,
+    Coding,
+    /// 工具调用与多步编排为主的任务。
+    Tooling,
+    LongContext,
+    /// 需要图片、音频或文件输入的任务。
+    Multimodal,
+    #[default]
+    General,
+}
+
+pl_protocol::impl_labeled_enum!(
+    AgentTaskCategory,
+    "AgentTaskCategory",
+    [
+        AgentTaskCategory::Reasoning => "reasoning",
+        AgentTaskCategory::Coding => "coding",
+        AgentTaskCategory::Tooling => "tooling",
+        AgentTaskCategory::LongContext => "longContext",
+        AgentTaskCategory::Multimodal => "multimodal",
+        AgentTaskCategory::General => "general",
+    ]
+);
 
 /// 选模短简介的 Unicode 字符上限。
 pub const SELECTION_SUMMARY_MAX_CHARS: usize = 240;

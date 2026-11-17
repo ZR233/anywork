@@ -25,11 +25,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::{InferenceBillingRecord, RuntimeCostAmount};
 use anyhow::{Context, Result, bail, ensure};
 use pl_core::model::ModelUsage;
 use pl_core::thread::journal::AttemptUpdate;
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch};
-use pl_protocol::{InferenceBillingRecord, RuntimeCostAmount};
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, DatabaseTransaction,
@@ -150,7 +150,7 @@ pub(crate) struct PerformanceSampleRow {
     pub(crate) effort: Option<String>,
     pub(crate) completion_tokens: Option<u64>,
     pub(crate) usage_status: pl_core::usage::UsageStatus,
-    pub(crate) first_output_source: pl_protocol::FirstOutputSource,
+    pub(crate) first_output_source: crate::FirstOutputSource,
     pub(crate) ttft_millis: Option<u64>,
     pub(crate) decode_millis: Option<u64>,
     pub(crate) response_millis: Option<u64>,
@@ -279,7 +279,7 @@ impl PreparedRecord {
 
     fn with_usage_analysis(
         mut record: CallLogRecord,
-        analyze: impl FnOnce(&pl_protocol::UsageReport) -> pl_core::usage::UsageAnalysis,
+        analyze: impl FnOnce(&crate::UsageReport) -> pl_core::usage::UsageAnalysis,
     ) -> Result<Self> {
         let analysis = if record.version == event::CALL_LOG_RECORD_VERSION
             && matches!(
@@ -2673,7 +2673,7 @@ mod storage_fault_tests {
                 }),
                 usage_status: Some(pl_core::usage::UsageStatus::Partial),
                 timing: Some(event::CallTimingRecord {
-                    first_output_source: pl_protocol::FirstOutputSource::Unobserved,
+                    first_output_source: crate::FirstOutputSource::Unobserved,
                     response_millis: Some(100),
                     ..Default::default()
                 }),
@@ -2831,7 +2831,7 @@ mod storage_fault_tests {
         let temp = tempfile::tempdir()?;
         let store = CallsStore::prepare(&temp.path().join("calls.sqlite")).await?;
         let record: InferenceBillingRecord = serde_json::from_value(serde_json::json!({
-            "inferenceId": "call", "accounting": pl_protocol::InferenceAccounting::default(),
+            "inferenceId": "call", "accounting": crate::InferenceAccounting::default(),
             "recordedAt": crate::studio::unix_seconds(),
         }))?;
         let ticket = store.admit_billing(

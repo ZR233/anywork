@@ -2,7 +2,7 @@
 use super::v24_presentation_types::DisplayBlockBody;
 use super::*;
 mod legacy;
-use pl_protocol::{ChatFactPosition, ChatSourceId};
+use crate::{ChatFactPosition, ChatSourceId};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DisplayHeader {
@@ -312,14 +312,14 @@ pub(in crate::studio::storage::history) mod tests {
         let mut originals = Vec::new();
         for seq in 1..=3i64 {
             let id = format!("original-{seq}");
-            let mut atom: pl_protocol::ChatAtom =
+            let mut atom: crate::ChatAtom =
                 serde_json::from_slice(&conversation::tests::metadata(&id))?;
-            atom.kind = pl_protocol::ChatAtomKind::ToolCall;
-            atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+            atom.kind = crate::ChatAtomKind::ToolCall;
+            atom.delivery = crate::ChatDeliveryKind::Foreground;
             if seq == 3 {
-                atom.kind = pl_protocol::ChatAtomKind::Inference;
+                atom.kind = crate::ChatAtomKind::Inference;
             }
-            atom.source = pl_protocol::ChatSourceId::ForegroundTurn {
+            atom.source = crate::ChatSourceId::ForegroundTurn {
                 turn_id: "saved-turn".into(),
             };
             let metadata = serde_json::to_vec(&atom)?;

@@ -1,7 +1,7 @@
 use crate::completion::CompletionPresentationItem;
-use pl_protocol::UsageReport;
-use pl_protocol::trace::TraceTextChannel;
-use pl_protocol::{ResponsesContextItem, ToolCallCaller};
+use crate::completion::{ResponsesContextItem, ToolCallCaller};
+use crate::model::UsageReport;
+use crate::trace::TraceTextChannel;
 use serde::{Deserialize, Serialize};
 
 /// Provider-neutral Web Search 活动。

@@ -31,7 +31,10 @@ pub(super) enum PendingWrite {
 }
 impl PendingWrite {
     pub(super) fn effect(&self) -> &Arc<ThreadEffectBatch> {
-        match self { Self::Checkpoint(write) => &write.effect, Self::History(export) => &export.effect }
+        match self {
+            Self::Checkpoint(write) => &write.effect,
+            Self::History(export) => &export.effect,
+        }
     }
 }
 
@@ -589,7 +592,8 @@ impl Owner {
                 }
                 Command::AttachHistory(store, reply) => {
                     let result = if self.current_task_start_ordinal.is_none()
-                        || self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open
+                        || self.cold.is_some()
+                        || self.state.lifecycle != ThreadLifecycle::Open
                     {
                         Err(ThreadError::InvalidIdentity)
                     } else {
@@ -926,7 +930,9 @@ impl Owner {
     fn publish_once(&mut self) -> Result<(), ThreadError> {
         // A just-ended task may still have the last real producer preview needed at this history
         // boundary. Current retires it below; the immutable export keeps that original cut.
-        let history_progress = self.current_task_start_ordinal.is_some()
+        let history_progress = self
+            .current_task_start_ordinal
+            .is_some()
             .then(|| self.state.tool_progress.clone());
         let revision = self.state.interaction_collection_revision_for(
             &self.published,
@@ -1006,7 +1012,15 @@ impl Owner {
             // The explicit current owner exports facts independently. It never creates a
             // transfer checkpoint, queues a second current body, or waits for its history receipt.
             let mut history_state = self.state.clone();
-            if let Some(progress) = history_progress { history_state.tool_progress = progress; }
+            if let Some(progress) = history_progress {
+                history_state.tool_progress = progress;
+            }
+            history_state.model_progress = self.model_progress.as_ref().map(|(id, receiver)| {
+                crate::model::ActiveModelProgress {
+                    attempt_id: id.clone(),
+                    progress: receiver.borrow().clone(),
+                }
+            });
             let export = Arc::new(HistoryExport {
                 effect,
                 state: history_state,
@@ -1015,7 +1029,10 @@ impl Owner {
             self.state.retain_live_facts()?;
             self.published = self.state.clone();
             self.effect_window.push_current(export.clone());
-            self.pending_effects.push_back(PendingEffect { write: PendingWrite::History(export), encoded_bytes });
+            self.pending_effects.push_back(PendingEffect {
+                write: PendingWrite::History(export),
+                encoded_bytes,
+            });
             self.admit_cold();
             self.publish_snapshot();
             return Ok(());

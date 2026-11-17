@@ -1,6 +1,6 @@
 //! Frozen schema-24 display payloads. These types are not public protocol DTOs.
 
-use pl_protocol::{ChatAtom, ChatFactPosition};
+use crate::{ChatAtom, ChatFactPosition};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

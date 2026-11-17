@@ -5,9 +5,8 @@ use std::{
 
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Parser, Subcommand};
-use pl_studio_runtime::{
-    NewThreadModelRoute, SkillSearchOptions, StudioRuntimeOptions, ThreadModeId,
-};
+use pl_studio_runtime::mode::ThreadModeId;
+use pl_studio_runtime::{NewThreadModelRoute, SkillSearchOptions, StudioRuntimeOptions};
 
 #[derive(Parser)]
 #[command(name = "anywk", version = pl_studio_update::STUDIO_VERSION.trim(), about = "在原生 Studio 运行时中执行单个任务")]

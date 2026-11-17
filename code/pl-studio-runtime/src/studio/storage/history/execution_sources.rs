@@ -1,6 +1,6 @@
 //! Actual source lifecycle only. Each source has at most one start/end, not a member ledger.
 use super::*;
-use pl_protocol::{
+use crate::{
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 use sea_orm::QueryResult;

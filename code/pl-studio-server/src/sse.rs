@@ -171,10 +171,10 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
         StudioProductTopic::McpCatalog { scope } => {
             query.append_pair("topic", "mcpCatalog");
             match scope {
-                pl_protocol::McpScope::Host => {
+                pl_studio_runtime::McpScope::Host => {
                     query.append_pair("scope", "host");
                 }
-                pl_protocol::McpScope::Ssh { ssh_alias } => {
+                pl_studio_runtime::McpScope::Ssh { ssh_alias } => {
                     query.append_pair("scope", "ssh");
                     query.append_pair("sshAlias", ssh_alias);
                 }
@@ -230,7 +230,7 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
 mod tests {
     use anyhow::Result;
     use axum::{extract::FromRequestParts, http::Request};
-    use pl_protocol::studio::StudioErrorCode;
+    use pl_studio_runtime::StudioErrorCode;
 
     use super::*;
 
@@ -259,10 +259,10 @@ mod tests {
                 host_thread_id: identity.into(),
             },
             StudioProductTopic::McpCatalog {
-                scope: pl_protocol::McpScope::Host,
+                scope: pl_studio_runtime::McpScope::Host,
             },
             StudioProductTopic::McpCatalog {
-                scope: pl_protocol::McpScope::Ssh {
+                scope: pl_studio_runtime::McpScope::Ssh {
                     ssh_alias: identity.into(),
                 },
             },

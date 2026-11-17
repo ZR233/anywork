@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
+import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -249,6 +251,7 @@ void main() {
         () => find.byType(StartModelSelector).evaluate().length == 1,
         'project start page exposes the unified model selector',
       );
+      await scene.capture('ordinary-start-card');
       await tester.tap(
         find.descendant(
           of: find.byType(StartModelSelector),
@@ -261,97 +264,27 @@ void main() {
         () => find.byType(AcpStartComposerView).evaluate().length == 1,
         'ACP service selected through production start page',
       );
-      final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
-      final prompt =
-          remote?.promptA('${marker}A') ??
-          'Reply with exactly $marker and nothing else. Do not call tools, '
-              'run commands, use the network, or read or write any files.';
-      final startupMarker = '${marker}READY';
-      final startupPrompt =
-          'Reply with exactly $startupMarker and nothing else. '
-          'Do not call tools, run commands, use the network, or read or write any files.';
-      await tester.enterText(
-        find.descendant(
-          of: find.byType(AcpStartComposerView),
-          matching: find.byType(TextField),
-        ),
-        startupPrompt,
-      );
-      await tester.pumpAndSettle();
-      await scene.capture('agy-live-start-card');
-      evidence['promptCount'] = 1;
-      await tester.tap(
-        find.byKey(ValueKey(AcpViewKeyValues.startSubmit(project.id))),
-      );
       await scene.until(
         () {
-          final failure = graph.client.drafts.attachments.state
-              .newThread(project.id)
-              .failure;
-          if (failure != null) throw StateError('ACP create failed: $failure');
-          return find.byType(AcpComposerConnector).evaluate().length == 1;
+          final phase =
+              graph.client.drafts.startDraft.state.acpPreparations[project.id];
+          if (phase is AcpDraftFailed) {
+            throw StateError('ACP draft failed: ${phase.error}');
+          }
+          return phase is AcpDraftReady;
         },
-        'the first send creates a session and admits its prompt',
-        // A live server starts its external harness here. It can take longer
-        // than the local fixture's default deadline; this never retries new.
+        'real ACP draft is configurable before first input',
         timeout: const Duration(seconds: 90),
       );
-      final threadId = tester
-          .widget<AcpComposerConnector>(find.byType(AcpComposerConnector))
-          .threadId;
-      final owner = graph.client.acpSessions.conversationForThread(threadId)!;
-      await scene.until(
-        () => owner.state.ready && !owner.state.openPending,
-        'real ACP owner ready',
-      );
-      void checkOwner() {
-        expect(owner.state.error, isNull);
-        expect(owner.state.observationGap, isNull);
-        expect(owner.state.disconnected, isFalse);
-        expect(owner.state.observationEnded, isFalse);
-      }
-
-      checkOwner();
-      await scene.until(
-        () =>
-            owner.state.lastCompleted != null &&
-            owner.state.activeRun == null &&
-            !owner.state.sendPending,
-        'startup prompt completes before configuring the next request',
-        timeout: const Duration(seconds: 120),
-      );
-      checkOwner();
-      final startupCompletion = owner.state.lastCompleted;
-      expect(
-        owner.state.content.whereType<AcpConversationMessageItem>(),
-        isNotEmpty,
-      );
-      expect(owner.state.content.whereType<AcpConversationToolItem>(), isEmpty);
-      evidence['startupNotifications'] = owner.state.content
-          .whereType<AcpConversationUpdateItem>()
-          .map((item) => item.update.runtimeType.toString())
-          .toList();
-      final draft = graph.client.drafts.composer(threadId);
-      expect(draft.state.draft, isEmpty);
-      await tester.enterText(
-        find.descendant(
-          of: find.byType(AcpConversationComposerView),
-          matching: find.byType(TextField),
-        ),
-        prompt,
-      );
-      final caps = owner.state.capabilities!;
-      evidence['capabilities'] = {
-        'image': caps.image,
-        'audio': caps.audio,
-        'embeddedContext': caps.embeddedContext,
-        'loadSession': caps.loadSession,
-        'listSessions': caps.listSessions,
-        'resumeSession': caps.resumeSession,
-      };
+      final initialPreparation =
+          graph.client.drafts.startDraft.state.acpPreparations[project.id]
+              as AcpDraftReady;
+      var owner = graph.client.acpSessions.conversationForThread(
+        initialPreparation.threadId,
+      )!;
+      expect(owner.state.lastCompleted, isNull);
       evidence['initialConfig'] = _configuration(owner.state);
-      await record('first-send-created-and-startup-prompt-completed');
-
+      await scene.capture('agy-draft-ready');
       var pendingObserved = false;
       final configWatch = owner.source.watch((state) {
         if (state.configPending) pendingObserved = true;
@@ -371,25 +304,17 @@ void main() {
           return kind is AcpSelectConfigView &&
               _values(kind).any((value) => value.value != kind.currentValue);
         }).toList();
-        selects.sort((a, b) => _priority(a).compareTo(_priority(b)));
         expect(selects, isNotEmpty, reason: 'No real alternate select config');
-        final option = selects.first;
+        final option = selects.reduce(
+          (a, b) =>
+              _values(a.kind as AcpSelectConfigView).length <=
+                  _values(b.kind as AcpSelectConfigView).length
+              ? a
+              : b,
+        );
         final kind = option.kind as AcpSelectConfigView;
         final alternate = _values(kind)
             .firstWhere((value) => value.value != kind.currentValue);
-        final controlAnchor = find.byKey(
-          ValueKey(AcpViewKeyValues.configControl(option.id.value)),
-        );
-        if (controlAnchor.evaluate().isEmpty) {
-          // If placed in the overflow popover, open "More settings" first.
-          await tester.tap(
-            find.descendant(
-              of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
-              matching: find.byType(TextButton),
-            ),
-          );
-          await tester.pumpAndSettle();
-        }
         await tester.tap(
           find.descendant(
             of: find.byKey(
@@ -399,6 +324,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
+        await scene.capture('agy-draft-options');
         await tester.tap(
           find.byKey(
             ValueKey(
@@ -453,13 +379,251 @@ void main() {
         expect(owner.state.modes!.currentModeId, alternate.id);
         evidence['changedModeId'] = alternate.id.value;
       }
-      checkOwner();
-      expect(draft.state.draft, prompt);
-      expect(owner.state.lastCompleted, startupCompletion);
+      expect(owner.state.error, isNull);
+      expect(owner.state.activeRun, isNull);
+      expect(owner.state.lastCompleted, isNull);
       evidence['configPendingObserved'] = pendingObserved;
       evidence['confirmedConfig'] = _configuration(owner.state);
-      await scene.capture('agy-live-configured-shell');
+      await scene.capture('agy-draft-configured');
       await record('real-configuration-confirmed');
+      if (remote == null) {
+        final previousOwner = owner;
+        final previousConfig = owner.configIntents;
+        await tester.tap(find.byKey(StudioDriverKeys.sessionWorkspaceMode));
+        await tester.pumpAndSettle();
+        await tester.tap(
+          find.byKey(
+            StudioDriverKeys.sessionWorkspaceModeOption(
+              ThreadWorkspaceMode.worktree.id,
+            ),
+          ),
+        );
+        await scene.until(
+          () {
+            final phase = graph
+                .client
+                .drafts
+                .startDraft
+                .state
+                .acpPreparations[project.id];
+            if (phase is AcpDraftFailed ||
+                phase is AcpDraftNeedsConfiguration) {
+              throw StateError('Worktree draft failed: $phase');
+            }
+            return phase is AcpDraftReady &&
+                phase.threadId != initialPreparation.threadId;
+          },
+          'worktree change prepares a new draft and confirms retained configuration',
+          timeout: const Duration(seconds: 90),
+        );
+        final phase =
+            graph.client.drafts.startDraft.state.acpPreparations[project.id]
+                as AcpDraftReady;
+        owner = graph.client.acpSessions.conversationForThread(phase.threadId)!;
+        expect(
+          owner.state.remoteSessionId,
+          isNot(previousOwner.state.remoteSessionId),
+        );
+        expect(owner.configIntents, previousConfig);
+        expect(
+          graph.client.acpSessions.conversationForThread(
+            initialPreparation.threadId,
+          ),
+          isNull,
+        );
+        expect(owner.state.lastCompleted, isNull);
+        evidence['directoryChange'] = {
+          'oldRemoteSessionId': previousOwner.state.remoteSessionId?.value,
+          'newRemoteSessionId': owner.state.remoteSessionId?.value,
+          'configurationReapplied': true,
+        };
+        await scene.capture('agy-draft-worktree-ready');
+      }
+      final preparedRemoteSessionId = owner.state.remoteSessionId;
+      final preparedThreadId = owner.state.target!.threadId;
+      await record('draft-prepared-before-first-send');
+      final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
+      final prompt = remote?.promptA('${marker}A') ?? 'hi';
+      final startupMarker = '${marker}READY';
+      final startupPrompt = remote == null
+          ? 'hi'
+          : 'Reply with exactly $startupMarker and nothing else. '
+                'Do not call tools, run commands, use the network, or read or write any files.';
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AcpStartComposerView),
+          matching: find.byType(TextField),
+        ),
+        startupPrompt,
+      );
+      await tester.pumpAndSettle();
+      await scene.capture('agy-live-start-card');
+      evidence['promptCount'] = 1;
+      await tester.tap(
+        find.byKey(ValueKey(AcpViewKeyValues.startSubmit(project.id))),
+      );
+      await scene.until(
+        () {
+          final failure = graph.client.drafts.attachments.state
+              .newThread(project.id)
+              .failure;
+          if (failure != null) throw StateError('ACP create failed: $failure');
+          return find.byType(AcpComposerConnector).evaluate().length == 1;
+        },
+        'the first send creates a session and admits its prompt',
+        // A live server starts its external harness here. It can take longer
+        // than the local fixture's default deadline; this never retries new.
+        timeout: const Duration(seconds: 90),
+      );
+      final threadId = tester
+          .widget<AcpComposerConnector>(find.byType(AcpComposerConnector))
+          .threadId;
+      expect(threadId, preparedThreadId);
+      expect(
+        graph.client.acpSessions.conversationForThread(threadId),
+        same(owner),
+      );
+      expect(owner.state.remoteSessionId, preparedRemoteSessionId);
+      await scene.until(
+        () => owner.state.ready && !owner.state.openPending,
+        'real ACP owner ready',
+      );
+      final metadata = graph.client.threadDirectory.observeThread(threadId);
+      await scene.until(
+        () => metadata.state.value.frame?.row != null,
+        'committed ACP directory is observable',
+      );
+      final row = metadata.state.value.frame!.row!;
+      final reference = (row.backend as AcpAgentBackendView).reference;
+      expect(reference.acpSessionId, preparedRemoteSessionId!.value);
+      if (remote == null) {
+        expect(row.workspaceMode, ThreadWorkspaceMode.worktree);
+        expect(reference.cwd, row.workspacePath);
+        expect(reference.cwd, isNot(projectPath));
+        expect(
+          await File(p.join(reference.cwd, 'README.md')).readAsString(),
+          'Disposable ACP live acceptance workspace. No private data.\n',
+        );
+        evidence['committedWorktree'] = {
+          'cwd': reference.cwd,
+          'samePreparedSession': true,
+        };
+      }
+      await metadata.release();
+      void checkOwner() {
+        expect(graph.client.drafts.composer(threadId).state.error, isNull);
+        expect(owner.state.error, isNull);
+        expect(owner.state.observationGap, isNull);
+        expect(owner.state.disconnected, isFalse);
+        expect(owner.state.observationEnded, isFalse);
+      }
+
+      checkOwner();
+      await record('first-send-reused-prepared-session');
+      try {
+        await scene.until(
+          () {
+            checkOwner();
+            if (owner.state.pendingPermissions.isNotEmpty) {
+              throw StateError(
+                'Text-only startup unexpectedly requested permission',
+              );
+            }
+            return owner.state.lastCompleted != null &&
+                owner.state.activeRun == null &&
+                !owner.state.sendPending;
+          },
+          'startup prompt completes before configuring the next request',
+          timeout: const Duration(seconds: 120),
+        );
+      } finally {
+        evidence['startupState'] = {
+          'error': owner.state.error?.toString(),
+          'activeRun': owner.state.activeRun?.sequence.toString(),
+          'completed': owner.state.lastCompleted != null,
+          'sendPending': owner.state.sendPending,
+          'permissions': owner.state.pendingPermissions.length,
+          'content': owner.state.content
+              .map((item) => item.runtimeType.toString())
+              .toList(),
+          'toolCalls': [
+            for (final item
+                in owner.state.content.whereType<AcpConversationToolItem>())
+              {'title': item.fields.title, 'status': item.fields.status?.name},
+          ],
+        };
+        await scene.capture('agy-live-startup-observed');
+        await record('startup-prompt-observed');
+      }
+      checkOwner();
+      evidence['startupMessages'] = [
+        for (final item
+            in owner.state.content.whereType<AcpConversationMessageItem>())
+          {
+            'kind': item.kind.name,
+            'visibleText': [
+              for (final block in mapAcpMessageBlocks(item, itemId: 'startup'))
+                if (block case AcpTextBlockPresentation(:final text)) text,
+            ].join(),
+            'audiences': [
+              for (final chunk in item.chunks)
+                chunk.content.annotations?.audience
+                    ?.map((role) => role.name)
+                    .toList(),
+            ],
+          },
+      ];
+      if (remote == null) {
+        final user = owner.state.content
+            .whereType<AcpConversationMessageItem>()
+            .singleWhere(
+              (item) => item.kind == AcpConversationMessageKind.user,
+            );
+        final blocks = mapAcpMessageBlocks(user, itemId: 'startup-user');
+        expect(blocks, hasLength(1));
+        expect((blocks.single as AcpTextBlockPresentation).text, 'hi');
+        expect(
+          find.descendant(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is AcpTimelineEntryView &&
+                  widget.item is AcpTimelineUserMessage,
+            ),
+            matching: find.text('hi', findRichText: true),
+          ),
+          findsOneWidget,
+        );
+        expect(owner.state.lastCompleted!.completionSequence, BigInt.one);
+      }
+      expect(
+        owner.state.content.whereType<AcpConversationMessageItem>(),
+        isNotEmpty,
+      );
+      expect(owner.state.content.whereType<AcpConversationToolItem>(), isEmpty);
+      evidence['startupNotifications'] = owner.state.content
+          .whereType<AcpConversationUpdateItem>()
+          .map((item) => item.update.runtimeType.toString())
+          .toList();
+      final draft = graph.client.drafts.composer(threadId);
+      expect(draft.state.draft, isEmpty);
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(AcpConversationComposerView),
+          matching: find.byType(TextField),
+        ),
+        prompt,
+      );
+      final caps = owner.state.capabilities!;
+      evidence['capabilities'] = {
+        'image': caps.image,
+        'audio': caps.audio,
+        'embeddedContext': caps.embeddedContext,
+        'loadSession': caps.loadSession,
+        'listSessions': caps.listSessions,
+        'resumeSession': caps.resumeSession,
+      };
+      await scene.capture('agy-live-configured-shell');
+      await record('first-send-reused-draft-and-startup-prompt-completed');
 
       expect(
         graph.client.project.state.projects!.values.any(
@@ -490,14 +654,6 @@ List<AcpSelectOptionView> _values(AcpSelectConfigView kind) =>
       AcpGroupedOptionsView(:final groups) => [
         for (final group in groups) ...group.options,
       ],
-    };
-
-int _priority(AcpSessionConfigOptionView option) =>
-    switch (option.category?.kind) {
-      AcpConfigCategoryKindView.thoughtLevel => 0,
-      AcpConfigCategoryKindView.modelConfig => 1,
-      AcpConfigCategoryKindView.model => 2,
-      _ => 3,
     };
 
 Map<String, Object?> _configuration(AcpConversationState state) => {

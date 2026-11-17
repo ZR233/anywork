@@ -7,8 +7,8 @@ use super::legacy_current::{
 };
 use super::legacy_timeline_types::{CurrentCollectionRef, CurrentPlanHead, CurrentProjection};
 use super::*;
+use crate::{ContentOwner, ContentRef, ContentTarget, CurrentTurnHead, ThreadStatus};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-use pl_protocol::{ContentOwner, ContentRef, ContentTarget, CurrentTurnHead, ThreadStatus};
 use std::sync::Arc;
 
 pub(super) struct DemandConversation {
@@ -222,7 +222,7 @@ pub(in super::super) async fn seed_current(
     if let Some(activity) =
         crate::studio::thread_projection::project_activity(thread_id, state, None)
     {
-        projection.active = Some(pl_protocol::CurrentActivityHead {
+        projection.active = Some(crate::CurrentActivityHead {
             id: activity.identity,
             kind: activity.kind,
             summary: activity.summary,
@@ -231,7 +231,7 @@ pub(in super::super) async fn seed_current(
             tool_count: activity.tools.count,
             background_tool_count: activity.tools.background,
             latest_tool: activity.tools.latest_started.as_ref().map(|tool| {
-                pl_protocol::CurrentToolHead {
+                crate::CurrentToolHead {
                     call_id: tool.call_id.clone(),
                     name: tool.name.clone(),
                     state: tool.state,

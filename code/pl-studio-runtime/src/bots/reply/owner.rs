@@ -18,8 +18,8 @@ use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
 use crate::bots::storage::{ClaimLease, FrozenInbound};
 use crate::studio::StudioRuntime;
+use crate::{TurnCompletion, TurnState};
 use pl_core::thread::input::{InputDelivery, InputState};
-use pl_protocol::{TurnCompletion, TurnState};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -564,7 +564,7 @@ impl BotRuntime {
         }
         let request = crate::studio::StudioSubmitPromptRequest {
             thread_id: run.thread_id.clone(),
-            input: pl_protocol::studio::StudioPromptInput {
+            input: crate::StudioPromptInput {
                 input_id: run.original_input.clone(),
                 text: run.text.clone(),
                 attachment_draft_ids: drafts.clone(),

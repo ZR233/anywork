@@ -4,8 +4,8 @@
 //! bytes are streamed directly from `HistoryEventBodyRef` in bounded 64 KiB windows. No Core chat
 //! Session, completion append sequence, router, or second timeline projection is involved.
 
+use crate::{ChatClassFilter, ChatContentRole, ChatScope};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatClassFilter, ChatContentRole, ChatScope};
 use sha2::{Digest, Sha256};
 
 use crate::history::{

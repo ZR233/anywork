@@ -5,11 +5,11 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::studio::thread_projection::{
     CurrentEntryWrite, CurrentPositionIndex, collection_revision, page_rows,
 };
-use anyhow::{Result, ensure};
-use pl_protocol::{
+use crate::{
     CurrentCollectionPage, CurrentCollectionRef, CurrentContentRef, CurrentStateField, ReadDemand,
     ThreadActivity, ThreadRuntimeSnapshot,
 };
+use anyhow::{Result, ensure};
 use serde::Serialize;
 
 const INLINE_FIELD_BYTES: usize = 2048;
@@ -100,8 +100,8 @@ mod tests {
             assert!(page.entries.len() <= demand.max_items as usize);
             for entry in page.entries {
                 let bytes = match entry.payload {
-                    pl_protocol::CurrentPayloadData::Inline { bytes } => bytes,
-                    pl_protocol::CurrentPayloadData::Deferred { reference, .. } => {
+                    crate::CurrentPayloadData::Inline { bytes } => bytes,
+                    crate::CurrentPayloadData::Deferred { reference, .. } => {
                         owner.body(&reference).unwrap().to_vec()
                     }
                 };

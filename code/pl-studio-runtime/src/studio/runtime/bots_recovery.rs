@@ -4,10 +4,10 @@
 //! obligations a live bot may still need to finish. This module never rebuilds global input/message
 //! idempotency from history and never activates a model or tool.
 
+use crate::InteractionStatus;
 use anyhow::{Context, Result};
 use pl_core::thread::interactions::{InteractionRecord, InteractionState};
 use pl_core::thread::permissions::{PermissionRecord, PermissionState};
-use pl_protocol::InteractionStatus;
 
 use super::StudioRuntime;
 use crate::bots::{BotInputRead, BotInteractionFact, BotInteractionKind, BotInteractionRead};

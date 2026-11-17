@@ -1,7 +1,7 @@
 //! Read-only durable corroboration. Never repairs a database or substitutes a
 //! snapshot for a real public command/provider request.
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceAssignmentSnapshot};
+use pl_studio_runtime::{AgentProfileSnapshot, AgentWorkspaceAssignmentSnapshot};
 use sea_orm::sqlx::{
     Connection,
     sqlite::{SqliteConnectOptions, SqliteConnection},

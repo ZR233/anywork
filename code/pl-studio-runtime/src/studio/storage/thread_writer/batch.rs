@@ -86,7 +86,7 @@ pub(super) fn select(
         let deadline = head.admitted_at + WINDOW;
         let pressure = resident_pressure
             || progress.pressure_paused
-            || progress.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
+            || progress.fault == Some(crate::HistoryFault::QueueFull)
             || progress.effects.len() >= MAX_HISTORY_BATCHES
             || progress.effect_bytes >= MAX_HISTORY_THREAD_BYTES
             || process_bytes >= MAX_HISTORY_PROCESS_BYTES;
@@ -141,7 +141,7 @@ fn millis(at: i64) -> Result<i64> {
 
 fn turn_event(
     turn: &crate::history::HistoryTurnHead,
-    detail: Option<&pl_protocol::Turn>,
+    detail: Option<&crate::Turn>,
     recorded_at: i64,
     anchor: bool,
 ) -> Result<HistoryEvent> {
@@ -194,10 +194,7 @@ fn source_event(
     anchor: bool,
 ) -> Result<HistoryEvent> {
     let identity = serde_json::to_string(&source.source)?;
-    let ended = matches!(
-        &source.lifecycle,
-        pl_protocol::ChatSourceLifecycle::Ended { .. }
-    );
+    let ended = matches!(&source.lifecycle, crate::ChatSourceLifecycle::Ended { .. });
     let mut event = HistoryEvent::new(
         format!("source:{identity}:{ended}:{recorded_at}"),
         if ended {
@@ -591,7 +588,7 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
                 &progress,
                 Instant::now(),
                 "history_store",
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 &safe_error_reasons(error),
             );
         }

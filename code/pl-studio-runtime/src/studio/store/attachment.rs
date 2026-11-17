@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use crate::{AttachmentModality, ThreadAttachment};
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use image::GenericImageView;
-use pl_protocol::{AttachmentModality, ThreadAttachment};
 
 use crate::studio::ids::{new_id, unix_seconds};
 use crate::studio::records::{AttachmentRecord, MaterializedAttachment};
@@ -150,15 +150,9 @@ impl StudioStore {
             materialized.push(MaterializedAttachment {
                 attachment_id: record.id,
                 modality: match record.modality {
-                    pl_protocol::studio::StudioAttachmentModality::Image => {
-                        pl_protocol::AttachmentModality::Image
-                    }
-                    pl_protocol::studio::StudioAttachmentModality::Video => {
-                        pl_protocol::AttachmentModality::Video
-                    }
-                    pl_protocol::studio::StudioAttachmentModality::File => {
-                        pl_protocol::AttachmentModality::File
-                    }
+                    crate::StudioAttachmentModality::Image => crate::AttachmentModality::Image,
+                    crate::StudioAttachmentModality::Video => crate::AttachmentModality::Video,
+                    crate::StudioAttachmentModality::File => crate::AttachmentModality::File,
                 },
                 media_type: record.media_type,
                 filename: record.filename,
@@ -407,7 +401,7 @@ async fn sync_blob(path: &std::path::Path) -> Result<()> {
 #[derive(Debug, Clone)]
 pub(crate) struct AttachmentDraftObject {
     pub draft_id: String,
-    pub modality: pl_protocol::studio::StudioAttachmentModality,
+    pub modality: crate::StudioAttachmentModality,
     pub media_type: String,
     pub filename: String,
     pub storage_path: PathBuf,
@@ -498,9 +492,9 @@ pub(crate) fn thread_attachment(record: &AttachmentRecord) -> ThreadAttachment {
     ThreadAttachment {
         id: record.id.clone(),
         modality: match record.modality {
-            pl_protocol::studio::StudioAttachmentModality::Image => AttachmentModality::Image,
-            pl_protocol::studio::StudioAttachmentModality::Video => AttachmentModality::Video,
-            pl_protocol::studio::StudioAttachmentModality::File => AttachmentModality::File,
+            crate::StudioAttachmentModality::Image => AttachmentModality::Image,
+            crate::StudioAttachmentModality::Video => AttachmentModality::Video,
+            crate::StudioAttachmentModality::File => AttachmentModality::File,
         },
         media_type: record.media_type.clone(),
         filename: record.filename.clone(),

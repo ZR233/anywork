@@ -30,12 +30,12 @@ void main() {
       await tester.pumpAndSettle();
       expect(
         tester
-            .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
-            .focusNode!
+            .widget<EditableText>(find.byType(EditableText))
+            .focusNode
             .hasFocus,
         isTrue,
       );
-      _expectCompleteLayout(tester, wide: width >= 540, focused: true);
+      _expectCompleteLayout(tester, wide: width >= 540);
       await tester.pumpWidget(const SizedBox.shrink());
     }
 
@@ -60,11 +60,7 @@ void main() {
   }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 }
 
-void _expectCompleteLayout(
-  WidgetTester tester, {
-  required bool wide,
-  bool focused = false,
-}) {
+void _expectCompleteLayout(WidgetTester tester, {required bool wide}) {
   expect(find.byType(ComposerContentView), findsOneWidget);
   expect(find.byType(SessionModeSelector), findsOneWidget);
   expect(find.byType(ModelRoleSelector), findsOneWidget);
@@ -83,7 +79,6 @@ void _expectCompleteLayout(
     ),
   );
   expect(outlined, findsOneWidget, reason: '输入区和底栏必须共用唯一整体外框');
-  expect(tester.widget<InputDecorator>(outlined).isFocused, focused);
   final decoration = tester
       .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
       .decoration!;

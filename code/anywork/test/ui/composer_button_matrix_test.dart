@@ -611,7 +611,7 @@ void main() {
     await _close(tester, composer);
   });
 
-  testWidgets('输入法组词中的 send 动作不提交，草稿保留', (tester) async {
+  testWidgets('输入法组词在重建时保留，平台确认后 send 提交', (tester) async {
     final composer = await _composer(tester);
     await _pump(tester, composer);
     await tester.enterText(
@@ -619,7 +619,7 @@ void main() {
       'zhongwen',
     );
     await tester.pump();
-    // 组词区间有效：回车由平台确认候选，框架不参与提交。
+    // 普通重建不能打断平台尚未确认的组词。
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
         text: 'zhongwen',
@@ -628,19 +628,22 @@ void main() {
       ),
     );
     await tester.pump();
-    await tester.testTextInput.receiveAction(TextInputAction.send);
-    await tester.pump();
+    await _pump(tester, composer);
     expect(composer.transport.submitCalls, 0, reason: '组词期间不得提交或发起模型请求');
     expect(
       tester
           .widget<TextField>(find.byKey(StudioDriverKeys.composerInput))
           .controller!
-          .text,
-      'zhongwen',
-      reason: '组词期间不提交也不清草稿',
+          .value,
+      const TextEditingValue(
+        text: 'zhongwen',
+        selection: TextSelection.collapsed(offset: 8),
+        composing: TextRange(start: 0, end: 8),
+      ),
+      reason: '重建保留草稿、选区和组词',
     );
 
-    // 组词结束后同一次 send 动作才提交。
+    // 平台确认组词后报告 send，由 TextField 的默认编辑完成行为处理。
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
         text: 'zhongwen',
@@ -672,7 +675,12 @@ void main() {
     expect(field.controller!.text, isEmpty, reason: '不等待 transport 回执清稿');
     expect(field.enabled, isTrue);
     final editable = tester.state<EditableTextState>(find.byType(EditableText));
-    expect(editable.widget.focusNode.hasFocus, isTrue, reason: '发送后保留编辑焦点');
+    expect(
+      editable.widget.focusNode.hasFocus,
+      isFalse,
+      reason: '沿用 TextField 完成编辑后的焦点行为',
+    );
+    await tester.showKeyboard(input);
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
         text: 'second zhong',

@@ -186,25 +186,42 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
       if (metadata == null) {
         throw StateError('Thread directory metadata is unavailable');
       }
-      final ready = Completer<void>();
-      _initialAcpReadyWait = ready;
-      void check() {
-        final value = metadata.state.value;
-        if (!ready.isCompleted &&
-            (value.frame != null || value.closed || value.error != null)) {
-          ready.complete();
+      Future<void> waitForMetadata() async {
+        final ready = Completer<void>();
+        _initialAcpReadyWait = ready;
+        void check() {
+          final value = metadata.state.value;
+          if (!ready.isCompleted &&
+              ((value.frame != null && !value.isLoading) ||
+                  value.closed ||
+                  value.error != null)) {
+            ready.complete();
+          }
+        }
+
+        final observation = metadata.state.watch((_) => check());
+        check();
+        try {
+          await ready.future;
+        } finally {
+          observation.cancel();
+          _initialAcpReadyWait = null;
         }
       }
 
-      final observation = metadata.state.watch((_) => check());
-      check();
-      try {
-        await ready.future;
-      } finally {
-        observation.cancel();
-        _initialAcpReadyWait = null;
+      await waitForMetadata();
+      var snapshot = metadata.state.value;
+      if (!_closed &&
+          !_dependencies.isClosed &&
+          snapshot.frame?.row == null &&
+          !snapshot.closed &&
+          snapshot.error == null) {
+        // The draft may have been observed before product publication. Confirm
+        // an empty cached snapshot through the existing exact-ID observation.
+        await metadata.refresh();
+        await waitForMetadata();
+        snapshot = metadata.state.value;
       }
-      final snapshot = metadata.state.value;
       if (_closed || _dependencies.isClosed) return false;
       final row = snapshot.frame?.row;
       if (snapshot.closed ||

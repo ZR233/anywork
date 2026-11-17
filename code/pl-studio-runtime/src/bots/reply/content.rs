@@ -5,15 +5,15 @@ use crate::history::{
     HistoryDemand, HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventDetail,
     HistoryEventsQuery, HistoryReader, HistoryRowHead, HistoryTurnState,
 };
-use pl_protocol::{ChatAtomKind, ChatSourceId, ThreadTextChannel, TurnState};
+use crate::{ChatAtomKind, ChatSourceId, ReadDemand, ThreadTextChannel, TurnState};
 use serde::Deserialize;
 
 pub(super) const MAX_TURN_CONTENT_ITEMS: usize = 16_384;
 pub(super) const MAX_TURN_BODY_BYTES: usize = 800_000;
 const WINDOW_BYTES: u32 = 32 * 1024;
 
-pub(super) fn demand() -> pl_protocol::ReadDemand {
-    pl_protocol::ReadDemand {
+pub(super) fn demand() -> ReadDemand {
+    ReadDemand {
         max_items: 100,
         max_bytes: 256 * 1024,
     }
@@ -502,19 +502,16 @@ pub(super) fn collect_complete_turn_text(
 }
 
 pub(super) fn activity_preview(
-    atom: &pl_protocol::CurrentAtom,
-    body: &pl_protocol::CurrentContentPreview,
+    atom: &crate::CurrentAtom,
+    body: &crate::CurrentContentPreview,
     turn_id: &str,
 ) -> Option<String> {
     if atom.turn_id.as_deref() != Some(turn_id)
         || atom.kind != ChatAtomKind::Text
         || atom.text_channel != Some(ThreadTextChannel::Final)
-        || !matches!(
-            &atom.lifecycle,
-            pl_protocol::ChatAtomLifecycle::Active { .. }
-        )
+        || !matches!(&atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
         || body.id != atom.id
-        || body.role != pl_protocol::CurrentContentRole::Response
+        || body.role != crate::CurrentContentRole::Response
     {
         return None;
     }

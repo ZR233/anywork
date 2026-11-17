@@ -16,9 +16,9 @@ mod mixed_tests {
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
     use crate::thread_assembler::agent_wait::{WaitAgentRequest, WaitAgentResult};
     use crate::thread_assembler::{AgentHost, SessionRuntime};
+    use crate::{AcpOpenIntent, OpenAcpSessionRequest};
     use anyhow::{Context, Result};
     use futures::FutureExt;
-    use pl_protocol::studio::{AcpOpenIntent, OpenAcpSessionRequest};
     use pl_tool::collaboration::control::AgentCallContext;
     use pl_tool::collaboration::thread::{AgentControlHost, AgentMessage, AgentSpawn};
     use std::sync::Arc;
@@ -47,7 +47,7 @@ mod mixed_tests {
 
     async fn rename_during_open(
         fixture: &Fixture,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         title: &str,
     ) -> Result<()> {
         fixture
@@ -65,9 +65,9 @@ mod mixed_tests {
 
     fn session_unchanged(
         fixture: &Fixture,
-        caller: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
         title: &str,
-        delegation: pl_protocol::DelegationSettings,
+        delegation: crate::DelegationSettings,
     ) -> Result<()> {
         let sessions = fixture.runtime.store.catalog().sessions();
         let sessions = sessions
@@ -102,8 +102,8 @@ mod mixed_tests {
     async fn native_inbox_report(
         runtime: &crate::studio::StudioRuntime,
         owner: &SessionRuntime,
-        caller: &pl_protocol::AgentThreadIdentity,
-        child: &pl_protocol::AgentThreadIdentity,
+        caller: &crate::AgentThreadIdentity,
+        child: &crate::AgentThreadIdentity,
         resources: &super::AcpResources,
         completed: &pl_acp::session::Completed,
     ) -> Result<String> {
@@ -229,11 +229,7 @@ mod mixed_tests {
         }
     }
 
-    fn call(
-        _host: &AgentHost,
-        caller: &pl_protocol::AgentThreadIdentity,
-        id: &str,
-    ) -> AgentCallContext {
+    fn call(_host: &AgentHost, caller: &crate::AgentThreadIdentity, id: &str) -> AgentCallContext {
         AgentCallContext {
             caller: caller.agent_id.clone(),
             call_id: id.into(),
@@ -243,8 +239,8 @@ mod mixed_tests {
 
     fn wait_report<'a>(
         host: &'a AgentHost,
-        caller: &pl_protocol::AgentThreadIdentity,
-        target: &pl_protocol::AgentId,
+        caller: &crate::AgentThreadIdentity,
+        target: &crate::AgentId,
         call_id: &str,
         after: Option<String>,
     ) -> futures::future::BoxFuture<
@@ -274,10 +270,10 @@ mod mixed_tests {
                 display_name: "ACP child".into(),
                 description: "Ordinary ACP task".into(),
                 when_to_use: "External coding task".into(),
-                binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+                binding: crate::AgentBinding::Acp(crate::AcpAgentConfig {
                     account_id: "business-peer".into(),
                 }),
-                workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+                workspace_mode: crate::AgentWorkspaceMode::Directory,
             },
         )?;
         Ok(())
@@ -286,7 +282,7 @@ mod mixed_tests {
     async fn host(
         fixture: &Fixture,
         native: bool,
-    ) -> Result<(SessionRuntime, pl_protocol::AgentThreadIdentity, AgentHost)> {
+    ) -> Result<(SessionRuntime, crate::AgentThreadIdentity, AgentHost)> {
         let profiles = fixture.runtime.config_runtime.agent_profiles_snapshot()?;
         if native {
             let current = fixture.runtime.config_runtime.read()?;
@@ -329,7 +325,7 @@ mod mixed_tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(open.target.session_id)?)
+                .get(&crate::SessionId::new(open.target.session_id)?)
                 .context("ACP owner")?;
             let identity = owner
                 .acp_identity(&open.target.thread_id)
@@ -368,8 +364,8 @@ mod mixed_tests {
 
     fn rebuild_native_parent_and_restore_child<'a>(
         fixture: &'a Fixture,
-        caller: &'a pl_protocol::AgentThreadIdentity,
-        child: &'a pl_protocol::AgentThreadIdentity,
+        caller: &'a crate::AgentThreadIdentity,
+        child: &'a crate::AgentThreadIdentity,
         old_generation: String,
         old_cursor: String,
         old_message_id: String,
@@ -473,8 +469,8 @@ mod mixed_tests {
                     .config_runtime
                     .update(current.revision, |config| {
                         let mut config = config.clone();
-                        config.delegation.mode = pl_protocol::DelegationMode::Automatic;
-                        config.delegation.preference = pl_protocol::DelegationPreference::Economy;
+                        config.delegation.mode = crate::DelegationMode::Automatic;
+                        config.delegation.preference = crate::DelegationPreference::Economy;
                         Ok(config)
                     })?;
                 hold_peer_open(&fixture)?;
@@ -496,7 +492,7 @@ mod mixed_tests {
                     "{:?}",
                     result.message_error
                 );
-                let agent = pl_protocol::AgentId::new(result.receipt.agent_id)?;
+                let agent = crate::AgentId::new(result.receipt.agent_id)?;
                 let identity = fixture
                     .runtime
                     .agent_facility
@@ -601,7 +597,9 @@ mod mixed_tests {
                         expected_connection_revision: fixture.revision,
                         workspace_id: fixture.workspace.id.clone(),
                         thread_id: Some(identity.thread_id.to_string()),
-                        intent: AcpOpenIntent::Load("remote-one".into()),
+                        intent: AcpOpenIntent::Load {
+                            session_id: "remote-one".into(),
+                        },
                     })
                     .await?;
                 assert!(
@@ -828,9 +826,9 @@ mod mixed_tests {
             "native-child", &crate::config::UserAgentProfile {
                 enabled: true, display_name: "Native child".into(),
                 description: "Ordinary native task".into(), when_to_use: "Native report fixture".into(),
-                workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                    route: Some(pl_protocol::studio::NewThreadModelRoute {
+                workspace_mode: crate::AgentWorkspaceMode::Directory,
+                binding: crate::AgentBinding::Native(crate::NativeAgentConfig {
+                    route: Some(crate::NewThreadModelRoute {
                         account_id: account_id.to_string(), model_id: "mixed-native-model".into(), effort: None,
                     }),
                     system_instructions: Some("Execute the ordinary task.".into()),
@@ -846,7 +844,7 @@ mod mixed_tests {
         assert!(result.receipt.message_accepted, "{:?}", result.message_error);
         assert!(result.receipt.model.is_some());
         assert!(result.receipt.message_sequence.is_some());
-        let agent = pl_protocol::AgentId::new(result.receipt.agent_id)?;
+        let agent = crate::AgentId::new(result.receipt.agent_id)?;
         let identity = fixture.runtime.agent_facility.product_events
             .member_identity(&caller.session_id, &agent).context("Native child identity")?;
         assert_eq!(identity.parent_agent_id.as_ref(), Some(&caller.agent_id));
@@ -964,8 +962,8 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    use crate::protocol::*;
     use anyhow::{Context, Result};
-    use pl_protocol::studio::*;
     use tokio::time::{timeout, timeout_at};
 
     use crate::acp_transport_fixture::AcpTransportFixture as Fixture;
@@ -1092,6 +1090,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draft_is_configurable_without_publication_and_commits_the_same_session() -> Result<()>
+    {
+        let fixture = Fixture::new("config").await?;
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: crate::ThreadWorkspaceMode::Local,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        let snapshot = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        assert!(snapshot.config_options.is_some());
+        fixture
+            .runtime
+            .configure_acp_session(
+                open.target.clone(),
+                "format".into(),
+                crate::SessionConfigOptionValue::value_id("json"),
+            )
+            .await?;
+        let configured = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        let config = serde_json::to_value(configured.config_options)?;
+        assert_eq!(config[0]["currentValue"], "json");
+        let error = fixture
+            .runtime
+            .prompt_acp_session(open.target.clone(), vec![])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, AcpBusinessFailureKind::NotReady);
+        fixture
+            .runtime
+            .commit_acp_draft(open.target.clone())
+            .await?;
+        assert_eq!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .len(),
+            1
+        );
+        let committed = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        assert_eq!(snapshot.acp_session_id, committed.acp_session_id);
+        fixture.runtime.close_acp_session(open.target).await?;
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closing_unused_draft_does_not_publish_it() -> Result<()> {
+        let fixture = Fixture::new("normal").await?;
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: crate::ThreadWorkspaceMode::Local,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        let closed = fixture.runtime.close_acp_session(open.target).await?;
+        assert!(closed.local_complete, "{closed:?}");
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closing_worktree_draft_preserves_checkout_and_exposes_recovery() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        let fixture = Fixture::new("config").await?;
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=ACP fixture",
+                "-c",
+                "user.email=acp@example.invalid",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.workspace.path)
+                .args(args)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        let lease = fixture
+            .runtime
+            .agent_facility
+            .worktrees
+            .get(&open.target.thread_id)
+            .context("draft worktree lease")?;
+        assert_eq!(lease.state, WorktreeLeaseState::Active);
+        assert!(
+            fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&open.target.thread_id)
+        );
+        assert_ne!(lease.path, fixture.workspace.path);
+        let opened: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(fixture.home.path().join("sessions"))?
+                .lines()
+                .next()
+                .context("peer cwd record")?,
+        )?;
+        assert_eq!(opened["cwd"], lease.path);
+        let closed = fixture
+            .runtime
+            .close_acp_session(open.target.clone())
+            .await?;
+        assert!(closed.local_complete, "{closed:?}");
+        let retained = fixture
+            .runtime
+            .agent_facility
+            .worktrees
+            .get(&open.target.thread_id)
+            .context("retained worktree lease")?;
+        assert_eq!(retained.state, WorktreeLeaseState::Preserved);
+        assert!(
+            !fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&open.target.thread_id)
+        );
+        assert!(std::path::Path::new(&retained.path).is_dir());
+        assert!(
+            fixture
+                .runtime
+                .recovery
+                .snapshot()
+                .iter()
+                .any(|issue| issue.thread_id.as_deref() == Some(open.target.thread_id.as_str()))
+        );
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        let mut committed = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: crate::ThreadWorkspaceMode::Worktree,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut committed).await?;
+        fixture
+            .runtime
+            .commit_acp_draft(committed.target.clone())
+            .await?;
+        assert!(
+            !fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&committed.target.thread_id)
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .len(),
+            1
+        );
+        assert!(
+            fixture
+                .runtime
+                .close_acp_session(committed.target)
+                .await?
+                .local_complete
+        );
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn factory_stream_publication_prompt_and_real_reclamation() -> Result<()> {
         let fixture = Fixture::new("replay").await?;
         assert!(
@@ -1103,7 +1323,9 @@ mod tests {
         );
         assert!(!fixture.home.path().join("pid").exists());
         let mut open = fixture
-            .open_intent(AcpOpenIntent::Load("remote-one".into()))
+            .open_intent(AcpOpenIntent::Load {
+                session_id: "remote-one".into(),
+            })
             .await?;
         let observer = open.observation.as_mut().unwrap();
         let first = timeout(Duration::from_secs(15), observer.recv()).await?;
@@ -1130,7 +1352,7 @@ mod tests {
         let owner = fixture
             .runtime
             .sessions
-            .get(&pl_protocol::SessionId::new(target.session_id.clone())?)
+            .get(&crate::SessionId::new(target.session_id.clone())?)
             .unwrap();
         assert!(
             owner.observed_threads().is_empty(),
@@ -1143,10 +1365,7 @@ mod tests {
             .directory_facts(&target.thread_id)
             .unwrap();
         assert!(session.native_mode.is_none());
-        assert!(matches!(
-            agent.backend,
-            pl_protocol::session::AgentBackend::Acp { .. }
-        ));
+        assert!(matches!(agent.backend, crate::AgentBackend::Acp { .. }));
         let native_paths = fixture
             .runtime
             .store
@@ -1340,7 +1559,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id: Some(original.thread_id.clone()),
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             })
             .await?;
         Fixture::ready(&mut reopened).await?;
@@ -1373,7 +1594,9 @@ mod tests {
     async fn observation_gap_does_not_lose_product_publication_or_remote_identity() -> Result<()> {
         let fixture = Fixture::new("gap").await?;
         let mut open = fixture
-            .open_intent(AcpOpenIntent::Load("remote-one".into()))
+            .open_intent(AcpOpenIntent::Load {
+                session_id: "remote-one".into(),
+            })
             .await?;
         let observation = open.observation.as_mut().unwrap();
         timeout(Duration::from_secs(15), open.completion.wait()).await??;
@@ -1393,7 +1616,7 @@ mod tests {
             .product_events
             .directory_facts(&open.target.thread_id)
             .unwrap();
-        let pl_protocol::session::AgentBackend::Acp { reference } = agent.backend else {
+        let crate::AgentBackend::Acp { reference } = agent.backend else {
             panic!("ACP reference");
         };
         assert_eq!(reference.acp_session_id, "remote-one");
@@ -1430,9 +1653,7 @@ mod tests {
         let owner = fixture
             .runtime
             .sessions
-            .get(&pl_protocol::SessionId::new(
-                open.target.session_id.clone(),
-            )?)
+            .get(&crate::SessionId::new(open.target.session_id.clone())?)
             .unwrap();
         let resources = owner.resident_acp(&open.target.thread_id)?.unwrap();
         let runtime = fixture.runtime.clone();
@@ -1494,9 +1715,7 @@ mod tests {
         let owner = fixture
             .runtime
             .sessions
-            .get(&pl_protocol::SessionId::new(
-                open.target.session_id.clone(),
-            )?)
+            .get(&crate::SessionId::new(open.target.session_id.clone())?)
             .unwrap();
         assert!(
             owner
@@ -1521,7 +1740,7 @@ mod tests {
             .product_events
             .directory_facts(&open.target.thread_id)
             .unwrap();
-        let pl_protocol::session::AgentBackend::Acp { reference } = agent.backend else {
+        let crate::AgentBackend::Acp { reference } = agent.backend else {
             panic!("ACP reference");
         };
         assert_eq!(reference.acp_session_id, "remote-one");
@@ -1558,7 +1777,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id: Some(original.target.thread_id.clone()),
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             };
             let (first, second) = tokio::join!(
                 fixture.runtime.open_acp_session(request.clone()),
@@ -1700,8 +1921,8 @@ mod tests {
                 "native-neighbor".into(),
                 &fixture.workspace.id,
                 "Native neighbor",
-                pl_protocol::ThreadModeId::simple(),
-                pl_protocol::ThreadWorkspaceMode::Local,
+                crate::mode::ThreadModeId::simple(),
+                crate::ThreadWorkspaceMode::Local,
                 fixture.workspace.path.clone(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
             );
@@ -1863,7 +2084,7 @@ mod tests {
     struct ColdNativeLeaf {
         root: PathBuf,
         store: crate::studio::StudioStore,
-        thread: pl_protocol::Thread,
+        thread: crate::Thread,
         usage: std::sync::Mutex<Option<crate::studio::WorkspaceUsageLease>>,
     }
 
@@ -1879,7 +2100,7 @@ mod tests {
         async fn root_delegation(
             &self,
             _: &crate::thread_assembler::ThreadActivation,
-        ) -> Result<pl_protocol::DelegationSettings, crate::thread_assembler::ThreadAssemblyError>
+        ) -> Result<crate::DelegationSettings, crate::thread_assembler::ThreadAssemblyError>
         {
             panic!("cold ACP parent must not become a Native root");
         }
@@ -1936,12 +2157,12 @@ mod tests {
             parent_agent_id: Some(root.agent.agent_id.clone()),
             role: "fixture".into(),
             title: Some("Native child".into()),
-            backend: pl_protocol::session::AgentBackend::Native {
-                config: pl_protocol::NativeAgentConfig {
+            backend: crate::AgentBackend::Native {
+                config: crate::NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 },
-                status: pl_protocol::ThreadStatus::Idle,
+                status: crate::ThreadStatus::Idle,
             },
             explicitly_closed: false,
             created_at: 1,
@@ -1988,11 +2209,11 @@ mod tests {
             .thread_factory
             .assign_workspace_use(&usage, &fixture.workspace, &physical)
             .await?;
-        let root_identity = pl_protocol::AgentThreadIdentity {
-            session_id: pl_protocol::SessionId::new(root.session.session_id.clone())?,
-            agent_id: pl_protocol::AgentId::new(root.agent.agent_id.clone())?,
+        let root_identity = crate::AgentThreadIdentity {
+            session_id: crate::SessionId::new(root.session.session_id.clone())?,
+            agent_id: crate::AgentId::new(root.agent.agent_id.clone())?,
             parent_agent_id: None,
-            thread_id: pl_protocol::ThreadId::new(root.agent.thread_id.clone())?,
+            thread_id: crate::ThreadId::new(root.agent.thread_id.clone())?,
         };
         let owner = fixture
             .runtime

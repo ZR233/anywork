@@ -45,7 +45,7 @@ impl StudioRuntime {
                 existing.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot accept bot traffic"
             );
-            let protocol = pl_protocol::Thread::from(existing.clone());
+            let protocol = crate::Thread::from(existing.clone());
             self.check_thread_read_access(&protocol)?;
             self.verify_thread_execution_preparation(&protocol, None)
                 .await?;
@@ -69,8 +69,8 @@ impl StudioRuntime {
             thread_id,
             workspace_id,
             title,
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
+            crate::mode::ThreadModeId::simple(),
+            crate::ThreadWorkspaceMode::Local,
             workspace_path,
             crate::config::ROOT_AGENT_ROUTE_KEY,
         );
@@ -171,9 +171,7 @@ impl StudioRuntime {
             .snapshot()
             .mode(&request.mode)
             .ok_or_else(|| {
-                pl_protocol::studio::StudioError::invalid_argument(
-                    "requested Thread Mode is unavailable",
-                )
+                crate::StudioError::invalid_argument("requested Thread Mode is unavailable")
             })?;
 
         self.attachment_drafts
@@ -186,8 +184,8 @@ impl StudioRuntime {
             .cloned()
             .context("selected Project not found")?;
         anyhow::ensure!(
-            project.kind != pl_protocol::studio::WorkspaceKind::Standalone
-                || request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
+            project.kind != crate::WorkspaceKind::Standalone
+                || request.workspace_mode == crate::ThreadWorkspaceMode::Local,
             "standalone sessions only support local workspaces"
         );
         self.ensure_project_thread_admission_open(&request.workspace_id)?;
@@ -205,13 +203,13 @@ impl StudioRuntime {
         let mut session_lease = None;
         report(
             ThreadPreparationStage::PreparingWorkspace,
-            (request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local)
+            (request.workspace_mode == crate::ThreadWorkspaceMode::Local)
                 .then_some(project.path.as_str()),
             None,
         );
         let workspace_started = std::time::Instant::now();
         tracing::debug!(target: "thread_preparation", stage = "workspace", "starting");
-        if request.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+        if request.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
             // 创建窗口内的 lease 由进程内「创建中」标记保护：在记录 `prepared` 之前设置，
             // 直到 owner Thread 目录事实提交（或失败 settle 并发布）之后才清除。
             self.agent_facility.worktrees.mark_creating(&thread_id);
@@ -439,7 +437,7 @@ impl StudioRuntime {
                 operation_id,
                 changed,
                 vec![self.thread_directory_stamp(&committed)?],
-                pl_protocol::studio::CommandEffectPoint::Immediate,
+                crate::CommandEffectPoint::Immediate,
                 false,
             ),
         })
@@ -608,17 +606,14 @@ impl StudioRuntime {
                 operation_id,
                 true,
                 vec![self.thread_directory_stamp(&committed)?],
-                pl_protocol::studio::CommandEffectPoint::Immediate,
+                crate::CommandEffectPoint::Immediate,
                 false,
             ),
         }))
     }
 
     /// Restores an archived root and its descendants without executing historical work.
-    pub async fn restore_thread(
-        &self,
-        thread_id: String,
-    ) -> Result<pl_protocol::SessionDirectoryRow> {
+    pub async fn restore_thread(&self, thread_id: String) -> Result<crate::SessionDirectoryRow> {
         let _guard = self.lifecycle_lock.lock().await;
         if let Some(root) = self.store.directory_member(&thread_id)? {
             self.store
@@ -781,7 +776,7 @@ impl StudioRuntime {
     ) -> Result<
         Option<(
             DirectoryMember,
-            Vec<pl_protocol::SessionDirectoryRow>,
+            Vec<crate::SessionDirectoryRow>,
             Vec<DirectoryMember>,
         )>,
     > {
@@ -838,7 +833,7 @@ impl StudioRuntime {
         Ok(Some((root, roots, tree)))
     }
 
-    fn ensure_mode_available(&self, mode_id: &pl_protocol::ThreadModeId) -> Result<()> {
+    fn ensure_mode_available(&self, mode_id: &crate::mode::ThreadModeId) -> Result<()> {
         anyhow::ensure!(
             self.thread_modes.snapshot().mode(mode_id).is_some(),
             "selected Thread Mode `{mode_id}` is unavailable"
@@ -932,8 +927,8 @@ impl StudioRuntime {
             };
             if tokio::time::Instant::now() >= deadline {
                 return Err(anyhow::Error::new(
-                    pl_protocol::studio::StudioError::new(
-                        pl_protocol::studio::StudioErrorCode::Busy,
+                    crate::StudioError::new(
+                        crate::StudioErrorCode::Busy,
                         "The session could not be ended before archiving",
                         true,
                     )
@@ -977,7 +972,7 @@ async fn local_thread_workspace(
     project: &crate::studio::WorkspaceRecord,
     thread_id: &str,
 ) -> Result<String> {
-    if project.kind == pl_protocol::studio::WorkspaceKind::Project {
+    if project.kind == crate::WorkspaceKind::Project {
         return Ok(project.path.clone());
     }
     anyhow::ensure!(

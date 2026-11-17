@@ -11,7 +11,7 @@ pub async fn admit_attachment_drafts(
     let bridge = active_bridge().await?;
     let response = bridge
         .studio
-        .admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
+        .admit_attachment_drafts(pl_studio_runtime::AdmitAttachmentDraftsRequest {
             context: context.into(),
             sources: sources.into_iter().map(Into::into).collect(),
         })

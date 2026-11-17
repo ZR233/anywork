@@ -1,7 +1,7 @@
 //! One encoding for product content ownership at the Core/storage boundary.
 
+use crate::ContentOwner;
 use pl_core::chat::{ChatError, ChatKey};
-use pl_protocol::ContentOwner;
 
 pub(crate) fn content_owner_key(owner: &ContentOwner) -> Result<ChatKey, ChatError> {
     match owner {

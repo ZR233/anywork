@@ -18,6 +18,10 @@
 //! 准备上下文。
 use std::collections::BTreeSet;
 
+use crate::{
+    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
+    ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
+};
 use pl_core::context::ContextContent;
 use pl_core::model::{
     AggregateChannel, ModelProgress, ObservedItemKind, ObservedPart, ObservedPartIdentity,
@@ -31,22 +35,18 @@ use pl_core::thread::{
     permissions::PermissionState,
     task::{TaskRecord, TaskStatus},
 };
-use pl_protocol::{
-    ACTIVITY_SUMMARY_LIMIT, ThreadActivity, ThreadActivityArguments, ThreadActivityKind,
-    ThreadActivityToolEntry, ThreadActivityToolState, ThreadActivityTools,
-};
 
 /// A frame-local view of the original current owner's admitted activity and part locations.
 /// It borrows the same immutable observation as current content; it owns no retained history.
 struct AdmittedActivity<'a> {
-    atoms: &'a [pl_protocol::ChatAtom],
+    atoms: &'a [crate::ChatAtom],
     parts: Vec<&'a ObservedPart>,
 }
 
 impl<'a> AdmittedActivity<'a> {
     fn new(
         state: &'a ThreadSnapshot,
-        atoms: &'a [pl_protocol::ChatAtom],
+        atoms: &'a [crate::ChatAtom],
         active: &[super::current::ActiveText],
     ) -> Self {
         let mut parts = Vec::new();
@@ -60,10 +60,7 @@ impl<'a> AdmittedActivity<'a> {
                 let Some(atom) = atoms.iter().find(|atom| {
                     atom.id == *id
                         && atom.attempt_id.as_deref() == Some(&progress.attempt_id)
-                        && matches!(
-                            atom.lifecycle,
-                            pl_protocol::ChatAtomLifecycle::Active { .. }
-                        )
+                        && matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
                 }) else {
                     continue;
                 };
@@ -78,7 +75,7 @@ impl<'a> AdmittedActivity<'a> {
                     &progress.attempt_id,
                     location.generation,
                     part,
-                    &pl_protocol::ThreadContentLifecycle::streaming(),
+                    &crate::ThreadContentLifecycle::streaming(),
                 ) else {
                     continue;
                 };
@@ -565,21 +562,19 @@ fn tool_entry(
 fn wait_presentation(
     state: &ThreadSnapshot,
     task: &TaskRecord,
-) -> Option<pl_protocol::ThreadWaitPresentation> {
+) -> Option<crate::ThreadWaitPresentation> {
     if !matches!(task.tool_id.as_str(), "wait" | "sleep") {
         return None;
     }
     let arguments = call_arguments(state, &task.call_id)?;
     let activity_state = tool_state(state, task);
     let tool_lifecycle = match activity_state {
-        ThreadActivityToolState::Cancelling => pl_protocol::ThreadToolState::Cancelling(
-            pl_protocol::CancellingThreadTool::new(String::new()),
-        ),
+        ThreadActivityToolState::Cancelling => {
+            crate::ThreadToolState::Cancelling(crate::CancellingThreadTool::new(String::new()))
+        }
         ThreadActivityToolState::Finished => return None,
         ThreadActivityToolState::Running | ThreadActivityToolState::AwaitingApproval => {
-            pl_protocol::ThreadToolState::Running(
-                pl_protocol::RunningThreadTool::new(String::new()),
-            )
+            crate::ThreadToolState::Running(crate::RunningThreadTool::new(String::new()))
         }
     };
     super::wait::project_wait(Some(state), &task.tool_id, &arguments, &tool_lifecycle)
@@ -958,13 +953,10 @@ fn has_stream_facts(
         for atom in view.atoms.iter().filter(|atom| {
             atom.attempt_id.as_deref() == Some(&attempt.attempt_id)
                 && atom.turn_id.as_deref() == Some(&attempt.turn_id)
-                && matches!(
-                    atom.lifecycle,
-                    pl_protocol::ChatAtomLifecycle::Active { .. }
-                )
+                && matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
         }) {
-            response |= atom.kind == pl_protocol::ChatAtomKind::Text;
-            reasoning |= atom.kind == pl_protocol::ChatAtomKind::Reasoning;
+            response |= atom.kind == crate::ChatAtomKind::Text;
+            reasoning |= atom.kind == crate::ChatAtomKind::Reasoning;
         }
         return (response, reasoning);
     }
@@ -1167,7 +1159,7 @@ impl ActivityProjection {
         &mut self,
         thread_id: &str,
         state: &ThreadSnapshot,
-        atoms: &[pl_protocol::ChatAtom],
+        atoms: &[crate::ChatAtom],
         active: &[super::current::ActiveText],
     ) -> Option<ThreadActivity> {
         let admitted = AdmittedActivity::new(state, atoms, active);
@@ -1435,7 +1427,7 @@ mod tests {
             "attempt",
             generation,
             &reasoning,
-            &pl_protocol::ThreadContentLifecycle::streaming(),
+            &crate::ThreadContentLifecycle::streaming(),
         )
         .unwrap();
         let item =
@@ -1458,7 +1450,7 @@ mod tests {
             "attempt",
             generation,
             response,
-            &pl_protocol::ThreadContentLifecycle::streaming(),
+            &crate::ThreadContentLifecycle::streaming(),
         )
         .unwrap();
         let item =

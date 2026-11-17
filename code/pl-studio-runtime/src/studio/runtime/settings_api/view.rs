@@ -1,17 +1,17 @@
 //! Settings 只读投影：从 StudioConfig 派生 secret-free 的 snapshot 视图与展示标签。
 
-use anyhow::{Context, Result};
-use pl_model::model::ModelInfo;
-use pl_model::protocol::{ConnectionMode, WireApi};
-use pl_protocol::WebSearchContextSize;
-use pl_protocol::search::WebSearchMode;
-use pl_protocol::studio::{
+use crate::WebSearchContextSize;
+use crate::WebSearchMode;
+use crate::{
     ModelCatalogSnapshot, SettingsConfigSnapshot, SettingsStateResponse, StudioAccountModelCatalog,
     StudioAccountSettings, StudioCustomModelSettings, StudioDeepSeekWebSearchSettings,
     StudioGeneralSettings, StudioInstructionsSettings, StudioModeModelSettings,
     StudioModelAutoCompactSettings, StudioModelConnectionSettings, StudioRoleSettings,
     StudioSettings, StudioSkillsSettings, StudioWebSearchSettings,
 };
+use anyhow::{Context, Result};
+use pl_model::model::ModelInfo;
+use pl_model::protocol::{ConnectionMode, WireApi};
 
 use crate::{ConfigRuntimeSnapshot, ModelCatalogRuntimeSnapshot};
 use pl_model::config::{AccountCapabilitySelection, AccountModelCatalogConfig};
@@ -19,7 +19,7 @@ use pl_tool::search::{WebSearchAvailability, WebSearchDeepSeekOptions};
 
 pub(crate) fn settings_config_snapshot(
     state: &ConfigRuntimeSnapshot,
-    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
+    acp_accounts: Vec<crate::AcpAccountSettings>,
 ) -> Result<SettingsConfigSnapshot> {
     Ok(SettingsConfigSnapshot {
         revision: state.revision,
@@ -40,11 +40,11 @@ pub(crate) fn model_catalog_snapshot(
         .map(|(id, account)| {
             let status = match catalog.catalogs.get(id).cloned() {
                 Some(status) => status,
-                None => pl_protocol::studio::StudioModelCatalogStatus {
+                None => crate::StudioModelCatalogStatus {
                     query_generation: 0,
                     operation_id: None,
                     supported: account.discovery_profile()?.is_some(),
-                    source: pl_protocol::studio::StudioModelCatalogSource::Default,
+                    source: crate::StudioModelCatalogSource::Default,
                     probing: false,
                     last_success_at: None,
                     checked_at: None,
@@ -73,7 +73,7 @@ pub(crate) fn model_catalog_snapshot(
 pub(crate) fn settings_state_response(
     state: &ConfigRuntimeSnapshot,
     catalog: &ModelCatalogRuntimeSnapshot,
-    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
+    acp_accounts: Vec<crate::AcpAccountSettings>,
 ) -> Result<SettingsStateResponse> {
     Ok(SettingsStateResponse {
         config: settings_config_snapshot(state, acp_accounts)?,
@@ -83,7 +83,7 @@ pub(crate) fn settings_state_response(
 
 fn settings_view(
     state: &ConfigRuntimeSnapshot,
-    acp_accounts: Vec<pl_protocol::studio::AcpAccountSettings>,
+    acp_accounts: Vec<crate::AcpAccountSettings>,
 ) -> Result<StudioSettings> {
     let config = state.canonical_config();
     let accounts = config
@@ -129,7 +129,7 @@ fn settings_view(
         delegation: config.delegation,
         default_account_id: config
             .mode_model_routes
-            .get(&pl_protocol::ThreadModeId::simple())
+            .get(&crate::mode::ThreadModeId::simple())
             .map(|route| route.account_id.to_string()),
         accounts,
         acp_accounts,

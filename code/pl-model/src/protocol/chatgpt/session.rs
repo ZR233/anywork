@@ -2,8 +2,8 @@ use super::{
     CHATGPT_ISSUER, CHATGPT_RESOURCE, CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError,
     DIRECT_SCOPE, TokenResponse, exchange, now, oauth_client,
 };
+use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
 use oauth2::TokenResponse as _;
-use pl_protocol::studio::ChatGptAccountInfo;
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -202,7 +202,7 @@ impl ChatGptSession {
         Self::validate_account_resource(&self.inner.identity, base_url)
     }
 
-    pub fn codex_account(&self) -> Option<&pl_protocol::studio::CodexAccountInfo> {
+    pub fn codex_account(&self) -> Option<&CodexAccountInfo> {
         self.inner.identity.codex.as_ref()
     }
 
@@ -456,7 +456,7 @@ mod tests {
             .find(|template| template.id.as_str() == "openai")
             .unwrap()
             .account;
-        account.authentication = pl_protocol::studio::AccountAuthenticationMethod::ChatGpt;
+        account.authentication = crate::config::AccountAuthenticationMethod::ChatGpt;
         account.chatgpt_account = Some(record().account);
         account.chatgpt_session = Some(session);
         account.bearer_token_env = None;

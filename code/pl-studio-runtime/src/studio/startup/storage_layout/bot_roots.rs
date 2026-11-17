@@ -107,8 +107,7 @@ pub(super) async fn plan(
                     }
                     let diagnostic = if frozen.is_none() {
                         Some("bot checkpoint has no stable owner evidence; execution binding was preserved".into())
-                    } else if parent_session.workspace_mode
-                        != pl_protocol::ThreadWorkspaceMode::Local
+                    } else if parent_session.workspace_mode != crate::ThreadWorkspaceMode::Local
                         || !same_path(
                             Path::new(&parent_session.workspace_path),
                             Path::new(&old_root),

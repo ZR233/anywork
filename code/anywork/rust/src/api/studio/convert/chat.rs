@@ -1,5 +1,5 @@
 //! Mechanical mappings for typed Current sources and bounded content windows.
-use pl_protocol as protocol;
+use pl_studio_runtime as protocol;
 
 use crate::api::studio::types::*;
 

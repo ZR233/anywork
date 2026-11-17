@@ -23,8 +23,8 @@ pub(crate) fn hosted_tool(route: &ResolvedModelRoute) -> Option<HostedTool> {
 mod tests {
     #[test]
     fn chatgpt_canonical_capabilities_prevent_automatic_programmatic_selection() {
+        use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
         use pl_model::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-        use pl_protocol::studio::{AccountAuthenticationMethod, ChatGptAccountInfo};
         let mut config = crate::StudioConfig::default_config().unwrap();
         let mut account = pl_model::config::builtin_account_catalog()
             .unwrap()

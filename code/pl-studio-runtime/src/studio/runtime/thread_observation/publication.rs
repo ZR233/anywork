@@ -51,11 +51,6 @@ impl ConversationPublication {
                     revision.checked_add(1)
                 });
     }
-    pub(in crate::studio) fn subscribe_progress(
-        &self,
-    ) -> watch::Receiver<Option<Arc<ConversationSource>>> {
-        self.progress.subscribe()
-    }
     pub(in crate::studio) fn new() -> Self {
         Self {
             latest: Mutex::new(None),
@@ -65,9 +60,7 @@ impl ConversationPublication {
             current_owner: Mutex::new(None),
         }
     }
-    pub(in crate::studio) fn content_changes(&self) -> watch::Receiver<u64> {
-        self.content_changed.subscribe()
-    }
+
     pub(in crate::studio) fn current(&self) -> Option<Arc<ConversationSource>> {
         self.latest
             .lock()

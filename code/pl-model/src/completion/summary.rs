@@ -10,7 +10,7 @@ pub fn summary_request(
     max_output_tokens: Option<u64>,
 ) -> CompletionRequest {
     prefix.input.push(ModelContextItem::from(Message {
-        presentation: pl_protocol::MessagePresentation::Hidden,
+        presentation: crate::completion::MessagePresentation::Hidden,
         role: MessageRole::User,
         content: MessageContent::text(format!("{instructions}\n\n{requirement}")),
         reasoning_content: None,

@@ -11,11 +11,13 @@ use pl_core::model::{AggregateChannel, ObservedItemKind, ObservedPartIdentity, O
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use pl_protocol::trace::{AgentEvent, AgentEventSender, TraceEventSink, TraceTextChannel};
-use pl_protocol::{
-    InferenceModelObservation, InferenceOrchestrationMetrics, PureError, ResponsesContextItem,
-    ResponsesContextItemKind, Result, ToolCallCaller, UsageReport,
+use crate::completion::{
+    InferenceModelObservation, InferenceOrchestrationMetrics, ResponsesContextItem,
+    ResponsesContextItemKind, ToolCallCaller,
 };
+use crate::model::UsageReport;
+use crate::trace::{AgentEvent, AgentEventSender, TraceEventSink, TraceTextChannel};
+use pl_protocol::{PureError, Result};
 
 use crate::completion::{
     CompletionPresentationItem, CompletionPresentationPart, CompletionResponse,
@@ -1033,7 +1035,7 @@ impl StreamCompletionAccumulator {
             presentation_items: self.take_presentation_items(),
             orchestration,
             timing: None,
-            accounting: pl_protocol::InferenceAccounting {
+            accounting: crate::model::InferenceAccounting {
                 usage: self.final_usage.take().unwrap_or_default(),
                 ..Default::default()
             },
@@ -1098,8 +1100,8 @@ impl StreamCompletionAccumulator {
             .or_else(|| self.tool_call_callers.remove(&call.call_id));
     }
 
-    pub(super) fn accounting(&self) -> pl_protocol::InferenceAccounting {
-        pl_protocol::InferenceAccounting {
+    pub(super) fn accounting(&self) -> crate::model::InferenceAccounting {
+        crate::model::InferenceAccounting {
             usage: self.final_usage.clone().unwrap_or_default(),
             ..Default::default()
         }

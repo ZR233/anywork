@@ -1,13 +1,13 @@
 //! Bounded typed History/Current observation shared by the bots acceptance cases.
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::{
-    ContentRange, CurrentPayloadData, ReadDemand, ThreadTextChannel, Turn, TurnState,
-};
 use pl_studio_runtime::history::{
     HEAD_MAX_BYTES, HistoryBodyEntry, HistoryBodyPage, HistoryBodyRole, HistoryCut, HistoryDemand,
     HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventDetail,
     HistoryEventHeader, HistoryEventsPage, HistoryEventsQuery, HistoryGroupPage, HistoryRowHead,
     HistoryTimelinePage, HistoryTurnHead, HistoryTurnState,
+};
+use pl_studio_runtime::{
+    ContentRange, CurrentPayloadData, ReadDemand, ThreadTextChannel, Turn, TurnState,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -38,7 +38,7 @@ pub(crate) struct HistoryOriginal {
 impl HistoryOriginal {
     pub(crate) fn text_body(&self) -> Result<Option<&HistoryBodyEntry>> {
         ensure!(
-            self.head.kind == pl_protocol::ChatAtomKind::Text,
+            self.head.kind == pl_studio_runtime::ChatAtomKind::Text,
             "History entity {} is not typed text",
             self.head.entity_id
         );
@@ -50,7 +50,7 @@ impl HistoryOriginal {
 
     pub(crate) fn tool_output_body(&self) -> Result<Option<&HistoryBodyEntry>> {
         ensure!(
-            self.head.kind == pl_protocol::ChatAtomKind::ToolCall,
+            self.head.kind == pl_studio_runtime::ChatAtomKind::ToolCall,
             "History entity {} is not a tool",
             self.head.entity_id
         );
@@ -60,7 +60,7 @@ impl HistoryOriginal {
 
     pub(crate) fn tool_arguments_body(&self) -> Result<Option<&HistoryBodyEntry>> {
         ensure!(
-            self.head.kind == pl_protocol::ChatAtomKind::ToolCall,
+            self.head.kind == pl_studio_runtime::ChatAtomKind::ToolCall,
             "History entity {} is not a tool",
             self.head.entity_id
         );
@@ -278,7 +278,7 @@ pub(crate) async fn originals_for_input(
     originals_for_query(
         read,
         HistoryEventsQuery::Source {
-            source: pl_protocol::ChatSourceId::Input {
+            source: pl_studio_runtime::ChatSourceId::Input {
                 input_id: input_id.to_owned(),
             },
         },
@@ -654,7 +654,7 @@ pub(crate) async fn current_payload_bytes(
 
 pub(crate) async fn current_content_bytes(
     read: &crate::http::CurrentRead,
-    reference: &pl_protocol::CurrentContentRef,
+    reference: &pl_studio_runtime::CurrentContentRef,
     length: u64,
     remaining: &mut usize,
     deadline: Instant,
@@ -768,12 +768,12 @@ fn ensure_history_payload_matches(head: &HistoryEntityHead, payload: &Value) -> 
     }
     match &head.state {
         HistoryEntityState::KnownTerminal { outcome } => {
-            if head.kind == pl_protocol::ChatAtomKind::TurnReceipt {
+            if head.kind == pl_studio_runtime::ChatAtomKind::TurnReceipt {
                 ensure!(
                     payload["type"] == "turn",
                     "terminal History Turn receipt is not a Turn payload"
                 );
-                let saved: pl_protocol::ChatTerminalOutcome =
+                let saved: pl_studio_runtime::ChatTerminalOutcome =
                     serde_json::from_value(payload["data"]["outcome"].clone())?;
                 ensure!(
                     &saved == outcome,

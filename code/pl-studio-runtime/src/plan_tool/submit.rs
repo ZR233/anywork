@@ -1,4 +1,4 @@
-use pl_protocol::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
+use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption};
 use schemars::JsonSchema;
 use serde::Deserialize;
 pub const TOOL_PLAN_SUBMIT: &str = "plan_submit";

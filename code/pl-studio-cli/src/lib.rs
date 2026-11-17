@@ -7,16 +7,19 @@ pub use args::{Cli, Command, ExecArgs, PreparedExec, PreparedExport};
 pub use signals::SignalListener;
 
 use anyhow::{Context, Result};
-use pl_protocol::{
-    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnCompletion,
-    TurnState, studio::StudioPromptInput,
+use pl_studio_runtime::history::{
+    BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryDemand,
+    HistoryEventBodyRef, HistoryReader, HistoryRowHead, HistoryTurnState,
 };
 use pl_studio_runtime::{
-    BuildInfoV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION,
-    ResultOutcome, ResultV3, RunExportOptions, RunExportReport, RunExporter,
-    StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
-    StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
-    StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
+    BuildInfoV3, CHAT_BATCH_MAX_BYTES, CURRENT_PROTOCOL_VERSION, CurrentFrame, ExecutionErrorStage,
+    ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION, ReadDemand, ResultOutcome, ResultV3,
+    RunExportOptions, RunExportReport, RunExporter, StudioPendingPersistence, StudioRuntime,
+    StudioShutdownOutcome, StudioShutdownReport, StudioStartNewThreadRequest, StudioStartupError,
+    StudioStartupErrorKind, StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
+};
+use pl_studio_runtime::{
+    StudioPromptInput, ThreadNotification, ThreadWorkspaceMode, Turn, TurnCompletion, TurnState,
 };
 use std::future::Future;
 use std::time::{Instant, SystemTime};
@@ -363,7 +366,7 @@ async fn execute_observed(
                     })
                     .await
                     .map_err(|error| {
-                        use pl_protocol::studio::StudioErrorCode;
+                        use pl_studio_runtime::StudioErrorCode;
                         match pl_studio_runtime::studio_error_from_anyhow_ref(&error).code {
                             StudioErrorCode::InvalidArgument | StudioErrorCode::NotFound => {
                                 ExecutionError::Input(error)
@@ -568,43 +571,202 @@ async fn wait_for_input(
     runtime: &StudioRuntime,
     thread_id: &str,
     input_id: &str,
-    cursor: u64,
+    _cursor: u64,
 ) -> Result<Turn> {
-    let mut feed = runtime.open_conversation_state_feed(thread_id).await?;
-    let result = async {
-        loop {
-            let update = feed.recv().await?.context("任务状态流提前结束")?;
-            match update {
-                ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
-                    if let Some(turn) = snapshot.active_turn
-                        && is_target_terminal(&turn, input_id, cursor)
-                    {
-                        return Ok(turn);
-                    }
+    // The submission cursor is a Chat acceptance sequence, not a Turn revision or History cut.
+    let current_demand = ReadDemand {
+        max_items: 128,
+        max_bytes: CHAT_BATCH_MAX_BYTES,
+    };
+    let reader = runtime
+        .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, current_demand)
+        .await?;
+    let history = match runtime
+        .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
+        .await
+    {
+        Ok(history) => history,
+        Err(error) => {
+            return match reader.close().await {
+                Ok(()) => Err(error),
+                Err(close) => {
+                    Err(error.context(format!("CurrentReader close also failed: {close}")))
                 }
-                ThreadSubscriptionUpdate::Notification { notification } => {
-                    match notification.notification {
+            };
+        }
+    };
+    let result = async {
+        let mut watch = reader.watch(None, current_demand).await?;
+        let watched = async {
+            loop {
+                let frame = watch.next().await?.context("任务状态流提前结束")?;
+                match frame {
+                    CurrentFrame::Reset { view } => {
+                        if let Some(turn) = view.state.active_turn
+                            && is_target_terminal(&turn, input_id, _cursor)
+                        {
+                            return Ok(turn);
+                        }
+                        if let Some(turn) =
+                            terminal_turn_for_input(&history, thread_id, input_id).await?
+                        {
+                            return Ok(turn);
+                        }
+                    }
+                    CurrentFrame::Notification { notification, .. } => match notification
+                        .notification
+                    {
                         ThreadNotification::TurnCompleted { turn }
-                            if is_target_terminal(&turn, input_id, cursor) =>
+                            if is_target_terminal(&turn, input_id, _cursor) =>
                         {
                             return Ok(turn);
                         }
                         ThreadNotification::Lagged { .. } => anyhow::bail!("任务状态流丢失连续性"),
                         _ => {}
-                    }
+                    },
+                    CurrentFrame::Projection { .. } => {}
                 }
+            }
+        }
+        .await;
+        let closed = watch.close().await;
+        match (watched, closed) {
+            (Ok(turn), Ok(())) => Ok(turn),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close)) => {
+                Err(error.context(format!("CurrentWatch close also failed: {close}")))
             }
         }
     }
     .await;
-    feed.close().await?;
-    result
+    history.close().await;
+    let current_closed = reader.close().await;
+    match (result, current_closed) {
+        (Ok(turn), Ok(())) => Ok(turn),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close)) => {
+            Err(error.context(format!("CurrentReader close also failed: {close}")))
+        }
+    }
 }
 
-fn is_target_terminal(turn: &Turn, input_id: &str, cursor: u64) -> bool {
-    turn.input_id.as_deref() == Some(input_id)
-        && turn.revision >= cursor
-        && turn.state.is_terminal()
+fn is_target_terminal(turn: &Turn, input_id: &str, _cursor: u64) -> bool {
+    turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
+}
+
+async fn terminal_turn_for_input(
+    history: &HistoryReader,
+    thread_id: &str,
+    input_id: &str,
+) -> Result<Option<Turn>> {
+    let mut page_cursor = None;
+    loop {
+        let page = history
+            .turns_page(None, page_cursor.clone(), history_demand())
+            .await?;
+        for entry in page.entries {
+            let HistoryRowHead::Turn(head) = entry.head else {
+                continue;
+            };
+            if head.input_id.as_deref() != Some(input_id)
+                || !matches!(
+                    head.state,
+                    HistoryTurnState::Completed
+                        | HistoryTurnState::Cancelled
+                        | HistoryTurnState::Failed
+                        | HistoryTurnState::BudgetLimited
+                )
+            {
+                continue;
+            }
+            let event_id = head
+                .detail_event_id
+                .context("terminal History Turn omitted its immutable detail")?;
+            let turn = read_history_turn(history, &event_id).await?;
+            ensure!(
+                turn.id == head.turn_id
+                    && turn.thread_id == thread_id
+                    && turn.input_id.as_deref() == Some(input_id)
+                    && turn.state.is_terminal(),
+                "terminal History Turn identity does not match the submitted input"
+            );
+            return Ok(Some(turn));
+        }
+        let Some(next) = page.next else {
+            return Ok(None);
+        };
+        ensure!(
+            page_cursor.as_deref() != Some(next.as_str()),
+            "History Turn cursor did not advance"
+        );
+        page_cursor = Some(next);
+    }
+}
+
+async fn read_history_turn(history: &HistoryReader, event_id: &str) -> Result<Turn> {
+    let mut cursor = None;
+    let mut selected = None;
+    loop {
+        let page = history
+            .list_bodies(event_id.to_owned(), cursor.clone(), history_demand())
+            .await?;
+        let HistoryBodyPage {
+            owner_event_id,
+            entries,
+            next,
+        } = page;
+        ensure!(
+            owner_event_id == event_id,
+            "History Turn detail belongs to another event"
+        );
+        for entry in entries {
+            if entry.body_key == "turn_detail" {
+                ensure!(selected.is_none(), "duplicate History Turn detail body");
+                selected = Some(entry.reference);
+            }
+        }
+        let Some(next) = next else {
+            break;
+        };
+        ensure!(
+            cursor.as_deref() != Some(next.as_str()),
+            "History Turn body cursor did not advance"
+        );
+        cursor = Some(next);
+    }
+    let reference = selected.context("terminal History Turn omitted its typed detail body")?;
+    serde_json::from_slice(&read_history_body(history, &reference).await?)
+        .context("History Turn detail is not a typed Turn")
+}
+
+async fn read_history_body(
+    history: &HistoryReader,
+    reference: &HistoryEventBodyRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while (bytes.len() as u64) < reference.byte_length {
+        let offset = bytes.len() as u64;
+        let max_bytes = (reference.byte_length - offset).min(BODY_CHUNK_BYTES as u64) as u32;
+        let window = history
+            .read_body(reference.clone(), offset, max_bytes)
+            .await?;
+        ensure!(
+            window.offset == offset
+                && !window.bytes.is_empty()
+                && window.bytes.len() <= max_bytes as usize
+                && window.total_length == reference.byte_length,
+            "History Turn detail range did not advance"
+        );
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+fn history_demand() -> HistoryDemand {
+    HistoryDemand {
+        max_rows: 128,
+        max_bytes: 1024 * 1024,
+    }
 }
 
 #[cfg(test)]
@@ -675,7 +837,7 @@ mod tests {
                     model_id: "startup-test".into(),
                     effort: None,
                 },
-                mode: pl_studio_runtime::ThreadModeId::simple(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple(),
                 prompt: "must not run".into(),
                 max_model_steps: None,
                 export: None,
@@ -717,7 +879,7 @@ mod tests {
             id: "turn".into(),
             thread_id: "thread".into(),
             revision: 12,
-            state: TurnState::Completed(pl_protocol::CompletedTurnState::new(
+            state: TurnState::Completed(pl_studio_runtime::CompletedTurnState::new(
                 Some(1),
                 2,
                 TurnCompletion::Normal,
@@ -763,7 +925,7 @@ mod tests {
             id: "turn".into(),
             thread_id: "thread".into(),
             revision: 12,
-            state: TurnState::Completed(pl_protocol::CompletedTurnState::new(
+            state: TurnState::Completed(pl_studio_runtime::CompletedTurnState::new(
                 Some(1),
                 2,
                 TurnCompletion::Normal,

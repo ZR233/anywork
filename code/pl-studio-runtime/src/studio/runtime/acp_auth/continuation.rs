@@ -1,9 +1,7 @@
 //! 在原登录流程与原连接上受理认证方法，不派生新进程。
 
+use crate::{AcpAuthMethodKind, AcpAuthState, ContinueAcpAuthRequest, StudioErrorCode};
 use anyhow::Result;
-use pl_protocol::studio::{
-    AcpAuthMethodKind, AcpAuthState, ContinueAcpAuthRequest, StudioErrorCode,
-};
 
 use super::admission::{AcpAuthAcceptance, AcpAuthRuntime, MAX_ACCEPTED_STARTS};
 use super::mapping::{acp_error, ensure_operation_id};
@@ -207,11 +205,11 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         let crate::config::AcpLaunch::Command { command, args } = definition.launch else {
             unreachable!("generic fixture")
         };
-        runtime.save_acp_account(pl_protocol::studio::UpdateAcpAccountRequest {
+        runtime.save_acp_account(crate::UpdateAcpAccountRequest {
             operation_id: "save-generic".into(),
             expected_revision: runtime.config_runtime.read()?.revision,
             expected_document_revision: None,
-            account: pl_protocol::studio::AcpAccountUpdate {
+            account: crate::AcpAccountUpdate {
                 account_id: definition.id,
                 name: definition.display_name,
                 template: None,
@@ -225,11 +223,11 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         let revision = saved.acp.definitions["generic"].connection_revision;
         let error = runtime
             .acp_auth
-            .start(pl_protocol::studio::StartAcpAuthRequest {
+            .start(crate::StartAcpAuthRequest {
                 operation_id: "no-generic-usage".into(),
                 account_id: "generic".into(),
                 expected_connection_revision: revision,
-                action: pl_protocol::studio::AcpAuthAction::QueryUsage,
+                action: crate::AcpAuthAction::QueryUsage,
             })
             .err()
             .expect("generic usage is not inferred");
@@ -238,14 +236,12 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             StudioErrorCode::InvalidArgument
         );
         assert!(!requests.exists(), "rejected usage must not spawn");
-        runtime
-            .acp_auth
-            .start(pl_protocol::studio::StartAcpAuthRequest {
-                operation_id: "generic-check".into(),
-                account_id: "generic".into(),
-                expected_connection_revision: revision,
-                action: pl_protocol::studio::AcpAuthAction::Check,
-            })?;
+        runtime.acp_auth.start(crate::StartAcpAuthRequest {
+            operation_id: "generic-check".into(),
+            account_id: "generic".into(),
+            expected_connection_revision: revision,
+            action: crate::AcpAuthAction::Check,
+        })?;
         let operation = runtime.acp_auth.inner.lock().slots["generic"]
             .operation
             .clone()
@@ -258,7 +254,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         let state = runtime.acp_auth.read_state();
         let verified = matches!(
             state.accounts[0].state,
-            pl_protocol::studio::AcpAuthState::Verified { server: None, .. }
+            crate::AcpAuthState::Verified { server: None, .. }
         );
         let shutdown = runtime.shutdown_runtime().await;
         joined??;
@@ -318,7 +314,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 account_id: "account".into(),
                 connection_revision: slot.revision,
                 generation: 1,
-                action: pl_protocol::studio::AcpAuthAction::Check,
+                action: crate::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),
@@ -328,7 +324,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             slot.state = AcpAuthState::Required {
                 operation_id: "flow".into(),
                 server: None,
-                methods: vec![pl_protocol::studio::AcpAuthMethod {
+                methods: vec![crate::AcpAuthMethod {
                     id: "browser".into(),
                     name: "Browser".into(),
                     description: None,
@@ -368,10 +364,10 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         // busy 状态与活动操作投影来自同一操作槽位：ID、修订与启动动作一致。
         assert_eq!(
             accepted.snapshot.accounts[0].active_operation,
-            Some(pl_protocol::studio::AcpAuthActiveOperation {
+            Some(crate::AcpAuthActiveOperation {
                 operation_id: "flow".into(),
                 connection_revision: operation.connection_revision,
-                action: pl_protocol::studio::AcpAuthAction::Check,
+                action: crate::AcpAuthAction::Check,
             })
         );
         assert!(
@@ -388,13 +384,11 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 })
                 .is_err()
         );
-        runtime
-            .acp_auth
-            .cancel(pl_protocol::studio::CancelAcpAuthRequest {
-                operation_id: "cancel".into(),
-                account_id: "account".into(),
-                target_operation_id: "flow".into(),
-            })?;
+        runtime.acp_auth.cancel(crate::CancelAcpAuthRequest {
+            operation_id: "cancel".into(),
+            account_id: "account".into(),
+            target_operation_id: "flow".into(),
+        })?;
         assert!(operation.cancel.is_cancelled());
         runtime.acp_auth.inner.complete_operation(
             "account",
@@ -460,7 +454,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 account_id: "account".into(),
                 connection_revision: slot.revision,
                 generation: 1,
-                action: pl_protocol::studio::AcpAuthAction::Check,
+                action: crate::AcpAuthAction::Check,
                 cancel: CancellationToken::new(),
                 authentication: sender,
                 cleanup_retry: tokio::sync::Notify::new(),

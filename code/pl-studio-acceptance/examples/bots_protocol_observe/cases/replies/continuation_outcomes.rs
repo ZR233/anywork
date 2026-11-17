@@ -30,11 +30,6 @@ use crate::http;
 use crate::report::{self, CaseResult};
 use crate::thread_watch::ThreadWatch;
 use anyhow::{Context, Result, ensure};
-use pl_protocol::studio::ResolveInteractionRequest;
-use pl_protocol::{
-    InteractionContent, InteractionRequest, InteractionResolution, InteractionStatus,
-    UserInputAnswer, UserInputResolution,
-};
 use pl_provider_fixture::feishu::{
     CardEntityReport, CardObservation, CardOperation, ChatType, DIRECT_CHAT_ID, SenderKind,
     SyntheticEvent, TRUSTED_USER_OPEN_ID, text_event,
@@ -42,6 +37,11 @@ use pl_provider_fixture::feishu::{
 use pl_provider_fixture::{
     Protocol, RealtimeToolCall, Reply, ReplyStage, Step, responses_authoritative_final,
     responses_text, responses_text_and_tool_calls_staged,
+};
+use pl_studio_runtime::ResolveInteractionRequest;
+use pl_studio_runtime::{
+    InteractionContent, InteractionRequest, InteractionResolution, InteractionStatus,
+    UserInputAnswer, UserInputResolution,
 };
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -363,7 +363,7 @@ async fn continuation_outcomes_inner(
     // Canonical Turn fact: the targeted Turn ends Cancelled with cause Interrupted.
     let cancelled_turn = wait_cancelled_turn(session, &thread_id, &continuation_turn).await?;
     ensure!(
-        *cancelled_turn.cause() == pl_protocol::TurnCancellationCause::Interrupted,
+        *cancelled_turn.cause() == pl_studio_runtime::TurnCancellationCause::Interrupted,
         "an explicit local interrupt must be recorded as Interrupted, got {:?}",
         cancelled_turn.cause()
     );

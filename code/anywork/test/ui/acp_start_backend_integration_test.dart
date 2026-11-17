@@ -7,7 +7,6 @@ import 'package:anywork/src/features/conversation/composer/composer.dart';
 import 'package:anywork/src/features/conversation/composer/views/start_environment_view.dart';
 import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
 import 'package:anywork/src/features/conversation/composer/view_models/composer_view_model.dart';
-import 'package:anywork/src/features/conversation/acp/state/acp_view_state.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -213,10 +212,10 @@ void main() {
         tester.widget<TextField>(find.byType(TextField)).controller!.text,
         'Native original draft',
       );
-      expect(find.byType(StartEnvironmentView), findsNothing);
+      expect(find.byType(StartEnvironmentView), findsOneWidget);
       expect(find.byKey(StudioDriverKeys.sessionMode), findsNothing);
-      expect(find.byKey(StudioDriverKeys.sessionSettings), findsNothing);
-      expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsNothing);
+      expect(find.byKey(StudioDriverKeys.sessionSettings), findsOneWidget);
+      expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsOneWidget);
       expect(tester.widget<TextButton>(_backendButton()).onPressed, isNotNull);
       final projectButton = find.byKey(
         const ValueKey('start-project-selector'),
@@ -282,65 +281,59 @@ void main() {
     },
   );
 
-  testWidgets(
-    'ACP creation uses SSH project despite retained Native worktree intent',
-    (tester) async {
-      final port = ControlledAcpBusinessPort()
-        ..admission = Completer<AcpSessionObservationPort>();
-      final fixture = await _mount(tester, port: port, remoteSshProject: true);
-      final draft = fixture.graph.client.drafts.startDraft;
-      final workspaceId = fixture.workspaceId;
-      draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
-      draft.setAcpService(workspaceId, 'test-acp');
-      await tester.pumpAndSettle();
-      // Only a first message creates ACP; Native worktree intent stays separate.
-      await tester.enterText(find.byType(TextField), '检查远程项目');
-      await tester.pump();
-      await tester.tap(
-        find.byKey(ValueKey(AcpViewKeyValues.startSubmit(workspaceId))),
-      );
-      await pumpClientUntil(
-        tester,
-        () => port.calls.isNotEmpty,
-        'ACP dispatch',
-      );
-      final call = port.calls.single;
-      expect(call.$1, 'open');
-      final request = call.$2 as OpenAcpSessionRequestView;
-      expect(request.accountId, 'test-acp');
-      expect(request.expectedConnectionRevision, BigInt.from(29));
-      expect(request.workspaceId, workspaceId);
-      expect(workspaceId, 'remote-acp-project');
-      expect(request.intent, isA<AcpNewIntentView>());
-      expect(find.textContaining('ACP 服务在本机运行'), findsNothing);
-      expect(find.text('/srv/workspace'), findsNothing);
-      expect(fixture.transport.submissions, isEmpty);
-      expect(
-        draft.state.forProject(workspaceId).workspaceMode,
+  testWidgets('ACP prepares SSH worktree intent before first submission', (
+    tester,
+  ) async {
+    final port = ControlledAcpBusinessPort()
+      ..admission = Completer<AcpSessionObservationPort>();
+    final fixture = await _mount(tester, port: port, remoteSshProject: true);
+    final draft = fixture.graph.client.drafts.startDraft;
+    final workspaceId = fixture.workspaceId;
+    draft.setWorkspaceMode(workspaceId, ThreadWorkspaceMode.worktree);
+    draft.setAcpService(workspaceId, 'test-acp');
+    await tester.pump();
+    await pumpClientUntil(tester, () => port.calls.isNotEmpty, 'ACP dispatch');
+    final call = port.calls.single;
+    expect(call.$1, 'open');
+    final request = call.$2 as OpenAcpSessionRequestView;
+    expect(request.accountId, 'test-acp');
+    expect(request.expectedConnectionRevision, BigInt.from(29));
+    expect(request.workspaceId, workspaceId);
+    expect(workspaceId, 'remote-acp-project');
+    expect(
+      request.intent,
+      isA<AcpDraftIntentView>().having(
+        (value) => value.workspaceMode,
+        'workspace mode',
         ThreadWorkspaceMode.worktree,
-      );
-      // End the scripted external operation explicitly before graph shutdown.
-      port.admission!.completeError(
-        StateError('Scripted ACP admission failure'),
-      );
-      await pumpClientUntil(
-        tester,
-        () => !draft.state.submitting,
-        'ACP rejection',
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.textContaining('Scripted ACP admission failure'),
-        findsOneWidget,
-      );
-      draft.setAcpService(workspaceId, null);
-      await tester.pumpAndSettle();
-      expect(
-        draft.state.forProject(workspaceId).workspaceMode,
-        ThreadWorkspaceMode.worktree,
-      );
-      expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsOneWidget);
-      await _close(tester, fixture.graph);
-    },
-  );
+      ),
+    );
+    expect(find.textContaining('ACP 服务在本机运行'), findsNothing);
+    expect(find.text('/srv/workspace'), findsNothing);
+    expect(fixture.transport.submissions, isEmpty);
+    expect(
+      draft.state.forProject(workspaceId).workspaceMode,
+      ThreadWorkspaceMode.worktree,
+    );
+    // End the scripted external operation explicitly before graph shutdown.
+    port.admission!.completeError(StateError('Scripted ACP admission failure'));
+    await pumpClientUntil(
+      tester,
+      () => draft.state.acpPreparations[workspaceId] is AcpDraftFailed,
+      'ACP rejection',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Scripted ACP admission failure'),
+      findsOneWidget,
+    );
+    draft.setAcpService(workspaceId, null);
+    await tester.pumpAndSettle();
+    expect(
+      draft.state.forProject(workspaceId).workspaceMode,
+      ThreadWorkspaceMode.worktree,
+    );
+    expect(find.byKey(StudioDriverKeys.sessionWorkspaceMode), findsOneWidget);
+    await _close(tester, fixture.graph);
+  });
 }

@@ -5,6 +5,7 @@ mod schema;
 mod search;
 
 use pl_protocol::Result;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use pl_output::text::{line_end_byte_offset, line_start_byte_offset, logical_line_count};
@@ -12,6 +13,16 @@ use pl_output::text::{line_end_byte_offset, line_start_byte_offset, logical_line
 use crate::tool_error;
 
 pub use schema::*;
+
+/// 随 canonical session 持久化、但不会直接进入模型上下文的文本笔记。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionNote {
+    pub revision: u64,
+    pub content: String,
+    pub content_hash: String,
+    pub updated_at: i64,
+}
 
 const MAX_SESSION_NOTE_BYTES: usize = 1024 * 1024;
 
@@ -21,7 +32,7 @@ const DEFAULT_SEARCH_MATCH_LIMIT: usize = 100;
 const MAX_SEARCH_MATCH_LIMIT: usize = 200;
 const MAX_CONTEXT_LINES: usize = 20;
 
-fn read_note(input: ReadInput, note: &pl_protocol::SessionNote) -> Result<Value> {
+fn read_note(input: ReadInput, note: &SessionNote) -> Result<Value> {
     let start_line = input.start_line.unwrap_or(1);
     if start_line == 0 {
         return Err(tool_error(TOOL_READ_SESSION_NOTE, "startLine is 1-based"));
@@ -67,7 +78,7 @@ fn read_note(input: ReadInput, note: &pl_protocol::SessionNote) -> Result<Value>
     }))
 }
 
-fn search_note(input: SearchInput, note: &pl_protocol::SessionNote) -> Result<Value> {
+fn search_note(input: SearchInput, note: &SessionNote) -> Result<Value> {
     let context_lines = input.context_lines.unwrap_or(0);
     if context_lines > MAX_CONTEXT_LINES {
         return Err(tool_error(
@@ -104,7 +115,7 @@ fn search_note(input: SearchInput, note: &pl_protocol::SessionNote) -> Result<Va
     }))
 }
 
-fn note_result(status: &str, note: &pl_protocol::SessionNote) -> Value {
+fn note_result(status: &str, note: &SessionNote) -> Value {
     json!({
         "status": status,
         "revision": note.revision,

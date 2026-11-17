@@ -1,11 +1,10 @@
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatAtomKind, ThreadTextChannel, Turn};
-use pl_studio_runtime::StudioRuntime;
 use pl_studio_runtime::history::{
-    HEAD_MAX_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyEntry, HistoryBodyPage, HistoryBodyRole,
-    HistoryDemand, HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventsQuery,
-    HistoryReader, HistoryRowHead,
+    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyEntry, HistoryBodyPage,
+    HistoryBodyRole, HistoryDemand, HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef,
+    HistoryEventDetail, HistoryEventsQuery, HistoryReader, HistoryRowHead,
 };
+use pl_studio_runtime::{ChatAtomKind, StudioRuntime, ThreadTextChannel, Turn};
 
 const READ_ROWS: u32 = 128;
 const READ_BYTES: u32 = 1024 * 1024;
@@ -23,79 +22,78 @@ pub(super) async fn final_text(runtime: &StudioRuntime, turn: &Turn) -> Result<S
         .open_history_reader(&turn.thread_id, HISTORY_PROTOCOL_VERSION)
         .await?;
     let result = async {
-        let (_, through) = reader.capture_position().await?;
+        let cut = reader.capture().await?;
         let mut parts = Vec::new();
-        let mut pivot = None;
+        let mut cursor = None;
         loop {
-            let (_, details, has_more) = reader
-                .events_window(
+            let page = reader
+                .events_page(
                     HistoryEventsQuery::Turn {
                         turn_id: turn.id.clone(),
                     },
-                    Some(through),
-                    pivot,
-                    true,
+                    Some(cut.clone()),
+                    cursor.clone(),
                     demand(),
                 )
                 .await?;
-            let Some(last_seq) = details.last().map(|detail| detail.header.seq) else {
-                break;
-            };
-            for detail in details {
+            for detail in &page.entries {
                 if detail.header.original.is_none() {
                     continue;
                 }
-                let head = history_head(&reader, &detail).await?;
+                let head = history_head(&reader, detail).await?;
                 if head.kind != ChatAtomKind::Text
                     || head.text_channel != Some(ThreadTextChannel::Final)
                     || !matches!(head.state, HistoryEntityState::KnownTerminal { .. })
                 {
                     continue;
                 }
-                let body = final_body(&reader, &detail.header.event_id).await?;
-                let text = match body {
-                    Some(reference) => String::from_utf8(read_bytes(&reader, &reference).await?)
-                        .context("canonical Final is not UTF-8")?,
-                    None if head.content_present == Some(false) => String::new(),
-                    None => anyhow::bail!("canonical Final omitted its body"),
-                };
-                parts.push((detail.header.seq, text));
+                let bodies = final_bodies(&reader, &detail.header.event_id).await?;
+                if bodies.is_empty() && head.content_present != Some(false) {
+                    anyhow::bail!("canonical Final omitted its body");
+                }
+                for (ordinal, reference) in bodies {
+                    let text = String::from_utf8(read_bytes(&reader, &reference).await?)
+                        .context("canonical Final is not UTF-8")?;
+                    parts.push((detail.header.seq, ordinal, text));
+                }
             }
-            if !has_more {
+            let Some(next) = page.next else {
                 break;
-            }
-            pivot = Some(last_seq);
+            };
+            ensure!(
+                cursor.as_deref() != Some(next.as_str()),
+                "History event cursor did not advance"
+            );
+            cursor = Some(next);
         }
-        parts.sort_by_key(|(seq, _)| *seq);
+        parts.sort_by_key(|(seq, ordinal, _)| (*seq, *ordinal));
         Ok(parts
             .into_iter()
-            .map(|(_, text)| text)
+            .map(|(_, _, text)| text)
             .collect::<Vec<_>>()
             .join("\n"))
     }
     .await;
-    let closed = reader.close().await;
-    match (result, closed) {
-        (Ok(text), Ok(())) => Ok(text),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(close)) => {
-            Err(error.context(format!("HistoryReader close also failed: {close}")))
-        }
-    }
+    reader.close().await;
+    result
 }
 
 async fn history_head(
     reader: &HistoryReader,
-    detail: &pl_studio_runtime::history::HistoryEventDetail,
+    detail: &HistoryEventDetail,
 ) -> Result<HistoryEntityHead> {
     if let Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) = &detail.head {
         return Ok(head.clone());
     }
-    let metadata = body_entry(reader, &detail.header.event_id, |body| {
+    let metadata = body_entries(reader, &detail.header.event_id, |body| {
         body.role == HistoryBodyRole::CanonicalMetadata
     })
-    .await?
-    .context("canonical original omitted typed HistoryEntityHead")?;
+    .await?;
+    ensure!(
+        metadata.len() == 1,
+        "canonical original must contain one typed HistoryEntityHead"
+    );
+    let metadata = &metadata[0];
     ensure!(
         metadata.reference.byte_length <= HEAD_MAX_BYTES as u64,
         "canonical History head exceeds {HEAD_MAX_BYTES} bytes"
@@ -104,24 +102,26 @@ async fn history_head(
         .context("canonical metadata is not HistoryEntityHead")
 }
 
-async fn final_body(reader: &HistoryReader, event_id: &str) -> Result<Option<HistoryEventBodyRef>> {
-    Ok(body_entry(reader, event_id, |body| {
-        body.role == HistoryBodyRole::Body
-            && (body.body_key == "body"
-                || body.body_key == "legacy-content:body"
-                || body.body_key.ends_with(":body"))
-    })
-    .await?
-    .map(|body| body.reference))
+async fn final_bodies(
+    reader: &HistoryReader,
+    event_id: &str,
+) -> Result<Vec<(u64, HistoryEventBodyRef)>> {
+    Ok(
+        body_entries(reader, event_id, |body| body.role == HistoryBodyRole::Body)
+            .await?
+            .into_iter()
+            .map(|body| (body.ordinal, body.reference))
+            .collect(),
+    )
 }
 
-async fn body_entry(
+async fn body_entries(
     reader: &HistoryReader,
     event_id: &str,
     predicate: impl Fn(&HistoryBodyEntry) -> bool,
-) -> Result<Option<HistoryBodyEntry>> {
+) -> Result<Vec<HistoryBodyEntry>> {
     let mut cursor = None;
-    let mut found = None;
+    let mut found = Vec::new();
     loop {
         let page = reader
             .list_bodies(event_id.into(), cursor.clone(), demand())
@@ -134,8 +134,13 @@ async fn body_entry(
         ensure!(owner_event_id == event_id, "History body owner mismatch");
         for entry in entries {
             if predicate(&entry) {
-                ensure!(found.is_none(), "duplicate selected History body");
-                found = Some(entry);
+                ensure!(
+                    found
+                        .iter()
+                        .all(|selected: &HistoryBodyEntry| selected.ordinal != entry.ordinal),
+                    "duplicate History body ordinal"
+                );
+                found.push(entry);
             }
         }
         let Some(next) = next else {
@@ -150,11 +155,10 @@ async fn body_entry(
 }
 
 async fn read_bytes(reader: &HistoryReader, reference: &HistoryEventBodyRef) -> Result<Vec<u8>> {
-    let mut bytes = Vec::with_capacity(usize::try_from(reference.byte_length)?);
+    let mut bytes = Vec::new();
     while (bytes.len() as u64) < reference.byte_length {
         let offset = bytes.len() as u64;
-        let max_bytes = (reference.byte_length - offset)
-            .min(u64::from(pl_protocol::CONTENT_WINDOW_MAX_BYTES)) as u32;
+        let max_bytes = (reference.byte_length - offset).min(BODY_CHUNK_BYTES as u64) as u32;
         let window = reader
             .read_body(reference.clone(), offset, max_bytes)
             .await?;

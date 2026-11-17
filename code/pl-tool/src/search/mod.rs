@@ -1,5 +1,6 @@
 mod binding;
 mod client;
+mod config;
 mod hosted_options;
 mod plan;
 mod standalone;
@@ -7,6 +8,7 @@ mod thread;
 
 pub use binding::{SearchBindingError, ThreadSearchBinding};
 pub use client::{SearchEndpoint, WebSearchClient, WebSearchError};
+pub use config::{WebSearchConfig, WebSearchLocation, WebSearchMode};
 pub use plan::{
     WebSearchAvailability, WebSearchBackend, WebSearchDeepSeekOptions, WebSearchPath,
     WebSearchPlan, WebSearchPlans, WebSearchResolution, WebSearchService, WebSearchServices,

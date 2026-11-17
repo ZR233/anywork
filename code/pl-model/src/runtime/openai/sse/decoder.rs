@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use pl_protocol::trace::TraceTextChannel;
+use crate::trace::TraceTextChannel;
 
 use crate::completion::stream::event::{ModelBlockKind, ModelStreamEvent, ProviderBlockIdentity};
 use crate::runtime::openai::VisibleOutputProtocol;

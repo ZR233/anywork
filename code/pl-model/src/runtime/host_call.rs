@@ -1,13 +1,13 @@
 use pl_protocol::Result;
 use tokio_util::sync::CancellationToken;
 
+use crate::completion::ToolSpec;
 use crate::completion::{CompletionRequest, CompletionResponse, ReasoningConfig};
 use crate::completion::{
     CompletionResponseSnapshot, completion_response_message_text, completion_response_snapshot,
 };
 use crate::config::ResolvedModelRoute;
 use crate::runtime::{ModelInvocationContext, ModelRuntime};
-use pl_protocol::ToolSpec;
 
 /// 不需要完整 turn loop 的单次模型请求。
 ///
@@ -139,7 +139,7 @@ impl ModelTurnClient {
     /// 执行一次模型调用，并返回不暴露 provider/wire 类型的宿主快照。
     pub async fn complete(
         &self,
-        input: &[pl_protocol::ModelContextItem],
+        input: &[crate::completion::ModelContextItem],
         request: ModelTurnRequest,
         options: ModelTurnOptions,
     ) -> std::result::Result<CompletionResponseSnapshot, crate::completion::CompletionFailure> {
@@ -150,7 +150,7 @@ impl ModelTurnClient {
     /// 执行一次模型调用并只返回 assistant 可见文本。
     pub async fn complete_text(
         &self,
-        input: &[pl_protocol::ModelContextItem],
+        input: &[crate::completion::ModelContextItem],
         request: ModelTurnRequest,
         options: ModelTurnOptions,
     ) -> std::result::Result<String, crate::completion::CompletionFailure> {
@@ -160,7 +160,7 @@ impl ModelTurnClient {
 
     async fn complete_raw(
         &self,
-        input: &[pl_protocol::ModelContextItem],
+        input: &[crate::completion::ModelContextItem],
         request: ModelTurnRequest,
         options: ModelTurnOptions,
     ) -> std::result::Result<CompletionResponse, crate::completion::CompletionFailure> {

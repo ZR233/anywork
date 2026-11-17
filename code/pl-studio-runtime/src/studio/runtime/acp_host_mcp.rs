@@ -40,11 +40,11 @@ use crate::{
 /// All references held by the protocol callback are weak with respect to its owner.
 pub(crate) async fn prepare_open(
     owner: &SessionRuntime,
-    identity: &pl_protocol::AgentThreadIdentity,
+    identity: &crate::AgentThreadIdentity,
     resources: &Arc<AcpResources>,
     config: &ConfigRuntime,
     cwd: &str,
-    selection: pl_protocol::DelegationSettings,
+    selection: crate::DelegationSettings,
 ) -> Result<PrepareOpen> {
     let snapshot = config.read()?;
     let profiles = config.agent_profiles_snapshot()?;
@@ -95,7 +95,7 @@ pub(crate) async fn prepare_open(
 
 fn instructions(
     config: &crate::config::InstructionsConfig,
-    identity: &pl_protocol::AgentThreadIdentity,
+    identity: &crate::AgentThreadIdentity,
     cwd: &str,
 ) -> Result<String> {
     let mut text = instruction_base(config, identity, cwd);
@@ -112,7 +112,7 @@ fn instructions(
 
 fn instruction_base(
     config: &crate::config::InstructionsConfig,
-    identity: &pl_protocol::AgentThreadIdentity,
+    identity: &crate::AgentThreadIdentity,
     cwd: &str,
 ) -> String {
     let mut text = format!(
@@ -146,7 +146,7 @@ fn append_documents(text: &mut String, documents: pl_tool::workspace::WorkspaceI
 
 async fn remote_instructions(
     config: &crate::config::InstructionsConfig,
-    identity: &pl_protocol::AgentThreadIdentity,
+    identity: &crate::AgentThreadIdentity,
     cwd: &str,
     tools: &super::acp_workspace_tools::WorkspaceTools,
 ) -> Result<String> {
@@ -198,7 +198,7 @@ impl HostMcp {
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) async fn start(
         host: AgentHost,
-        caller: pl_protocol::AgentId,
+        caller: crate::AgentId,
         domain_closed: CancellationToken,
         is_root: bool,
         frontend: Option<&std::path::Path>,
@@ -208,7 +208,7 @@ impl HostMcp {
 
     pub(super) async fn start_bound(
         host: AgentHost,
-        caller: pl_protocol::AgentId,
+        caller: crate::AgentId,
         domain_closed: CancellationToken,
         is_root: bool,
         frontend: Option<&std::path::Path>,
@@ -367,7 +367,7 @@ impl Drop for HostMcp {
 #[derive(Clone)]
 struct Handler {
     host: Arc<AgentHost>,
-    caller: pl_protocol::AgentId,
+    caller: crate::AgentId,
     tools: Arc<BTreeMap<String, HostBinding>>,
     domain_closed: CancellationToken,
     observed_calls: Arc<AtomicU64>,
@@ -548,14 +548,13 @@ fn bindings(host: &AgentHost, is_root: bool) -> Result<BTreeMap<String, HostBind
             })
         },
     )?;
-    if is_root && selection.mode == pl_protocol::DelegationMode::Automatic {
+    if is_root && selection.mode == crate::DelegationMode::Automatic {
         bind(
             &mut tools,
             ToolDefinition::json(
                 "list_delegation_models",
-                "Query enabled Native child model candidates; ACP does not use modelSelection.",
-                pl_agent_tool::typed::input_schema_for::<pl_protocol::ListDelegationModelsRequest>(
-                ),
+                "Read all qualified Native child model candidates and short descriptions in one call, without pagination. Shortlist then compare recent task feedback with get_delegation_models before choosing; ACP does not use modelSelection.",
+                pl_agent_tool::typed::input_schema_for::<crate::ListDelegationModelsRequest>(),
             )?,
             |host, arguments, context| {
                 Box::pin(async move {
@@ -569,14 +568,14 @@ fn bindings(host: &AgentHost, is_root: bool) -> Result<BTreeMap<String, HostBind
         bind(
             &mut tools,
             ToolDefinition::json(
-                "get_delegation_model",
-                "Read a Native child model's current eligibility and supported effort.",
-                pl_agent_tool::typed::input_schema_for::<pl_protocol::GetDelegationModelRequest>(),
+                "get_delegation_models",
+                "Read 1-10 exact Native account/model details with recent evaluations, prices, supported effort and measured speed. Proactively compare suitable candidates using same-task comments and instruction following before automatic dispatch; preserve uncertainty for empty or small samples.",
+                pl_agent_tool::typed::input_schema_for::<crate::GetDelegationModelsRequest>(),
             )?,
             |host, arguments, context| {
                 Box::pin(async move {
                     encoded(
-                        host.get_delegation_model(context, decode(arguments)?)
+                        host.get_delegation_models(context, decode(arguments)?)
                             .await?,
                     )
                 })
@@ -961,10 +960,10 @@ mod tests {
                 display_name: "ACP child".into(),
                 description: "Ordinary ACP task".into(),
                 when_to_use: "External coding task".into(),
-                binding: pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+                binding: crate::AgentBinding::Acp(crate::AcpAgentConfig {
                     account_id: "business-peer".into(),
                 }),
-                workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+                workspace_mode: crate::AgentWorkspaceMode::Directory,
             },
         )?;
         Ok(())
@@ -998,12 +997,12 @@ mod tests {
             let mut open = fixture.open().await?;
             Fixture::ready(&mut open).await?;
             target = Some(open.target.clone());
-            let owner = fixture.runtime.sessions.get(&pl_protocol::SessionId::new(open.target.session_id.clone())?).context("session owner")?;
+            let owner = fixture.runtime.sessions.get(&crate::SessionId::new(open.target.session_id.clone())?).context("session owner")?;
             let resources = owner.resident_acp(&open.target.thread_id)?.context("ACP resources")?;
             let identity = fixture.runtime.agent_facility.product_events.agent_execution_identity(&open.target.thread_id).context("member identity")?.0;
             let host = owner.acp_agent_host(&identity, &resources, &fixture.runtime.config_runtime.agent_profiles_snapshot()?, fixture.runtime.config_runtime.read()?.config.delegation)?;
             let forged = pl_tool::collaboration::control::AgentCallContext {
-                caller: pl_protocol::AgentId::new("forged-agent")?, call_id: "not-a-transport-id".into(), cancellation: CancellationToken::new(),
+                caller: crate::AgentId::new("forged-agent")?, call_id: "not-a-transport-id".into(), cancellation: CancellationToken::new(),
             };
             ensure!(host.authorize_workspace_call(&forged).await.is_err(), "forged caller acquired workspace tools");
             let execution = WorkspaceExecutionBinding::new(executor.clone(), root.to_str().context("business root")?)?;
@@ -1210,9 +1209,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    open.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(open.target.session_id.clone())?)
                 .context("session owner")?;
             let resources = owner
                 .resident_acp(&open.target.thread_id)?
@@ -1355,9 +1352,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    open.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(open.target.session_id.clone())?)
                 .context("published owner")?;
             let resources = owner
                 .resident_acp(&open.target.thread_id)?
@@ -1570,7 +1565,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(target.session_id.clone())?)
+                .get(&crate::SessionId::new(target.session_id.clone())?)
                 .context("published ACP session owner")?;
             let resources = owner
                 .resident_acp(&target.thread_id)?
@@ -1795,9 +1790,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    open.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(open.target.session_id.clone())?)
                 .context("published ACP owner")?;
             let resources = owner
                 .resident_acp(&open.target.thread_id)?
@@ -1868,9 +1861,7 @@ mod tests {
             let owner = fixture
                 .runtime
                 .sessions
-                .get(&pl_protocol::SessionId::new(
-                    open.target.session_id.clone(),
-                )?)
+                .get(&crate::SessionId::new(open.target.session_id.clone())?)
                 .context("published root ACP owner")?;
             let root_identity = owner
                 .acp_identity(&open.target.thread_id)
@@ -1929,7 +1920,7 @@ mod tests {
             .await
             .context("fixture ACP child did not reach the held prompt")?;
 
-            let child_agent = pl_protocol::AgentId::new(child_id.clone())?;
+            let child_agent = crate::AgentId::new(child_id.clone())?;
             let child_identity = fixture
                 .runtime
                 .agent_facility
@@ -2225,7 +2216,7 @@ mod future_sizes {
             |(host, context, request): (
                 &'static AgentHost,
                 AgentCallContext,
-                pl_protocol::ListDelegationModelsRequest,
+                crate::ListDelegationModelsRequest,
             )| host.list_delegation_models(context, request),
         );
         bounded(
@@ -2233,8 +2224,8 @@ mod future_sizes {
             |(host, context, request): (
                 &'static AgentHost,
                 AgentCallContext,
-                pl_protocol::GetDelegationModelRequest,
-            )| host.get_delegation_model(context, request),
+                crate::GetDelegationModelsRequest,
+            )| host.get_delegation_models(context, request),
         );
         assert!(request <= 16 * 1024, "tool request inlines {request} bytes");
     }

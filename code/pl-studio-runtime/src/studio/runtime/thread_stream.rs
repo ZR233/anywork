@@ -1,27 +1,40 @@
 //! Point-in-time Thread snapshots and usage folds. Continuous State delivery lives in
 //! `conversation_state_feed` and does not activate execution.
 use super::StudioRuntime;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use pl_core::thread::ThreadSnapshot;
 
 impl StudioRuntime {
     /// Uses the original bounded State assembler through the independent Current port.
-    pub async fn thread_snapshot(&self, thread_id: &str) -> Result<pl_protocol::ThreadSnapshot> {
-        let reader = self.open_current_reader(thread_id, pl_protocol::CURRENT_PROTOCOL_VERSION,
-            pl_protocol::ReadDemand { max_items: 128, max_bytes: pl_protocol::CHAT_BATCH_MAX_BYTES }).await?;
-        let result = reader.snapshot(pl_protocol::ReadDemand { max_items: 128, max_bytes: pl_protocol::CHAT_BATCH_MAX_BYTES }).await;
+    pub async fn thread_snapshot(&self, thread_id: &str) -> Result<crate::ThreadSnapshot> {
+        let reader = self
+            .open_current_reader(
+                thread_id,
+                crate::CURRENT_PROTOCOL_VERSION,
+                crate::ReadDemand {
+                    max_items: 128,
+                    max_bytes: crate::CHAT_BATCH_MAX_BYTES,
+                },
+            )
+            .await?;
+        let result = reader
+            .snapshot(crate::ReadDemand {
+                max_items: 128,
+                max_bytes: crate::CHAT_BATCH_MAX_BYTES,
+            })
+            .await;
         reader.close().await?;
         Ok(*result?.state)
     }
 
     /// 该 Thread 的 typed 持久化快照；没有登记过持久化的 Thread 为 `None`（未知不等于健康）。
     ///
-    /// 这是 [`pl_protocol::ThreadStorageState`] 的 typed 来源：故障类别、代数与水位都来自协调器
+    /// 这是 [`crate::ThreadStorageState`] 的 typed 来源：故障类别、代数与水位都来自协调器
     /// 的类型化值，不是错误文本的解析结果。
     pub(in crate::studio) fn thread_persistence_snapshot(
         &self,
         thread_id: &str,
-    ) -> Option<pl_protocol::ThreadPersistenceSnapshot> {
+    ) -> Option<crate::ThreadPersistenceSnapshot> {
         self.store
             .thread_persistence()
             .queue_snapshot()
@@ -59,5 +72,4 @@ impl StudioRuntime {
             .seed_usage(thread_id, state.usage_summary.clone());
         Ok(state)
     }
-
 }

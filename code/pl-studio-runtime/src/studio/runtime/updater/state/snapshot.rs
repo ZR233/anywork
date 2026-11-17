@@ -119,7 +119,7 @@ pub struct StudioUpdateStateSnapshot {
     pub activity: StudioUpdateActivity,
     pub ready_update: Option<StudioReadyUpdate>,
     /// Previous install outcome stays visible while this process checks again.
-    pub installation_error: Option<pl_protocol::StateError>,
+    pub installation_error: Option<crate::StateError>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

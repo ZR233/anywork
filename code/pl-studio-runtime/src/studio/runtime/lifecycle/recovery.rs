@@ -542,7 +542,7 @@ impl StudioRuntime {
     /// exists; a missing lease is reported without inventing ownership.
     pub(in crate::studio::runtime) async fn publish_session_workspace_issue(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         error: &anyhow::Error,
     ) {
         let issue_id = worktree_issue_id(&thread.id);
@@ -667,10 +667,7 @@ impl StudioRuntime {
             let Some(session) = sessions.get(&entry.session_id) else {
                 continue;
             };
-            if matches!(
-                entry.backend,
-                pl_protocol::session::AgentBackend::Acp { .. }
-            ) {
+            if matches!(entry.backend, crate::AgentBackend::Acp { .. }) {
                 continue;
             }
             let thread = crate::studio::records::thread_projection(session, &entry, |id| {

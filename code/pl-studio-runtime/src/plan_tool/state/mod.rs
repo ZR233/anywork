@@ -9,10 +9,8 @@ pub use machine::{
     available_transitions, validate_plan,
 };
 
-use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, AgentSessionPlanState, MessagePresentation,
-    PureError,
-};
+use crate::plan_tool::AgentSessionPlanState;
+use crate::{AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, MessagePresentation, PureError};
 
 pub const MAX_PLAN_SESSION_STATE_BYTES: usize = 128 * 1024;
 
@@ -63,7 +61,7 @@ pub fn validate_session_state_size(state: &AgentSessionPlanState) -> Result<(), 
 /// # Errors
 /// Rejects missing answers or answers with no confirmation decision.
 pub fn confirmation_decision(
-    resolution: &pl_protocol::UserInputResolution,
+    resolution: &crate::UserInputResolution,
 ) -> Result<AgentSessionPlanConfirmationDecision, String> {
     let answer = resolution
         .answers

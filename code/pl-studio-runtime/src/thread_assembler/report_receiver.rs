@@ -10,10 +10,7 @@ use std::sync::Arc;
 enum Recipient {
     Preparing,
     Cold(EntryPurpose),
-    Borrowed {
-        thread: ThreadHandle,
-        wake: bool,
-    },
+    Borrowed { thread: ThreadHandle, wake: bool },
     Temporary(ThreadHandle, Arc<()>),
     Release(Arc<()>),
 }
@@ -26,9 +23,7 @@ enum StorageWrite {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "Native delivery failed: {delivery:#}; temporary receiver cleanup failed: {cleanup:#}"
-)]
+#[error("Native delivery failed: {delivery:#}; temporary receiver cleanup failed: {cleanup:#}")]
 struct ReportReceiverFailure {
     #[source]
     delivery: anyhow::Error,
@@ -113,10 +108,7 @@ impl AgentServices {
             !self
                 .events
                 .agent_execution_identity(parent)
-                .is_some_and(|(_, binding, _)| matches!(
-                    binding,
-                    pl_protocol::AgentBinding::Acp(_)
-                ))
+                .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
                 && !owner.0.state().entries.get(parent).is_some_and(|entry| {
                     matches!(entry.runtime, crate::session::AgentRuntime::Acp(_))
                 }),
@@ -230,9 +222,7 @@ impl AgentServices {
                                 }
                             }
                             EntryPurpose::Execution
-                                if (entry.native()?.ready
-                                    || closing_inbox
-                                    || source_write)
+                                if (entry.native()?.ready || closing_inbox || source_write)
                                     && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>
                             {

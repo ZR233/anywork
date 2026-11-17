@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::model_catalog::{CatalogProbe, SuccessCache};
-use pl_protocol::studio::{StudioModelCatalogError, StudioModelCatalogSource};
+use crate::{StudioModelCatalogError, StudioModelCatalogSource};
 
 impl ConfigRuntime {
     /// A supervisor failure is distinct from a provider/cache failure and never discards last-good.
@@ -293,11 +293,13 @@ impl ConfigRuntime {
         source_account: &AccountId,
     ) {
         state.catalog.revision = state.catalog.revision.saturating_add(1);
-        if let Some(revisions) = state.account_projection_revisions.get_mut(
-            &pl_protocol::studio::AccountIdentity::Native {
-                account_id: source_account.to_string(),
-            },
-        ) {
+        if let Some(revisions) =
+            state
+                .account_projection_revisions
+                .get_mut(&crate::AccountIdentity::Native {
+                    account_id: source_account.to_string(),
+                })
+        {
             revisions.1 = state.catalog.revision;
         }
         state.catalog.updated_at = unix_seconds();

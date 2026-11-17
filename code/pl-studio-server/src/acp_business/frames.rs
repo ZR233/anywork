@@ -4,8 +4,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use futures::{FutureExt, Stream, StreamExt, stream};
-use pl_protocol::studio::{AcpBusinessFailure, AcpSessionEvent, AcpSessionFrame};
 use pl_studio_runtime::AcpSessionOpen;
+use pl_studio_runtime::{AcpBusinessFailure, AcpSessionEvent, AcpSessionFrame};
 
 type Events = Pin<Box<dyn Stream<Item = AcpSessionEvent> + Send>>;
 type Completion = Pin<Box<dyn Future<Output = Result<(), AcpBusinessFailure>> + Send>>;
@@ -87,7 +87,7 @@ impl OpenFrames {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::{AcpObservationGap, AcpSessionTarget, SessionNotification};
+    use pl_studio_runtime::{AcpObservationGap, AcpSessionTarget, SessionNotification};
 
     fn source(events: Events, completion: Completion, has_observation: bool) -> OpenFrames {
         OpenFrames {

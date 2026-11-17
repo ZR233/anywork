@@ -4,9 +4,9 @@ use super::legacy_completion_projection::lightweight;
 use super::legacy_timeline_store as timeline;
 use super::*;
 use crate::studio::thread_projection::order;
+use crate::{ChatAtom, ChatDeliveryKind, ChatSourceId};
 #[cfg(test)]
 use crate::{ExecutionItem, ExecutionShape};
-use pl_protocol::{ChatAtom, ChatDeliveryKind, ChatSourceId};
 use serde::Deserialize;
 
 pub(super) struct BackgroundResults;
@@ -193,7 +193,7 @@ async fn correct_facts(
             atom.source_order = corrected.source_order;
             let unknown = matches!(
                 atom.lifecycle,
-                pl_protocol::ChatAtomLifecycle::Terminal {
+                crate::ChatAtomLifecycle::Terminal {
                     started: None,
                     ended: None,
                     ..
@@ -238,13 +238,13 @@ async fn correct_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::*;
     use crate::studio::paths::SqliteFileMode;
     use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::{HistoryStore, connect};
     use anyhow::{Context, Result};
     use pl_core::thread::{ToolDelivery, ToolDeliveryTarget, ToolOutcome};
     use pl_core::tool::ToolOutput;
-    use pl_protocol::*;
     use sea_orm::DatabaseConnection;
     use serde_json::json;
 

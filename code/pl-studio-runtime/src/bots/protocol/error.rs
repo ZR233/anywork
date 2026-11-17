@@ -1,4 +1,4 @@
-use pl_protocol::studio::{BotDiagnostic, StudioError, StudioErrorCode};
+use crate::{BotDiagnostic, StudioError, StudioErrorCode};
 
 /// 飞书协议失败。保留安全类别与平台错误码，不携带 secret、正文或票据 URL。
 #[derive(Debug, Clone)]

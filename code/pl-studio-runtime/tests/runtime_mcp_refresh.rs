@@ -9,12 +9,12 @@ mod mcp_stdio;
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, ThreadMcpLifecycleKind,
-    ThreadWorkspaceMode, TurnState, UpdateMcpDocumentRequest,
-    studio::{StudioPromptInput, SubmitPromptRequest},
-};
 use pl_provider_fixture::{Protocol, Step};
+use pl_studio_runtime::{
+    CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpScope, StudioPromptInput,
+    SubmitPromptRequest, ThreadMcpLifecycleKind, ThreadWorkspaceMode, TurnState,
+    UpdateMcpDocumentRequest,
+};
 use pl_studio_runtime::{
     StudioProductBaselineState, StudioProductEventKind, StudioProductFrame, StudioProductTopic,
 };
@@ -164,7 +164,7 @@ async fn submit(env: &Environment, id: &str, prompt: &str) -> Result<()> {
     Ok(())
 }
 
-async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_protocol::Turn> {
+async fn submit_turn(env: &Environment, id: &str, prompt: &str) -> Result<pl_studio_runtime::Turn> {
     let revision = env
         .runtime
         .thread_snapshot(id)
@@ -523,7 +523,7 @@ async fn real_thread_reconnect_validates_target_replaces_session_and_installs_ca
         ensure!(reply["catalogRevision"].as_u64().is_some());
         ensure!(reply["runtimeGeneration"].as_u64().is_some_and(|generation| generation > 0));
         ensure!(reply["state"]["generation"].as_u64().is_some_and(|generation| generation > before.generation));
-        let snapshot: pl_protocol::ThreadMcpStateSnapshot = serde_json::from_value(reply["state"].clone())?;
+        let snapshot: pl_studio_runtime::ThreadMcpStateSnapshot = serde_json::from_value(reply["state"].clone())?;
         ensure!(snapshot.servers.iter().any(|server| server.id == "fixture"
             && server.lifecycle == ThreadMcpLifecycleKind::Available));
         catalog(&env, id, "reconnected", true).await?;

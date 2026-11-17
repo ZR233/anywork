@@ -43,11 +43,11 @@ fn resolved(account: &AccountConfig, model: &ModelInfo) -> Option<u64> {
 
 #[test]
 fn catalog_filter_route_and_descriptor_share_context_resolution() {
+    use pl_model::model::ModelContextUnavailable;
     use pl_model::{
         config::model_descriptor,
         model::{ModelType, ModelTypeExclusion},
     };
-    use pl_protocol::ModelContextUnavailable;
     let mut exhausted = model("exhausted", Some(100));
     exhausted.max_output_tokens = Some(100);
     let account = provider(vec![

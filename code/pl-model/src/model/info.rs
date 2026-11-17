@@ -427,7 +427,7 @@ impl ModelInfo {
             });
         }
         if self.resolve_context(None).unavailable
-            == Some(pl_protocol::ModelContextUnavailable::InvalidParameters)
+            == Some(crate::model::ModelContextUnavailable::InvalidParameters)
             || self
                 .default_temperature
                 .is_some_and(|t| !t.is_finite() || t < 0.0)
@@ -497,8 +497,8 @@ impl ModelInfo {
     pub fn resolve_context(
         &self,
         override_limit: Option<u64>,
-    ) -> pl_protocol::ModelContextResolution {
-        use pl_protocol::{
+    ) -> crate::model::ModelContextResolution {
+        use crate::model::{
             ModelContextAdjustment, ModelContextResolution, ModelContextUnavailable,
         };
         let window = self.context_window.or(self.max_context_window);

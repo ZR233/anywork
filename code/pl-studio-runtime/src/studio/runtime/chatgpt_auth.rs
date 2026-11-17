@@ -1,10 +1,11 @@
 //! Canonical login owner; unsuccessful or discarded attempts never become saved accounts.
 use super::StudioRuntime;
+use crate::protocol::*;
+use crate::{AccountAuthenticationMethod, ChatGptAccountInfo};
 use anyhow::Result;
 use pl_model::protocol::chatgpt::{
     ChatGptAuthError, ChatGptAuthorization, ChatGptCredentialRecord,
 };
-use pl_protocol::studio::*;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -612,7 +613,7 @@ mod tests {
             client_id: pl_model::protocol::chatgpt::CODEX_CLIENT_ID.into(),
             email: Some("fixture@example.test".into()),
             plan_usage_enabled: true,
-            codex: Some(pl_protocol::studio::CodexAccountInfo {
+            codex: Some(crate::CodexAccountInfo {
                 account_id: "fixture-workspace".into(),
                 plan_type: Some("plus".into()),
             }),
@@ -750,7 +751,7 @@ mod tests {
             name: "ChatGPT Fixture".into(),
             base_url: pl_model::protocol::chatgpt::CODEX_RESOURCE.into(),
             secret: AccountSecretUpdate::Preserve,
-            initial_billing_kind: Some(pl_protocol::BillingKind::NoCharge),
+            initial_billing_kind: Some(crate::BillingKind::NoCharge),
             custom_models: Vec::new(),
             model_connection_modes: Vec::new(),
             model_auto_compact_limits: Vec::new(),
@@ -857,7 +858,7 @@ mod tests {
         let snapshot = runtime.config_runtime.read()?;
         let account = &snapshot.config.models.accounts[&AccountId::new(account_id)?];
         assert_eq!(account.authentication, AccountAuthenticationMethod::ChatGpt);
-        assert_eq!(account.billing_kind()?, pl_protocol::BillingKind::NoCharge);
+        assert_eq!(account.billing_kind()?, crate::BillingKind::NoCharge);
         assert!(account.bearer_token.is_none());
         let session = account.chatgpt_session.clone().unwrap();
         assert_eq!(session.access_token().await?, "fixture-private-access");

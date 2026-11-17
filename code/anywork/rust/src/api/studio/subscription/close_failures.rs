@@ -37,7 +37,7 @@ impl CloseFailures {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::{StudioError, StudioErrorCode};
+    use pl_studio_runtime::{StudioError, StudioErrorCode};
 
     fn error(code: StudioErrorCode, message: &str) -> BridgeError {
         StudioError::new(code, message, false).into()

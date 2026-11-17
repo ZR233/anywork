@@ -13,7 +13,7 @@ impl StudioStore {
         let Some(record) = self.read_thread_association(thread_id).await? else {
             return Ok(None);
         };
-        let thread = pl_protocol::Thread::from(record);
+        let thread = crate::Thread::from(record);
         // Reading one interaction is a projection: it never imports or deletes storage.
         let Some(current) =
             crate::studio::thread_factory::recovery::load_current_read_only(self, &thread).await?
@@ -33,7 +33,7 @@ impl StudioStore {
         let Some(record) = self.read_thread_association(thread_id).await? else {
             return Ok(Vec::new());
         };
-        let thread = pl_protocol::Thread::from(record);
+        let thread = crate::Thread::from(record);
         // Listing pending interactions is a projection too: no migration, no legacy cleanup.
         let Some(current) =
             crate::studio::thread_factory::recovery::load_current_read_only(self, &thread).await?

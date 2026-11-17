@@ -15,8 +15,8 @@ mod schema;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::ThreadStatus;
 use anyhow::{Result, ensure};
-use pl_protocol::ThreadStatus;
 use version_migrate::Versioned;
 
 use super::records::{AgentDirectoryRecord, SessionDirectoryRecord};
@@ -447,7 +447,7 @@ pub(in crate::studio) async fn relocate_managed_v2_paths(
         }) {
             ensure!(
                 session.workspace_id == mapping.workspace_id
-                    && session.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local,
+                    && session.workspace_mode == crate::ThreadWorkspaceMode::Local,
                 "bot catalog binding changed"
             );
             mapping.exact_path(&mut session.workspace_path)?;
@@ -510,10 +510,10 @@ mod tests {
                 root_agent_id: "thread-a".into(),
                 workspace_id: "project-a".into(),
                 title: "Root".into(),
-                native_mode: Some(pl_protocol::ThreadModeId::simple()),
-                workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
-                delegation_mode: pl_protocol::DelegationMode::Profile,
-                delegation_preference: pl_protocol::DelegationPreference::Balanced,
+                native_mode: Some(crate::mode::ThreadModeId::simple()),
+                workspace_mode: crate::ThreadWorkspaceMode::Local,
+                delegation_mode: crate::DelegationMode::Profile,
+                delegation_preference: crate::DelegationPreference::Balanced,
                 workspace_path: "/tmp/a".into(),
                 created_at: 10,
                 updated_at: 20,
@@ -527,8 +527,8 @@ mod tests {
                 thread_id: "thread-a".into(),
                 role: "root".into(),
                 title: None,
-                backend: pl_protocol::session::AgentBackend::Native {
-                    config: pl_protocol::NativeAgentConfig {
+                backend: crate::AgentBackend::Native {
+                    config: crate::NativeAgentConfig {
                         route: None,
                         system_instructions: None,
                     },
@@ -580,17 +580,17 @@ mod tests {
         let path = dir.path().join("catalog.toml");
         let mut document = current_document();
         document.sessions[0].archived = true;
-        document.sessions[0].native_mode = Some(pl_protocol::ThreadModeId::task());
+        document.sessions[0].native_mode = Some(crate::mode::ThreadModeId::task());
         let mut child = document.agents[0].clone();
         child.agent_id = "child".into();
         child.thread_id = "child".into();
         child.parent_agent_id = Some("thread-a".into());
         child.title = Some("Saved task".into());
         child.explicitly_closed = true;
-        child.backend = pl_protocol::session::AgentBackend::Native {
+        child.backend = crate::AgentBackend::Native {
             status: ThreadStatus::Closing,
-            config: pl_protocol::NativeAgentConfig {
-                route: Some(pl_protocol::studio::NewThreadModelRoute {
+            config: crate::NativeAgentConfig {
+                route: Some(crate::NewThreadModelRoute {
                     account_id: "account".into(),
                     model_id: "model".into(),
                     effort: Some("high".into()),

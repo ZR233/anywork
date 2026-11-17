@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use pl_protocol::{McpHealthSnapshot, PureError, Result};
+use crate::mcp::McpHealthSnapshot;
+use pl_protocol::{PureError, Result};
 use rmcp::model::CallToolResult;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc, oneshot};

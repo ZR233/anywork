@@ -334,7 +334,9 @@ void main() {
         .toList();
     expect(users, hasLength(2));
     expect(users.first.chunks.single, same(replay));
+    expect(users.first.submittedContent, isNull);
     expect(users.last.chunks, [same(first), same(second)]);
+    expect(users.last.submittedContent, [same(_input.single)]);
     port.promptResult!.complete(_run);
     expect(await sending, _run);
     _push(source, _text('answer'));
@@ -401,7 +403,9 @@ void main() {
             .toList();
         expect(users, hasLength(2));
         expect(users.first.chunks.single.content, same(_input.single));
+        expect(users.first.submittedContent, [same(_input.single)]);
         expect(users.last.chunks.single, same(later));
+        expect(users.last.submittedContent, isNull);
       },
     );
   }

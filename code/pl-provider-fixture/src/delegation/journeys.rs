@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 const ROOT_ONLY_TOOLS: [&str; 4] = [
     "spawn_agent",
     "list_delegation_models",
-    "get_delegation_model",
+    "get_delegation_models",
     "evaluate_agent",
 ];
 
@@ -175,9 +175,8 @@ fn enablement(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> Progr
             select(&candidates.models, "-b", super::SHARED_MODEL)? == b,
             "enabled B route did not come from its actual candidate query",
         )?;
-        let available: EnablementAvailability = flow.read(
+        let available: EnablementAvailability = flow.model(
             "enabled-b-detail",
-            "get_delegation_model",
             json!({"accountId":b.account_id,"modelId":b.model_id}),
         )?;
         available.require_enabled(&b)?;
@@ -229,8 +228,16 @@ fn enablement(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> Progr
             old_arguments,
             "disabled-old-query",
         )?;
-        flow.rejected("stale-after-disable", "list_delegation_models", json!({"cursor":old_page.next_cursor.context("before-disable query did not return a cursor")?}), "stale or belongs to another query")?;
         let models = flow.models()?;
+        let refreshed: ModelList = flow.read(
+            "refreshed-after-disable",
+            "list_delegation_models",
+            json!({}),
+        )?;
+        require(
+            refreshed.catalog_revision > old_page.catalog_revision,
+            "disable did not advance the candidate catalog revision",
+        )?;
         let surviving = super::flow::select(&models, "-a", super::OTHER_MODEL)?;
         require(
             !models.iter().any(|model| {
@@ -238,9 +245,8 @@ fn enablement(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> Progr
             }),
             "disabled model remained in a new delegation query",
         )?;
-        let detail: Detail = flow.read(
+        let detail: Detail = flow.model(
             "disabled-detail",
-            "get_delegation_model",
             json!({"accountId":surviving.account_id,"modelId":super::SHARED_MODEL}),
         )?;
         require(
@@ -409,12 +415,17 @@ fn original_enablement<T: DeserializeOwned>(
         .call_id
         .as_deref()
         .context("original query has no callId")?;
-    let result = flow.read_call(
+    let result: Value = flow.read_call(
         call_id,
         tool,
         arguments.clone(),
         &format!("enablement-history-{label}"),
     )?;
+    let result = if tool == "get_delegation_models" {
+        super::flow::decode_model(result)?
+    } else {
+        serde_json::from_value(result).context("decode original enablement result")?
+    };
     Ok((result, arguments))
 }
 
@@ -423,10 +434,10 @@ fn disabled_spawn(flow: &Flow<'_>, environment: &Environment) -> Progress<Decisi
         original_enablement(flow, "enabled-b-candidates", "list_delegation_models")?;
     let b = select(&candidates.models, "-b", super::SHARED_MODEL)?;
     let (enabled, detail_query): (EnablementAvailability, _) =
-        original_enablement(flow, "enabled-b-detail", "get_delegation_model")?;
+        original_enablement(flow, "enabled-b-detail", "get_delegation_models")?;
     require(
         query == json!({"accountId":b.account_id})
-            && detail_query == json!({"accountId":b.account_id,"modelId":b.model_id}),
+            && detail_query == json!({"models":[{"accountId":b.account_id,"modelId":b.model_id}]}),
         "before-disable evidence belongs to a different account/model query",
     )?;
     enabled.require_enabled(&b)?;
@@ -436,12 +447,11 @@ fn disabled_spawn(flow: &Flow<'_>, environment: &Environment) -> Progress<Decisi
         json!({"accountId":b.account_id}),
     )?;
     require(
-        empty.models.is_empty() && empty.next_cursor.is_none(),
+        empty.models.is_empty(),
         "no-candidate account did not remain explicitly empty",
     )?;
-    let disabled: EnablementAvailability = flow.read(
+    let disabled: EnablementAvailability = flow.model(
         "disabled-b-detail",
-        "get_delegation_model",
         json!({"accountId":b.account_id,"modelId":b.model_id}),
     )?;
     disabled.require_disabled(&b)?;

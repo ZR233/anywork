@@ -12,7 +12,7 @@ use crate::studio::storage::history::schema::legacy_completion_projection::{
 use crate::studio::storage::history::schema::legacy_timeline_projection::{
     TimelineInput, TimelineProjection, TimelineUpdate,
 };
-use pl_protocol::{
+use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId,
     ContentRef, ContentTarget, PayloadData,
 };
@@ -181,7 +181,7 @@ pub(in super::super) async fn read_state(
         ensure!(
             state.version == TIMELINE_PROJECTION_VERSION
                 && !state.generation.is_empty()
-                && state.recovery.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+                && state.recovery.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
             ProjectionFault
         );
         Ok(state)
@@ -592,7 +592,7 @@ async fn rebuild_thinking_summary(
         .contents
         .iter()
         .rev()
-        .filter(|content| content.role == pl_protocol::ChatContentRole::ReasoningSummary)
+        .filter(|content| content.role == crate::ChatContentRole::ReasoningSummary)
     {
         let ContentTarget::Body { owner, key } = &content.reference.target else {
             anyhow::bail!("reasoning summary is not a body reference");
@@ -755,7 +755,7 @@ async fn rebuild_with_classification(
     current.items = update.current().to_vec();
     let bytes = serde_json::to_vec(&current)?;
     ensure!(
-        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        bytes.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
         "rebuilt current exceeds budget"
     );
     db.execute_raw(statement(

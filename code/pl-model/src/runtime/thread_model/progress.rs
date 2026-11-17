@@ -27,6 +27,7 @@ use crate::completion::stream::ToolStream;
 use crate::completion::stream::event::{
     ModelBlockContent, ModelBlockKind, ModelStreamEvent, ProviderBlockIdentity,
 };
+use crate::trace::TraceTextChannel;
 use pl_core::chat::PresentationPart;
 use pl_core::model::{
     AggregateChannel, ModelParts, ModelProgressSender, ModelTextChannel, ObservedItemKind,
@@ -34,7 +35,6 @@ use pl_core::model::{
 };
 use pl_core::usage::UsageStatus;
 use pl_protocol::PureError;
-use pl_protocol::trace::TraceTextChannel;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

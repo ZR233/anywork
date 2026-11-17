@@ -38,6 +38,7 @@ pub use permission_projection::{PermissionProjectionError, project_execution_per
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
 mod child_resources;
+pub(crate) use child_resources::WorkspaceBindingAdmission;
 pub use child_resources::WorkspacePreparationOwner;
 mod children;
 mod close_storage;
@@ -66,18 +67,17 @@ use std::{
 pub use tools::{StudioCommandBinding, StudioGitBinding, StudioThreadTools, StudioWorkspaceTools};
 
 pub use crate::studio::WorkspaceUsageLease;
+pub use crate::{DelegationSettings, PureError};
 use pl_core::{
     context::ResourceAccess,
     model::ModelFactory,
     thread::{
         ContextCapacity, ThreadError, ThreadHandle, ThreadLifecycle,
-        cold::ColdStoreHandle,
         current::{CurrentError, RuntimeEpoch, ThreadCurrent},
     },
     tool::opaque::Registration,
 };
 use pl_model::{config::ResolvedModelRoute, runtime::ThreadModel};
-pub use pl_protocol::{DelegationSettings, PureError};
 
 /// Product-selected collaboration exposure, independent from core tool scheduling.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -122,7 +122,7 @@ pub struct StudioThreadSpec {
 }
 
 impl StudioThreadSpec {
-    fn frozen_delegation(&self) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+    fn frozen_delegation(&self) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
         let selection = match &self.current {
             Some(current) => crate::studio::delegation::saved(&current.state.to_paused_snapshot()),
             None => self
@@ -180,9 +180,7 @@ impl std::fmt::Debug for StudioThreadSpec {
 #[derive(Debug, thiserror::Error)]
 pub enum ThreadAssemblyError {
     #[error("Agent backend {backend:?} is not supported by the Native runtime")]
-    UnsupportedBackend {
-        backend: pl_protocol::AgentBackendKind,
-    },
+    UnsupportedBackend { backend: crate::AgentBackendKind },
     #[error("Thread activation failed")]
     ActivationFailed(#[source] Arc<ThreadAssemblyError>),
     #[error("Thread resource preparation panicked")]
@@ -284,7 +282,7 @@ type ActivationOutcome = Result<ThreadHandle, Arc<ThreadAssemblyError>>;
 #[derive(Debug)]
 struct Preparation {
     resources: crate::session::PreparedResources,
-    identity: Option<pl_protocol::AgentThreadIdentity>,
+    identity: Option<crate::AgentThreadIdentity>,
     /// The factory has stopped; its original preparation still owns settlement until ACK.
     settlement: Option<WorkspacePreparationOwner>,
     purpose: Option<activation::ActivationPurpose>,
@@ -296,7 +294,7 @@ struct Preparation {
 #[derive(Debug)]
 struct FailedPreparation {
     resources: crate::session::PreparedResources,
-    identity: Option<pl_protocol::AgentThreadIdentity>,
+    identity: Option<crate::AgentThreadIdentity>,
     settlement: Option<WorkspacePreparationOwner>,
     gate: tokio::sync::Mutex<()>,
 }
@@ -321,7 +319,7 @@ struct State {
     preparing_children: BTreeMap<String, children::PreparingChild>,
     unpublished_children: BTreeMap<String, child_resources::UnpublishedChild>,
     entries: BTreeMap<String, AgentInstance>,
-    by_agent: BTreeMap<pl_protocol::AgentId, String>,
+    by_agent: BTreeMap<crate::AgentId, String>,
     pending_activation: BTreeMap<String, crate::thread_assembler::ThreadActivation>,
     failed_preparations: BTreeMap<String, Arc<FailedPreparation>>,
 }
@@ -347,7 +345,7 @@ impl State {
 
     /// 成员树父 Thread。只用冻结 `parent_agent_id` 解析，不从 Native 字段回退。
     fn membership_parent<'a>(
-        by_agent: &'a BTreeMap<pl_protocol::AgentId, String>,
+        by_agent: &'a BTreeMap<crate::AgentId, String>,
         entry: &'a AgentInstance,
     ) -> Option<&'a str> {
         if let Some(parent) = entry.identity.parent_agent_id.as_ref() {
@@ -372,14 +370,14 @@ struct CloseLife {
 
 #[derive(Debug)]
 pub(crate) struct Registry {
-    pub(crate) session_id: pl_protocol::SessionId,
+    pub(crate) session_id: crate::SessionId,
     state: Mutex<State>,
     changed: tokio::sync::Notify,
     life: Mutex<CloseLife>,
 }
 
 impl Registry {
-    pub(crate) fn open(session_id: pl_protocol::SessionId) -> Self {
+    pub(crate) fn open(session_id: crate::SessionId) -> Self {
         Self {
             session_id,
             state: Mutex::new(State::default()),
@@ -464,7 +462,7 @@ impl SessionRuntime {
     /// without materializing any execution resources for that member.
     pub(crate) fn retain_directory_identity(
         &self,
-        identity: &pl_protocol::AgentThreadIdentity,
+        identity: &crate::AgentThreadIdentity,
     ) -> Result<(), ThreadAssemblyError> {
         if &identity.session_id != self.id() {
             return Err(ThreadAssemblyError::Identity(
@@ -2366,7 +2364,7 @@ mod s2_close_regression_tests {
         async fn root_delegation(
             &self,
             _: &ThreadActivation,
-        ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
             assert!(!self.panic, "factory unwind before resource publication");
             Err(ThreadAssemblyError::Identity(
                 "factory refused preparation".into(),
@@ -2511,7 +2509,7 @@ mod s2_close_regression_tests {
             });
             owner.0.state().s2_settlement_probe = Some(probe.clone());
             let mut activation = ThreadActivation::native_test(id, None);
-            activation.agent.agent_id = pl_protocol::AgentId::new(format!("agent-{id}")).unwrap();
+            activation.agent.agent_id = crate::AgentId::new(format!("agent-{id}")).unwrap();
             assert!(
                 owner
                     .activate(activation, RefusedFactory { panic: false })
@@ -2638,14 +2636,14 @@ mod s2_close_regression_tests {
         owner.0.state().insert_entry(
             id.into(),
             AgentInstance {
-                identity: pl_protocol::AgentThreadIdentity {
+                identity: crate::AgentThreadIdentity {
                     session_id: owner.id().clone(),
-                    agent_id: pl_protocol::AgentId::new(format!("agent-{id}")).unwrap(),
+                    agent_id: crate::AgentId::new(format!("agent-{id}")).unwrap(),
                     parent_agent_id: parent
-                        .map(|id| pl_protocol::AgentId::new(format!("agent-{id}")).unwrap()),
-                    thread_id: pl_protocol::ThreadId::new(id).unwrap(),
+                        .map(|id| crate::AgentId::new(format!("agent-{id}")).unwrap()),
+                    thread_id: crate::ThreadId::new(id).unwrap(),
                 },
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+                binding: crate::AgentBinding::Native(crate::NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 }),
@@ -2690,8 +2688,8 @@ mod s2_close_regression_tests {
     #[tokio::test]
     async fn s2_close_cancels_parent_before_blocked_child_and_preserves_other_session() {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let owner = SessionRuntime::open(pl_protocol::SessionId::new("session-a").unwrap());
-            let other = SessionRuntime::open(pl_protocol::SessionId::new("session-b").unwrap());
+            let owner = SessionRuntime::open(crate::SessionId::new("session-a").unwrap());
+            let other = SessionRuntime::open(crate::SessionId::new("session-b").unwrap());
             let (started, model_started) = oneshot::channel();
             let parent = ThreadHandle::start(
                 "parent-thread".into(),

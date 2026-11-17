@@ -10,7 +10,10 @@ pub mod thread;
 
 pub use config::McpExecutionContext;
 pub use connector::{ConnectedMcp, ExecutorStreamableHttpClient, McpConnectRequest, McpConnector};
-pub use health::{McpAvailabilityKind, McpAvailabilitySnapshot};
+pub use health::{
+    McpAvailabilityDescriptor, McpAvailabilityKind, McpAvailabilitySnapshot, McpHealthSnapshot,
+    McpServerDescriptor,
+};
 pub use refresh::{McpServerToolRefresh, McpToolRefreshReport, McpToolRefreshStatus};
 
 pub use runtime::{

@@ -16,10 +16,22 @@ sealed class AcpConversationContentItem {
 
 /// Consecutive chunks retain their original blocks, IDs and metadata.
 final class AcpConversationMessageItem extends AcpConversationContentItem {
-  AcpConversationMessageItem._(this.kind, Iterable<AcpContentChunkView> chunks)
-    : chunks = List.unmodifiable(chunks);
+  AcpConversationMessageItem._(
+    this.kind,
+    Iterable<AcpContentChunkView> chunks, {
+    Iterable<AcpContentBlockView>? submittedContent,
+  }) : chunks = List.unmodifiable(chunks),
+       submittedContent = submittedContent == null
+           ? null
+           : List.unmodifiable(submittedContent);
   final AcpConversationMessageKind kind;
+
+  /// Original peer chunks, including any context added outside the Client.
   final List<AcpContentChunkView> chunks;
+
+  /// This owner's original submission, retained across its formal echo.
+  /// Absent for replay or independently received messages; never persisted.
+  final List<AcpContentBlockView>? submittedContent;
 }
 
 /// A partial tool update never invents missing title, kind or status values.
@@ -105,7 +117,8 @@ final class AcpConversationSession {
     this._observation,
     AcpOpenIntentView intent,
   ) : _history = switch (intent) {
-        AcpNewIntentView() => AcpConversationHistory.newSession,
+        AcpNewIntentView() ||
+        AcpDraftIntentView() => AcpConversationHistory.newSession,
         AcpLoadIntentView() => AcpConversationHistory.loadReplay,
         AcpResumeIntentView() => AcpConversationHistory.resumedWithoutHistory,
       } {
@@ -128,6 +141,13 @@ final class AcpConversationSession {
   bool _configFutureDone = false;
   bool _configEventSeen = false;
   final Set<AcpPermissionIdView> _answering = {};
+  final Map<AcpConfigId, AcpSessionConfigValueView> _configIntents = {};
+  AcpModeId? _modeIntent;
+
+  /// Explicit successful user selections, independent of server-owned current state.
+  Map<AcpConfigId, AcpSessionConfigValueView> get configIntents =>
+      Map.unmodifiable(_configIntents);
+  AcpModeId? get modeIntent => _modeIntent;
 
   AcpSessionTargetView? _target;
   AcpAgentCapabilitiesView? _capabilities;
@@ -329,7 +349,11 @@ final class AcpConversationSession {
           );
           _canMergeMessage = false;
         }
-        _message(AcpConversationMessageKind.user, chunk);
+        _message(
+          AcpConversationMessageKind.user,
+          chunk,
+          submittedContent: provisional?.submittedContent,
+        );
       case AcpAgentMessageChunkView(:final chunk):
         _pendingUserEcho = null;
         _message(AcpConversationMessageKind.assistant, chunk);
@@ -375,7 +399,11 @@ final class AcpConversationSession {
     }
   }
 
-  void _message(AcpConversationMessageKind kind, AcpContentChunkView chunk) {
+  void _message(
+    AcpConversationMessageKind kind,
+    AcpContentChunkView chunk, {
+    List<AcpContentBlockView>? submittedContent,
+  }) {
     final last = _content.lastOrNull;
     if (last is AcpConversationMessageItem &&
         _canMergeMessage &&
@@ -383,12 +411,17 @@ final class AcpConversationSession {
         last.chunks.last.messageId == chunk.messageId) {
       _content = List.unmodifiable([
         ..._content.take(_content.length - 1),
-        AcpConversationMessageItem._(kind, [...last.chunks, chunk]),
+        AcpConversationMessageItem._(kind, [
+          ...last.chunks,
+          chunk,
+        ], submittedContent: last.submittedContent),
       ]);
     } else {
       _content = List.unmodifiable([
         ..._content,
-        AcpConversationMessageItem._(kind, [chunk]),
+        AcpConversationMessageItem._(kind, [
+          chunk,
+        ], submittedContent: submittedContent),
       ]);
     }
     _canMergeMessage = true;
@@ -479,6 +512,7 @@ final class AcpConversationSession {
       final provisional = AcpConversationMessageItem._(
         AcpConversationMessageKind.user,
         content.map((block) => AcpContentChunkView(content: block)),
+        submittedContent: content,
       );
       _pendingUserEcho = provisional;
       _content = List.unmodifiable([..._content, provisional]);
@@ -505,16 +539,20 @@ final class AcpConversationSession {
     }
   }
 
-  Future<void> configure(AcpConfigId id, AcpSessionConfigValueView value) {
+  Future<void> configure(
+    AcpConfigId id,
+    AcpSessionConfigValueView value,
+  ) async {
     final target = _requireTarget();
-    return _configure(
+    await _configure(
       () => _client.configure(
         AcpConfigureRequestView(target: target, configId: id, value: value),
       ),
     );
+    _configIntents[id] = value;
   }
 
-  Future<void> setMode(AcpModeId id) {
+  Future<void> setMode(AcpModeId id) async {
     final target = _requireTarget();
     if (_configOptions != null) {
       throw AcpBusinessFailureView(
@@ -522,9 +560,10 @@ final class AcpConversationSession {
         message: 'Legacy modes are only available when configOptions is absent',
       );
     }
-    return _configure(
+    await _configure(
       () => _client.setMode(AcpSetModeRequestView(target: target, modeId: id)),
     );
+    _modeIntent = id;
   }
 
   Future<void> _configure(Future<void> Function() command) async {

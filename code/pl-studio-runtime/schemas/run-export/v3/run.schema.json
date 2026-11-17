@@ -144,9 +144,9 @@
       "additionalProperties": false,
       "required": ["manifest", "events", "result", "contentAddressing"],
       "properties": {
-    "manifest": { "const": 3 },
-    "events": { "const": 3 },
-    "result": { "const": 3 },
+        "manifest": { "const": 3 },
+        "events": { "const": 3 },
+        "result": { "const": 3 },
         "contentAddressing": { "const": "sha256" }
       }
     }

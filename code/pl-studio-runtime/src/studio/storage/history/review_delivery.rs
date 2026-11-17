@@ -56,14 +56,11 @@ impl HistoryStore {
             "SELECT metadata FROM conversation_items WHERE parent_id=? AND json_extract(metadata,'$.tool.name')=? ORDER BY seq DESC LIMIT 1",
             vec![parent.as_str().into(),pl_tool::finish_turn::TOOL_FINISH_TURN.into()],
         )).await? else { return Ok(None) };
-        let atom: pl_protocol::ChatAtom =
+        let atom: crate::ChatAtom =
             serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
         ensure!(
             atom.turn_id.as_deref() == Some(turn)
-                && matches!(
-                    atom.lifecycle,
-                    pl_protocol::ChatAtomLifecycle::Terminal { .. }
-                ),
+                && matches!(atom.lifecycle, crate::ChatAtomLifecycle::Terminal { .. }),
             crate::thread_assembler::review_dispatch::TerminalIntegrityError(
                 "review finish original provenance mismatch"
             )

@@ -43,7 +43,7 @@ pub(crate) struct AgentCloseRecord {
     pub git: Option<AgentCloseGitGrant>,
     pub execution_closed: bool,
     pub worktree_cleanup: AgentWorktreeCleanup,
-    pub error: Option<pl_protocol::StateError>,
+    pub error: Option<crate::StateError>,
 }
 
 impl AgentCloseRecord {
@@ -266,8 +266,8 @@ impl StudioStore {
 
     pub(crate) async fn ensure_agent_execution_allowed(&self, id: &str) -> Result<()> {
         if self.agent_close(id).await?.is_some() || self.has_legacy_retirement(id).await? {
-            return Err(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Conflict,
+            return Err(crate::StudioError::new(
+                crate::StudioErrorCode::Conflict,
                 "Permanently closed agent cannot execute or receive a new evaluation",
                 false,
             )

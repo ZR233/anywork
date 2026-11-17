@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use crate::acp_schema::ContentBlock;
+use crate::protocol::*;
+use crate::{AcpSessionReference, AgentBackend};
 use anyhow::{Context, Result, ensure};
 use futures::FutureExt;
 use pl_acp::session as sdk;
-use pl_protocol::session::{AcpSessionReference, AgentBackend};
-use pl_protocol::studio::*;
 
 use super::{AcpResources, AcpSessionCompletion, AcpSessionObservation, projection};
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
@@ -30,7 +31,7 @@ pub(crate) struct AcpBusinessOwner {
 
 struct MemberOpen {
     owner: crate::thread_assembler::SessionRuntime,
-    identity: pl_protocol::AgentThreadIdentity,
+    identity: crate::AgentThreadIdentity,
     project: crate::studio::WorkspaceRecord,
     definition: crate::config::AcpServiceDefinition,
     session_record: SessionDirectoryRecord,
@@ -120,7 +121,9 @@ impl AcpBusinessOwner {
             definition,
             session_record: member.session,
             previous: Some(member.agent.clone()),
-            intent: AcpOpenIntent::Load(reference.acp_session_id.clone()),
+            intent: AcpOpenIntent::Load {
+                session_id: reference.acp_session_id.clone(),
+            },
             cwd: Some(cwd),
             business_root,
             role: member.agent.role,
@@ -142,14 +145,11 @@ impl AcpBusinessOwner {
         &self,
         owner: &crate::thread_assembler::SessionRuntime,
         request: &crate::thread_assembler::ChildThreadRequest,
-        profile: &pl_protocol::AgentProfile,
+        profile: &crate::AgentProfile,
         definition: crate::config::AcpServiceDefinition,
-    ) -> Result<(
-        Arc<AcpResources>,
-        pl_protocol::AgentWorkspaceAssignmentSnapshot,
-    )> {
+    ) -> Result<(Arc<AcpResources>, crate::AgentWorkspaceAssignmentSnapshot)> {
         ensure!(
-            profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review
+            profile.workspace_mode != crate::AgentWorkspaceMode::Review
                 && request.model_selection.is_none()
                 && request.writable_paths.is_none()
                 && request.review_target_agent_id.is_none()
@@ -219,7 +219,7 @@ impl AcpBusinessOwner {
             previous,
             intent,
             cwd,
-            business_root,
+            mut business_root,
             role,
             title,
             usage,
@@ -232,7 +232,8 @@ impl AcpBusinessOwner {
         let completion = AcpSessionCompletion {
             publication: published,
         };
-        let resources = AcpResources::new(project.id.clone(), completion.clone());
+        let draft = matches!(&intent, AcpOpenIntent::Draft { .. });
+        let resources = AcpResources::new(project.id.clone(), completion.clone(), draft);
         let preparation =
             owner.prepare_acp(identity.clone(), definition.id.clone(), resources.clone())?;
         let accepted = AcpSessionTarget {
@@ -254,6 +255,14 @@ impl AcpBusinessOwner {
             let mut started = Some(started);
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
+                    let draft_worktree = if draft && session_record.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
+                        resources.retain_draft_worktree(factory.clone(), thread_id.clone()).await;
+                        let lease = factory.prepare_acp_root_worktree(&thread_id, &project).await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                        business_root = lease.path.clone();
+                        session_record.workspace_path = business_root.clone();
+                        Some(lease)
+                    } else { None };
                     let usage = match usage {
                         Some(usage) => usage,
                         None => factory
@@ -308,6 +317,10 @@ impl AcpBusinessOwner {
                                 projection::preparation("ACP workspace identity is unavailable")
                             })?;
                     }
+                    if let Some(lease) = &draft_worktree {
+                        factory.confirm_acp_worktree(lease, &usage, &preparation).await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                    }
                     let account = connections.connection(&definition).map_err(|_| projection::preparation("ACP account connection is closing or stale"))?;
                     let prepared = tokio::select! {
                         biased;
@@ -315,9 +328,9 @@ impl AcpBusinessOwner {
                         result = account.ready_business() => result?,
                     };
                     let intent = match intent {
-                        AcpOpenIntent::New => sdk::Open::New,
-                        AcpOpenIntent::Load(id) => sdk::Open::Load(id.into()),
-                        AcpOpenIntent::Resume(id) => sdk::Open::Resume(id.into()),
+                        AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => sdk::Open::New,
+                        AcpOpenIntent::Load { session_id: id } => sdk::Open::Load(id.into()),
+                        AcpOpenIntent::Resume { session_id: id } => sdk::Open::Resume(id.into()),
                     };
                     let observer = resources
                         .observe(sdk::OpenRequest {
@@ -330,7 +343,7 @@ impl AcpBusinessOwner {
                                     &resources,
                                     &config,
                                     &cwd,
-                                    pl_protocol::DelegationSettings {
+                                    crate::DelegationSettings {
                                         mode: session_record.delegation_mode,
                                         preference: session_record.delegation_preference,
                                     },
@@ -499,7 +512,7 @@ impl StudioRuntime {
             );
             let owner = self
                 .sessions
-                .materialize(&pl_protocol::SessionId::new(session.session_id.clone())?)?;
+                .materialize(&crate::SessionId::new(session.session_id.clone())?)?;
             // The existing per-member admission permit serializes cold preparation
             // registration, not protocol open or product publication.
             _admission = Some(owner.agent_operation(&agent.thread_id).await);
@@ -513,8 +526,9 @@ impl StudioRuntime {
                 });
             }
             let id = match &request.intent {
-                AcpOpenIntent::Load(id) | AcpOpenIntent::Resume(id) => id,
-                AcpOpenIntent::New => {
+                AcpOpenIntent::Load { session_id: id }
+                | AcpOpenIntent::Resume { session_id: id } => id,
+                AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => {
                     anyhow::bail!("existing ACP association requires Load or Resume")
                 }
             };
@@ -539,6 +553,22 @@ impl StudioRuntime {
             let agent_id = crate::studio::ids::new_id("agent");
             let thread_id = crate::studio::ids::new_id("acp");
             let delegation = self.config_runtime.read()?.config.delegation;
+            let (workspace_mode, delegation_mode, delegation_preference) = match &request.intent {
+                AcpOpenIntent::Draft {
+                    workspace_mode,
+                    delegation_mode,
+                    delegation_preference,
+                } => (
+                    *workspace_mode,
+                    delegation_mode.unwrap_or(delegation.mode),
+                    delegation_preference.unwrap_or(delegation.preference),
+                ),
+                _ => (
+                    crate::ThreadWorkspaceMode::Local,
+                    delegation.mode,
+                    delegation.preference,
+                ),
+            };
             (
                 SessionDirectoryRecord {
                     session_id: session_id.clone(),
@@ -546,9 +576,9 @@ impl StudioRuntime {
                     workspace_id: request.workspace_id.clone(),
                     title: request.account_id.clone(),
                     native_mode: None,
-                    workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
-                    delegation_mode: delegation.mode,
-                    delegation_preference: delegation.preference,
+                    workspace_mode,
+                    delegation_mode,
+                    delegation_preference,
                     workspace_path: project.path.clone(),
                     created_at: now,
                     updated_at: now,
@@ -573,15 +603,15 @@ impl StudioRuntime {
         self.store
             .ensure_agent_execution_allowed(&thread_id)
             .await?;
-        let identity = pl_protocol::AgentThreadIdentity {
-            session_id: pl_protocol::SessionId::new(session_record.session_id.clone())?,
-            agent_id: pl_protocol::AgentId::new(agent_id.clone())?,
+        let identity = crate::AgentThreadIdentity {
+            session_id: crate::SessionId::new(session_record.session_id.clone())?,
+            agent_id: crate::AgentId::new(agent_id.clone())?,
             parent_agent_id: previous
                 .as_ref()
                 .and_then(|agent| agent.parent_agent_id.as_ref())
-                .map(|id| pl_protocol::AgentId::new(id.clone()))
+                .map(|id| crate::AgentId::new(id.clone()))
                 .transpose()?,
-            thread_id: pl_protocol::ThreadId::new(thread_id.clone())?,
+            thread_id: crate::ThreadId::new(thread_id.clone())?,
         };
         let owner = self.sessions.materialize(&identity.session_id)?;
         let business = AcpBusinessOwner::new(
@@ -631,7 +661,7 @@ impl StudioRuntime {
         &self,
         target: &AcpSessionTarget,
     ) -> Result<Arc<AcpResources>, AcpBusinessFailure> {
-        let id = pl_protocol::SessionId::new(target.session_id.clone())
+        let id = crate::SessionId::new(target.session_id.clone())
             .map_err(|_| projection::failure(sdk::Error::Stale))?;
         let owner = self
             .sessions
@@ -653,12 +683,27 @@ impl StudioRuntime {
             })
     }
 
+    pub async fn commit_acp_draft(
+        &self,
+        target: AcpSessionTarget,
+    ) -> Result<(), AcpBusinessFailure> {
+        let resources = self.business_resources(&target)?;
+        resources.completion.wait().await?;
+        resources
+            .commit_draft(&self.agent_facility.product_events)
+            .await
+            .map_err(|error| projection::preparation(&error.to_string()))
+    }
+
     pub async fn prompt_acp_session(
         &self,
         target: AcpSessionTarget,
         content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        if resources.is_draft().await {
+            return Err(projection::failure(sdk::Error::NotReady));
+        }
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
@@ -793,7 +838,7 @@ impl StudioRuntime {
                 && matches!(&agent.backend, AgentBackend::Acp { .. }),
             "ACP product membership is not executable"
         );
-        let id = pl_protocol::SessionId::new(session.session_id.clone())?;
+        let id = crate::SessionId::new(session.session_id.clone())?;
         let owner = self
             .sessions
             .get(&id)
@@ -811,7 +856,7 @@ impl StudioRuntime {
         Ok(snapshot.capabilities.prompt_capabilities)
     }
     pub async fn close_acp_session(&self, target: AcpSessionTarget) -> Result<AcpBusinessClose> {
-        let id = pl_protocol::SessionId::new(target.session_id)?;
+        let id = crate::SessionId::new(target.session_id)?;
         let owner = self
             .sessions
             .get(&id)
@@ -846,6 +891,13 @@ impl StudioRuntime {
                     .unwrap_or_default(),
             )
         };
+        if let Some(lease) = self.agent_facility.worktrees.get(&target.thread_id)
+            && lease.state
+                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved
+        {
+            self.publish_worktree_recovery(Some("unused ACP draft worktree retained"), &lease)
+                .await;
+        }
         let mut result = projection::close(resources.outcome().await);
         result.owner_failures = report
             .iter()

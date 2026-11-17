@@ -16,7 +16,7 @@ use pl_core::{
     thread::interactions::{InteractionRecord, InteractionState},
 };
 
-use pl_protocol::{
+use crate::{
     InteractionContent, InteractionResolution, InteractionStatus, ResolvedThreadToolUserInput,
     ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState, UserInputAnswer,
     UserQuestion,

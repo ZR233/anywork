@@ -25,7 +25,7 @@ impl StudioThreadFactory {
     pub(super) async fn resolve_root_delegation(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
-    ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+    ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
         let thread = self.thread_record(identity.id()).await?;
         if identity.parent_thread_id.is_some() || thread.parent_thread_id.is_some() {
             return Err(ThreadAssemblyError::Identity(identity.id().to_owned()));
@@ -246,7 +246,7 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("resolve bot ownership", error))?;
         let config = self.services.config_runtime.read()?.config;
-        let protocol_thread: pl_protocol::Thread = thread.clone().into();
+        let protocol_thread: crate::Thread = thread.clone().into();
         let mut current =
             super::recovery::load_current_for_recovery(&self.services.store, &protocol_thread)
                 .await
@@ -406,8 +406,8 @@ impl StudioThreadFactory {
             .await
             .map_err(|error| resource_error("resolve root workspace", error))?;
         let workspace = ToolWorkspace::new(match workspace_mode {
-            pl_protocol::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
-            pl_protocol::ThreadWorkspaceMode::Worktree => {
+            crate::ThreadWorkspaceMode::Local => AgentWorkspace::local(&root),
+            crate::ThreadWorkspaceMode::Worktree => {
                 AgentWorkspace::worktree(&canonical_project_root, &root)
             }
         })
@@ -622,14 +622,14 @@ impl StudioThreadFactory {
 fn root_delegation(
     thread: &crate::studio::ThreadRecord,
     saved: Option<&pl_core::thread::ThreadSnapshot>,
-) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
     match saved {
         Some(saved) => crate::studio::delegation::saved(saved)
             .map_err(|error| resource_error("read saved delegation", error))?
             .ok_or_else(|| {
                 ThreadAssemblyError::Identity("saved root has no delegation selection".into())
             }),
-        None => Ok(pl_protocol::DelegationSettings {
+        None => Ok(crate::DelegationSettings {
             mode: thread.delegation_mode,
             preference: thread.delegation_preference,
         }),

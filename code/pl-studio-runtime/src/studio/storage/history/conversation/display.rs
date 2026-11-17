@@ -1,12 +1,12 @@
 //! Frozen schema-22/23 display validation used only inside the schema-24 migration transaction.
 use super::*;
+use crate::PayloadData;
 use crate::studio::storage::history::schema::v24_presentation::{
     DisplayHeader, DisplayMemberWrite,
 };
 use crate::studio::storage::history::schema::v24_presentation_types::{
     DisplayBlockBody, DisplayContentSource, DisplayRecord,
 };
-use pl_protocol::PayloadData;
 
 pub(in crate::studio::storage::history) fn validate_header(header: &DisplayHeader) -> Result<()> {
     ensure!(
@@ -75,7 +75,7 @@ fn completion_id(record: &DisplayRecord) -> Option<&str> {
     }
 }
 
-fn validate_original(atom: &pl_protocol::ChatAtom, original: &pl_protocol::ChatAtom) -> Result<()> {
+fn validate_original(atom: &crate::ChatAtom, original: &crate::ChatAtom) -> Result<()> {
     ensure!(
         atom.id == original.id
             && atom.source == original.source
@@ -109,7 +109,7 @@ pub(in crate::studio::storage::history) async fn validate_original_references(
         .await?;
     let mut originals = std::collections::HashMap::new();
     for row in rows {
-        let atom: pl_protocol::ChatAtom =
+        let atom: crate::ChatAtom =
             serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
         originals.insert(row.try_get::<String>("", "item_id")?, atom);
     }

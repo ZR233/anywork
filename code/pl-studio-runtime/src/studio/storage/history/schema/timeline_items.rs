@@ -76,13 +76,13 @@ mod tests {
         ChatEntry, CurrentCollectionRef, CurrentContentPreview, CurrentProjection, TimelineItem,
         TimelineItemKind,
     };
+    use crate::*;
     use anyhow::{Context, Result, ensure};
     use pl_core::{
         chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
         context::{ContextContent, ContextRecord, ContextSnapshot, ContextSource},
         thread::{ThreadCheckpoint, ThreadSnapshot},
     };
-    use pl_protocol::*;
     use sea_orm::DatabaseConnection;
     use serde_json::json;
     use std::sync::Arc;

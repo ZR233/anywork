@@ -8,6 +8,7 @@ import sqlite3
 import tomllib
 from contextlib import closing
 from pathlib import Path
+from uuid import RFC_4122, UUID
 
 from .artifacts import read_and_validate_run_artifacts, read_json, safe_file, sha256
 from .render_profile import load_profile
@@ -27,6 +28,95 @@ def tree_hashes(root: Path) -> dict:
 
 def catalog_identity(config: dict) -> str:
     return sha256(json.dumps(config["models"]["accounts"], sort_keys=True).encode())
+
+
+def _canonical_uuid4(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = UUID(value)
+    except ValueError:
+        return False
+    return parsed.version == 4 and parsed.variant == RFC_4122 and str(parsed) == value
+
+
+def validate_current(current: dict, thread_id: str) -> None:
+    if set(current) != {
+        "schemaVersion",
+        "threadId",
+        "savedRuntimeEpoch",
+        "snapshotRevision",
+        "savedAt",
+        "state",
+        "modelCall",
+    }:
+        raise ValueError("种子 Current JSON 顶层字段无效")
+    if (
+        current["schemaVersion"] != 1
+        or current["threadId"] != thread_id
+        or not _canonical_uuid4(current["savedRuntimeEpoch"])
+        or not isinstance(current["snapshotRevision"], int)
+        or isinstance(current["snapshotRevision"], bool)
+        or current["snapshotRevision"] < 0
+        or not isinstance(current["savedAt"], int)
+        or isinstance(current["savedAt"], bool)
+        or current["savedAt"] < 0
+        or not isinstance(current["state"], dict)
+    ):
+        raise ValueError("种子 Current JSON 身份或格式无效")
+    if set(current["state"]) != {
+        "lifecycle",
+        "execution",
+        "continuation",
+        "inputs",
+        "inputOrdinal",
+        "terminalInputs",
+        "context",
+        "privateContext",
+        "tasks",
+        "taskStartOrdinal",
+        "toolPreviews",
+        "deliveries",
+        "discoveredTools",
+        "runtimeFacts",
+        "extensions",
+        "extensionSequence",
+        "inbox",
+        "inboxSequence",
+        "consumedMessages",
+        "wakeMessagesThrough",
+        "consumedMessageIdentities",
+        "interactions",
+        "permissions",
+        "lastAttemptUsage",
+        "lastAttemptUsageOrigin",
+        "usageSummary",
+    }:
+        raise ValueError("种子 Current state 字段无效")
+    model_call = current["modelCall"]
+    if model_call is not None:
+        if not isinstance(model_call, dict) or set(model_call) != {
+            "sourceRunId",
+            "sourceExecutionId",
+            "sourceTurnId",
+            "sourceAttemptId",
+            "tools",
+            "toolCallMode",
+            "soloToolIds",
+            "preparedParameters",
+            "phase",
+        }:
+            raise ValueError("种子 Current modelCall 字段无效")
+        if (
+            not _canonical_uuid4(model_call["sourceRunId"])
+            or not model_call["sourceExecutionId"]
+            or not model_call["sourceTurnId"]
+            or not model_call["sourceAttemptId"]
+            or not isinstance(model_call["phase"], dict)
+            or model_call["phase"].get("kind")
+            not in ("preparing", "streaming", "applied")
+        ):
+            raise ValueError("种子 Current modelCall 身份或阶段无效")
 
 
 def validate_seed(
@@ -90,18 +180,7 @@ def _inspect_data_unchecked(data: Path) -> dict:
                 raise ValueError("种子会话归属无效")
             safe_file(session, "history.sqlite")
             current = read_json(safe_file(session, "current.json"))
-            if (
-                current.get("schemaVersion") != 1
-                or current.get("threadId") != member["threadId"]
-                or not isinstance(current.get("savedRuntimeEpoch"), str)
-                or not current["savedRuntimeEpoch"]
-                or not isinstance(current.get("snapshotRevision"), int)
-                or current["snapshotRevision"] < 0
-                or not isinstance(current.get("savedAt"), int)
-                or not isinstance(current.get("state"), dict)
-                or "modelCall" not in current
-            ):
-                raise ValueError("种子 Current JSON 身份或格式无效")
+            validate_current(current, member["threadId"])
     # 只读检查当前原生格式，不改写数据库或工作区路径。
     for path in sorted(data.rglob("*.sqlite")):
         wal = path.with_name(path.name + "-wal")

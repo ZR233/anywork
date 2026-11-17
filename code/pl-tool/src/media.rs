@@ -62,14 +62,14 @@ pub(crate) fn image_limits(
     let Some(projection) = projection else {
         return Ok(None);
     };
-    if projection.format() != pl_protocol::tool_projection::FORMAT
-        || projection.version() != pl_protocol::tool_projection::VERSION
+    if projection.format() != pl_model::completion::tool_projection::FORMAT
+        || projection.version() != pl_model::completion::tool_projection::VERSION
     {
         return Err(pl_core::tool::opaque::ToolError::new(
             std::io::Error::other("unknown model tool projection format"),
         ));
     }
-    let projection: pl_protocol::tool_projection::ToolProjection =
+    let projection: pl_model::completion::tool_projection::ToolProjection =
         serde_json::from_str(projection.content()).map_err(ToolError::new)?;
     Ok(projection
         .image

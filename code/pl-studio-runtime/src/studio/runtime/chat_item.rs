@@ -1,5 +1,11 @@
 //! 执行事实在可靠完成或观察封存边界编码为规范 JSON 与显式内容所有权。
 
+use crate::{
+    ContentOwner, ContentRef, ContentTarget, ResolvedThreadToolUserInput, ThreadRawItem,
+    ThreadRawPayload, ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem,
+    ThreadToolState, ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState,
+    UserQuestion,
+};
 use crate::{ExecutionItem, ExecutionShape};
 mod history;
 use anyhow::{Result, ensure};
@@ -11,12 +17,6 @@ use pl_core::{
         ContentDescriptor, PresentationPart,
     },
     model::ContentBlock,
-};
-use pl_protocol::{
-    ContentOwner, ContentRef, ContentTarget, ResolvedThreadToolUserInput, ThreadRawItem,
-    ThreadRawPayload, ThreadTextItem, ThreadThinkingItem, ThreadToolInvocation, ThreadToolItem,
-    ThreadToolState, ThreadToolUserInput, ThreadToolUserInputAnswer, ThreadToolUserInputState,
-    UserQuestion,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -30,7 +30,6 @@ pub(crate) use atom::atom;
 use descriptor::{
     PLAN_DOCUMENT_FIELD, PLAN_FEEDBACK_FIELD, count, plan_completion, validate_counts,
 };
-pub(in crate::studio) use restore::{execution_item, execution_state};
 
 /// 仅用于执行投影的正文位置比较；不进入 Core、存储记录或产品 DTO。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -65,8 +64,8 @@ const INLINE_BODY_BYTES: usize = 4096;
 
 /// Only canonical member body roles belong to the small provenance header. Structured details
 /// (questions, raw payload fields, attachments) keep their existing manifest/collection owners.
-pub(crate) fn atom_content_role(key: &BodyKey) -> Option<pl_protocol::ChatContentRole> {
-    use pl_protocol::ChatContentRole as Role;
+pub(crate) fn atom_content_role(key: &BodyKey) -> Option<crate::ChatContentRole> {
+    use crate::ChatContentRole as Role;
     match key {
         BodyKey::Body
         | BodyKey::Part(PresentationPart::OutputText(_) | PresentationPart::ReasoningText(_)) => {
@@ -82,7 +81,7 @@ pub(crate) fn atom_content_role(key: &BodyKey) -> Option<pl_protocol::ChatConten
     }
 }
 
-pub(crate) fn atom_content_role_by_key(key: &str) -> Option<pl_protocol::ChatContentRole> {
+pub(crate) fn atom_content_role_by_key(key: &str) -> Option<crate::ChatContentRole> {
     let parsed = if key == "body" {
         BodyKey::Body
     } else if key.starts_with("part.outputText.") {
@@ -205,79 +204,19 @@ struct CompletionStamp<'a> {
     sealed_at: i64,
 }
 
-pub(in crate::studio) struct ObservationStamp<'a> {
-    pub thread_id: &'a str,
-    pub database_id: &'a str,
-    pub owner: &'a ContentOwner,
-    pub boundary: pl_protocol::ChatFactPosition,
-    pub captured_at: i64,
-}
-
 pub(in crate::studio) fn validate_observation(
     state: &ExecutionShape,
-    atom: &pl_protocol::ChatAtom,
+    atom: &crate::ChatAtom,
     thread_id: &str,
 ) -> Result<()> {
     ensure!(
-        matches!(
-            atom.lifecycle,
-            pl_protocol::ChatAtomLifecycle::Active { .. }
-        ) && atom.completion_item_id.is_none()
+        matches!(atom.lifecycle, crate::ChatAtomLifecycle::Active { .. })
+            && atom.completion_item_id.is_none()
             && atom.finished_at.is_none(),
         "observation is not an active execution cut"
     );
     serde_json::to_value(descriptor::observation_descriptor(state, thread_id)?)?;
     Ok(())
-}
-
-pub(in crate::studio) fn observation_payload(
-    state: &ExecutionShape,
-    atom: &pl_protocol::ChatAtom,
-    contents: &[Arc<ChatContent>],
-    stamp: ObservationStamp<'_>,
-) -> Result<Vec<u8>> {
-    validate_observation(state, atom, stamp.thread_id)?;
-    ensure!(
-        !stamp.database_id.is_empty(),
-        "observation requires its database identity"
-    );
-    ensure!(
-        matches!(stamp.owner, ContentOwner::DisplayObservation { block_id, member_key }
-            if !block_id.is_empty() && !member_key.is_empty()),
-        "observation requires its assigned display namespace"
-    );
-    let owner_key = crate::studio::conversation_identity::content_owner_key(stamp.owner)?;
-    let mut bodies = Vec::with_capacity(atom.contents.len());
-    for body in &atom.contents {
-        let ContentTarget::Body { owner, key } = &body.reference.target else {
-            anyhow::bail!("observation body has no display owner");
-        };
-        ensure!(
-            owner == stamp.owner && body.reference.database_id == stamp.database_id,
-            "observation body escaped its display namespace"
-        );
-        let content = contents
-            .iter()
-            .find(|content| {
-                content.descriptor.key.owner == owner_key && content.descriptor.key.key == *key
-            })
-            .ok_or_else(|| anyhow::anyhow!("observation lost its owned content"))?;
-        // Observations always expose their sealed namespace, even for short bodies.
-        bodies.push(body_envelope(
-            content,
-            stamp.database_id,
-            stamp.owner,
-            false,
-        )?);
-    }
-    let descriptor =
-        serde_json::to_value(descriptor::observation_descriptor(state, stamp.thread_id)?)?;
-    let mut envelope = payload_envelope(state, descriptor, bodies, stamp.boundary.effect_seq)?;
-    envelope["capturedAt"] = stamp.captured_at.into();
-    if let Some(turn_id) = &atom.turn_id {
-        envelope["turnId"] = turn_id.clone().into();
-    }
-    Ok(serde_json::to_vec(&envelope)?)
 }
 
 fn body_envelope(
@@ -339,7 +278,7 @@ fn freeze(
     descriptor: serde_json::Value,
     bodies: &mut BTreeMap<BodyKey, Arc<ContentBlock>>,
     previous: &ChatContents,
-    metadata: Option<pl_protocol::ChatAtom>,
+    metadata: Option<crate::ChatAtom>,
 ) -> Result<ChatDraft> {
     let CompletionStamp {
         id,
@@ -428,8 +367,7 @@ fn freeze(
     if let ExecutionShape::Text(text) = item.state() {
         atom.content_present = Some(
             bodies.iter().any(|(key, block)| {
-                atom_content_role(key) == Some(pl_protocol::ChatContentRole::Body)
-                    && !block.is_empty()
+                atom_content_role(key) == Some(crate::ChatContentRole::Body) && !block.is_empty()
             }) || !text.attachments().is_empty(),
         );
     }
@@ -437,21 +375,21 @@ fn freeze(
     // typed tool payload, never a duplicate of the active wait presentation.
     atom.wait = None;
     if kind == "plan" {
-        atom.kind = pl_protocol::ChatAtomKind::Plan;
+        atom.kind = crate::ChatAtomKind::Plan;
     }
     atom.completion_item_id = Some(id.into());
     if id != item.id {
-        atom.delivery = pl_protocol::ChatDeliveryKind::BackgroundHandoff;
-        atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
+        atom.delivery = crate::ChatDeliveryKind::BackgroundHandoff;
+        atom.lifecycle = crate::ChatAtomLifecycle::Terminal {
             started: None,
             ended: None,
-            outcome: pl_protocol::ChatTerminalOutcome::Transferred,
+            outcome: crate::ChatTerminalOutcome::Transferred,
         };
     }
     atom.contents = bodies
         .keys()
         .filter_map(|key| {
-            Some(pl_protocol::ChatAtomContent {
+            Some(crate::ChatAtomContent {
                 role: atom_content_role(key)?,
                 reference: ContentRef {
                     database_id: database_id.into(),
@@ -465,7 +403,7 @@ fn freeze(
         .collect();
     Ok(ChatDraft {
         item_id: id.into(),
-        query_class: if atom.kind == pl_protocol::ChatAtomKind::Inference {
+        query_class: if atom.kind == crate::ChatAtomKind::Inference {
             "execution"
         } else {
             "conversation"
@@ -716,7 +654,7 @@ fn clear_user_input(user_input: &ThreadToolUserInput) -> ThreadToolUserInput {
                 options: question.options.as_ref().map(|options| {
                     options
                         .iter()
-                        .map(|_| pl_protocol::UserQuestionOption {
+                        .map(|_| crate::UserQuestionOption {
                             label: String::new(),
                             description: String::new(),
                         })
@@ -771,24 +709,22 @@ fn raw_payload_field(payload_index: usize) -> BodyKey {
 fn clear_terminal_output(state: &ThreadToolState) -> ThreadToolState {
     match state {
         ThreadToolState::Succeeded(succeeded) => {
-            ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+            ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
                 succeeded.completed_at(),
                 cleared_output(succeeded.output()),
             ))
         }
-        ThreadToolState::Failed(failed) => {
-            ThreadToolState::Failed(pl_protocol::FailedThreadTool::new(
-                failed.failed_at(),
-                failed.failure().clone(),
-                failed.output().map(cleared_output),
-            ))
-        }
+        ThreadToolState::Failed(failed) => ThreadToolState::Failed(crate::FailedThreadTool::new(
+            failed.failed_at(),
+            failed.failure().clone(),
+            failed.output().map(cleared_output),
+        )),
         other => other.clone(),
     }
 }
 
-fn cleared_output(output: &pl_protocol::ThreadToolOutput) -> pl_protocol::ThreadToolOutput {
-    pl_protocol::ThreadToolOutput::new(
+fn cleared_output(output: &crate::ThreadToolOutput) -> crate::ThreadToolOutput {
+    crate::ThreadToolOutput::new(
         String::new(),
         output.attachments().to_vec(),
         Vec::new(),
@@ -799,10 +735,10 @@ fn cleared_output(output: &pl_protocol::ThreadToolOutput) -> pl_protocol::Thread
 fn clear_streamed_output(state: &ThreadToolState) -> ThreadToolState {
     match state {
         ThreadToolState::Running(_) => {
-            ThreadToolState::Running(pl_protocol::RunningThreadTool::new(String::new()))
+            ThreadToolState::Running(crate::RunningThreadTool::new(String::new()))
         }
         ThreadToolState::Cancelling(_) => {
-            ThreadToolState::Cancelling(pl_protocol::CancellingThreadTool::new(String::new()))
+            ThreadToolState::Cancelling(crate::CancellingThreadTool::new(String::new()))
         }
         other => other.clone(),
     }
@@ -830,11 +766,11 @@ fn clear_arguments(invocation: &ThreadToolInvocation) -> ThreadToolInvocation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel};
+    use crate::{ThreadContentLifecycle, ThreadTextChannel};
 
     #[test]
     fn completion_rejects_active_text_thinking_and_tool_with_shared_observation_codec() {
-        use pl_protocol::*;
+        use crate::protocol::*;
         for state in [
             ExecutionShape::Text(ThreadTextItem::new(
                 ThreadTextChannel::Final,
@@ -868,7 +804,7 @@ mod tests {
 
     #[test]
     fn observation_tool_descriptors_keep_all_nonterminal_phases_without_completion() -> Result<()> {
-        use pl_protocol::*;
+        use crate::protocol::*;
         for (kind, state) in [
             ("queued", ThreadToolState::Queued(QueuedThreadTool)),
             ("started", ThreadToolState::Started(StartedThreadTool)),
@@ -908,7 +844,7 @@ mod tests {
     #[test]
     fn active_wait_is_typed_without_payload_and_completion_keeps_only_original_wait() -> Result<()>
     {
-        use pl_protocol::*;
+        use crate::protocol::*;
         let waiting = ThreadWaitPresentation::new(
             ThreadWaitIntent::Events {
                 targets: vec![ThreadWaitTarget::new(
@@ -1004,7 +940,8 @@ mod tests {
     #[test]
     fn interaction_calls_enter_status_before_user_input_and_keep_identity_through_resolution()
     -> Result<()> {
-        use pl_protocol::*;
+        use crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID;
+        use crate::protocol::*;
 
         for (name, kind, question_id) in [
             ("request_user_input", ChatAtomKind::Interaction, "question"),
@@ -1157,7 +1094,7 @@ mod tests {
         assert_eq!(envelope["bodies"][0]["byteLength"], body.len() as u64);
         assert!(envelope["bodies"][0].get("inline").is_none());
         assert_eq!(draft.query_class, "conversation");
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&draft.metadata)?;
+        let atom: crate::ChatAtom = serde_json::from_slice(&draft.metadata)?;
         assert_eq!(atom.id, item.id);
         assert_eq!(atom.completion_item_id.as_deref(), Some(item.id.as_str()));
         assert_eq!(atom.completion_seq, None);
@@ -1170,7 +1107,7 @@ mod tests {
         assert_eq!(atom.payload, None);
         assert_eq!(
             atom.source,
-            pl_protocol::ChatSourceId::ForegroundTurn {
+            crate::ChatSourceId::ForegroundTurn {
                 turn_id: "turn:a:b".into()
             }
         );
@@ -1220,21 +1157,18 @@ mod tests {
             11,
             ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new("call".into(), "arbitrary".into(), "{}".into()),
-                ThreadToolState::Running(pl_protocol::RunningThreadTool::new(String::new())),
+                ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
             )),
         );
         let draft = background_started_draft(&item, "task", "accepted", 3, 12, "database")?;
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&draft.metadata)?;
+        let atom: crate::ChatAtom = serde_json::from_slice(&draft.metadata)?;
         assert_eq!(atom.id, item.id);
         assert_ne!(draft.item_id, atom.id);
         assert_eq!(
             atom.completion_item_id.as_deref(),
             Some(draft.item_id.as_str())
         );
-        assert_eq!(
-            atom.delivery,
-            pl_protocol::ChatDeliveryKind::BackgroundHandoff
-        );
+        assert_eq!(atom.delivery, crate::ChatDeliveryKind::BackgroundHandoff);
         assert_eq!(atom.source_state, None);
         assert!(
             serde_json::from_slice::<serde_json::Value>(&draft.metadata)?
@@ -1243,8 +1177,8 @@ mod tests {
         );
         assert!(matches!(
             atom.lifecycle,
-            pl_protocol::ChatAtomLifecycle::Terminal {
-                outcome: pl_protocol::ChatTerminalOutcome::Transferred,
+            crate::ChatAtomLifecycle::Terminal {
+                outcome: crate::ChatTerminalOutcome::Transferred,
                 ..
             }
         ));
@@ -1293,14 +1227,9 @@ mod tests {
                 11,
                 ExecutionShape::Tool(ThreadToolItem::new(
                     invocation,
-                    ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                    ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
                         11,
-                        pl_protocol::ThreadToolOutput::new(
-                            "result".into(),
-                            Vec::new(),
-                            Vec::new(),
-                            None,
-                        ),
+                        crate::ThreadToolOutput::new("result".into(), Vec::new(), Vec::new(), None),
                     )),
                 )),
             );
@@ -1322,8 +1251,8 @@ mod tests {
 
     #[test]
     fn frozen_text_presence_uses_owned_blocks_not_the_static_shell_or_payload_json() -> Result<()> {
+        use crate::{AttachmentModality, ChatAtom, ThreadAttachment};
         use anyhow::Context;
-        use pl_protocol::{AttachmentModality, ChatAtom, ThreadAttachment};
         for (body, expected) in [("accepted", true), ("", false), (" \n\t", true)] {
             let original = text("presence", body.into());
             let shell = original.clone().with_state(static_state(original.state()));

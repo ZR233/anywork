@@ -3,11 +3,11 @@
 use super::v24_presentation_types::{
     DisplayBlockBody, DisplayContentSource, DisplayMemberHead, DisplayRecord,
 };
-use anyhow::{Result, ensure};
-use pl_protocol::{
+use crate::{
     ChatAtom, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ContentRef, ContentTarget,
     PayloadData,
 };
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 /// Positive creation position, independent of completion and effect sequences.

@@ -1,7 +1,7 @@
 //! Independent append-only history access for Native production consumers.
 
+use crate::{StudioError, StudioErrorCode, StudioErrorReason};
 use anyhow::{Context, Result};
-use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
 
 use crate::studio::StudioRuntime;
 
@@ -54,7 +54,7 @@ impl StudioRuntime {
         thread_id: &str,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<pl_protocol::ThreadTurnPage> {
+    ) -> Result<crate::ThreadTurnPage> {
         let reader = self
             .open_history_reader(thread_id, crate::history::HISTORY_PROTOCOL_VERSION)
             .await?;
@@ -76,13 +76,13 @@ impl StudioRuntime {
                 continue;
             };
             let items = history_turn_items(&reader, &head.turn_id, 512).await?;
-            turns.push(pl_protocol::ThreadTurnHistory {
+            turns.push(crate::ThreadTurnHistory {
                 context_disposition: head.context_disposition,
                 turn: history_turn(&reader, head).await?,
                 items,
             });
         }
-        Ok(pl_protocol::ThreadTurnPage {
+        Ok(crate::ThreadTurnPage {
             turns,
             next_cursor: page.next,
         })
@@ -92,7 +92,7 @@ impl StudioRuntime {
 async fn history_turn(
     reader: &crate::history::HistoryReader,
     head: crate::history::HistoryTurnHead,
-) -> Result<pl_protocol::Turn> {
+) -> Result<crate::Turn> {
     let detail_event_id = head.detail_event_id.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "history Turn {} has no immutable original detail",
@@ -153,7 +153,7 @@ async fn history_turn_items(
     reader: &crate::history::HistoryReader,
     turn: &str,
     limit: usize,
-) -> Result<Vec<pl_protocol::HistoryEventDetail>> {
+) -> Result<Vec<crate::HistoryEventDetail>> {
     let (_, items, _) = reader
         .events_window(
             crate::history::HistoryEventsQuery::Turn {

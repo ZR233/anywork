@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::response::IntoResponse;
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     CancelBotRegistrationRequest, ListBotConversationsRequest, ReadBotMessagesRequest,
     RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest, SetBotEnabledRequest,
     SetBotTrustedChatRequest, SetBotTrustedUserRequest, StartBotRegistrationRequest,
@@ -175,10 +175,10 @@ async fn send_bot_message(
     ))
 }
 
-#[utoipa::path(post, path = "/api/v1/bots/conversations/thread", operation_id = "bots.createConversationThread", request_body = pl_protocol::studio::CreateBotConversationThreadRequest, responses(StudioApiErrors, (status = 200)))]
+#[utoipa::path(post, path = "/api/v1/bots/conversations/thread", operation_id = "bots.createConversationThread", request_body = pl_studio_runtime::CreateBotConversationThreadRequest, responses(StudioApiErrors, (status = 200)))]
 async fn create_bot_conversation_thread(
     State(state): State<AppState>,
-    ApiJson(request): ApiJson<pl_protocol::studio::CreateBotConversationThreadRequest>,
+    ApiJson(request): ApiJson<pl_studio_runtime::CreateBotConversationThreadRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     Ok(Json(
         state

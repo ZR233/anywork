@@ -370,7 +370,7 @@ async fn generate_title(
         Ok(response) => response.model_observation().cloned(),
         Err(failure) => failure.model_observation().cloned(),
     };
-    let billing = pl_protocol::InferenceBillingRecord {
+    let billing = crate::InferenceBillingRecord {
         purpose: Some("title".into()),
         inference_id,
         account_id: route.account_id.as_str().to_owned(),

@@ -1,7 +1,7 @@
 //! Mechanical mappings for the independent History and Current FRB ports.
 
-use pl_protocol as protocol;
-use pl_protocol::history as runtime_history;
+use pl_studio_runtime as protocol;
+use pl_studio_runtime::history as runtime_history;
 
 use super::{chat, thread_stream};
 use crate::api::studio::types::*;

@@ -1,6 +1,6 @@
 //! ACP 官方 server 自动准备的 Bridge DTO。
 //!
-//! 字段与 `pl_protocol::studio::acp_install` 一一对应；这里是 FRB 的镜像层，不解释状态、不重排
+//! 字段与 `pl_studio_runtime::acp_install` 一一对应；这里是 FRB 的镜像层，不解释状态、不重排
 //! revision。安装是共享资产，拥有独立快照与回执，不与 `acpAuth` 或 Settings 混用（见 design/25）。
 
 use serde::{Deserialize, Serialize};

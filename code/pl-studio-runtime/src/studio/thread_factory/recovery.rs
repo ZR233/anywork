@@ -22,7 +22,7 @@ use crate::studio::StudioStore;
 /// prepares it.
 pub(crate) async fn load_current_read_only(
     store: &StudioStore,
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
 ) -> Result<Option<ThreadCurrent>> {
     store
         .state_for(&thread.workspace_id, &thread.id)?
@@ -35,7 +35,7 @@ pub(crate) async fn load_current_read_only(
 /// reconstructs a Core checkpoint, history fence or snapshot bridge.
 pub(crate) fn load_current_for_recovery<'a>(
     store: &'a StudioStore,
-    thread: &'a pl_protocol::Thread,
+    thread: &'a crate::Thread,
 ) -> impl std::future::Future<Output = Result<Option<ThreadCurrent>>> + Send + 'a {
     Box::pin(async move {
         let state = store.state_for(&thread.workspace_id, &thread.id)?;
@@ -47,7 +47,8 @@ pub(crate) fn load_current_for_recovery<'a>(
         let history_path = store
             .registered_session_paths(&thread.id)?
             .history_database();
-        if tokio::fs::try_exists(history_path).await? || state.legacy_checkpoint().await?.is_some() {
+        if tokio::fs::try_exists(history_path).await? || state.legacy_checkpoint().await?.is_some()
+        {
             drop(store.history_for(&thread.workspace_id, &thread.id).await?);
         }
         state.load_current().await

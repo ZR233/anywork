@@ -658,6 +658,30 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Accepts a message and commits its producer-owned records in the same owner publication.
+    /// This does not request execution. A host can retain an explicit admission marker until its
+    /// independent Current save succeeds, even after the bounded message ledger retires the ID.
+    ///
+    /// # Errors
+    /// Rejects conflicting message identities, stale extension revisions and closed owners before
+    /// applying either mutation.
+    pub async fn send_message_with_extensions(
+        &self,
+        message: inbox::ThreadMessage,
+        mutations: Vec<extensions::ExtensionMutation>,
+    ) -> Result<u64, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::MessageWithExtensions {
+                message,
+                mutations,
+                reply,
+            })
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Delivers a runtime message and durably requests execution if it remains unconsumed.
     /// A message consumed by an already active Turn does not trigger a second invocation.
     ///
@@ -1129,9 +1153,15 @@ impl ThreadHandle {
 
     /// Installs the independent History export sink and its existing reliable-output budget.
     /// Current capture and physical close never await this sink's archive receipt.
-    pub async fn attach_history(&self, store: super::super::history_sink::HistorySinkHandle) -> Result<(), ThreadError> {
+    pub async fn attach_history(
+        &self,
+        store: super::super::history_sink::HistorySinkHandle,
+    ) -> Result<(), ThreadError> {
         let (reply, response) = oneshot::channel();
-        self.commands.send(Command::AttachHistory(store, reply)).await.map_err(|_| ThreadError::Closed)?;
+        self.commands
+            .send(Command::AttachHistory(store, reply))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
         response.await.map_err(|_| ThreadError::Closed)?
     }
 

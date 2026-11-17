@@ -1,5 +1,5 @@
 //! 会话内一个已物化成员：目录身份、冻结 binding 与具体 Native 运行时。
-use pl_protocol::{AgentBinding, AgentThreadIdentity};
+use crate::{AgentBinding, AgentThreadIdentity};
 
 use super::agent_runtime::NativeThreadRuntime;
 
@@ -25,7 +25,7 @@ impl AgentInstance {
             AgentRuntime::Native(native) => Ok(native),
             AgentRuntime::Acp(_) => Err(
                 crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                    backend: pl_protocol::AgentBackendKind::Acp,
+                    backend: crate::AgentBackendKind::Acp,
                 },
             ),
         }
@@ -38,7 +38,7 @@ impl AgentInstance {
             AgentRuntime::Native(native) => Ok(native),
             AgentRuntime::Acp(_) => Err(
                 crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                    backend: pl_protocol::AgentBackendKind::Acp,
+                    backend: crate::AgentBackendKind::Acp,
                 },
             ),
         }

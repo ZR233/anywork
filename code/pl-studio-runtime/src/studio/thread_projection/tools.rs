@@ -1,13 +1,13 @@
 //! Tool timeline facts keep delivered text and producer-owned machine metadata separate.
 use super::{ProjectionError, content::text_content};
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{
+    FailedThreadTool, SucceededThreadTool, ThreadToolInvocation, ThreadToolItem, ThreadToolOutput,
+    ThreadToolState,
+};
 use pl_core::context::ResourceReference;
 use pl_core::thread::{
     ThreadSnapshot, ToolDelivery, ToolOutcome, permissions::PermissionState, task::TaskStatus,
-};
-use pl_protocol::{
-    FailedThreadTool, SucceededThreadTool, ThreadToolInvocation, ThreadToolItem, ThreadToolOutput,
-    ThreadToolState,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -178,16 +178,16 @@ fn project_invocation(
             // block and is materialized only here, at the projection boundary that has to encode it.
             .map_or_else(String::new, |progress| progress.content().text());
         if task.cancel_requested {
-            ThreadToolState::Cancelling(pl_protocol::CancellingThreadTool::new(progress))
+            ThreadToolState::Cancelling(crate::CancellingThreadTool::new(progress))
         } else if snapshot.permissions.values().any(|permission| {
             permission.call_id == id && permission.state == PermissionState::Pending
         }) {
-            ThreadToolState::AwaitingApproval(pl_protocol::AwaitingApprovalThreadTool)
+            ThreadToolState::AwaitingApproval(crate::AwaitingApprovalThreadTool)
         } else {
-            ThreadToolState::Running(pl_protocol::RunningThreadTool::new(progress))
+            ThreadToolState::Running(crate::RunningThreadTool::new(progress))
         }
     } else {
-        ThreadToolState::Queued(pl_protocol::QueuedThreadTool)
+        ThreadToolState::Queued(crate::QueuedThreadTool)
     };
     if let Some(delivery) = delivery
         && delivery.tool_id == "skill_view"
@@ -195,7 +195,7 @@ fn project_invocation(
         && let Ok(Some(mut activation)) = pl_tool::skill::saved_skill_activation(
             delivery.output.payload(),
             turn_id.into(),
-            pl_protocol::SkillActivationCause::Tool {
+            crate::SkillActivationCause::Tool {
                 tool_call_id: id.clone(),
             },
         )
@@ -209,7 +209,7 @@ fn project_invocation(
             revision,
             updated_at,
             updated_at,
-            ExecutionShape::Skill(pl_protocol::ThreadSkillItem::new(activation)),
+            ExecutionShape::Skill(crate::ThreadSkillItem::new(activation)),
         ));
     }
     if let Some(task) = task {
@@ -292,24 +292,22 @@ fn terminal(delivery: &ToolDelivery, at: i64) -> Result<ThreadToolState, Project
     );
     Ok(match &delivery.outcome {
         ToolOutcome::Succeeded => {
-            ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(at, output))
+            ThreadToolState::Succeeded(crate::SucceededThreadTool::new(at, output))
         }
-        ToolOutcome::Failed(error) => ThreadToolState::Failed(pl_protocol::FailedThreadTool::new(
+        ToolOutcome::Failed(error) => ThreadToolState::Failed(crate::FailedThreadTool::new(
             at,
-            pl_protocol::ThreadToolFailure::new(
-                pl_protocol::ThreadToolFailureKind::Execution,
+            crate::ThreadToolFailure::new(
+                crate::ThreadToolFailureKind::Execution,
                 error.to_string(),
             ),
             Some(output),
         )),
-        ToolOutcome::Cancelled => {
-            ThreadToolState::Cancelled(pl_protocol::CancelledThreadTool::new(
-                at,
-                "Tool execution was cancelled; observed facts remain in the journal.".into(),
-            ))
-        }
+        ToolOutcome::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
+            at,
+            "Tool execution was cancelled; observed facts remain in the journal.".into(),
+        )),
         ToolOutcome::Interrupted => {
-            ThreadToolState::Interrupted(pl_protocol::InterruptedThreadTool::new(
+            ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
                 at,
                 "Tool execution was interrupted; no side effect was replayed.".into(),
             ))

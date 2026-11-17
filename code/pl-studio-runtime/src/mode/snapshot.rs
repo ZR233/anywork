@@ -1,7 +1,8 @@
 //! Self-contained execution snapshots. Execution recovery requires a full definition; passive reads preserve old run facts.
 use super::{RegisteredThreadMode, ThreadModeManager};
+use crate::PureError;
+use crate::mode::{ThreadModeDefinition, ThreadModeId};
 use pl_core::{context::OpaquePayload, thread::ThreadSnapshot};
-use pl_protocol::{PureError, ThreadModeDefinition, ThreadModeId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

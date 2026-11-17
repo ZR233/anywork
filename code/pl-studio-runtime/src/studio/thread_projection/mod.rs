@@ -15,18 +15,17 @@ mod completed_activity;
 pub(in crate::studio) use activity::project_activity;
 pub(in crate::studio) use completed_activity::activity_identity;
 mod completions;
-pub(crate) use completions::{committed_finish_execution, committed_finish_item};
+pub(crate) use completions::committed_finish_execution;
 mod content;
 mod current;
 mod current_page;
-pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
 pub(in crate::studio) use current::{CurrentEntryWrite, CurrentPositionIndex};
+pub(in crate::studio) use current_page::{collection_revision, current_page, page_rows};
 mod current_projection;
 pub(in crate::studio) use content::{
     ContentError, InputView, continuation_request_digest, input_presentation, input_view,
-    prompt_request_digest, saved_prompt_request_digest,
 };
-pub(in crate::studio) use current::{CurrentState, project_business_refs};
+pub(in crate::studio) use current::CurrentState;
 pub(in crate::studio) use current_projection::FrozenCurrentProjection;
 mod effect;
 pub(in crate::studio) use effect::project_effect_items;
@@ -47,12 +46,10 @@ pub(in crate::studio) use live::retained_bytes;
 pub(in crate::studio) use live::LIVE_ITEM_WINDOW;
 mod runtime;
 mod usage_projection;
-pub(in crate::studio) use runtime::{
-    fold_effect_accounting, project_cold_runtime, project_runtime,
-};
+pub(in crate::studio) use runtime::{project_cold_runtime, project_runtime};
 pub(in crate::studio) use usage_projection::usage_status;
 mod snapshot;
-pub(in crate::studio) use snapshot::{project_snapshot, saved_mode, status, storage_state};
+pub(in crate::studio) use snapshot::{saved_mode, status, storage_state};
 pub(in crate::studio) mod order;
 mod tool_media;
 pub(crate) use tool_media::{delivery_attachments, read_persisted_media};
@@ -68,9 +65,7 @@ pub(in crate::studio) use user_input::{
 };
 
 /// The canonical terminal Turn already prepared for the reliable history transaction.
-pub(in crate::studio) fn prepared_terminal_turn(
-    prepared: &PreparedEffect,
-) -> Option<pl_protocol::Turn> {
+pub(in crate::studio) fn prepared_terminal_turn(prepared: &PreparedEffect) -> Option<crate::Turn> {
     prepared
         .history_turn_details
         .values()
@@ -91,7 +86,7 @@ pub(crate) enum ProjectionError {
     #[error("review delivery application fact cannot be projected")]
     ReviewDelivery(#[source] anyhow::Error),
     #[error("saved product state cannot be projected")]
-    Product(#[from] pl_protocol::PureError),
+    Product(#[from] crate::PureError),
     #[error("saved workflow state cannot be projected")]
     Workflow(#[from] pl_core::tool::opaque::ToolError),
     #[error("saved tool media receipt cannot be decoded")]
@@ -126,10 +121,8 @@ pub(crate) enum ProjectionError {
     MissingDuration(String),
 }
 
-pub(super) fn raw_payload(
-    payload: &pl_core::context::OpaquePayload,
-) -> pl_protocol::ThreadRawPayload {
-    pl_protocol::ThreadRawPayload {
+pub(super) fn raw_payload(payload: &pl_core::context::OpaquePayload) -> crate::ThreadRawPayload {
+    crate::ThreadRawPayload {
         format: payload.format().into(),
         version: payload.version(),
         content: payload.content().into(),

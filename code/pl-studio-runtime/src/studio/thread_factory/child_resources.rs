@@ -12,12 +12,12 @@ use pl_tool::workspace::{AgentWorkspace, ToolWorkspace};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub(in crate::studio) struct PreparedChildWorkspace {
-    pub caller_identity: pl_protocol::AgentThreadIdentity,
-    pub child_identity: pl_protocol::AgentThreadIdentity,
+    pub caller_identity: crate::AgentThreadIdentity,
+    pub child_identity: crate::AgentThreadIdentity,
     pub parent: crate::studio::records::DirectoryMember,
     pub project: crate::studio::records::WorkspaceRecord,
     pub workspace_usage: crate::studio::WorkspaceUsageLease,
-    pub assignment: pl_protocol::AgentWorkspaceAssignmentSnapshot,
+    pub assignment: crate::AgentWorkspaceAssignmentSnapshot,
     pub workspace: ToolWorkspace,
     pub worktree: Option<crate::studio::agent_host::workspace_preparation::PreparedWorktree>,
     pub _creation: crate::studio::agent_host::worktree_lease::WorktreeCreationGuard,
@@ -27,7 +27,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn prepare_child_workspace(
         &self,
         request: &ChildThreadRequest,
-        mode: pl_protocol::AgentWorkspaceMode,
+        mode: crate::AgentWorkspaceMode,
     ) -> Result<PreparedChildWorkspace, ThreadAssemblyError> {
         check_cancelled(request)?;
         let (caller_identity, caller_binding, _) = self
@@ -35,22 +35,22 @@ impl StudioThreadFactory {
             .product_events
             .agent_execution_identity(&request.caller)
             .ok_or_else(|| ThreadAssemblyError::Identity(request.caller.clone()))?;
-        if matches!(caller_binding, pl_protocol::AgentBinding::Acp(_))
-            && (mode == pl_protocol::AgentWorkspaceMode::Review
+        if matches!(caller_binding, crate::AgentBinding::Acp(_))
+            && (mode == crate::AgentWorkspaceMode::Review
                 || request.review_target_agent_id.is_some()
                 || request.review_feedback.is_some())
         {
             return Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             });
         }
-        let child_identity = pl_protocol::AgentThreadIdentity {
+        let child_identity = crate::AgentThreadIdentity {
             session_id: caller_identity.session_id.clone(),
-            agent_id: pl_protocol::AgentId::new(request.id.clone()).map_err(|error| {
+            agent_id: crate::AgentId::new(request.id.clone()).map_err(|error| {
                 ThreadAssemblyError::Identity(format!("invalid child Agent identity: {error}"))
             })?,
             parent_agent_id: Some(caller_identity.agent_id.clone()),
-            thread_id: pl_protocol::ThreadId::new(request.id.clone()).map_err(|error| {
+            thread_id: crate::ThreadId::new(request.id.clone()).map_err(|error| {
                 ThreadAssemblyError::Identity(format!("invalid child Thread identity: {error}"))
             })?,
         };
@@ -76,7 +76,7 @@ impl StudioThreadFactory {
             .find(|project| project.id == parent.session.workspace_id)
             .ok_or_else(|| ThreadAssemblyError::Identity(parent.session.workspace_id.clone()))?;
         let root_thread = self.directory_member(&parent.root_thread_id)?;
-        let reviewed = if mode == pl_protocol::AgentWorkspaceMode::Review {
+        let reviewed = if mode == crate::AgentWorkspaceMode::Review {
             let target = request
                 .review_target
                 .as_ref()
@@ -91,7 +91,7 @@ impl StudioThreadFactory {
             if let Some(actual) = self.tool_project(&target.agent_id) {
                 project = actual;
             }
-            assignment.mode = pl_protocol::AgentWorkspaceMode::Review;
+            assignment.mode = crate::AgentWorkspaceMode::Review;
             assignment.writable_paths = None;
             assignment.review_target = Some(target.clone());
             Some(assignment)
@@ -143,12 +143,10 @@ impl StudioThreadFactory {
         // 之前设置，离开本函数（成功、失败、取消或展开）时由守卫清除。标记键是 child_id，
         // 不会影响会话路径的判定。
         let _creation = self.services.worktrees.creation_guard(&request.id);
-        let caller_workspace = if mode == pl_protocol::AgentWorkspaceMode::Worktree {
+        let caller_workspace = if mode == crate::AgentWorkspaceMode::Worktree {
             let (actual, execution_project) = match caller_binding {
-                pl_protocol::AgentBinding::Native(_) => {
-                    self.actual_tool_workspace(&request.caller)?
-                }
-                pl_protocol::AgentBinding::Acp(_) => (
+                crate::AgentBinding::Native(_) => self.actual_tool_workspace(&request.caller)?,
+                crate::AgentBinding::Acp(_) => (
                     ToolWorkspace::new(pl_tool::workspace::AgentWorkspace::local(PathBuf::from(
                         self.acp_business_root(&request.caller, &parent.session),
                     ))),
@@ -245,9 +243,9 @@ impl StudioChildResources for StudioThreadFactory {
         profile: &crate::config::ResolvedAgentProfile,
     ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
         check_cancelled(request)?;
-        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+        if matches!(&profile.binding, crate::AgentBinding::Acp(_)) {
             return Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             });
         }
         self.bind_resource_scope(&request.id, &request.workspace_owner.native_resources())?;
@@ -297,7 +295,7 @@ impl StudioChildResources for StudioThreadFactory {
         )?;
         let receipt = workspace_payload.content().to_owned();
         let agent = crate::agent::definition::ResolvedAgentDefinition::from_current(
-            &pl_protocol::AgentProfile {
+            &crate::AgentProfile {
                 definition: profile.definition.clone(),
                 binding: profile.binding.clone(),
                 system: profile.profile.system,
@@ -620,10 +618,10 @@ impl StudioThreadFactory {
 
 /// Creation and cold restoration share the session boundary and directory policy.
 pub(super) fn assigned_workspace(
-    assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
-    session_mode: pl_protocol::ThreadWorkspaceMode,
+    assignment: &crate::AgentWorkspaceAssignmentSnapshot,
+    session_mode: crate::ThreadWorkspaceMode,
 ) -> AgentWorkspace {
-    let writable_paths = if assignment.mode == pl_protocol::AgentWorkspaceMode::Directory {
+    let writable_paths = if assignment.mode == crate::AgentWorkspaceMode::Directory {
         assignment
             .writable_paths
             .as_ref()
@@ -631,18 +629,16 @@ pub(super) fn assigned_workspace(
     } else {
         None
     };
-    if assignment.mode == pl_protocol::AgentWorkspaceMode::Review {
+    if assignment.mode == crate::AgentWorkspaceMode::Review {
         // 边界与被审代理一致：worktree 被审者 Confined 于其 worktree；共享会话 checkout 的
         // 被审者在 worktree 会话下同样 Confined，在 local 会话下 host-permitted。
-        if assignment.worktree.is_some()
-            || session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
-        {
+        if assignment.worktree.is_some() || session_mode == crate::ThreadWorkspaceMode::Worktree {
             AgentWorkspace::worktree(&assignment.project_root, &assignment.root)
         } else {
             AgentWorkspace::host_permitted(&assignment.project_root, &assignment.root, None)
         }
-    } else if session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
-        || assignment.mode == pl_protocol::AgentWorkspaceMode::Worktree
+    } else if session_mode == crate::ThreadWorkspaceMode::Worktree
+        || assignment.mode == crate::AgentWorkspaceMode::Worktree
     {
         AgentWorkspace::worktree(&assignment.project_root, &assignment.root)
             .with_writable_paths(writable_paths)

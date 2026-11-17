@@ -190,7 +190,7 @@ async fn cache_scopes_isolate_agents_accounts_models_and_auxiliary_work_on_the_w
             context: info.resolve_context(None),
             model: info,
             endpoint,
-            pricing_mode: pl_protocol::PricingMode::NoCharge,
+            pricing_mode: pl_model::model::PricingMode::NoCharge,
             effort: None,
         };
         let runtime = ModelRuntime::from_route(&route).unwrap();

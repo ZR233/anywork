@@ -5,10 +5,6 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::studio::{
-    AccountModelUpdate, AccountModelsPatch, AccountSecretUpdate, NewThreadModelRoute,
-};
-use pl_protocol::{AgentBinding, AgentWorkspaceMode, NativeAgentConfig, ThreadModeId};
 use pl_provider_fixture::agent_definitions::{
     CHILD_MODEL, COMPACT_MODEL, DISABLED_PROFILE, FUTURE_MODEL, ROOT_MODEL, UNAVAILABLE_MODEL,
     UNAVAILABLE_PROFILE, USER_MODEL_NEW, USER_MODEL_OLD, USER_PROFILE,
@@ -16,6 +12,11 @@ use pl_provider_fixture::agent_definitions::{
 use pl_studio_runtime::config::{
     AcpDefinitionsSnapshot, ConfigPaths, StudioConfig, UserAgentProfile, save_user_agent_profile,
 };
+use pl_studio_runtime::mode::ThreadModeId;
+use pl_studio_runtime::{
+    AccountModelUpdate, AccountModelsPatch, AccountSecretUpdate, NewThreadModelRoute,
+};
+use pl_studio_runtime::{AgentBinding, AgentWorkspaceMode, NativeAgentConfig};
 use std::{fs, path::Path};
 
 pub(super) const ROOT_ACCOUNT: &str = "agent-observe-root";

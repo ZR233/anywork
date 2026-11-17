@@ -122,6 +122,13 @@ int _decodedBase64Length(String encoded) {
   }
 }
 
+bool _visibleToUser(AcpContentBlockView content) =>
+    content.annotations?.audience?.contains(AcpContentRoleView.user) ?? true;
+
+Iterable<AcpContentBlockView> _messageContent(
+  AcpConversationMessageItem item,
+) => item.submittedContent ?? item.chunks.map((chunk) => chunk.content);
+
 /// Adjacent text chunks form one Markdown document without mutating or trimming
 /// canonical Client chunks.
 List<AcpContentBlockPresentation> mapAcpMessageBlocks(
@@ -139,16 +146,14 @@ List<AcpContentBlockPresentation> mapAcpMessageBlocks(
     blockIndex++;
   }
 
-  for (final chunk in item.chunks) {
-    if (chunk.content case AcpTextContentView(text: final value)) {
+  for (final content in _messageContent(item)) {
+    if (!_visibleToUser(content)) continue;
+    if (content case AcpTextContentView(text: final value)) {
       text.write(value);
     } else {
       flush();
       blocks.add(
-        mapAcpContentBlock(
-          chunk.content,
-          fallbackKey: '$itemId:block:$blockIndex',
-        ),
+        mapAcpContentBlock(content, fallbackKey: '$itemId:block:$blockIndex'),
       );
       blockIndex++;
     }
@@ -261,6 +266,9 @@ bool hasConversationalAcpContent(List<AcpConversationContentItem> content) {
   for (final item in content) {
     switch (item) {
       case AcpConversationMessageItem():
+        if (_messageContent(item).any(_visibleToUser)) {
+          return true;
+        }
       case AcpConversationToolItem():
         return true;
       case AcpConversationUpdateItem(:final update):
@@ -304,13 +312,17 @@ AcpUpdatePresentation mapAcpUpdatePresentation(
   _ => const AcpUpdatePresentation.generic(),
 };
 
-AcpTimelineItemPresentation mapAcpTimelineItem({
+AcpTimelineItemPresentation? mapAcpTimelineItem({
   required String threadId,
   required int index,
   required AcpConversationContentItem item,
   required bool isLastAndRunning,
   bool supersededUpdate = false,
 }) {
+  if (item is AcpConversationMessageItem &&
+      !_messageContent(item).any(_visibleToUser)) {
+    return null;
+  }
   final itemId = '$threadId:$index';
   return switch (item) {
     AcpConversationMessageItem(kind: AcpConversationMessageKind.user) =>

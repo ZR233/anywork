@@ -159,11 +159,9 @@ HTTP、FRB 与 SDK 传递同一类型化观察，Flutter 只做本地化和格�
 
 ## 28.10 登录验收
 
-协议回归通过官方 SDK 对端与 Tokio 虚拟时间覆盖超过原初始化、探测和人工授权上限的成功响应，断连、取消竞争、授权后仍要求认证和关闭失败。业务等待不以虚拟时钟触发超时，结果未知时不重发。
+协议与前端受控回归在隔离环境与模拟对端下验证流程收敛、取消、去重与页面生命周期；真实边界由下述供应商原生集成验收覆盖，不允许合成分发包冒充官方安装。
 
-Flutter 受控回归使用官方 `flutter_test` 与 `WidgetTester`，通过 `cargo flutter test test/ui/acp_auth_test.dart` 运行生产路由、Client、账户观察与组件。外部端点的 ACP 响应和账户提交回执由夹具控制，验证同流程继续、授权后复核仍要求登录、页面离开后返回、重复输入、取消及删除，不使用 Driver、`requestData` 或宿主脚本作断言。这条旅程无需原生桌面构建；夹具不证明实际持久化或进程行为，真实边界由下述供应商验收覆盖。旧合成分发包的 Driver 旅程与独立观察脚本已移除；固定官方 SHA-256 不允许合成包冒充官方安装。
-
-真实供应商验收使用 `integration_test/acp_real_login_test.dart`，设置进程环境 `ANYWORK_ACP_ACCEPTANCE=login` 和独立 `ANYWORK_HOME` 后运行 `cargo xtask test-project --suite desktop --case acp_real_login`；`ANYWORK_ACP_EVIDENCE` 可指定真实组件渲染截图目录。显式准备固定发行、保存/检查账户、用户完成官方浏览器授权、等待原流程自动验证，随后显式查询额度。已有凭据使检查直接通过时，须由用户通过官方入口退出，或为验收进程使用独立用户配置目录；不得删除或改写原有凭据，也不把复用登录状态计为首次浏览器授权。重复运行可复用已保存的验收账户和受管安装。结束后以同一产品及用户配置目录、`ANYWORK_ACP_ACCEPTANCE=restart` 再次运行，验证重启后重新检查及额度读取。人工授权不设测试时限，Google 账号选择、验证码、同意和官方退出由用户完成，工具不操作其凭据。截图导出只遮蔽包含 Windows 用户名的本机安装路径，保留实际认证、版本和额度结果。
+真实供应商验收通过显式启用的 `acp_real_login` 原生集成场景执行，设置进程环境 `ANYWORK_ACP_ACCEPTANCE=login` 和独立 `ANYWORK_HOME` 后运行 `cargo xtask test-project --suite desktop --case acp_real_login`；`ANYWORK_ACP_EVIDENCE` 可指定真实组件渲染截图目录。显式准备固定发行、保存/检查账户、用户完成官方浏览器授权、等待原流程自动验证，随后显式查询额度。已有凭据使检查直接通过时，须由用户通过官方入口退出，或为验收进程使用独立用户配置目录；不得删除或改写原有凭据，也不把复用登录状态计为首次浏览器授权。重复运行可复用已保存的验收账户和受管安装。结束后以同一产品及用户配置目录、`ANYWORK_ACP_ACCEPTANCE=restart` 再次运行，验证重启后重新检查及额度读取。人工授权不设测试时限，Google 账号选择、验证码、同意和官方退出由用户完成，工具不操作其凭据。截图导出只遮蔽包含 Windows 用户名的本机安装路径，保留实际认证、版本和额度结果。
 
 通过判据同时要求：真实 `session/new` 成功、服务端实际报告 `1.4.5`、GUI canonical `verified`，以及关闭结果 `completed` / `clean` / `drained`、官方原生测试 runner 成功退出、所属进程全部回收。单独握手、模拟对端和仅启动进程不构成真实通过。报告注明实际平台、代理条件、未覆盖平台和证据位置。
 
@@ -201,15 +199,19 @@ Open 在发送 new/load/resume 前交付本次观察入口，同一流保留回�
 
 准备 owner 通过 `Session::opened() -> Result<schema::SessionId, Error>` 取得同一次 open 的最终结算，结算只保留真实对端 ID 或真实失败，不复制内容更新或配置列表。它由原有序 setup/fail_open 写入口完成，观察窗口失效不丢结算，重复等待返回原结果，等待者取消不撤销 open；连接先断开或关闭等未成功路径也必须结束等待。观察入口仍在请求前交付，owner 不能消费或转发显示 Observer 来等待 Ready，显示缺口也不能驱动目录提交。这个结算只证明协议打开结果，不证明产品发布、进程或租约已收束。
 
-Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及 `completion: AcpSessionCompletion`；`completion.wait()` 可重复等待原 Preparation 的产品发布结果，不另建协议结算或第二结果状态机。并发冷重开共享同一准备结果，已发布实例返回已完成句柄；`observation=None` 只表示没有新观察流，不能推断发布成功或触发重新 new。接收方先取得完整 open 返回并开始消费回放，不先等待 completion 再开放观察；等待取消不撤销已受理准备，失败仍返回原准备错误。
+Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及 `completion: AcpSessionCompletion`；`completion.wait()` 可重复等待原 Preparation 的结算结果：普通 New/Load/Resume 为产品发布，Draft 为可配置草稿准备就绪，不另建协议结算或第二结果状态机。并发冷重开共享同一准备结果，已发布实例返回已完成句柄；`observation=None` 只表示没有新观察流，不能推断发布成功或触发重新 new。接收方先取得完整 open 返回并开始消费回放，不先等待 completion 再开放观察；等待取消不撤销已受理准备，失败仍返回原准备错误。
 
-传输使用 `AcpSessionFrame` 薄封装：首帧 `Accepted { target, has_observation }`，原准备结果只映射一次 `Settled { result }`，原观察逐项映射 `Event { event }`。`Settled` 表示产品发布完成，不冒充带官方 setup 载荷的 Ready；回放事件可早于 Settled。HTTP open 直接返回同次 POST 的 SSE 流，不另建观察注册表、内容缓存或先返回 ID 再重开连接；其他控制和查询使用 target 的独立类型化请求。FRB open 返回持有同一准备与观察资源的具体句柄，逐次读取上述帧；并发 next 明确 Busy，不建立转发生产任务或无界队列。关闭/丢弃观察只释放该观察与等待，不等同于关闭业务成员；真正关闭仍须显式调用原 Session close。无新观察的 resident 流仍交 Accepted 和原准备 Settled，不制造回放或 Ready。Client 归约相同帧、原结果和资格，不建设第二业务状态机。
+传输使用 `AcpSessionFrame` 薄封装：首帧 `Accepted { target, has_observation }`，原准备结果只映射一次 `Settled { result }`，原观察逐项映射 `Event { event }`。`Settled` 表示原产品准备已结算（Draft 暂不发布目录），不冒充带官方 setup 载荷的 Ready；回放事件可早于 Settled。HTTP open 直接返回同次 POST 的 SSE 流，不另建观察注册表、内容缓存或先返回 ID 再重开连接；其他控制和查询使用 target 的独立类型化请求。FRB open 返回持有同一准备与观察资源的具体句柄，逐次读取上述帧；并发 next 明确 Busy，不建立转发生产任务或无界队列。关闭/丢弃观察只释放该观察与等待，不等同于关闭业务成员；真正关闭仍须显式调用原 Session close。无新观察的 resident 流仍交 Accepted 和原准备 Settled，不制造回放或 Ready。Client 归约相同帧、原结果和资格，不建设第二业务状态机。
 
 业务启动失败保留安全且可操作的类型分类：`InstallRequired`（模板尚未准备）、`InstallationInvalid`、`UnsupportedPlatform`、`MissingExecutable`、`InvalidWorkingDirectory`、`InvalidDefinition`、`Io` 和 `Cancelled`。原启动边界的 `Template(PreparationRequired)` 对应 `InstallRequired`，其他模板准备及普通 command 错误分别映射上述类别，不能全部压成 `Preparation`；后者仍表示未进一步分类的产品准备失败。HTTP、FRB 与 SDK-only Client 保留同一类别和固定安全说明，不暴露原始路径、env、凭据或错误输入，不自动安装、重试或重新打开。
 
 ### 提交、控制与完成
 
-新会话的产品入口是发送首条消息：用户动作冻结本次目标、服务和输入，先执行一次 `session/new`，同次观察 Ready 后沿已有 prompt 通路提交一次首条内容。空输入不创建会话，目录读取和选择服务不触发连接或探测。已创建但 prompt 失败保留原会话供用户处理，不再次 new；创建或发送结果未知不自动重放。草稿、附件交接与迟到导航边界见 [25.2.1](./25-frontend-state.md#2521-acp-协议内容与目录消费)。这项产品编排不合并 ACP 的 new 与 prompt 协议，也不承诺对端没有提供的原子事务。
+打开意图 `kind=draft` 显式携带 `workspaceMode` 与可空的 `delegationMode` / `delegationPreference`；它不占用远端 `sessionId` 字段。HTTP `/api/v1/acp/sessions/commit-draft`、FRB `commit_acp_draft` 和 Client `commitDraft` 接收原 target，作为首次提交前的正式目录发布边界。未提交草稿不能 prompt；提交可按同一 target 重复确认，不执行第二次 session/new。
+
+新会话先由选择 ACP 服务的显式意图准备草稿：以已选项目目录或立即准备的新工作树执行一次 session/new，取得真实配置但暂不发布产品目录。Draft 准备沿原 SessionRuntime 注册、观察与关闭边界执行，Ready 仍只证明协议打开，Settled 在该分支证明草稿准备已就绪；业务 New/Load/Resume 的原发布语义不变。目录、服务或冻结设置改变时旧草稿失去发送资格，收束后创建替代 session，迟到结果只结算原资源。只读目录查询与组件重建仍不启动探测。
+
+首次非空提交显式 commit 同一草稿的产品关联，再经原 prompt 通路提交一次输入；未 commit 的草稿不能 prompt。空输入可持有配置草稿但不发布正式会话。commit 与关闭通过原资源所有者串行，普通关闭不发布未使用草稿；一旦进入正式发布责任，失败仍保留同一关联供原路径结算。配置、prompt 或创建结果未知不自动重放，已发布但发送失败保留原会话。外部 session/close 按能力执行，其失败不等于本地责任未释放，也不承诺删除供应商历史。
 
 普通 submit 消费正式 `ContentBlock`，按对端 prompt 能力校验，最多一个活动 prompt，busy 明确拒绝。独立业务驱动同时推进更新、有限命令、控制请求完成和 EOF；配置/权限 RPC 的等待不持有整个会话锁，权限只保留 SDK responder、合法选项及当前请求资格，回答后释放，cancel/close 按协议回答 Cancelled。待决权限独立受最多 64 项、保留数据合计 8 MiB 的资源上限约束，消费观察事件不会释放仍待回答的权限额度；回答后归还额度，超限请求立即回答 Cancelled。权限事件无法交付或观察已失效时，取消失去有效观察通路的待决权限，后续请求不再积存；活动 prompt 与其他控制仍按实际协议结果继续。
 
@@ -223,7 +225,7 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 ### 会话配置与旧模式
 
-模型、思考强度和其他选项只来自当前 session 的正式 `configOptions`，保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。
+所有选项只来自当前 session 的正式 `configOptions`，界面完全按协议类型与服务端顺序动态渲染，不按名称、ID 或类别填充固定槽位；保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。
 
 set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 bool；权限响应才使用 optionId。一次最多一个配置修改在途，prompt/权限/控制继续处理；失败只清本次 pending，保留等待期间已接纳的推送，不恢复发起前快照、不重发、不增加配置 revision、ACK 或回读事务。只有跨桥、请求与实际显示闭环完整时才广告 boolean 能力，不因预留类型而提前声明。未知类别原样保留，未知类型沿 SDK 按项容错，不另写配置 schema parser。
 
@@ -247,7 +249,7 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 桌面安装包分发并校验当前 Linux/Windows/macOS 宿主原生 `pl-studio-mcp`，资源在 `data/host-mcp/<target>/`，由显式 `HostMcpSource` 解析。bundled 缺失或校验不符明确失败，不回退 PATH；非打包入口使用显式 external 来源。复用原工程的摘要、压缩及映像租约能力，传给 Agent 的绝对命令路径必须可跨进程使用，原实例持有映像直至进程树回收。ACP 本机进程沿统一 native Executor 创建和回收；SSH helper 的两种 Linux 前台 server 资产保持独立职责，不代替 MCP 服务程序，也不承担本地监督 worker 角色；不在业务会话下载代理或复制临时凭据到资源包。
 
-宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
+宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_models`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
 SSH 项目的同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。本地 ACP 保留已有协作工具和外部代理原本的本机工具，不在本期额外增加宿主文件/命令访问或其审批能力。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
 
@@ -258,6 +260,8 @@ SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分�
 宿主指令分别标明 ACP 本机目录与业务执行端、Shell、根目录及执行侧会话文件路径，要求远程操作使用上述 MCP 工具；项目指令也由原业务文件后端读取。工具输入不能选择 caller、SSH 目标或扩大工作区权限。外部代理自带的本机工具不受这些 MCP 权限约束，不能把提示词或前缀声称为沙箱。
 
 宿主指令由共享项目指令、实际角色、工作区与已提供的协作能力组成，不套用未支持的 Native workflow。对端声明 `sessionCapabilities.systemPrompt` 时，通过正式 `systemPrompt` 的 `append` 模式传入；未声明时，在用户 prompt 内容前附独立的宿主指令文本块，用户原内容与附件保持独立。两种传递方式使用同一内容来源；不使用 `override` 替换 agent 原指令。
+
+上述 prompt 宿主块使用官方 `annotations.audience=["assistant"]` 标记受众。对端可能丢失标注，因此原 Client owner 在同次提交与回显归约中保留真实 `submittedContent`，用户气泡优先展示这份实际提交内容；原 `chunks` 继续完整保留对端回显，不按文本前缀猜测或删改。无本地提交来源的回放或独立消息仍按协议内容呈现，仅展示未指定受众或包含 `user` 的内容块，隐藏块不产生空白气泡。本地提交来源仅随当前 owner 存在，不持久化 transcript，也不推断无标注历史中的宿主内容。受众标注是呈现提示，不是保密或权限边界。
 
 宿主指令要求派发、成员管理、结果等待与关闭使用 `anywork_` 工具。前缀帮助识别，提示词引导选择，两者不构成权限控制。稳定 ACP 没有统一关闭 agent 自带工具的开关；客户端不声明文件或终端能力，只限制由客户端执行的 ACP 方法，不能禁止 agent 自己运行工具。`systemPrompt` 同样不改变工具可用性、MCP 服务、权限或会话配置；具体服务的私有选项不解释成通用禁用策略。
 

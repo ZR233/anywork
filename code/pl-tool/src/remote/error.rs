@@ -64,7 +64,7 @@ pub enum SshError {
     Protocol(String),
     #[error("remote helper rejected the request ({code:?}): {message}")]
     Remote {
-        code: pl_protocol::remote::RemoteErrorCode,
+        code: crate::remote::RemoteErrorCode,
         message: String,
     },
 }
@@ -96,7 +96,7 @@ impl From<crate::workspace_file::WorkspaceFileError> for SshError {
             WorkspaceFileError::Execution(error) => Self::Execution(error),
             WorkspaceFileError::Removal(error) => Self::Removal(error),
             WorkspaceFileError::Policy(message) => Self::Remote {
-                code: pl_protocol::remote::RemoteErrorCode::WorkspaceEscape,
+                code: crate::remote::RemoteErrorCode::WorkspaceEscape,
                 message,
             },
         }

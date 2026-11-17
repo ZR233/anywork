@@ -156,6 +156,42 @@ void main() {
   });
 
   testWidgets(
+    'active session workspace submenu exposes host application entries',
+    (tester) async {
+      final actions = <SidebarThreadAction>[];
+      final thread = _thread(id: 'submenu');
+      await tester.pumpWidget(
+        _sidebarRowHost(_sidebarRow(thread: thread, onAction: actions.add)),
+      );
+      final menuTrigger = find.descendant(
+        of: find.byKey(StudioDriverKeys.threadMenu(thread.threadId)),
+        matching: find.byType(IconButton),
+      );
+      await tester.tap(menuTrigger);
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.byKey(StudioDriverKeys.openThreadWorkspace(thread.threadId)),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(StudioDriverKeys.openThreadVsCode(thread.threadId)),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.openThreadZed(thread.threadId)),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(StudioDriverKeys.openThreadTerminal(thread.threadId)),
+        findsOneWidget,
+      );
+      expect(actions, isEmpty);
+    },
+  );
+
+  testWidgets(
     'archived session has a delete button without replacing restore',
     (tester) async {
       final actions = <SidebarThreadAction>[];

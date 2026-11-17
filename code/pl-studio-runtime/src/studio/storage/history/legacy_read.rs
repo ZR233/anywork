@@ -1,8 +1,8 @@
 //! Frozen schema-24 page budgeting for legacy migration fixtures.
 use super::schema::v24_presentation_types::{ChatBatch, ChatPlacement, CompletedEntry};
+use crate::*;
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
-use pl_protocol::*;
 
 pub(crate) struct JsonBudget {
     pub database_id: String,

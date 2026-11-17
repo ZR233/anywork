@@ -3,9 +3,9 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::{ChatContentRole, InferenceBillingRecord, TurnFailure};
 use anyhow::{Result, ensure};
 use pl_core::thread::UsageSummary;
-use pl_protocol::{ChatContentRole, InferenceBillingRecord, TurnFailure};
 use pl_tool::skill::{SkillDiscoverySourceSummary, SkillWinnerSummary};
 use serde::{Deserialize, Serialize};
 

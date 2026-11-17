@@ -1,8 +1,8 @@
 //! Final text emitted by the explicit completion tool, decoded from the saved producer receipt.
 use super::order;
 use crate::{ExecutionItem, ExecutionShape};
+use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 use pl_core::thread::ToolOutcome;
-use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
 
 pub(super) fn project_completion(
     thread_id: &str,
@@ -47,19 +47,6 @@ pub(crate) fn committed_finish(
         .flatten()
 }
 
-/// Decodes the immutable finish report from a canonical completion item.
-pub(crate) fn committed_finish_item(
-    item: &pl_core::chat::ChatItem,
-    thread_id: &str,
-) -> anyhow::Result<Option<pl_tool::finish_turn::SavedFinishTurn>> {
-    let ExecutionShape::Tool(tool) =
-        crate::studio::runtime::chat_item::execution_state(item, thread_id)?
-    else {
-        return Ok(None);
-    };
-    finish_tool(&tool)
-}
-
 pub(crate) fn committed_finish_execution(
     item: &ExecutionItem,
 ) -> anyhow::Result<Option<pl_tool::finish_turn::SavedFinishTurn>> {
@@ -69,7 +56,7 @@ pub(crate) fn committed_finish_execution(
     }
 }
 fn finish_tool(
-    tool: &pl_protocol::ThreadToolItem,
+    tool: &crate::ThreadToolItem,
 ) -> anyhow::Result<Option<pl_tool::finish_turn::SavedFinishTurn>> {
     if tool.invocation().name() != pl_tool::finish_turn::TOOL_FINISH_TURN {
         return Ok(None);

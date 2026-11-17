@@ -2,8 +2,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::SessionId;
 use pl_core::thread::ThreadHandle;
-use pl_protocol::SessionId;
 
 use super::{SessionPhase, SessionRuntime};
 use crate::thread_assembler::{ThreadAssemblyError, WorkspaceRecoveryPublisher};

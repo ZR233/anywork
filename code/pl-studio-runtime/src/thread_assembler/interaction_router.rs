@@ -1,6 +1,6 @@
 //! Product interaction routing reads only canonical Thread snapshots.
 use super::{SessionRuntime, decode_interaction_key};
-use pl_protocol::{
+use crate::{
     ChildInteractionSummary, InteractionRequest, InteractionResolution, InteractionStatus,
 };
 
@@ -126,12 +126,12 @@ impl SessionRuntime {
         let resolved_at = crate::studio::unix_seconds();
         match response {
             InteractionResolution::ToolApproval(response)
-                if current.kind() == pl_protocol::InteractionKind::ToolApproval =>
+                if current.kind() == crate::InteractionKind::ToolApproval =>
             {
                 Ok(self
                     .resolve_tool_approval(
                         &current.scope.thread_id,
-                        pl_protocol::ResolveToolApproval {
+                        crate::ResolveToolApproval {
                             interaction_id: wire_id.into(),
                             expected_revision: current.revision,
                             operation_id,
@@ -143,9 +143,9 @@ impl SessionRuntime {
                     .await?)
             }
             InteractionResolution::UserInput(response)
-                if current.kind() == pl_protocol::InteractionKind::UserInput =>
+                if current.kind() == crate::InteractionKind::UserInput =>
             {
-                let command = pl_protocol::ResolveUserInput {
+                let command = crate::ResolveUserInput {
                     interaction_id: wire_id.into(),
                     expected_revision: current.revision,
                     operation_id,
@@ -153,10 +153,10 @@ impl SessionRuntime {
                     answers: response.answers,
                 };
                 match current.scope.purpose {
-                    pl_protocol::InteractionPurpose::General => {
+                    crate::InteractionPurpose::General => {
                         Ok(self.resolve_user_input(command).await?)
                     }
-                    pl_protocol::InteractionPurpose::AgentSessionPlanConfirmation(_) => Ok(self
+                    crate::InteractionPurpose::AgentSessionPlanConfirmation(_) => Ok(self
                         .resolve_plan_confirmation(&current.scope.thread_id, command)
                         .await?),
                 }

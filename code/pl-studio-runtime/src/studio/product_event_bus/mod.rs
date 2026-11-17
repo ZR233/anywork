@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-use pl_protocol::ObservedResource;
+use crate::ObservedResource;
 use tokio::sync::{Mutex, broadcast};
 
 use crate::{
@@ -67,7 +67,6 @@ pub struct ProductEventBus {
     child_interactions: Arc<std::sync::Mutex<ChildInteractionsProjection>>,
 }
 
-
 #[derive(Default)]
 struct ProductStateRevisions {
     project: DomainRevision,
@@ -85,7 +84,7 @@ struct ChildInteractionsProjection {
 struct ChildInteractionsHost {
     revision: u64,
     updated_at: i64,
-    children: BTreeMap<String, Vec<pl_protocol::ChildInteractionSummary>>,
+    children: BTreeMap<String, Vec<crate::ChildInteractionSummary>>,
 }
 
 struct ChildInteractionsMember {
@@ -104,7 +103,7 @@ struct DomainRevision {
 #[derive(Default)]
 struct PersistenceQueuePublication {
     revision: u64,
-    published: Option<pl_protocol::PersistenceQueueSnapshot>,
+    published: Option<crate::PersistenceQueueSnapshot>,
     snapshot: StudioPersistenceQueueStateSnapshot,
 }
 

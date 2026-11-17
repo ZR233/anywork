@@ -1,6 +1,6 @@
 //! Independent history visibility classification.
 
-use pl_protocol::{
+use crate::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome,
 };
 

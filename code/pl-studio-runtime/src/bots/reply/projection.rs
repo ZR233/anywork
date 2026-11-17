@@ -3,7 +3,7 @@
 use super::content::{
     FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS, ReplyItem, ReplyItemKind,
 };
-use pl_protocol::TurnState;
+use crate::TurnState;
 
 #[derive(Clone)]
 pub(super) struct ReplyProjection {

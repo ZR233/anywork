@@ -8,9 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use pl_protocol::studio::{
-    AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpInstallStage,
-};
+use crate::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallProgress, AcpInstallStage};
 use tokio_util::sync::CancellationToken;
 
 use super::mapping::failure;

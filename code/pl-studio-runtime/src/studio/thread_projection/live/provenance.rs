@@ -1,10 +1,10 @@
 //! Actual lifecycle folded by the existing projection owner. No display ranges or group state.
 use super::*;
-use crate::{ExecutionItem, ExecutionShape};
-use pl_protocol::{
+use crate::{
     ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
+use crate::{ExecutionItem, ExecutionShape};
 
 // Original immutable phases, source changes, then effect-local display state updates.
 // Updating an admitted active member must not rewrite its original `start` fact.
@@ -56,7 +56,7 @@ impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
         if self.provenance_restored {
@@ -92,12 +92,12 @@ impl LiveProjection {
                     .fields
                     .keys()
                     .filter_map(|key| {
-                        Some(pl_protocol::ChatAtomContent {
+                        Some(crate::ChatAtomContent {
                             role: crate::studio::runtime::chat_item::atom_content_role(key)?,
-                            reference: pl_protocol::ContentRef {
+                            reference: crate::ContentRef {
                                 database_id: database.into(),
-                                target: pl_protocol::ContentTarget::Body {
-                                    owner: pl_protocol::ContentOwner::Item {
+                                target: crate::ContentTarget::Body {
+                                    owner: crate::ContentOwner::Item {
                                         item_id: atom.id.clone(),
                                     },
                                     key: key.as_key(),
@@ -270,7 +270,7 @@ impl LiveProjection {
             self.fact(&item);
             // Freeze the canonical reference with the reliable start itself.
             // Later preview synchronization cannot amend the cloned start fact.
-            let content = pl_protocol::ChatAtomContent {
+            let content = crate::ChatAtomContent {
                 role: crate::studio::runtime::chat_item::atom_content_role(&field).ok_or_else(
                     || {
                         ProjectionError::UnsupportedOutput(
@@ -278,7 +278,7 @@ impl LiveProjection {
                         )
                     },
                 )?,
-                reference: pl_protocol::ContentRef {
+                reference: crate::ContentRef {
                     database_id: self
                         .current
                         .owner_id()
@@ -288,8 +288,8 @@ impl LiveProjection {
                             )
                         })?
                         .into(),
-                    target: pl_protocol::ContentTarget::Body {
-                        owner: pl_protocol::ContentOwner::Item {
+                    target: crate::ContentTarget::Body {
+                        owner: crate::ContentOwner::Item {
                             item_id: id.clone(),
                         },
                         key: field.as_key(),
@@ -438,7 +438,7 @@ impl LiveProjection {
                 status: if matches!(item.state(), ExecutionShape::Tool(tool)
                     if matches!(tool.state(), ThreadToolState::AwaitingApproval(_))
                     || tool.user_input().is_some_and(|input|
-                        matches!(input.state(), pl_protocol::ThreadToolUserInputState::Pending)))
+                        matches!(input.state(), crate::ThreadToolUserInputState::Pending)))
                 {
                     ChatActiveStatus::Waiting
                 } else {
@@ -589,7 +589,7 @@ impl LiveProjection {
                 atom.source = ChatSourceId::Input {
                     input_id: atom.id.clone(),
                 };
-                atom.kind = pl_protocol::ChatAtomKind::Input;
+                atom.kind = crate::ChatAtomKind::Input;
             }
             for (inbox_index, record) in effect.inbox.iter().enumerate() {
                 let background_tool = matches!(item.state(), ExecutionShape::Tool(tool)

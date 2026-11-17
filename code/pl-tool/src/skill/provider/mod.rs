@@ -5,8 +5,8 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 
+use crate::skill::{SkillActivation, SkillActivationCause, SkillActivationResourceBase};
 use pl_protocol::{PureError, Result};
-use pl_protocol::{SkillActivation, SkillActivationCause, SkillActivationResourceBase};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 

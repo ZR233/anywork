@@ -2,6 +2,7 @@
 //!
 //! 这些用例只通过 pl-model 的公开 API 验证完整能力：禁用必须真正挡住执行，而不是只多一个
 //! 字段；资料与计费类别必须绑定精确目录成员，不能靠同名或默认值蒙对。
+use pl_model::config::BillingKind;
 use pl_model::config::{
     AccountConfig, AccountId, AgentModelConfig, AgentRoleId, ModelCatalogId,
     ModelRouteAvailability, ModelRouteConfig, ReasoningEffort, builtin_account_catalog,
@@ -12,7 +13,6 @@ use pl_model::model::{
     bundled_selection_guide,
 };
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::BillingKind;
 use pretty_assertions::assert_eq;
 
 fn openai_account() -> AccountConfig {
@@ -426,8 +426,8 @@ fn billing_kind_follows_template_and_canonical_endpoint() {
 /// 计费意图只改变请求冻结策略，不改写参考价或历史账单。
 #[test]
 fn billing_kind_freezes_accounting_without_erasing_reference_prices() {
+    use pl_model::model::{InferenceAccounting, PricingOutcome, UsageReport};
     use pl_model::model::{ModelPricing, TokenPriceTier};
-    use pl_protocol::{InferenceAccounting, PricingOutcome, UsageReport};
 
     let mut model = ModelInfo::compatible("priced-model");
     model.context_window = Some(64_000);
@@ -637,7 +637,7 @@ fn account_selection_guide_requires_current_non_manual_member() {
 fn selection_guide_rejects_unscoped_scores() {
     let guide = ModelSelectionGuide {
         summary: "scoped score fixture",
-        task_suitability: &[pl_protocol::AgentTaskCategory::Coding],
+        task_suitability: &[pl_model::model::AgentTaskCategory::Coding],
         limitations: &[],
         sources: &[ModelSelectionSource {
             kind: ModelSelectionSourceKind::Benchmark,
@@ -661,11 +661,12 @@ fn selection_guide_rejects_unscoped_scores() {
 /// 资料转换保留测量条件、来源顺序和缺失状态，不绑定内置模型文案与分数。
 #[test]
 fn selection_guide_projection_keeps_measurement_conditions() {
-    use pl_model::model::ModelSelectionMeasurement;
-    use pl_protocol::{
-        AgentTaskCategory, ModelSelectionGuideDto, ModelSelectionMeasurementDto,
-        ModelSelectionSourceDto, ModelSelectionSourceKindDto,
+    use pl_model::config::{
+        ModelSelectionGuideDto, ModelSelectionMeasurementDto, ModelSelectionSourceDto,
+        ModelSelectionSourceKindDto,
     };
+    use pl_model::model::AgentTaskCategory;
+    use pl_model::model::ModelSelectionMeasurement;
 
     let guide = ModelSelectionGuide {
         summary: "Synthetic guide",

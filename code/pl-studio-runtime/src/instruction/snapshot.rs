@@ -1,5 +1,5 @@
+use crate::{PureError, Result};
 use pl_core::context::OpaquePayload;
-use pl_protocol::{PureError, Result};
 
 use super::{InstructionSnapshot, SNAPSHOT_FORMAT, SNAPSHOT_VERSION, structure};
 

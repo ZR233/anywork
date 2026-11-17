@@ -14,14 +14,14 @@ pub struct ChildThreadRequest {
     pub caller: String,
     pub call_id: String,
     pub profile_id: String,
-    pub model_selection: Option<pl_protocol::studio::NewThreadModelRoute>,
-    pub delegation: pl_protocol::DelegationSettings,
+    pub model_selection: Option<crate::NewThreadModelRoute>,
+    pub delegation: crate::DelegationSettings,
     pub task_summary: pl_tool::collaboration::thread::AgentTaskSummary,
     pub writable_paths: Option<Vec<String>>,
     pub review_target_agent_id: Option<String>,
     pub review_feedback: Option<pl_tool::collaboration::thread::ReviewFeedback>,
-    pub review_target: Option<pl_protocol::AgentReviewTargetSnapshot>,
-    pub review_workspace: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
+    pub review_target: Option<crate::AgentReviewTargetSnapshot>,
+    pub review_workspace: Option<crate::AgentWorkspaceAssignmentSnapshot>,
     pub metadata: pl_core::context::OpaquePayload,
 }
 
@@ -33,8 +33,8 @@ pub trait StudioChildFactory: Send + Sync + std::fmt::Debug + 'static {
     fn admit(
         &self,
         profile_id: &str,
-        delegation: pl_protocol::DelegationSettings,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        delegation: crate::DelegationSettings,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> impl Future<Output = Result<Self::Admission, ThreadAssemblyError>> + Send;
 
     /// Must reject unauthorized profiles and exceeded product limits before allocating resources.
@@ -129,8 +129,8 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
     async fn admit(
         &self,
         profile_id: &str,
-        delegation: pl_protocol::DelegationSettings,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        delegation: crate::DelegationSettings,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> Result<Self::Admission, ThreadAssemblyError> {
         let config = self.config.clone();
         let profile_id = profile_id.to_owned();
@@ -138,9 +138,9 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
             config.resolve_delegated_profile(&profile_id, delegation.mode, selection)
         })
         .await??;
-        if matches!(&profile.binding, pl_protocol::AgentBinding::Acp(_)) {
+        if matches!(&profile.binding, crate::AgentBinding::Acp(_)) {
             return Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+                backend: crate::AgentBackendKind::Acp,
             });
         }
         Ok(profile)
@@ -172,14 +172,14 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
             return Err(pl_core::thread::ThreadError::Cancelled.into());
         }
         if request.writable_paths.is_some()
-            && profile.profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Directory
+            && profile.profile.workspace_mode != crate::AgentWorkspaceMode::Directory
         {
             return Err(ThreadAssemblyError::WorkspaceScope(
                 request.profile_id.clone(),
             ));
         }
         if request.review_feedback.is_some()
-            && profile.profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review
+            && profile.profile.workspace_mode != crate::AgentWorkspaceMode::Review
         {
             return Err(ThreadAssemblyError::ReviewTargetScope(
                 request.profile_id.clone(),
@@ -189,13 +189,13 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
             request.review_target_agent_id.as_ref(),
             profile.profile.workspace_mode,
         ) {
-            (Some(_), pl_protocol::AgentWorkspaceMode::Review) => {}
+            (Some(_), crate::AgentWorkspaceMode::Review) => {}
             (Some(_), _) => {
                 return Err(ThreadAssemblyError::ReviewTargetScope(
                     request.profile_id.clone(),
                 ));
             }
-            (None, pl_protocol::AgentWorkspaceMode::Review) => {
+            (None, crate::AgentWorkspaceMode::Review) => {
                 return Err(ThreadAssemblyError::ReviewTargetMissing(
                     request.profile_id.clone(),
                 ));
@@ -224,8 +224,8 @@ trait ErasedFactory: Send + Sync + std::fmt::Debug {
     fn admit<'a>(
         &'a self,
         profile_id: String,
-        delegation: pl_protocol::DelegationSettings,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        delegation: crate::DelegationSettings,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> BoxFuture<'a, Result<ErasedAdmission<'a>, ThreadAssemblyError>>;
 
     fn close_published<'a>(
@@ -245,8 +245,8 @@ impl<T: StudioChildFactory> ErasedFactory for T {
     fn admit<'a>(
         &'a self,
         profile_id: String,
-        delegation: pl_protocol::DelegationSettings,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        delegation: crate::DelegationSettings,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> BoxFuture<'a, Result<ErasedAdmission<'a>, ThreadAssemblyError>> {
         Box::pin(async move {
             let admission =
@@ -308,8 +308,8 @@ impl ChildFactory {
     pub(super) async fn admit(
         &self,
         profile_id: &str,
-        delegation: pl_protocol::DelegationSettings,
-        selection: Option<pl_protocol::studio::NewThreadModelRoute>,
+        delegation: crate::DelegationSettings,
+        selection: Option<crate::NewThreadModelRoute>,
     ) -> Result<ErasedAdmission<'_>, ThreadAssemblyError> {
         self.0
             .admit(profile_id.to_owned(), delegation, selection)

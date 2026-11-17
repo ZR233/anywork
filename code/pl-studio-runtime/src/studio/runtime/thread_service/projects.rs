@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
+use crate::WorkspaceKind;
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::WorkspaceKind;
 
 use crate::studio::records::{DirectoryMember, WorkspaceRecord};
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord, ProjectRemoval};
@@ -940,18 +940,16 @@ mod standalone_tests {
         Ok(endpoint)
     }
 
-    fn request(
-        workspace_mode: pl_protocol::ThreadWorkspaceMode,
-    ) -> pl_protocol::studio::CreateThreadRequest {
-        pl_protocol::studio::CreateThreadRequest {
+    fn request(workspace_mode: crate::ThreadWorkspaceMode) -> crate::CreateThreadRequest {
+        crate::CreateThreadRequest {
             title: Some("standalone".into()),
-            input: pl_protocol::studio::StudioPromptInput {
+            input: crate::StudioPromptInput {
                 input_id: "standalone-start".into(),
                 text: "hello".into(),
                 attachment_draft_ids: vec![],
             },
-            mode: pl_protocol::ThreadModeId::simple().label().into(),
-            route: pl_protocol::studio::NewThreadModelRoute {
+            mode: crate::mode::ThreadModeId::simple().label().into(),
+            route: crate::NewThreadModelRoute {
                 account_id: "standalone-fixture".into(),
                 model_id: "standalone-model".into(),
                 effort: None,
@@ -994,10 +992,10 @@ mod standalone_tests {
         assert!(runtime.archive_project(&project.id).await.is_err());
         assert!(
             runtime
-                .apply_settings_field(pl_protocol::studio::UpdateSettingsFieldRequest {
+                .apply_settings_field(crate::UpdateSettingsFieldRequest {
                     operation_id: "pin-standalone".into(),
                     expected_revision: runtime.config_runtime.read()?.revision,
-                    update: pl_protocol::studio::SettingsFieldUpdate::GeneralPinnedProjectIds {
+                    update: crate::SettingsFieldUpdate::GeneralPinnedProjectIds {
                         value: vec![project.id.clone()],
                     },
                 })
@@ -1227,7 +1225,7 @@ mod standalone_tests {
         let result = runtime
             .create_thread_command(
                 project.id.clone(),
-                request(pl_protocol::ThreadWorkspaceMode::Worktree),
+                request(crate::ThreadWorkspaceMode::Worktree),
                 None,
             )
             .await;
@@ -1279,7 +1277,7 @@ mod standalone_tests {
         let error = runtime
             .create_thread_command(
                 project.id.clone(),
-                request(pl_protocol::ThreadWorkspaceMode::Local),
+                request(crate::ThreadWorkspaceMode::Local),
                 Some(observer),
             )
             .await
@@ -1375,7 +1373,7 @@ mod standalone_tests {
                 let result = runtime
                     .create_thread_command(
                         project.id,
-                        request(pl_protocol::ThreadWorkspaceMode::Local),
+                        request(crate::ThreadWorkspaceMode::Local),
                         None,
                     )
                     .await;
@@ -1408,7 +1406,7 @@ mod standalone_tests {
         mod mcp {
             //! Gated loopback MCP protocol fixture. Tests cross the real create/input and shutdown boundaries.
             use super::*;
-            use pl_protocol::{McpScope, ThreadMcpLifecycleKind as Lifecycle};
+            use crate::{McpScope, ThreadMcpLifecycleKind as Lifecycle};
             use std::sync::atomic::{AtomicUsize, Ordering};
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             use tokio_util::sync::CancellationToken;
@@ -1669,7 +1667,7 @@ mod standalone_tests {
                     })
                 }
                 async fn create(&self) -> Result<crate::StudioStartNewThreadResponse> {
-                    let mut request = request(pl_protocol::ThreadWorkspaceMode::Local);
+                    let mut request = request(crate::ThreadWorkspaceMode::Local);
                     let prompt_index = self.prompt_sequence.fetch_add(1, Ordering::Relaxed);
                     request.input.input_id = format!("standalone-start-{prompt_index}");
                     if prompt_index == 1 {
@@ -1788,7 +1786,7 @@ mod standalone_tests {
 
                 let stale = env
                     .runtime
-                    .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+                    .reset_thread_lsp_server(crate::ThreadLspResetRequest {
                         thread_id: first.thread.id.clone(),
                         binding_id: "expired-binding-qualification".into(),
                         server_id: "irrelevant-while-stale".into(),
@@ -1796,17 +1794,17 @@ mod standalone_tests {
                     .await
                     .expect_err("stale qualification must be rejected before member lookup");
                 let stale = stale
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .downcast_ref::<crate::StudioError>()
                     .expect("typed stale binding error");
-                assert_eq!(stale.code, pl_protocol::studio::StudioErrorCode::Conflict);
+                assert_eq!(stale.code, crate::StudioErrorCode::Conflict);
                 assert_eq!(
                     stale.reason(),
-                    Some(pl_protocol::studio::StudioErrorReason::StaleLspBinding.label())
+                    Some(crate::StudioErrorReason::StaleLspBinding.label())
                 );
 
                 let absent = env
                     .runtime
-                    .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+                    .reset_thread_lsp_server(crate::ThreadLspResetRequest {
                         thread_id: first.thread.id.clone(),
                         binding_id: first_state.binding_id.clone().unwrap(),
                         server_id: "not-a-member".into(),
@@ -1815,9 +1813,9 @@ mod standalone_tests {
                     .expect_err("a server outside this binding must be rejected");
                 assert_eq!(
                     absent
-                        .downcast_ref::<pl_protocol::studio::StudioError>()
+                        .downcast_ref::<crate::StudioError>()
                         .map(|error| error.code),
-                    Some(pl_protocol::studio::StudioErrorCode::NotFound)
+                    Some(crate::StudioErrorCode::NotFound)
                 );
 
                 let mut retired_subscription = env
@@ -1875,7 +1873,7 @@ mod standalone_tests {
 
                 let released = env
                     .runtime
-                    .reset_thread_lsp_server(pl_protocol::studio::ThreadLspResetRequest {
+                    .reset_thread_lsp_server(crate::ThreadLspResetRequest {
                         thread_id: first.thread.id.clone(),
                         binding_id: first_state.binding_id.clone().unwrap(),
                         server_id: "released-binding-server".into(),
@@ -1883,15 +1881,12 @@ mod standalone_tests {
                     .await
                     .expect_err("a retired Thread binding must be rejected as stale");
                 let released = released
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .downcast_ref::<crate::StudioError>()
                     .expect("typed released binding error");
-                assert_eq!(
-                    released.code,
-                    pl_protocol::studio::StudioErrorCode::Conflict
-                );
+                assert_eq!(released.code, crate::StudioErrorCode::Conflict);
                 assert_eq!(
                     released.reason(),
-                    Some(pl_protocol::studio::StudioErrorReason::StaleLspBinding.label())
+                    Some(crate::StudioErrorReason::StaleLspBinding.label())
                 );
 
                 let unknown = env
@@ -1901,9 +1896,9 @@ mod standalone_tests {
                     .expect_err("unknown Thread must not become an empty successful projection");
                 assert_eq!(
                     unknown
-                        .downcast_ref::<pl_protocol::studio::StudioError>()
+                        .downcast_ref::<crate::StudioError>()
                         .map(|error| error.code),
-                    Some(pl_protocol::studio::StudioErrorCode::NotFound)
+                    Some(crate::StudioErrorCode::NotFound)
                 );
                 env.shutdown().await?;
                 Ok(())
@@ -2296,25 +2291,19 @@ mod standalone_tests {
 
                         let rejected = tokio::time::timeout(
                             Duration::from_secs(2),
-                            env.runtime.reconnect_thread_mcp(
-                                pl_protocol::ReconnectThreadMcpRequest {
+                            env.runtime
+                                .reconnect_thread_mcp(crate::ReconnectThreadMcpRequest {
                                     thread_id: response.thread.id.clone(),
                                     server_id: Some("missing".into()),
-                                },
-                            ),
+                                }),
                         )
                         .await
                         .context("invalid reconnect waited for the unrelated optional handshake")?
                         .expect_err("a missing reconnect target must be rejected");
-                        let public = rejected
-                            .downcast_ref::<pl_protocol::studio::StudioError>()
-                            .context(
-                                "invalid reconnect must preserve its public error classification",
-                            )?;
-                        assert_eq!(
-                            public.code,
-                            pl_protocol::studio::StudioErrorCode::InvalidArgument
-                        );
+                        let public = rejected.downcast_ref::<crate::StudioError>().context(
+                            "invalid reconnect must preserve its public error classification",
+                        )?;
+                        assert_eq!(public.code, crate::StudioErrorCode::InvalidArgument);
                         assert!(rejected.to_string().contains("not enabled"), "{rejected:#}");
                         assert!(!server.gate.release.is_cancelled());
                         assert_eq!(
@@ -2389,7 +2378,7 @@ mod standalone_tests {
                                     .reload_mcp_catalog(&McpScope::Host)?;
                             }
                             let reconnecting = env.runtime.reconnect_thread_mcp(
-                                pl_protocol::ReconnectThreadMcpRequest {
+                                crate::ReconnectThreadMcpRequest {
                                     thread_id: response.thread.id.clone(),
                                     server_id: None,
                                 },
@@ -2495,8 +2484,8 @@ mod standalone_tests {
             async fn admit(
                 &self,
                 _: &str,
-                _: pl_protocol::DelegationSettings,
-                _: Option<pl_protocol::studio::NewThreadModelRoute>,
+                _: crate::DelegationSettings,
+                _: Option<crate::NewThreadModelRoute>,
             ) -> Result<(), ThreadAssemblyError> {
                 Ok(())
             }
@@ -2802,7 +2791,7 @@ mod standalone_tests {
                 .await?;
             runtime.ensure_thread_owner(&root.id).await?.flush().await?;
             eprintln!("private crash seed: root ready");
-            let mut protocol = pl_protocol::Thread::placeholder("required-private");
+            let mut protocol = crate::Thread::placeholder("required-private");
             protocol.agent_path = protocol.id.clone();
             protocol.workspace_id = project.id.clone();
             protocol.workspace_path = workspace.to_string_lossy().into_owned();
@@ -2819,8 +2808,8 @@ mod standalone_tests {
                         thread_id: protocol.id.clone(),
                         role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
                         title: Some(protocol.id.clone()),
-                        backend: pl_protocol::session::AgentBackend::Native {
-                            config: pl_protocol::NativeAgentConfig {
+                        backend: crate::AgentBackend::Native {
+                            config: crate::NativeAgentConfig {
                                 route: None,
                                 system_instructions: None,
                             },
@@ -3885,10 +3874,10 @@ mod standalone_tests {
 
         async fn cold_child(
             runtime: &StudioRuntime,
-            parent: &pl_protocol::Thread,
+            parent: &crate::Thread,
             id: &str,
-        ) -> Result<pl_protocol::Thread> {
-            let mut child = pl_protocol::Thread::placeholder(id);
+        ) -> Result<crate::Thread> {
+            let mut child = crate::Thread::placeholder(id);
             child.agent_path = format!("{}/{}", parent.agent_path, child.id);
             child.workspace_id = parent.workspace_id.clone();
             child.workspace_path = parent.workspace_path.clone();
@@ -3935,8 +3924,8 @@ mod standalone_tests {
                     "delete-cold".into(),
                     &project.id,
                     "cold",
-                    pl_protocol::ThreadModeId::simple(),
-                    pl_protocol::ThreadWorkspaceMode::Local,
+                    crate::mode::ThreadModeId::simple(),
+                    crate::ThreadWorkspaceMode::Local,
                     dunce::canonicalize(&workspace)?
                         .to_string_lossy()
                         .into_owned(),
@@ -4159,8 +4148,8 @@ mod standalone_tests {
                 let old_current = runtime
                     .open_current_reader(
                         &root.id,
-                        pl_protocol::CURRENT_PROTOCOL_VERSION,
-                        pl_protocol::ReadDemand {
+                        crate::CURRENT_PROTOCOL_VERSION,
+                        crate::ReadDemand {
                             max_items: 16,
                             max_bytes: 65536,
                         },
@@ -4201,7 +4190,7 @@ mod standalone_tests {
                 );
                 assert!(
                     old_current
-                        .snapshot(pl_protocol::ReadDemand {
+                        .snapshot(crate::ReadDemand {
                             max_items: 16,
                             max_bytes: 65536,
                         })
@@ -4241,7 +4230,7 @@ mod standalone_tests {
                     vec![neighbor.id.clone()]
                 );
                 let (session, agent) = crate::studio::records::directory_facts_from_thread(
-                    &pl_protocol::Thread::from(root.clone()),
+                    &crate::Thread::from(root.clone()),
                 );
                 let mut delayed =
                     crate::studio::records::row_projection(&session.expect("root session"), &agent);
@@ -4651,8 +4640,8 @@ mod standalone_tests {
                         "owned-root".into(),
                         &project.id,
                         "owned",
-                        pl_protocol::ThreadModeId::simple(),
-                        pl_protocol::ThreadWorkspaceMode::Worktree,
+                        crate::mode::ThreadModeId::simple(),
+                        crate::ThreadWorkspaceMode::Worktree,
                         identity.root.clone(),
                         crate::config::ROOT_AGENT_ROUTE_KEY,
                     );
@@ -4962,8 +4951,8 @@ mod standalone_tests {
                         "owned-root".into(),
                         &project.id,
                         "owned",
-                        pl_protocol::ThreadModeId::simple(),
-                        pl_protocol::ThreadWorkspaceMode::Worktree,
+                        crate::mode::ThreadModeId::simple(),
+                        crate::ThreadWorkspaceMode::Worktree,
                         identity.root.clone(),
                         crate::config::ROOT_AGENT_ROUTE_KEY,
                     );
@@ -5509,7 +5498,7 @@ mod standalone_tests {
                     .await?;
                 runtime.ensure_thread_owner(&root.id).await?.flush().await?;
                 let id = "delete-private-required";
-                let mut private = pl_protocol::Thread::placeholder(id);
+                let mut private = crate::Thread::placeholder(id);
                 private.workspace_id = project.id.clone();
                 private.workspace_path = workspace.to_string_lossy().into_owned();
                 private.root_thread_id = root.id.clone();
@@ -5656,8 +5645,8 @@ mod standalone_tests {
                         "private-root".into(),
                         &project.id,
                         "root",
-                        pl_protocol::ThreadModeId::simple(),
-                        pl_protocol::ThreadWorkspaceMode::Local,
+                        crate::mode::ThreadModeId::simple(),
+                        crate::ThreadWorkspaceMode::Local,
                         workspace.to_string_lossy().into_owned(),
                         crate::config::ROOT_AGENT_ROUTE_KEY,
                     );
@@ -6316,7 +6305,7 @@ mod standalone_tests {
                             .err()
                             .context("reads must be revoked")?,
                     );
-                    assert_eq!(public.code, pl_protocol::studio::StudioErrorCode::Conflict);
+                    assert_eq!(public.code, crate::StudioErrorCode::Conflict);
                     assert!(public.message.contains("重试删除"));
                     runtime
                         .store

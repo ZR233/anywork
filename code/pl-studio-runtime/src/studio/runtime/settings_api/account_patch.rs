@@ -1,14 +1,14 @@
 //! Narrow account editing and model intents share ConfigRuntime's CAS/credential transaction.
 
-use anyhow::Result;
-use pl_model::config::{AccountId, AccountModelCatalogConfig, builtin_account_catalog};
-use pl_model::protocol::ConnectionMode;
-use pl_protocol::PureError;
-use pl_protocol::studio::{
+use crate::PureError;
+use crate::{
     AccountConnectionMode, AccountModelsPatch, AccountTextPatch, AutoCompactIntent,
     CommandEffectPoint, ModelConnectionIntent, PatchAccountRequest,
     SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest, SettingsCommandReply,
 };
+use anyhow::Result;
+use pl_model::config::{AccountId, AccountModelCatalogConfig, builtin_account_catalog};
+use pl_model::protocol::ConnectionMode;
 
 use super::super::StudioRuntime;
 use super::account_edit::{account_configuration, invalid_settings_argument};
@@ -76,7 +76,7 @@ impl StudioRuntime {
                             AccountModelsPatch::Keep => account
                                 .editable_models()
                                 .iter()
-                                .map(|model| pl_protocol::studio::AccountModelUpdate {
+                                .map(|model| crate::AccountModelUpdate {
                                     model_id: model.model_id.clone(),
                                     display_name: model.display_name.clone(),
                                     wire_api: match model.binding.transport.protocol {
@@ -103,7 +103,7 @@ impl StudioRuntime {
                             })
                             .map(|model| model.model_id.clone())
                             .collect::<std::collections::BTreeSet<_>>();
-                        let input = pl_protocol::studio::AccountSettingsUpdate {
+                        let input = crate::AccountSettingsUpdate {
                             authentication: request.authentication,
                             account_id: id.to_string(),
                             template_id,
@@ -117,26 +117,22 @@ impl StudioRuntime {
                                 .connection_overrides()
                                 .iter()
                                 .filter(|(model_id, _)| !removed_manual.contains(*model_id))
-                                .map(|(id, mode)| {
-                                    pl_protocol::studio::AccountModelConnectionUpdate {
-                                        model_id: id.clone(),
-                                        connection_mode: match mode {
-                                            ConnectionMode::Http => "http",
-                                            ConnectionMode::WebSocket => "web_socket",
-                                        }
-                                        .to_owned(),
+                                .map(|(id, mode)| crate::AccountModelConnectionUpdate {
+                                    model_id: id.clone(),
+                                    connection_mode: match mode {
+                                        ConnectionMode::Http => "http",
+                                        ConnectionMode::WebSocket => "web_socket",
                                     }
+                                    .to_owned(),
                                 })
                                 .collect(),
                             model_auto_compact_limits: account
                                 .auto_compact_overrides()
                                 .iter()
                                 .filter(|(model_id, _)| !removed_manual.contains(*model_id))
-                                .map(|(id, limit)| {
-                                    pl_protocol::studio::AccountModelAutoCompactUpdate {
-                                        model_id: id.clone(),
-                                        limit: *limit,
-                                    }
+                                .map(|(id, limit)| crate::AccountModelAutoCompactUpdate {
+                                    model_id: id.clone(),
+                                    limit: *limit,
                                 })
                                 .collect(),
                         };
@@ -162,10 +158,7 @@ impl StudioRuntime {
                     },
                 )?)
             })?;
-        if matches!(
-            authentication,
-            pl_protocol::studio::AccountAuthenticationIntent::ApiKey
-        ) {
+        if matches!(authentication, crate::AccountAuthenticationIntent::ApiKey) {
             self.chatgpt_auth.discard_account(&account_id).await?;
         }
         self.publish_settings_state()?;

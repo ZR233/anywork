@@ -79,11 +79,9 @@ impl BotRuntime {
                     )
                     .await?;
             }
-            sources.push(
-                pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
-                    path: path.to_string_lossy().into_owned(),
-                },
-            );
+            sources.push(crate::StudioAttachmentDraftSource::LocalFile {
+                path: path.to_string_lossy().into_owned(),
+            });
         }
         let drafts = runtime
             .prepare_bot_attachment_drafts(thread_id, sources, cancel)

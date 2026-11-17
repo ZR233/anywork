@@ -31,7 +31,7 @@ pub enum StudioProductTopic {
     SettingsConfig,
     ModelCatalog,
     Recovery,
-    McpCatalog { scope: pl_protocol::McpScope },
+    McpCatalog { scope: crate::McpScope },
     ThreadMcp { thread_id: String },
     ThreadLsp { thread_id: String },
     Lsp,
@@ -64,7 +64,7 @@ impl StudioProductTopic {
     pub fn validate(&self) -> Result<(), StudioProductTopicScopeError> {
         match self {
             Self::McpCatalog {
-                scope: pl_protocol::McpScope::Ssh { ssh_alias },
+                scope: crate::McpScope::Ssh { ssh_alias },
             } if ssh_alias.trim().is_empty() => Err(scope_error("mcpCatalog", "sshAlias")),
             Self::ThreadMcp { thread_id } if thread_id.trim().is_empty() => {
                 Err(scope_error("threadMcp", "threadId"))
@@ -154,23 +154,23 @@ pub enum StudioProductBaselineState {
     SettingsConfig(Box<StudioSettingsConfigStateSnapshot>),
     ModelCatalog(Box<StudioModelCatalogStateSnapshot>),
     Recovery(Box<StudioRecoveryStateSnapshot>),
-    McpCatalog(Box<pl_protocol::McpCatalogSnapshot>),
-    ThreadMcp(Box<pl_protocol::ThreadMcpStateSnapshot>),
+    McpCatalog(Box<crate::McpCatalogSnapshot>),
+    ThreadMcp(Box<crate::ThreadMcpStateSnapshot>),
     ThreadLsp(Box<crate::protocol::StudioThreadLspStateSnapshot>),
     Lsp(Box<StudioLspStateSnapshot>),
     Skills(Box<StudioSkillsStateSnapshot>),
-    ThreadModeCatalog(Box<pl_protocol::ThreadModeCatalogSnapshot>),
+    ThreadModeCatalog(Box<crate::mode::ThreadModeCatalogSnapshot>),
     AccountUsage(Box<AccountUsageStateSnapshot>),
-    AcpAuth(Box<pl_protocol::studio::AcpAuthSnapshot>),
-    AcpInstall(Box<pl_protocol::studio::AcpInstallSnapshot>),
-    AcpLocalDetection(Box<pl_protocol::studio::AcpLocalDetectionSnapshot>),
+    AcpAuth(Box<crate::AcpAuthSnapshot>),
+    AcpInstall(Box<crate::AcpInstallSnapshot>),
+    AcpLocalDetection(Box<crate::AcpLocalDetectionSnapshot>),
     ModelPerformance(Box<StudioModelPerformanceSnapshot>),
     SessionCosts(Box<StudioSessionCostsState>),
     Updater(Box<StudioUpdateStateSnapshot>),
     Persistence(Box<PersistenceStateSnapshot>),
     PersistenceQueue(Box<StudioPersistenceQueueStateSnapshot>),
     AgentProfiles(Box<StudioAgentProfilesStateSnapshot>),
-    Bots(Box<pl_protocol::studio::BotsStateSnapshot>),
+    Bots(Box<crate::BotsStateSnapshot>),
     ChildInteractions(Box<StudioChildInteractionsState>),
 }
 
@@ -221,6 +221,6 @@ pub enum StudioProductFrame {
     },
 }
 
-fn revision_of<T>(resource: &pl_protocol::ObservedResource<T>) -> u64 {
+fn revision_of<T>(resource: &crate::ObservedResource<T>) -> u64 {
     resource.revision()
 }

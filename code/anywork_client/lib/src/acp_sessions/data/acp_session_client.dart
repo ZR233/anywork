@@ -107,6 +107,11 @@ final class AcpSessionClient {
     }
   }
 
+  Future<void> commitDraft(AcpSessionTargetView target) {
+    _requireOpen();
+    return _port.commitDraft(target);
+  }
+
   Future<AcpRunIdView> prompt(AcpPromptRequestView request) {
     _requireOpen();
     return _port.prompt(request);
@@ -153,6 +158,26 @@ final class AcpSessionClient {
   Future<AcpBusinessCloseView> closeMember(AcpSessionTargetView target) {
     _requireOpen();
     return _port.closeMember(target);
+  }
+
+  /// Ends an unused draft's business membership and then its borrowed display.
+  /// Failed cleanup keeps the original owner registered for explicit retry.
+  /// Cleanup remains available after new calls and observations are sealed.
+  Future<AcpBusinessCloseView> discardDraft(
+    AcpConversationSession owner,
+  ) async {
+    if (!identical(owner._client, this)) {
+      throw ArgumentError('ACP draft belongs to another Client');
+    }
+    final target = owner.state.target!;
+    final result = await _port.closeMember(target);
+    if (result.localComplete) {
+      await owner._dispose();
+      if (identical(_conversations[target.threadId], owner))
+        _conversations.remove(target.threadId);
+      _owners.remove(owner);
+    }
+    return result;
   }
 
   /// Seals new calls and joins release of this application's observations.

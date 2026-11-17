@@ -19,7 +19,7 @@ pub(super) struct ThreadInstructionSeed<'a> {
     pub root: &'a Path,
     pub agent: &'a ResolvedAgentDefinition,
     pub mode: Option<ModeInstructionProfile<'a>>,
-    pub delegation: Option<pl_protocol::DelegationSettings>,
+    pub delegation: Option<crate::DelegationSettings>,
     pub resources: &'a PreparedThreadTools,
 }
 

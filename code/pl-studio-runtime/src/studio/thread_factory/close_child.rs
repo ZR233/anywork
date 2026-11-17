@@ -1,5 +1,6 @@
 //! Closing a saved child checks frozen workspace ownership without restoring execution resources.
 use super::{StudioThreadFactory, errors::resource_error};
+use crate::Thread;
 use crate::studio::{
     agent_close::state_error,
     agent_host::workspace_preparation,
@@ -7,7 +8,6 @@ use crate::studio::{
 };
 use crate::thread_assembler::ThreadAssemblyError;
 use anyhow::{Context, Result, ensure};
-use pl_protocol::Thread;
 use pl_tool::collaboration::control::AgentWorktreeCleanup;
 
 impl StudioThreadFactory {
@@ -48,7 +48,7 @@ impl StudioThreadFactory {
         let assignment = crate::studio::workspace_receipt::from_snapshot(snapshot)
             .map_err(anyhow::Error::msg)?
             .context("child has no frozen workspace")?;
-        let worktree = if assignment.mode == pl_protocol::AgentWorkspaceMode::Worktree {
+        let worktree = if assignment.mode == crate::AgentWorkspaceMode::Worktree {
             let lease = self
                 .services
                 .worktrees
@@ -209,7 +209,7 @@ impl StudioThreadFactory {
     /// The Core owner's resource lifecycle cannot stand in for the execution-close ACK.
     pub(crate) async fn project_child_close(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         snapshot: &pl_core::thread::ThreadSnapshot,
     ) -> Result<(), ThreadAssemblyError> {
         let result = async {
@@ -236,7 +236,7 @@ impl StudioThreadFactory {
 
     pub(crate) async fn child_close_storage(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         current: &pl_core::thread::current::ThreadCurrent,
     ) -> Result<crate::studio::ThreadStorageBinding, ThreadAssemblyError> {
         if current.thread_id != thread.id {
@@ -253,7 +253,7 @@ impl StudioThreadFactory {
 
     pub(crate) fn validate_child_close(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         snapshot: &pl_core::thread::ThreadSnapshot,
     ) -> Result<(), ThreadAssemblyError> {
         let saved = snapshot
@@ -272,12 +272,12 @@ impl StudioThreadFactory {
 
     pub(crate) fn validate_child_close_workspace(
         &self,
-        thread: &pl_protocol::Thread,
-        assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
+        thread: &crate::Thread,
+        assignment: &crate::AgentWorkspaceAssignmentSnapshot,
     ) -> Result<(), ThreadAssemblyError> {
         use crate::studio::agent_host::worktree_lease::WorktreeLeaseOwnerKind;
         let lease = self.services.worktrees.get(&thread.id);
-        if assignment.mode != pl_protocol::AgentWorkspaceMode::Worktree {
+        if assignment.mode != crate::AgentWorkspaceMode::Worktree {
             // In particular a reviewer never owns the worktree named by its review assignment.
             if lease.is_some() {
                 return Err(ThreadAssemblyError::Identity(
@@ -316,7 +316,7 @@ impl StudioThreadFactory {
     /// Directory inheritance identifies the collaboration tree, not a child's assigned checkout.
     pub(super) async fn validate_child_close_association(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> Result<(), ThreadAssemblyError> {
         let parent_id = thread
             .parent_thread_id

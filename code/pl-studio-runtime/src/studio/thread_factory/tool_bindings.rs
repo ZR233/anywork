@@ -13,7 +13,7 @@ use pl_tool::workspace::ToolWorkspace;
 
 #[derive(Clone)]
 pub(crate) struct ToolBinding {
-    pub assignment: Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>,
+    pub assignment: Option<crate::AgentWorkspaceAssignmentSnapshot>,
     pub workspace_usage: crate::studio::agent_host::worktree_lease::WorkspaceUsageLease,
     pub lifetime: std::sync::Arc<ThreadToolLifetime>,
     pub incarnation: std::sync::Arc<()>,
@@ -451,7 +451,7 @@ impl StudioThreadFactory {
             }
         }
         let role = if child {
-            pl_protocol::AgentRoleId::new(thread.role.clone())?
+            crate::AgentRoleId::new(thread.role.clone())?
         } else {
             crate::config::root_agent_route_id()
         };

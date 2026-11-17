@@ -1,6 +1,6 @@
 //! Typed usage conversion shared by streaming, fixtures and compaction.
 
-use pl_protocol::UsageReport;
+use crate::model::UsageReport;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

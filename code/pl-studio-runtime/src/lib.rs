@@ -8,7 +8,6 @@
 extern crate self as pl_studio_runtime;
 
 pub(crate) use pl_core::context::content_hash as canonical_content_hash;
-pub(crate) use pl_protocol::*;
 pub(crate) use studio::storage::history::schema::legacy_execution_item::LegacyTurn;
 pub(crate) use studio::thread_projection::{ExecutionItem, ExecutionKind, ExecutionShape};
 pub use studio::{AcpSessionCompletion, AcpSessionObservation, AcpSessionOpen};
@@ -46,11 +45,13 @@ mod worker_assets;
 
 // Data types needed to call Studio's SSH API; transport consumers do not depend on tool runtimes.
 pub use pl_tool::remote::{
-    SshConfigEntry, SshConfigFile, SshConnectionSnapshot, SshConnectionState, SshServerProfile,
+    RemoteDirectoryEntry, RemoteDirectoryListing, RemoteErrorCode, SshConfigEntry, SshConfigFile,
+    SshConnectionSnapshot, SshConnectionState, SshServerProfile,
 };
 
 pub use pl_tool::skill::{
-    SkillCatalog, SkillMetadata, SkillResourceBase, SkillSearchOptions, SkillSourceKind,
+    SkillActivation, SkillActivationCause, SkillActivationResourceBase, SkillCatalog,
+    SkillMetadata, SkillResourceBase, SkillSearchOptions, SkillSourceKind,
 };
 
 pub use config::{
@@ -66,22 +67,7 @@ pub use first_run::{
     AccountTemplateKind, FirstRunAccountDraft, FirstRunConfigDraft, FirstRunModelDraft,
 };
 pub use host_mcp_assets::HostMcpSource;
-pub use protocol::{
-    FlushingPersistenceProgress, LspAvailable, LspAvailableActivity, LspBusy, LspChecking,
-    LspDisabled, LspIdle, LspIndexing, LspUnavailable, StudioAgentActivity,
-    StudioAgentDirectoryData, StudioAgentDirectoryEntry, StudioAgentDirectoryState,
-    StudioChildInteractionsState, StudioLspHealth, StudioLspServer, StudioLspServerState,
-    StudioLspStateSnapshot, StudioModelCatalogStateSnapshot, StudioPendingPersistence,
-    StudioProductBaseline, StudioProductBaselineState, StudioProductEventEnvelope,
-    StudioProductEventKind, StudioProductFrame, StudioProductTopic, StudioProductTopicScopeError,
-    StudioProjectDirectoryData, StudioProjectDirectoryState, StudioPurposeCostSnapshot,
-    StudioRecoveryStateSnapshot, StudioSessionCostSnapshot, StudioSessionCostsState,
-    StudioSettingsConfigStateSnapshot, StudioShutdownIssue, StudioShutdownOutcome,
-    StudioShutdownProgress, StudioShutdownReport, StudioSkillsStateSnapshot, StudioStartupStage,
-    StudioStateSnapshot, StudioThreadDirectoryData, StudioThreadDirectoryDelta,
-    StudioThreadDirectoryPage, StudioThreadDirectoryPageData, StudioThreadDirectoryState,
-    StudioThreadLspStateSnapshot,
-};
+pub use protocol::*;
 
 pub use account_usage::{
     AccountUsageCommand, AccountUsageData, AccountUsageRecord, AccountUsageState,
@@ -89,10 +75,6 @@ pub use account_usage::{
     DeepSeekBalanceUsage, FailedAccountUsage, MissingCredentialAccountUsage, ReadyAccountUsage,
     SubscriptionQuotaLimit, SubscriptionQuotaWindow, SubscriptionUsage, SubscriptionUsageDetail,
     UnsupportedAccountUsage, zhipu_limit_by_window,
-};
-pub use protocol::{
-    StudioAgentProfileDiagnostic, StudioAgentProfilesData, StudioAgentProfilesStateSnapshot,
-    StudioPersistenceQueueStateSnapshot,
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, CurrentBodyWatch,
@@ -108,8 +90,7 @@ pub use studio::{
     StudioStore, StudioSubmitPromptOptions, StudioSubmitPromptRequest, StudioSubmitPromptResponse,
     StudioUpdateActivity, StudioUpdatePreparationResult, StudioUpdateStateSnapshot,
     StudioWorktreeInspection, StudioWorktreeRecoveryPreview, ThreadMetadataObservation,
-    ThreadPreparationObserver, ThreadPreparationProgress, ThreadPreparationStage, ThreadRecord,
-    ThreadsObservation, WorkspaceRecord,
+    ThreadPreparationObserver, ThreadRecord, ThreadsObservation, WorkspaceRecord,
 };
 pub use studio::{
     BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
@@ -124,17 +105,50 @@ pub use studio::{
 };
 pub use worker_assets::RemoteHelperSource;
 
-// 公共签名（bridge DTO 字段、runtime API 返回值）使用的 pl-protocol 类型在此
-// 精确重导出，消费方只依赖 pl-studio-runtime 即可命名完整签名。
-pub use pl_protocol::studio::NewThreadModelRoute;
-pub use pl_protocol::studio::{SetAccountBillingKindRequest, SetAccountModelEnabledRequest};
-pub use pl_protocol::{
-    AgentState, AgentWorkspaceMode, CancelInteraction, DelegationMode, DelegationModelDetail,
-    DelegationModelList, DelegationPreference, DelegationSettings, GetDelegationModelRequest,
-    InteractionCommand, InteractionContinuationInput, InteractionPurpose,
-    ListDelegationModelsRequest, ReopenRecoveredInteraction, ResolveToolApproval, ResolveUserInput,
-    ThreadModeId, ToolApprovalResolutionPayload, UserInputResolution,
+// 公共签名（bridge DTO 字段、HTTP/CLI API 返回值）使用的下层 crate 类型在此精确重导出，
+// 消费方只依赖 pl-studio-runtime 即可命名完整签名。
+pub use pl_model::completion::{
+    AttachmentModality, ContentPart, HostedWebSearchOptions, InferenceBillingRecord,
+    InferenceModelObservation, InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage,
+    Message, MessageContent, MessagePresentation, MessageRole, ModelContextItem,
+    ResponsesContextItem, ResponsesContextItemKind, ThreadAttachment, ToolCallCaller, ToolCallKind,
+    ToolCallRecord, ToolCallerMode, ToolFormat, ToolMediaContext, ToolResultReceipt,
+    ToolResultRecord, ToolSpec, WebSearchFilters, WebSearchUserLocation, WebSearchUserLocationType,
 };
+pub use pl_model::config::{
+    ACCOUNT_CATALOG_SCHEMA_VERSION, AccountAuthenticationMethod, AccountCatalogSnapshot,
+    AccountServiceCapabilitiesDescriptor, AccountTemplateDescriptor, AgentRoleId, BillingKind,
+    ChatGptAccountInfo, CodexAccountInfo, ConnectionModeDescriptor, CredentialDescriptorDto,
+    ModelCapabilitiesDto, ModelCatalogDescriptor, ModelDescriptor, ModelInputCapabilityDto,
+    ModelInputSourceDto, ModelModalityDto, ModelOriginDto, ModelReasoningDescriptor,
+    ModelSelectionGuideDto, ModelSelectionMeasurementDto, ModelSelectionSourceDto,
+    ModelSelectionSourceKindDto, ModelTransportDescriptor, WebSearchServiceCapabilitiesDescriptor,
+};
+pub use pl_model::model::{
+    AgentTaskCategory, InferenceAccounting, ModelContextAdjustment, ModelContextResolution,
+    ModelContextUnavailable, ModelPriceTierDto, ModelPricingDto, ModelPricingSnapshot, ModelType,
+    ModelTypeExclusion, ModelTypeSupport, PricingMode, PricingOutcome, RuntimeCostAmount,
+    UnpricedReason, UsageReport,
+};
+pub use pl_model::protocol::HostedWebSearchDialect;
+pub use pl_model::runtime::{
+    PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPromptSnapshot,
+};
+pub use pl_protocol::{
+    AgentBackendKind, AgentId, AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
+    AgentThreadIdentity, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
+    AgentWorktreeSnapshot, DelegationMode, DelegationPreference, DelegationSettings,
+    FirstOutputSource, LabeledEnum, NewThreadModelRoute, ProviderFailure, ProviderFailureContext,
+    ProviderFailureKind, ProviderFailureStage, ProviderRecovery, PureError, Result,
+    RetryDisposition, SessionId, StateError, ThreadId, UnknownLabelError,
+};
+pub use pl_studio_statistics::{MetricAvailability, ModelMatchState, UsageReportStatus};
+pub use pl_tool::ask_user::{
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, UserQuestion, UserQuestionOption,
+};
+pub use pl_tool::mcp::{McpAvailabilityDescriptor, McpHealthSnapshot, McpServerDescriptor};
+pub use pl_tool::session_note::SessionNote;
+pub use pl_tool::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 
 mod programmatic;
 

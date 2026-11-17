@@ -8,9 +8,9 @@ use crate::completion::stream::event::WebSearchAction;
 use crate::completion::stream::event::{
     ModelStreamEvent, ToolInputDeltaPayload, ToolInputPayloadKind,
 };
+use crate::completion::{ResponsesContextItem, ToolCallCaller};
 use crate::runtime::openai::identity::responses_tool_identity;
-use pl_protocol::trace::TraceTextChannel;
-use pl_protocol::{ResponsesContextItem, ToolCallCaller};
+use crate::trace::TraceTextChannel;
 
 pub(super) fn output_item_tool_started(item: &Value) -> Option<ModelStreamEvent> {
     let kind = item.get("type")?.as_str()?;

@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use pl_protocol::{InferenceBillingRecord, InferenceModelObservation, ModelMatchState};
+use crate::{InferenceBillingRecord, InferenceModelObservation, ModelMatchState};
 use pl_studio_statistics::{
     StatisticsFeed, StatisticsPublisher, StudioModelPerformanceEffortSummary,
     StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
@@ -1027,7 +1027,12 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
             .and_then(|value| value.reported_model.clone()),
         model_match_state: observation
             .as_ref()
-            .map_or(ModelMatchState::LegacyUnknown, |value| value.match_state()),
+            .map_or(ModelMatchState::LegacyUnknown, |value| {
+                ModelMatchState::from_observation(
+                    &value.sent_model,
+                    value.reported_model.as_deref(),
+                )
+            }),
         effort: row.effort.clone(),
         completion_tokens: row.completion_tokens,
         ttft_millis: row.ttft_millis,
@@ -1041,8 +1046,8 @@ fn history_sample(row: &PerformanceSampleRow) -> StudioModelPerformanceSample {
     }
 }
 
-fn ttft_availability(row: &PerformanceSampleRow) -> pl_protocol::MetricAvailability {
-    use pl_protocol::{FirstOutputSource, MetricAvailability as Availability};
+fn ttft_availability(row: &PerformanceSampleRow) -> crate::MetricAvailability {
+    use crate::{FirstOutputSource, MetricAvailability as Availability};
     match (row.ttft_millis, row.decode_millis, row.response_millis) {
         (Some(ttft), Some(decode), Some(response))
             if ttft <= response && decode == response - ttft =>
@@ -1058,9 +1063,9 @@ fn ttft_availability(row: &PerformanceSampleRow) -> pl_protocol::MetricAvailabil
     }
 }
 
-fn throughput_availability(row: &PerformanceSampleRow) -> pl_protocol::MetricAvailability {
+fn throughput_availability(row: &PerformanceSampleRow) -> crate::MetricAvailability {
+    use crate::MetricAvailability as Availability;
     use pl_core::usage::UsageStatus;
-    use pl_protocol::MetricAvailability as Availability;
     if row.usage_status == UsageStatus::LegacyUnknown {
         return Availability::LegacyUnknown;
     }

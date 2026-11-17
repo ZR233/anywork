@@ -2770,5 +2770,6 @@
     }
   },
   "timelineLspStatusEmpty": "当前工作区未配置语言服务器",
-  "timelineLspStateMissingCommand": "缺少命令"
+  "timelineLspStateMissingCommand": "缺少命令",
+  "acpDraftUseCurrentConfiguration": "使用当前配置"
 }

@@ -99,8 +99,8 @@ impl CatalogSources {
             )),
             StudioProductEventKind::McpCatalogChanged(value) => {
                 let key = match &value.scope {
-                    pl_protocol::McpScope::Host => "mcp-catalog:host".to_owned(),
-                    pl_protocol::McpScope::Ssh { ssh_alias } => {
+                    crate::McpScope::Host => "mcp-catalog:host".to_owned(),
+                    crate::McpScope::Ssh { ssh_alias } => {
                         format!("mcp-catalog:ssh:{ssh_alias}")
                     }
                 };

@@ -1,7 +1,7 @@
 use super::error::{FeishuError, FeishuErrorKind};
 use super::http::FeishuHttp;
 use super::{BOT_INFO_PATH, IM_CHATS_PATH, IM_MESSAGES_PATH};
-use pl_protocol::studio::{BotConversationKind, BotMessage, BotMessageBody};
+use crate::{BotConversationKind, BotMessage, BotMessageBody};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

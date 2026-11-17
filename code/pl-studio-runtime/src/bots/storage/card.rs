@@ -2,9 +2,9 @@
 //! lease and a card version, in one transaction; no HTTP runs in that transaction.
 
 use super::{BotStateStore, INBOUND_CLAIM_TTL_SECONDS, inbound_identity, statement, storage};
+use crate::BotDiagnostic;
 use crate::bots::protocol::error::{FeishuError, FeishuErrorKind};
 use crate::studio::unix_seconds;
-use pl_protocol::studio::BotDiagnostic;
 use sea_orm::{ConnectionTrait, QueryResult, TransactionTrait, Value};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

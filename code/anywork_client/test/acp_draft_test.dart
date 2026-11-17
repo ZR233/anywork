@@ -255,16 +255,271 @@ final class _Harness {
       port.calls.where((call) => call.$1 == name).map((call) => call.$2);
 }
 
+const _draftFlag = AcpSessionConfigOptionView(
+  id: AcpConfigId('references'),
+  name: 'Include references',
+  kind: AcpBooleanConfigView(currentValue: false),
+);
+
+List<AcpSessionFrameView> _draftFrames(int generation, {bool hasFlag = true}) =>
+    [
+      AcpAcceptedFrameView(
+        target: AcpSessionTargetView(
+          sessionId: 'session-$generation',
+          agentId: 'agent-$generation',
+          threadId: generation == 1 ? 'thread' : 'thread-$generation',
+          instance: BigInt.from(generation),
+        ),
+        hasObservation: true,
+      ),
+      AcpEventFrameView(AcpInitializedEventView(_capabilities)),
+      AcpEventFrameView(
+        AcpReadyEventView(
+          AcpNewSessionResponseView(
+            sessionId: AcpRemoteSessionId('remote-$generation'),
+            configOptions: hasFlag ? [_draftFlag] : [],
+          ),
+        ),
+      ),
+      _accepted,
+    ];
+
+void _pushTo(ControlledAcpObservation source, AcpSessionFrameView frame) {
+  final pending = source.read;
+  if (pending != null && !pending.isCompleted) {
+    pending.complete(frame);
+  } else {
+    source.frames.add(frame);
+  }
+}
+
 void main() {
-  test('empty ACP input cannot create a session', () async {
+  test(
+    'selecting ACP prepares configuration without submitting empty input',
+    () async {
+      final h = _Harness();
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      start.updateDraft('workspace', '  \n ');
+      expect(await start.submit('workspace'), isFalse);
+      await start.prepareAcp('workspace');
+      expect(h.calls('open'), hasLength(1));
+      expect(h.calls('commitDraft'), isEmpty);
+      expect(h.calls('prompt'), isEmpty);
+    },
+  );
+
+  test('directory changes retire late admission before publishing the current draft', () async {
+    final h = _Harness();
+    final start = h.repository.startDraft;
+    h.port.admission = Completer<AcpSessionObservationPort>();
+    final oldAdmission = h.port.admission!;
+    start.setAcpService('workspace', 'account');
+    final first = start.prepareAcp('workspace');
+    await h.port.enteredOpen.future;
+    expect(h.calls('open'), hasLength(1));
+    final replacement = ControlledAcpObservation(_draftFrames(2));
+    h.port.sources
+      ..clear()
+      ..add(replacement);
+    h.port.admission = null;
+    start.updateDraft('workspace', 'keep this input');
+    start.setWorkspaceMode('workspace', ThreadWorkspaceMode.worktree);
+    final second = start.prepareAcp('workspace');
+    oldAdmission.complete(h.source);
+    await first;
+    await second;
+    final phase = start.state.acpPreparations['workspace'] as AcpDraftReady;
+    expect(phase.threadId, 'thread-2');
+    expect(h.calls('closeMember'), hasLength(1));
+    expect(h.source.closes, 1);
+    expect(h.calls('open'), hasLength(2));
+    expect(
+      (h.calls('open').last as OpenAcpSessionRequestView).intent,
+      isA<AcpDraftIntentView>().having(
+        (v) => v.workspaceMode,
+        'mode',
+        ThreadWorkspaceMode.worktree,
+      ),
+    );
+    expect(start.state.forProject('workspace').text, 'keep this input');
+    expect(h.calls('commitDraft'), isEmpty);
+    expect(h.calls('prompt'), isEmpty);
+  });
+
+  for (final hasFlag in [true, false]) {
+    test(
+      'directory change ${hasFlag ? 'confirms configuration again' : 'requires acknowledgement of unavailable configuration'}',
+      () async {
+        final h = _Harness();
+        h.source.frames
+          ..clear()
+          ..addAll(_draftFrames(1));
+        final start = h.repository.startDraft;
+        start.setAcpService('workspace', 'account');
+        await start.prepareAcp('workspace');
+        final owner = h.sessions.conversationForThread('thread')!;
+        await owner.configure(
+          const AcpConfigId('references'),
+          const AcpBooleanConfigValueView(true),
+        );
+        h.push(
+          AcpEventFrameView(
+            AcpConfiguredEventView(
+              AcpConfiguredResponseView(
+                configOptions: [
+                  const AcpSessionConfigOptionView(
+                    id: AcpConfigId('references'),
+                    name: 'Include references',
+                    kind: AcpBooleanConfigView(currentValue: true),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+        await owner.source.waitFor((value) => !value.configPending);
+        final replacement = ControlledAcpObservation(
+          _draftFrames(2, hasFlag: hasFlag),
+        );
+        h.port.sources.add(replacement);
+        start.setWorkspaceMode('workspace', ThreadWorkspaceMode.worktree);
+        final preparing = start.prepareAcp('workspace');
+        if (hasFlag) {
+          await replacement.waitingForFrame.future;
+          final newOwner = h.sessions.conversationForThread('thread-2')!;
+          await newOwner.source.waitFor((value) => value.configPending);
+          expect(
+            start.state.acpPreparations['workspace'],
+            isA<AcpDraftPreparing>(),
+          );
+          _pushTo(
+            replacement,
+            AcpEventFrameView(
+              AcpConfiguredEventView(
+                AcpConfiguredResponseView(
+                  configOptions: [
+                    const AcpSessionConfigOptionView(
+                      id: AcpConfigId('references'),
+                      name: 'Include references',
+                      kind: AcpBooleanConfigView(currentValue: true),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }
+        await preparing;
+        expect(h.sessions.conversationForThread('thread'), isNull);
+        expect(h.calls('configure'), hasLength(hasFlag ? 2 : 1));
+        if (hasFlag) {
+          expect(
+            start.state.acpPreparations['workspace'],
+            isA<AcpDraftReady>(),
+          );
+          final request = h.calls('configure').last as AcpConfigureRequestView;
+          expect(request.target.threadId, 'thread-2');
+          expect((request.value as AcpBooleanConfigValueView).value, isTrue);
+        } else {
+          expect(
+            start.state.acpPreparations['workspace'],
+            isA<AcpDraftNeedsConfiguration>(),
+          );
+          start.acceptAcpConfiguration('workspace');
+          expect(
+            start.state.acpPreparations['workspace'],
+            isA<AcpDraftReady>(),
+          );
+        }
+        expect(h.calls('commitDraft'), isEmpty);
+        expect(h.calls('prompt'), isEmpty);
+      },
+    );
+  }
+
+  test('a rejected draft commit retries the same prepared session', () async {
     final h = _Harness();
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
-    start.updateDraft('workspace', '  \n ');
+    await start.prepareAcp('workspace');
+    start.updateDraft('workspace', 'frozen first input');
+    h.port.commitDraftError = AcpBusinessFailureView(
+      kind: AcpBusinessFailureKindView.busy,
+      message: 'not admitted',
+    );
     expect(await start.submit('workspace'), isFalse);
-    expect(h.calls('open'), isEmpty);
+    expect(start.state.acpPreparations['workspace'], isA<AcpDraftReady>());
+    expect(h.calls('open'), hasLength(1));
     expect(h.calls('prompt'), isEmpty);
+    h.port.commitDraftError = null;
+    expect(await start.submit('workspace'), isTrue);
+    expect(h.calls('open'), hasLength(1));
+    expect(h.calls('commitDraft'), hasLength(2));
+    expect(h.calls('prompt'), hasLength(1));
   });
+
+  test(
+    'an in-flight commit cannot close or clear a replacement directory draft',
+    () async {
+      final h = _Harness();
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      await start.prepareAcp('workspace');
+      start.updateDraft('workspace', 'frozen first input');
+      h.port.commitDraftResult = Completer<void>();
+      final sending = start.submit('workspace');
+      await h.port.enteredCommit.future;
+      final replacement = ControlledAcpObservation(_draftFrames(2));
+      h.port.sources.add(replacement);
+      h.project.applyProjectDirectory(
+        ProjectDirectoryState(
+          values: const [
+            StudioProject(
+              id: 'workspace',
+              name: 'Project',
+              path: '/new-project',
+            ),
+          ],
+          revision: 2,
+        ),
+      );
+      await start.prepareAcp('workspace');
+      expect(
+        (start.state.acpPreparations['workspace'] as AcpDraftReady).threadId,
+        'thread-2',
+      );
+      expect(h.calls('closeMember'), isEmpty);
+      h.port.commitDraftResult!.complete();
+      expect(await sending, isTrue);
+      expect(
+        (start.state.acpPreparations['workspace'] as AcpDraftReady).threadId,
+        'thread-2',
+      );
+      expect(h.calls('open'), hasLength(2));
+      expect(h.calls('prompt'), hasLength(1));
+      expect(
+        (h.calls('prompt').single as AcpPromptRequestView).target.threadId,
+        'thread',
+      );
+      expect(replacement.closes, 0);
+    },
+  );
+
+  test(
+    'unused draft cleanup remains available while Client observations dispose',
+    () async {
+      final h = _Harness();
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      await start.prepareAcp('workspace');
+      await Future.wait([h.sessions.dispose(), h.repository.close()]);
+      expect(h.calls('closeMember'), hasLength(1));
+      expect(h.source.closes, 1);
+      expect(h.calls('commitDraft'), isEmpty);
+      expect(h.calls('prompt'), isEmpty);
+    },
+  );
 
   test(
     'explicit creation failure preserves the start input and attachments',
@@ -459,6 +714,23 @@ void main() {
     );
   }
 
+  test('first submission refreshes the unpublished draft metadata snapshot after commit', () async {
+    final h = _Harness();
+    h.transport.directoryThreads['thread'] = null;
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    await start.prepareAcp('workspace');
+    final composer = await h.composer();
+    expect(h.directory.observedThread('thread'), isNull);
+    h.transport.seedThread(_row());
+    start.updateDraft('workspace', 'first input after draft preparation');
+    expect(await start.submit('workspace'), isTrue);
+    expect(h.transport.openedMetadataThreadIds, ['thread', 'thread']);
+    expect(h.calls('commitDraft'), hasLength(1));
+    expect(h.calls('prompt'), hasLength(1));
+    expect(composer.state.draft, isEmpty);
+  });
+
   test('directory wait cannot replace the frozen first input or admit a second submit', () async {
     final h = _Harness();
     final metadataGate = Completer<void>();
@@ -525,7 +797,7 @@ void main() {
     },
   );
 
-  test('retired start draft sends only its frozen input and leaves the replacement untouched', () async {
+  test('discarding an uncommitted start draft prevents its frozen input from being sent', () async {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
@@ -536,14 +808,11 @@ void main() {
     start.updateDraft('workspace', 'replacement');
     h.push(_ready);
     h.push(_accepted);
-    expect(await creating, isTrue);
+    expect(await creating, isFalse);
     expect(start.state.forProject('workspace').text, 'replacement');
     expect(h.selection.state.selectedThreadId, isNull);
-    expect(
-      (h.calls('prompt').single as AcpPromptRequestView).content.single,
-      isA<AcpTextContentView>().having((value) => value.text, 'text', 'first'),
-    );
-    expect(h.calls('closeMember'), isEmpty);
+    expect(h.calls('prompt'), isEmpty);
+    expect(h.calls('closeMember'), hasLength(1));
   });
 
   test('first prompt rejection preserves later typing until explicit retry succeeds in the same session', () async {
@@ -841,7 +1110,7 @@ void main() {
     },
   );
 
-  test('closing the draft releases all workspace ready waits without stopping business owners', () async {
+  test('closing start drafts releases readiness waits and their unused business resources', () async {
     final h = _Harness(ready: false);
     final start = h.repository.startDraft;
     start.setAcpService('workspace', 'account');
@@ -880,9 +1149,9 @@ void main() {
     expect(await creating, isFalse);
     expect(await otherCreating, isFalse);
     expect(h.calls('open'), hasLength(2));
-    expect(h.calls('closeMember'), isEmpty);
-    expect(h.source.closes, 0);
-    expect(otherSource.closes, 0);
+    expect(h.calls('closeMember'), hasLength(2));
+    expect(h.source.closes, 1);
+    expect(otherSource.closes, 1);
   });
 
   test('metadata removal during preparation blocks the frozen target and keeps the draft', () async {
@@ -979,7 +1248,7 @@ void main() {
   });
 
   test(
-    'ACP uses the existing workspace without consuming Native worktree intent',
+    'ACP preparation carries worktree intent without creating a Native session',
     () async {
       final h = _Harness();
       final start = h.repository.startDraft;

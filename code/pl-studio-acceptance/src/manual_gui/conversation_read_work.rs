@@ -9,14 +9,14 @@ use anyhow::{Context, Result, bail, ensure};
 use pl_model::config::{AccountConfig, AccountId};
 use pl_model::model::{ModelInfo, ModelTransportProfile};
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::studio::{
-    CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
-};
-use pl_protocol::{
+use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+use pl_studio_runtime::{
     CHAT_BATCH_MAX_BYTES, CurrentFrame, ReadDemand, ThreadNotification, ThreadStatus,
     ThreadWorkspaceMode,
 };
-use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step, responses_text};
+use pl_studio_runtime::{
+    CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
+};
 use pl_studio_runtime::{
     CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
@@ -202,7 +202,11 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
     let created = Box::pin(create_seed_thread(runtime, workspace_id, index)).await?;
     let demand = current_demand();
     let current = runtime
-        .open_current_reader(&created, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)
+        .open_current_reader(
+            &created,
+            pl_studio_runtime::CURRENT_PROTOCOL_VERSION,
+            demand,
+        )
         .await?;
     let mut watch = match current.watch(None, demand).await {
         Ok(watch) => watch,
@@ -349,7 +353,7 @@ pub(super) async fn wait_initial_turn(
             }
         };
         ensure!(
-            view.state.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                 && view.state.thread.id == thread_id
                 && view.state.active_turn.is_none()
                 && view.state.thread.status == ThreadStatus::Idle,
@@ -394,9 +398,9 @@ pub(super) async fn wait_notified_turn(
                     {
                         let view = current.snapshot(current_demand()).await?;
                         ensure!(
-                            view.state.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
+                            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                                 && view.state.thread.id == thread_id
-                                && matches!(turn.state, pl_protocol::TurnState::Completed(_))
+                                && matches!(turn.state, pl_studio_runtime::TurnState::Completed(_))
                                 && view.state.active_turn.is_none()
                                 && view.state.thread.status == ThreadStatus::Idle,
                             "TurnCompleted and Current State disagree"
@@ -436,7 +440,7 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().label().into(),
+                mode: pl_studio_runtime::ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),

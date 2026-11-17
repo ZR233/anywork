@@ -1,8 +1,48 @@
-use pl_protocol::{PureError, TodoItem, TodoStatus};
+use pl_protocol::PureError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 pub const TOOL_UPDATE_TODO_LIST: &str = "update_todo_list";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "inProgress",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoItem {
+    pub step: String,
+    pub status: TodoStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoListSnapshot {
+    pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub items: Vec<TodoItem>,
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -56,14 +96,14 @@ struct TodoDocument {
 pub fn saved_snapshot(
     payload: &pl_core::context::OpaquePayload,
     call_id: String,
-) -> Result<pl_protocol::TodoListSnapshot, PureError> {
+) -> Result<TodoListSnapshot, PureError> {
     if payload.format() != "pl.tool.todo" || payload.version() != 1 {
         return Err(invalid_todo_list(
             "unsupported saved todo payload format or version",
         ));
     }
     let document: TodoDocument = serde_json::from_str(payload.content())?;
-    Ok(pl_protocol::TodoListSnapshot {
+    Ok(TodoListSnapshot {
         call_id,
         agent_id: None,
         path: None,

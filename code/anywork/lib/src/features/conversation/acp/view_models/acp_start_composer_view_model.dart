@@ -1,4 +1,5 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:anywork_client/models.dart';
 
 import '../../../../presentation/providers/attachment_drafts.dart';
 import '../../../../presentation/providers/client_provider.dart';
@@ -24,6 +25,20 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
     final service = ref
         .watch(startBackendViewModelProvider(workspaceId))
         .selectedService;
+    final preparation = sessionDraft.acpPreparations[workspaceId];
+    final threadId = switch (preparation) {
+      AcpDraftReady(:final threadId) ||
+      AcpDraftNeedsConfiguration(:final threadId) => threadId,
+      _ => null,
+    };
+    final session = threadId == null
+        ? null
+        : ref.watch(acpConversationStateProvider(threadId)).value;
+    final preparationError = switch (preparation) {
+      AcpDraftFailed(:final error) ||
+      AcpDraftNeedsConfiguration(:final error) => error,
+      _ => null,
+    };
     return AcpStartComposerViewState(
       workspaceId: workspaceId,
       text: draft.project.text,
@@ -32,8 +47,24 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
       brandKey: service?.brandKey,
       submitting: draft.submitting,
       serviceEnabled: service?.enabled == true,
+      preparing: preparation is AcpDraftPreparing,
+      preparedThreadId: threadId,
+      ready:
+          preparation is AcpDraftReady &&
+          session?.ready == true &&
+          session?.configPending == false &&
+          session?.configError == null &&
+          session?.disconnected == false &&
+          session?.observationEnded == false,
       stagedAttachments: composer.attachments,
-      failureMessage: failure == null ? null : formatAcpError(failure),
+      failureMessage:
+          (preparationError ?? session?.configError ?? session?.error) != null
+          ? formatAcpError(
+              (preparationError ?? session?.configError ?? session?.error)!,
+            )
+          : failure == null
+          ? null
+          : formatAcpError(failure),
     );
   }
 
@@ -44,6 +75,17 @@ class AcpStartComposerViewModel extends _$AcpStartComposerViewModel {
         .startDraft
         .updateDraft(workspaceId, text);
   }
+
+  Future<void> retryPreparation() => ref
+      .read(anyworkClientProvider)
+      .drafts
+      .startDraft
+      .prepareAcp(workspaceId, retry: true);
+  void acceptConfiguration() => ref
+      .read(anyworkClientProvider)
+      .drafts
+      .startDraft
+      .acceptAcpConfiguration(workspaceId);
 
   Future<bool> submit() {
     return ref

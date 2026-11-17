@@ -9,30 +9,32 @@
 //! 消费方只需依赖 `pl-model` 即可命名完整签名。
 
 mod attachment;
+mod billing;
 pub(crate) mod compaction;
+mod context_item;
+mod message;
 pub(crate) mod replay;
 pub(crate) mod request;
 pub(crate) mod response;
 pub(crate) mod stream;
+mod tool;
 pub(crate) mod tool_arguments;
 pub(crate) mod tool_call;
+pub mod tool_projection;
 pub(crate) mod tool_schema;
 pub(crate) mod usage;
 mod visible_text;
 pub use attachment::{AttachmentInput, AttachmentSource, ResourceAccess, ResourceReference};
-
+pub use billing::*;
 pub use compaction::*;
-pub use pl_protocol::{
-    AttachmentModality, ContentPart, HostedWebSearchOptions, InferenceAccounting,
-    InferenceModelObservation, InferenceOrchestrationMetrics, InferenceTiming, InferenceTokenUsage,
-    Message, MessageContent, MessageRole, ModelContextItem, PureError, ResponsesContextItem,
-    Result, ToolCallCaller, ToolCallKind, ToolCallRecord, ToolSpec, UsageReport,
-    WebSearchContextSize, WebSearchFilters, WebSearchUserLocation,
-};
+pub use context_item::*;
+pub use message::*;
+pub use pl_protocol::{FirstOutputSource, PureError, Result};
 pub use replay::{AssistantReplay, Value};
 pub use request::*;
 pub use response::*;
 pub use stream::current::*;
+pub use tool::*;
 pub use tool_call::*;
 pub use usage::*;
 

@@ -1,5 +1,8 @@
 import 'dart:convert' show utf8;
 
+import '../../models/studio_enums.dart';
+import '../../models/delegation_models.dart';
+
 import '../../models/acp_models.dart' show AcpAuthMethodKindView;
 import 'acp_content.dart';
 import 'acp_session_payloads.dart';
@@ -12,6 +15,17 @@ sealed class AcpOpenIntentView {
 
 final class AcpNewIntentView extends AcpOpenIntentView {
   const AcpNewIntentView();
+}
+
+final class AcpDraftIntentView extends AcpOpenIntentView {
+  const AcpDraftIntentView({
+    required this.workspaceMode,
+    this.delegationMode,
+    this.delegationPreference,
+  });
+  final ThreadWorkspaceMode workspaceMode;
+  final DelegationMode? delegationMode;
+  final DelegationPreference? delegationPreference;
 }
 
 final class AcpLoadIntentView extends AcpOpenIntentView {

@@ -1,5 +1,8 @@
 //! Ordinary question projection and atomic user-answer continuation.
 use super::SessionRuntime;
+use crate::{
+    InteractionCommand, InteractionRequest, InteractionScope, ResolveUserInput, UserInputResolution,
+};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{
@@ -9,9 +12,6 @@ use pl_core::{
             InteractionState,
         },
     },
-};
-use pl_protocol::{
-    InteractionCommand, InteractionRequest, InteractionScope, ResolveUserInput, UserInputResolution,
 };
 use std::collections::BTreeMap;
 
@@ -28,7 +28,7 @@ pub enum UserInteractionError {
     #[error("user interaction identity or revision does not match")]
     Identity,
     #[error("user answer validation failed")]
-    Projection(#[from] pl_protocol::InteractionTransitionError),
+    Projection(#[from] crate::InteractionTransitionError),
     #[error("user answer could not be frozen")]
     Payload(#[from] pl_core::context::PayloadError),
     #[error("Thread rejected user answer")]
@@ -57,13 +57,13 @@ pub fn project_user_input(
     thread_id: &str,
     record: &InteractionRecord,
 ) -> Result<InteractionRequest, UserInteractionError> {
-    let questions: Vec<pl_protocol::UserQuestion> =
+    let questions: Vec<crate::UserQuestion> =
         decode(&record.request.payload, "pl.tool.user-input")?;
     // 计划确认的问题身份是保留标识：普通提问不得占用它。否则界面无法仅凭该身份把子会话的
     // 计划诊断与普通问题区分开，普通问题也会被误当作诊断事实隐藏。
     if let Some(reserved) = questions
         .iter()
-        .find(|question| question.id == pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
+        .find(|question| question.id == crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID)
     {
         return Err(UserInteractionError::ReservedQuestion {
             id: reserved.id.clone(),
@@ -83,8 +83,8 @@ pub fn project_user_input(
         questions,
         record.created_at,
     )
-    .with_continuation(pl_protocol::InteractionContinuationPreset::resolution(
-        pl_protocol::MessagePresentation::Hidden,
+    .with_continuation(crate::InteractionContinuationPreset::resolution(
+        crate::MessagePresentation::Hidden,
     ));
     projected.revision = 1;
     let command = match &record.state {
@@ -99,15 +99,13 @@ pub fn project_user_input(
                 answers: response.answers,
             }))
         }
-        InteractionState::Cancelled => {
-            Some(InteractionCommand::Cancel(pl_protocol::CancelInteraction {
-                interaction_id: wire_id.clone(),
-                expected_revision: 1,
-                operation_id: format!("cancel:{wire_id}"),
-                reason: "User input was cancelled.".into(),
-                cancelled_at: record.updated_at,
-            }))
-        }
+        InteractionState::Cancelled => Some(InteractionCommand::Cancel(crate::CancelInteraction {
+            interaction_id: wire_id.clone(),
+            expected_revision: 1,
+            operation_id: format!("cancel:{wire_id}"),
+            reason: "User input was cancelled.".into(),
+            cancelled_at: record.updated_at,
+        })),
     };
     if let Some(command) = command {
         let decision = projected.decide(command)?;
@@ -149,7 +147,7 @@ fn prepare_resolution(
         "pl.studio.interaction-continuation",
         1,
         serde_json::to_string(
-            &serde_json::json!({"interactionId":record.request.id,"presentation":pl_protocol::MessagePresentation::Hidden}),
+            &serde_json::json!({"interactionId":record.request.id,"presentation":crate::MessagePresentation::Hidden}),
         )?,
     )?;
     Ok(CoreResolution {

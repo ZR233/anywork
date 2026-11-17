@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use pl_protocol::{
+use crate::{
     CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogEntry, McpCatalogSnapshot,
     McpConfigStatusKind, McpDocumentCommitReceipt, McpDocumentContent, McpDocumentDiagnostic,
     McpDocumentRef, McpEffectiveSource, McpExecutionLocation, McpScope, PureError, Result,

@@ -101,6 +101,13 @@ for line in sys.stdin:
                 emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32000,'message':'Authentication required'}})
                 continue
         result={'sessionId':sid}
+        if mode == 'config':
+            result['configOptions']=[{'id':'format','name':'Output format','type':'select',
+                'currentValue':'plain','options':[{'value':'plain','name':'Plain'}, {'value':'json','name':'JSON'}]}]
+    elif method == 'session/set_config_option':
+        assert msg['params']['configId'] == 'format'
+        result={'configOptions':[{'id':'format','name':'Output format','type':'select',
+            'currentValue':msg['params']['value'],'options':[{'value':'plain','name':'Plain'}, {'value':'json','name':'JSON'}]}]}
     elif method == 'session/prompt':
         sid=msg['params']['sessionId']
         assert sid

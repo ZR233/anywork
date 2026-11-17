@@ -236,7 +236,7 @@ mod startup_fault_tests {
             .store
             .persist_directory_summaries(&DirectoryDelta::upsert_project(ProjectDirectoryRecord {
                 id: "project-published".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Published".into(),
                 path: workspace.to_string_lossy().into_owned(),
                 ssh_alias: None,
@@ -456,7 +456,7 @@ mod startup_fault_tests {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: "project-cold".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Cold".into(),
                 path: "/tmp/project-cold".into(),
                 ssh_alias: None,
@@ -471,8 +471,8 @@ mod startup_fault_tests {
                 "cold".into(),
                 "project-cold",
                 "cold",
-                pl_protocol::ThreadModeId::simple(),
-                pl_protocol::ThreadWorkspaceMode::Local,
+                crate::mode::ThreadModeId::simple(),
+                crate::ThreadWorkspaceMode::Local,
                 "/tmp/project-cold".into(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
             );
@@ -531,7 +531,7 @@ mod startup_fault_tests {
         assert_eq!(session.root_agent_id, "cold");
         assert_eq!(
             session.native_mode,
-            Some(pl_protocol::ThreadModeId::simple())
+            Some(crate::mode::ThreadModeId::simple())
         );
         let child = catalog
             .get_agent("synthetic-child")
@@ -765,7 +765,7 @@ mod startup_fault_tests {
         let temp = tempfile::tempdir()?;
         let home = temp.path();
         let paths = seed(home).await?;
-        let frozen_cost = pl_protocol::RuntimeCostAmount {
+        let frozen_cost = crate::RuntimeCostAmount {
             currency: "USD".into(),
             amount: 3.25,
         };
@@ -1143,10 +1143,24 @@ mod startup_fault_tests {
                 .and_then(|session| session.observed_thread("cold"))
                 .is_none()
         );
-        let reader = runtime.open_history_reader("cold", pl_protocol::HISTORY_PROTOCOL_VERSION).await?;
-        let manifest = reader.list_bodies(item.id.clone(), None, crate::history::HistoryDemand::default()).await?;
-        let reference = manifest.entries.iter().find(|entry| entry.reference.body_key == "text")
-            .or_else(|| manifest.entries.first()).context("preserved manifest")?.reference.clone();
+        let reader = runtime
+            .open_history_reader("cold", crate::HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let manifest = reader
+            .list_bodies(
+                item.id.clone(),
+                None,
+                crate::history::HistoryDemand::default(),
+            )
+            .await?;
+        let reference = manifest
+            .entries
+            .iter()
+            .find(|entry| entry.reference.body_key == "text")
+            .or_else(|| manifest.entries.first())
+            .context("preserved manifest")?
+            .reference
+            .clone();
         let detail = reader.read_body(reference, 0, 128).await?;
         assert_eq!(detail.bytes, "preserved detail 中文\n".as_bytes());
         assert_eq!(detail.bytes.len() as u64, detail.total_length);

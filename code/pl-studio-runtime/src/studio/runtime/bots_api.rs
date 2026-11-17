@@ -1,10 +1,10 @@
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     BotConversationPage, BotMessagePage, BotSendResult, BotsCommandReply, BotsStateSnapshot,
     CancelBotRegistrationRequest, ListBotConversationsRequest, ReadBotMessagesRequest,
     RetryBotConnectionRequest, SaveBotRequest, SendBotMessageRequest, SetBotEnabledRequest,
     SetBotTrustedChatRequest, SetBotTrustedUserRequest, StartBotRegistrationRequest,
 };
+use anyhow::Result;
 
 use super::StudioRuntime;
 
@@ -39,9 +39,9 @@ impl StudioRuntime {
     pub(crate) async fn prepare_bot_attachment_drafts(
         &self,
         thread_id: &str,
-        sources: Vec<pl_protocol::studio::StudioAttachmentDraftSource>,
+        sources: Vec<crate::StudioAttachmentDraftSource>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<pl_protocol::studio::AdmitAttachmentDraftsResponse> {
+    ) -> Result<crate::AdmitAttachmentDraftsResponse> {
         // Only admission is cancellable. Once admitted, the reply retains this
         // future through the actual file/resource handoff before reporting stop.
         let _guard = tokio::select! {
@@ -51,8 +51,8 @@ impl StudioRuntime {
         anyhow::ensure!(!cancel.is_cancelled(), "bot attachment admission cancelled");
         let thread = self.ensure_thread_owner(thread_id).await?;
         self.reconcile_bot_model(thread_id, &thread).await?;
-        self.admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-            context: pl_protocol::studio::StudioAttachmentAdmissionContext::ExistingThread {
+        self.admit_attachment_drafts(crate::AdmitAttachmentDraftsRequest {
+            context: crate::StudioAttachmentAdmissionContext::ExistingThread {
                 thread_id: thread_id.into(),
             },
             sources,
@@ -267,8 +267,8 @@ impl StudioRuntime {
 
     pub async fn create_bot_conversation_thread(
         &self,
-        request: pl_protocol::studio::CreateBotConversationThreadRequest,
-    ) -> Result<pl_protocol::studio::BotConversationThreadReply> {
+        request: crate::CreateBotConversationThreadRequest,
+    ) -> Result<crate::BotConversationThreadReply> {
         Self::validate_operation_id(&request.operation_id)?;
         self.bots
             .create_conversation_thread(request, &self.owner_epoch)

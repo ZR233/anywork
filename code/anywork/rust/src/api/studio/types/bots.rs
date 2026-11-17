@@ -1,4 +1,4 @@
-//! 机器人产品 FRB DTO。字段与 `pl_protocol::studio::bots` 对齐；Secret 与验证链接
+//! 机器人产品 FRB DTO。字段与 `pl_studio_runtime::bots` 对齐；Secret 与验证链接
 //! 的调试表示脱敏。FRB 2.x wire 按位置传递，不依赖 serde 字段重命名。
 
 use serde::{Deserialize, Serialize};

@@ -760,10 +760,8 @@ impl Owner {
             }
         }
         self.state.attempts = attempts.into();
-        // The terminal outcome is now the only accounting authority. Do not leave the completed
-        // attempt's live receiver attached to the next snapshot, even though publish_snapshot also
-        // filters non-running attempts defensively.
-        self.model_progress = None;
+        // The terminal receiver remains available only until its immutable History handoff has
+        // captured the exact producer cut. Current snapshots already exclude non-running attempts.
         // Independently admitted members still have live call-local opaque allocations until the
         // terminal handoff below completes. Their resident reservation is not transferable funding
         // for this terminal effect: use ordinary reliable admission for that encoded copy instead.
@@ -777,7 +775,9 @@ impl Owner {
         } else {
             Some(input.attempt_id.clone())
         };
-        self.publish()?;
+        let published = self.publish();
+        self.model_progress = None;
+        published?;
         // Keep bounded member validation through the final output checks and terminal handoff.
         // Closing ingress above is not permission to release its identity/metadata obligation early.
         self.model_members = None;

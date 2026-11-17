@@ -2,9 +2,9 @@
 
 use std::sync::{Arc, Weak};
 
+use crate::ThreadMcpStateSnapshot;
 use pl_agent_tool::{ToolHandle, typed::TypedTool};
 use pl_core::tool::opaque::{CallContext, Registration, ToolError};
-use pl_protocol::ThreadMcpStateSnapshot;
 use pl_tool::binding::{ToolCallPolicy, prepare_json_tool, prepare_registration};
 
 use super::{StudioThreadFactory, mcp::ThreadMcpOwner, mcp_refresh_tool::McpToolCatalogStatus};

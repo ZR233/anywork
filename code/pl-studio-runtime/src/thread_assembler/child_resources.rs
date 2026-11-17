@@ -22,6 +22,25 @@ struct PreparationAdmission {
 }
 #[derive(Debug, Clone, Default)]
 pub struct WorkspacePreparationOwner(Arc<std::sync::Mutex<PreparationResources>>);
+
+/// Serializes a binding handoff with the original preparation's close admission.
+pub(crate) trait WorkspaceBindingAdmission {
+    fn with_binding_admission<T>(
+        &self,
+        id: &str,
+        handoff: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T>;
+}
+
+impl WorkspaceBindingAdmission for WorkspacePreparationOwner {
+    fn with_binding_admission<T>(
+        &self,
+        id: &str,
+        handoff: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        WorkspacePreparationOwner::with_binding_admission(self, id, handoff)
+    }
+}
 impl WorkspacePreparationOwner {
     pub(crate) fn verified_review(
         proof: crate::studio::thread_factory::VerifiedLocalResume,

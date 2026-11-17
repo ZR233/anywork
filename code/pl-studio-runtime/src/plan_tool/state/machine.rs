@@ -1,4 +1,4 @@
-use pl_protocol::{
+use crate::plan_tool::{
     AgentSessionPlanAvailableTransition, AgentSessionPlanDocument,
     AgentSessionPlanMutationResponse, AgentSessionPlanOperation, AgentSessionPlanOperationReceipt,
     AgentSessionPlanPhase, AgentSessionPlanResultCode, AgentSessionPlanSnapshot,

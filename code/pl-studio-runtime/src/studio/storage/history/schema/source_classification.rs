@@ -1,9 +1,9 @@
 //! Named content upgrade; original payloads and reliable fact positions are immutable.
 use super::legacy_timeline_store as timeline;
 use super::*;
+use crate::{ChatAtom, ChatAtomKind};
 #[cfg(test)]
 use crate::{ExecutionItem, ExecutionShape};
-use pl_protocol::{ChatAtom, ChatAtomKind};
 
 pub(super) struct SourceClassification;
 
@@ -274,6 +274,7 @@ async fn completion_owner(db: &impl ConnectionTrait, atom: &ChatAtom) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::*;
     use crate::studio::paths::SqliteFileMode;
     use crate::studio::storage::history::conversation;
     use crate::studio::storage::history::schema::legacy_timeline_types::{
@@ -281,7 +282,6 @@ mod tests {
     };
     use crate::studio::storage::history::{HistoryStore, connect};
     use anyhow::Result;
-    use pl_protocol::*;
     use sea_orm::DatabaseConnection;
     use std::path::{Path, PathBuf};
 

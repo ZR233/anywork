@@ -7,17 +7,11 @@ flutter_rust_bridge；Rust bridge 位于 `rust/`，SDK-only Client 位于 `../an
 
 ## 按目标选择最轻入口
 
-| 目标 | 入口 | 边界 |
-| --- | --- | --- |
-| 纯界面调整、局部交互、截图 | `cargo xtask preview-gui --headless --no-devtools` | 独立 `anywork_previews` 开发包通过官方 Widget Previewer 复用生产组件；**不编译 Rust bridge**，不启动模型服务，不需要 Xvfb |
-| 组件布局/交互回归 | `cargo flutter test --no-pub test/ui/<相关用例>` | 无设备，不准备 bridge；保留确定性产品断言，不为截图新增测试入口 |
-| 隔离真实业务观察 | `cargo xtask manual-gui --preset gui --inspect` | 本地严格模拟供应商、真实 AppGraph/FRB/SQLite；官方 Dart MCP 操作和截图 |
-| 原生功能集成 | `cargo xtask test-project --suite desktop --case <用例>` | 官方 `integration_test` 在真实应用断言功能 |
-| OS 进程退出/重开/多实例 | `cargo xtask test-project --suite native` | 独立进程裁判，不能由截图或 Client 关闭代证 |
+场景选择、控件发现、热更新、截图核图、错误检查及资源回收见 [无头实验指南](../../.agents/skills/flutter-studio-build/references/experiments.md)；
+自动化命令与真实边界见 [测试基础设施](../../design/24-testing.md)。
 
-统一的场景选择、控件发现、热更新、截图核图、错误检查及资源回收见
-[无头实验指南](../../.agents/skills/flutter-studio-build/references/experiments.md)。不同载体不是每轮必跑清单，
-不为了纯界面截图启动原生应用。预览标明合成状态，不证明保存、真实供应商、IME 或原生性能。
+纯界面迭代从仓库根使用 `cargo xtask preview-gui --headless --no-devtools`，不编译 Rust bridge。
+预览标明合成状态，不证明保存、真实供应商、IME 或原生性能。
 
 现有账号、时间线、输入框、工作模式和侧栏预览直接复用生产 View、主题和本地化；合成数据只提供
 呈现输入，不实现第二套分组或业务状态。官方工具会编译全部已发现入口，筛选 UI 不隔离原生依赖；
@@ -72,6 +66,4 @@ DTD URI 与 VM Service URI 不能混用；先读 widget tree，再定位点击�
 不要用 MCP 启动另一个应用绕过 xtask；Driver 调试入口、正式入口和 integration-test binding 分离。
 纯预览不一定注册 Driver extension，按真实能力使用成熟浏览器工具，不新增私有桥接协议。
 
-正式桌面测试保留生产资源所有者、受控对端和失败传播；性能采样与真实账号登录仅显式选择。
-专项 fixture、保存重开、credit、20k 历史、真实 native 退出仍保留独特信号，不因整理人工流程删除。
 证据口径和 CI 职责统一见[测试与人工验收](../../design/24-testing.md)，操作步骤不在本页另行复制。

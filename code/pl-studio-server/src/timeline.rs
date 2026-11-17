@@ -20,7 +20,7 @@ use axum::{
     },
 };
 use futures::Stream;
-use pl_protocol::{
+use pl_studio_runtime::{
     ContentRange, CurrentCollectionPage, CurrentCollectionRef, CurrentContentRef, CurrentFrame,
     CurrentRevision, ReadDemand,
     history::{
@@ -958,7 +958,7 @@ pub(crate) async fn snapshot(
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<CurrentSnapshotRequest>,
-) -> Result<Json<pl_protocol::CurrentView>, ApiError> {
+) -> Result<Json<pl_studio_runtime::CurrentView>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;
@@ -1056,13 +1056,13 @@ pub(crate) async fn page(
     operation_id = "thread.readCurrentBody",
     params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
     request_body = CurrentBodyRequest,
-    responses(StudioApiErrors, (status = 200, body = pl_protocol::ContentWindow)))]
+    responses(StudioApiErrors, (status = 200, body = pl_studio_runtime::ContentWindow)))]
 pub(crate) async fn body_read(
     State(state): State<AppState>,
     Path(thread_id): Path<String>,
     headers: HeaderMap,
     ApiJson(request): ApiJson<CurrentBodyRequest>,
-) -> Result<Json<pl_protocol::ContentWindow>, ApiError> {
+) -> Result<Json<pl_studio_runtime::ContentWindow>, ApiError> {
     let lease = state
         .timelines
         .borrow(&thread_id, &headers, &state.shutdown)?;

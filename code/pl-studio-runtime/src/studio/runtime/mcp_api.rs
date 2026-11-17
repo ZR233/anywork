@@ -1,11 +1,11 @@
 //! StudioRuntime 的按环境作用域 MCP 配置目录 API 与 Thread 级 MCP 状态/重连 API。
 
-use anyhow::Result;
-use pl_protocol::{
+use crate::{
     CreateMcpDocumentRequest, DeleteMcpDocumentRequest, McpCatalogSnapshot,
     McpDocumentCommitReceipt, McpDocumentContent, McpDocumentRef, McpScope,
     ReconnectThreadMcpRequest, ThreadMcpStateSnapshot, UpdateMcpDocumentRequest,
 };
+use anyhow::Result;
 
 use super::StudioRuntime;
 use crate::config::McpDocumentError;
@@ -27,18 +27,18 @@ impl StudioRuntime {
     /// Resets one server through the current Thread binding and returns its new published cut.
     pub async fn reset_thread_lsp_server(
         &self,
-        request: pl_protocol::studio::ThreadLspResetRequest,
+        request: crate::ThreadLspResetRequest,
     ) -> Result<crate::protocol::StudioThreadLspStateSnapshot> {
         self.read_protocol_thread(&request.thread_id).await?;
         let stale = || {
             anyhow::Error::new(
-                pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Conflict,
+                crate::StudioError::new(
+                    crate::StudioErrorCode::Conflict,
                     "The Thread LSP binding is no longer current",
                     false,
                 )
                 .with_reason(
-                    pl_protocol::studio::StudioErrorReason::StaleLspBinding,
+                    crate::StudioErrorReason::StaleLspBinding,
                     serde_json::json!({}),
                 ),
             )
@@ -75,9 +75,9 @@ impl StudioRuntime {
         let root = lease.workspace_root().to_path_buf();
         let members = registry.snapshots_for_workspace(&root).await;
         if !members.iter().any(|server| server.id == request.server_id) {
-            return Err(anyhow::Error::new(
-                pl_protocol::studio::StudioError::not_found("LSP server"),
-            ));
+            return Err(anyhow::Error::new(crate::StudioError::not_found(
+                "LSP server",
+            )));
         }
         if cancellation.is_cancelled()
             || self

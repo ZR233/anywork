@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use pl_protocol::studio::StudioAttachmentModality;
+use crate::StudioAttachmentModality;
 
 use crate::studio::store::attachment::normalize_image_attachment;
 

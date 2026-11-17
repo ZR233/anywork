@@ -14,6 +14,7 @@ void main() {
       accountId: 'account',
       serviceName: 'Codex',
       serviceEnabled: true,
+      ready: true,
     );
     var sends = 0;
     await tester.pumpWidget(
@@ -68,6 +69,7 @@ void main() {
       accountId: 'account',
       serviceName: 'Codex',
       serviceEnabled: true,
+      ready: true,
     );
     late StateSetter rebuild;
     var sends = 0;

@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpAuthSnapshot, AcpAuthState, CancelAcpAuthRequest, StartAcpAuthRequest, StudioErrorCode,
 };
+use anyhow::Result;
 
 use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
 use super::mapping::{acp_error, ensure_operation_id};
@@ -298,10 +298,8 @@ impl AcpAuthInner {
                 false,
             ));
         }
-        if matches!(
-            request.action,
-            pl_protocol::studio::AcpAuthAction::QueryUsage
-        ) && account.definition.template_kind().is_none()
+        if matches!(request.action, crate::AcpAuthAction::QueryUsage)
+            && account.definition.template_kind().is_none()
         {
             return Err(acp_error(
                 StudioErrorCode::InvalidArgument,
@@ -407,16 +405,17 @@ impl AcpAuthInner {
             }
             // 忙碌切面与拒绝裁决同锁捕获：账号当前修订、快照修订与占用操作身份
             // 描述同一时刻，不能在解锁后重读或拼接较新修订（design/28 §28.9）。
-            let busy = slot.operation.as_ref().map(|operation| {
-                pl_protocol::studio::AcpAuthBusyRejection {
-                    acp_auth_busy: pl_protocol::studio::AcpAuthBusyDetails {
+            let busy = slot
+                .operation
+                .as_ref()
+                .map(|operation| crate::AcpAuthBusyRejection {
+                    acp_auth_busy: crate::AcpAuthBusyDetails {
                         account_id: request.account_id.clone(),
                         connection_revision: slot.revision,
                         snapshot_revision: registry.revision,
                         active_operation: operation.active_operation_view(),
                     },
-                }
-            });
+                });
             (slot.revision, busy)
         };
         if let Some(busy) = busy {
@@ -478,11 +477,11 @@ mod tests {
     use crate::config::{
         AcpProvider, AcpServiceDefinition, ConfigPaths, ConfigStore, StudioConfig,
     };
-    use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
-    use pl_protocol::studio::{
+    use crate::{
         AcpAuthAction, AcpAuthActiveOperation, AcpAuthBusyDetails, AcpAuthBusyRejection,
         StudioError,
     };
+    use crate::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -540,7 +539,7 @@ mod tests {
     fn busy_rejection(
         runtime: &StudioRuntime,
         expected_connection_revision: u64,
-    ) -> pl_protocol::studio::AcpAuthBusyRejection {
+    ) -> crate::AcpAuthBusyRejection {
         let error = match runtime.acp_auth.start(StartAcpAuthRequest {
             operation_id: "second".into(),
             account_id: "account".into(),

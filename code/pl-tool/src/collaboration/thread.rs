@@ -11,7 +11,7 @@ use pl_core::{
         opaque::{CallContext, Registration, ToolError},
     },
 };
-pub use pl_protocol::studio::NewThreadModelRoute;
+pub use pl_protocol::NewThreadModelRoute;
 pub use pl_protocol::{AgentWorkspaceMode, DelegationMode};
 pub use serde_json::Error as SchemaEncodingError;
 use std::sync::Arc;

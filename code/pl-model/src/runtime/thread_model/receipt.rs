@@ -106,13 +106,13 @@ pub struct ModelResponseReceipt {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFailureReceipt {
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub timing: Option<crate::completion::InferenceTiming>,
     #[serde(default)]
     pub provider_failure: Option<pl_protocol::ProviderFailure>,
     #[serde(default)]
     pub message: String,
     pub binding: ModelCallBinding,
-    pub accounting: crate::completion::InferenceAccounting,
+    pub accounting: crate::model::InferenceAccounting,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_observation: Option<crate::completion::InferenceModelObservation>,
     /// Full provider output retained independently of the bounded live preview.
@@ -167,13 +167,11 @@ pub(super) fn presentation_part_kind(kind: CompletionPresentationPartKind) -> Ob
     }
 }
 
-fn text_channel(channel: pl_protocol::trace::TraceTextChannel) -> pl_core::model::ModelTextChannel {
+fn text_channel(channel: crate::trace::TraceTextChannel) -> pl_core::model::ModelTextChannel {
     match channel {
-        pl_protocol::trace::TraceTextChannel::User => pl_core::model::ModelTextChannel::User,
-        pl_protocol::trace::TraceTextChannel::Commentary => {
-            pl_core::model::ModelTextChannel::Commentary
-        }
-        pl_protocol::trace::TraceTextChannel::Final => pl_core::model::ModelTextChannel::Final,
+        crate::trace::TraceTextChannel::User => pl_core::model::ModelTextChannel::User,
+        crate::trace::TraceTextChannel::Commentary => pl_core::model::ModelTextChannel::Commentary,
+        crate::trace::TraceTextChannel::Final => pl_core::model::ModelTextChannel::Final,
     }
 }
 
@@ -223,9 +221,9 @@ pub(super) fn failure_error(
 
 pub(super) fn postprocess_failure_error(
     binding: ModelCallBinding,
-    accounting: crate::completion::InferenceAccounting,
+    accounting: crate::model::InferenceAccounting,
     model_observation: Option<crate::completion::InferenceModelObservation>,
-    timing: Option<pl_protocol::InferenceTiming>,
+    timing: Option<crate::completion::InferenceTiming>,
     partial_progress: Option<ModelProgress>,
     error: ModelError,
 ) -> ModelError {

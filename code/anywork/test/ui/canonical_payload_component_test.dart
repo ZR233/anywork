@@ -262,15 +262,31 @@ void main() {
             ),
         ],
       );
-      final evidence = input.verifyHorizontalLayout(
-        tester,
-        item: unit,
-        attachments: rendered.attachments,
-        itemFinder: find.byType(ChatItemView),
-        thumbnailFinder: (id) =>
-            find.byKey(StudioDriverKeys.viewImageThumbnail(id)),
-      );
+      final evidence = input.verifyItem(unit, rendered.attachments);
       expect(evidence['attachmentResourceIds'], ids);
+      final cardFinder = find.byType(ChatItemView);
+      expect(cardFinder, findsOneWidget);
+      Rect? previous;
+      double? firstTop;
+      for (final attachment in rendered.attachments) {
+        final thumbnail = find.descendant(
+          of: cardFinder,
+          matching: find.byKey(
+            StudioDriverKeys.viewImageThumbnail(attachment.id),
+          ),
+        );
+        expect(thumbnail, findsOneWidget);
+        final rect = tester.getRect(thumbnail);
+        expect(rect.width, greaterThan(0));
+        expect(rect.height, greaterThan(0));
+        if (firstTop == null) {
+          firstTop = rect.top;
+        } else {
+          expect(rect.top, closeTo(firstTop, 1));
+          expect(rect.left, greaterThanOrEqualTo(previous!.right));
+        }
+        previous = rect;
+      }
       expect(mediaReads, unorderedEquals(ids));
       expect(h.content.requests, hasLength(1));
       expect(h.content.requests.single.$1, 'completion');

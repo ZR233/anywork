@@ -8,10 +8,10 @@
 pub struct CompletionResponseSnapshot {
     id: Option<String>,
     model: String,
-    model_observation: Option<pl_protocol::InferenceModelObservation>,
+    model_observation: Option<crate::completion::InferenceModelObservation>,
     output: Vec<CompletionResponseOutputSnapshot>,
-    accounting: pl_protocol::InferenceAccounting,
-    timing: Option<pl_protocol::InferenceTiming>,
+    accounting: crate::model::InferenceAccounting,
+    timing: Option<crate::completion::InferenceTiming>,
 }
 
 impl CompletionResponseSnapshot {
@@ -27,16 +27,16 @@ impl CompletionResponseSnapshot {
         &self.model
     }
 
-    pub fn model_observation(&self) -> Option<&pl_protocol::InferenceModelObservation> {
+    pub fn model_observation(&self) -> Option<&crate::completion::InferenceModelObservation> {
         self.model_observation.as_ref()
     }
 
     /// Final accounting, including missing usage and disabled pricing states.
-    pub fn accounting(&self) -> &pl_protocol::InferenceAccounting {
+    pub fn accounting(&self) -> &crate::model::InferenceAccounting {
         &self.accounting
     }
 
-    pub fn timing(&self) -> Option<pl_protocol::InferenceTiming> {
+    pub fn timing(&self) -> Option<crate::completion::InferenceTiming> {
         self.timing
     }
 }

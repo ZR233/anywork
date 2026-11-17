@@ -481,12 +481,39 @@ final class FailedComposerThreadState extends ComposerThreadState {
 }
 
 /// 起始页草稿。相等性按值比较，供 ViewProvider 过滤通知。
+/// Preparation state contains only draft qualification, never a second ACP config snapshot.
+sealed class AcpDraftPreparation {
+  const AcpDraftPreparation(this.generation);
+  final int generation;
+}
+
+final class AcpDraftPreparing extends AcpDraftPreparation {
+  const AcpDraftPreparing(super.generation);
+}
+
+final class AcpDraftReady extends AcpDraftPreparation {
+  const AcpDraftReady(super.generation, this.threadId);
+  final String threadId;
+}
+
+final class AcpDraftFailed extends AcpDraftPreparation {
+  const AcpDraftFailed(super.generation, this.error);
+  final Object error;
+}
+
+final class AcpDraftNeedsConfiguration extends AcpDraftPreparation {
+  const AcpDraftNeedsConfiguration(super.generation, this.threadId, this.error);
+  final String threadId;
+  final Object error;
+}
+
 class StartSessionDraft {
   const StartSessionDraft({
     this.projects = const {},
     this.modelIntents = const {},
     this.effortIntents = const {},
     this.preparations = const {},
+    this.acpPreparations = const {},
     this.submitting = false,
     this.revision = 0,
   });
@@ -495,6 +522,7 @@ class StartSessionDraft {
   final Map<String, StartSessionModelIntent> modelIntents;
   final Map<String, String> effortIntents;
   final Map<String, NewThreadPreparation> preparations;
+  final Map<String, AcpDraftPreparation> acpPreparations;
   final bool submitting;
   final int revision;
 
@@ -517,6 +545,7 @@ class StartSessionDraft {
     Map<String, StartSessionModelIntent>? modelIntents,
     Map<String, String>? effortIntents,
     Map<String, NewThreadPreparation>? preparations,
+    Map<String, AcpDraftPreparation>? acpPreparations,
     bool? submitting,
     int? revision,
   }) {
@@ -525,6 +554,7 @@ class StartSessionDraft {
       modelIntents: modelIntents ?? this.modelIntents,
       effortIntents: effortIntents ?? this.effortIntents,
       preparations: preparations ?? this.preparations,
+      acpPreparations: acpPreparations ?? this.acpPreparations,
       submitting: submitting ?? this.submitting,
       revision: revision ?? this.revision,
     );
@@ -539,7 +569,8 @@ class StartSessionDraft {
           _mapEquals(projects, other.projects) &&
           _mapEquals(modelIntents, other.modelIntents) &&
           _mapEquals(effortIntents, other.effortIntents) &&
-          _mapEquals(preparations, other.preparations);
+          _mapEquals(preparations, other.preparations) &&
+          _mapEquals(acpPreparations, other.acpPreparations);
 
   @override
   int get hashCode => Object.hash(
@@ -549,6 +580,7 @@ class StartSessionDraft {
     _mapHash(modelIntents),
     _mapHash(effortIntents),
     _mapHash(preparations),
+    _mapHash(acpPreparations),
   );
 }
 

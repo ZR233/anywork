@@ -290,10 +290,10 @@ impl StudioThreadFactory {
             .ok_or_else(|| {
                 crate::thread_assembler::ThreadAssemblyError::Identity(thread_id.to_owned())
             })?;
-        if matches!(&binding, pl_protocol::AgentBinding::Acp(_)) {
+        if matches!(&binding, crate::AgentBinding::Acp(_)) {
             return Err(
                 crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                    backend: pl_protocol::AgentBackendKind::Acp,
+                    backend: crate::AgentBackendKind::Acp,
                 },
             );
         }
@@ -316,7 +316,7 @@ impl crate::thread_assembler::StudioActivationFactory for StudioThreadFactory {
     async fn root_delegation(
         &self,
         identity: &crate::thread_assembler::ThreadActivation,
-    ) -> Result<pl_protocol::DelegationSettings, crate::thread_assembler::ThreadAssemblyError> {
+    ) -> Result<crate::DelegationSettings, crate::thread_assembler::ThreadAssemblyError> {
         self.resolve_root_delegation(identity).await
     }
 
@@ -434,7 +434,7 @@ mod review_archive_tests {
         async fn root_delegation(
             &self,
             _: &ThreadActivation,
-        ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
             Ok(Default::default())
         }
 
@@ -472,7 +472,7 @@ mod review_archive_tests {
         let factory = &physical.factory;
         let owner = SessionRuntime::default();
         physical.install(&owner)?;
-        let mut protocol = pl_protocol::Thread::placeholder("root");
+        let mut protocol = crate::Thread::placeholder("root");
         protocol.workspace_id = "review-workspace".into();
         protocol.root_thread_id = "root".into();
         protocol.workspace_path = root.to_string_lossy().into_owned();
@@ -620,12 +620,12 @@ mod review_archive_tests {
 
     async fn register(
         events: &crate::studio::ProductEventBus,
-        protocol: &pl_protocol::Thread,
+        protocol: &crate::Thread,
         root: &str,
     ) -> anyhow::Result<()> {
         let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
             id: protocol.workspace_id.clone(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name: "Review fixture".into(),
             path: root.into(),
             ssh_alias: None,
@@ -648,9 +648,9 @@ mod review_archive_tests {
         store: &StudioStore,
         events: &crate::studio::ProductEventBus,
         id: &str,
-        assignment: &pl_protocol::AgentWorkspaceAssignmentSnapshot,
+        assignment: &crate::AgentWorkspaceAssignmentSnapshot,
     ) -> anyhow::Result<(ThreadHandle, tokio::task::JoinHandle<()>, String)> {
-        let mut protocol = pl_protocol::Thread::placeholder(id);
+        let mut protocol = crate::Thread::placeholder(id);
         protocol.workspace_id = "review-workspace".into();
         protocol.parent_thread_id = Some("root".into());
         protocol.root_thread_id = "root".into();
@@ -663,7 +663,7 @@ mod review_archive_tests {
             model_steps: 0,
             elapsed_ms: None,
         };
-        let review = (assignment.mode == pl_protocol::AgentWorkspaceMode::Review).then(|| {
+        let review = (assignment.mode == crate::AgentWorkspaceMode::Review).then(|| {
             serde_json::json!({
                 "target": assignment.review_target,
                 "disposition": pl_tool::finish_turn::ReviewDisposition::NeedsChanges,
@@ -708,8 +708,7 @@ mod review_archive_tests {
             .initial_extensions
             .get_mut(crate::studio::model_route::AGENT_PROFILE_EXTENSION)
             .unwrap();
-        let mut profile: pl_protocol::AgentProfileSnapshot =
-            serde_json::from_str(payload.content())?;
+        let mut profile: crate::AgentProfileSnapshot = serde_json::from_str(payload.content())?;
         profile.workspace_mode = assignment.mode;
         *payload = crate::studio::model_route::encode_profile(&profile)?;
         prepared.initial_extensions.insert(
@@ -738,9 +737,9 @@ mod review_archive_tests {
             )
         })?;
         let physical = close_factory(&store)?;
-        let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
+        let owner = SessionRuntime::open(crate::SessionId::new("root")?);
         physical.install(&owner)?;
-        let mut protocol = pl_protocol::Thread::placeholder("root");
+        let mut protocol = crate::Thread::placeholder("root");
         protocol.workspace_id = "review-workspace".into();
         protocol.root_thread_id = "root".into();
         protocol.workspace_path = root.clone();
@@ -748,8 +747,8 @@ mod review_archive_tests {
         owner
             .assemble(spec("root".into(), None, temp.path()))
             .await?;
-        let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
-            mode: pl_protocol::AgentWorkspaceMode::Directory,
+        let assignment = crate::AgentWorkspaceAssignmentSnapshot {
+            mode: crate::AgentWorkspaceMode::Directory,
             project_root: root.clone(),
             root: root.clone(),
             writable_paths: None,
@@ -762,7 +761,7 @@ mod review_archive_tests {
         let terminal_sequence = 1;
         let turn_id = "original-terminal-turn";
         let input_id = None;
-        let baseline = pl_protocol::AgentReviewBaseline {
+        let baseline = crate::AgentReviewBaseline {
             turn_id: turn_id.into(),
             input_id,
             terminal_sequence,
@@ -775,10 +774,10 @@ mod review_archive_tests {
             continuation_id: snapshot.continuation.as_ref().map(|point| point.id.clone()),
         };
         let mut review_assignment = assignment.clone();
-        review_assignment.mode = pl_protocol::AgentWorkspaceMode::Review;
-        review_assignment.review_target = Some(pl_protocol::AgentReviewTargetSnapshot {
+        review_assignment.mode = crate::AgentWorkspaceMode::Review;
+        review_assignment.review_target = Some(crate::AgentReviewTargetSnapshot {
             agent_id: "target".into(),
-            feedback: Some(pl_protocol::AgentReviewFeedback::ToExecutor),
+            feedback: Some(crate::AgentReviewFeedback::ToExecutor),
             baseline: Some(baseline),
         });
         let (_, reviewer_projection, original_body) = restore_delivery(

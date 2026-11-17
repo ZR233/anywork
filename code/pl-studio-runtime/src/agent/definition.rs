@@ -5,7 +5,7 @@
 //! 工具权限，也不进入可派发的 Profile 目录。已解析定义随 instruction snapshot 冻结，Mode
 //! 执行方式由独立的指令来源更新。
 
-use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, PureError};
+use crate::{AgentProfileSnapshot, AgentWorkspaceMode, PureError};
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{self, BuiltinAgentDefinition};
@@ -123,8 +123,8 @@ impl ResolvedAgentDefinition {
         )
     }
 
-    pub(crate) fn from_current(profile: &pl_protocol::AgentProfile) -> Result<Self, PureError> {
-        let pl_protocol::AgentBinding::Native(native) = &profile.binding else {
+    pub(crate) fn from_current(profile: &crate::AgentProfile) -> Result<Self, PureError> {
+        let crate::AgentBinding::Native(native) = &profile.binding else {
             return Err(PureError::ConfigError(
                 "ACP execution is not supported before S4".into(),
             ));
@@ -141,7 +141,7 @@ impl ResolvedAgentDefinition {
     }
 
     fn from_definition(
-        definition: &pl_protocol::AgentDefinitionSnapshot,
+        definition: &crate::AgentDefinitionSnapshot,
         instructions: &str,
         system: bool,
         workspace_mode: AgentWorkspaceMode,

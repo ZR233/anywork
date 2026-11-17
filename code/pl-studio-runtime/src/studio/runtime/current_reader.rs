@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use crate::{
     CURRENT_PROTOCOL_VERSION, ContentRange, ContentWindow, CurrentCollectionPage,
     CurrentCollectionRef, CurrentContentRef, CurrentFrame, CurrentRevision, CurrentView,
-    ReadDemand, ThreadNotification, ThreadSubscriptionUpdate,
-    studio::{StudioError, StudioErrorCode, StudioErrorReason},
+    ReadDemand, StudioError, StudioErrorCode, StudioErrorReason, ThreadNotification,
+    ThreadSubscriptionUpdate,
 };
+use anyhow::{Context, Result, ensure};
 use tokio::sync::{mpsc, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -177,11 +177,20 @@ impl CurrentReader {
         let runtime = &self.inner.runtime;
         let thread = runtime.read_protocol_thread(self.thread_id()).await?;
         runtime.check_thread_read_access(&thread)?;
-        let saved = runtime.store.state_for(&thread.workspace_id, self.thread_id())?.load_current().await?;
+        let saved = runtime
+            .store
+            .state_for(&thread.workspace_id, self.thread_id())?
+            .load_current()
+            .await?;
         self.check_open()?;
-        saved.map(Arc::new).ok_or_else(|| StudioError::new(
-            StudioErrorCode::NotFound, "This Thread has no recoverable current snapshot", false,
-        ).into())
+        saved.map(Arc::new).ok_or_else(|| {
+            StudioError::new(
+                StudioErrorCode::NotFound,
+                "This Thread has no recoverable current snapshot",
+                false,
+            )
+            .into()
+        })
     }
 
     fn metadata_revision(&self, current: &CurrentState) -> Result<u64> {
@@ -191,7 +200,8 @@ impl CurrentReader {
             .thread_observations
             .observation_slot(self.thread_id());
         let (position, _) = slot.capture();
-        let revision = if let Some(feed) = position.source.filter(|feed| !feed.is_delivery_closed()) {
+        let revision = if let Some(feed) = position.source.filter(|feed| !feed.is_delivery_closed())
+        {
             ensure!(
                 feed.current_conversation()
                     .is_some_and(|source| source.current.owner_id() == current.owner_id()),
@@ -229,15 +239,27 @@ impl CurrentReader {
             let (position, _) = slot.capture();
             // A passive baseline reads complete JSON once. Both original State assembly and
             // Current projection consume that same immutable cut, even during activation.
-            let saved = if position.source.as_ref().is_none_or(|source| source.is_delivery_closed()) {
+            let saved = if position
+                .source
+                .as_ref()
+                .is_none_or(|source| source.is_delivery_closed())
+            {
                 self.saved_current().await.map(Some)
-            } else { Ok(None) };
-            if !slot.is_current(position.epoch) { continue; }
+            } else {
+                Ok(None)
+            };
+            if !slot.is_current(position.epoch) {
+                continue;
+            }
             let saved = saved?;
             let opened = self
                 .inner
                 .runtime
-                .open_current_state_feed(self.thread_id(), cancellation.child_token(), saved.clone())
+                .open_current_state_feed(
+                    self.thread_id(),
+                    cancellation.child_token(),
+                    saved.clone(),
+                )
                 .await;
             let mut state = match opened {
                 Ok(state) => state,
@@ -287,7 +309,10 @@ impl CurrentReader {
                 Ok(view) => return Ok((view, state)),
                 Err(error) => {
                     state.close().await?;
-                    if error.downcast_ref::<StudioError>().is_some_and(|error| error.reason() == Some("staleCurrentReference")) {
+                    if error
+                        .downcast_ref::<StudioError>()
+                        .is_some_and(|error| error.reason() == Some("staleCurrentReference"))
+                    {
                         continue;
                     }
                     return Err(error);
@@ -334,7 +359,7 @@ impl CurrentReader {
         let after = continuation
             .map(|cursor| -> Result<String> {
                 ensure!(
-                    cursor.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+                    cursor.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
                     stale()
                 );
                 let (saved, after): (CurrentCollectionRef, String) =
@@ -422,7 +447,7 @@ impl CurrentReader {
         cancellation: &CancellationToken,
     ) -> Result<ContentWindow> {
         ensure!(
-            range.max_bytes > 0 && range.max_bytes <= pl_protocol::CONTENT_WINDOW_MAX_BYTES,
+            range.max_bytes > 0 && range.max_bytes <= crate::CONTENT_WINDOW_MAX_BYTES,
             StudioError::new(
                 StudioErrorCode::InvalidArgument,
                 "Invalid current body range",
@@ -497,10 +522,7 @@ impl CurrentReader {
                 .iter()
                 .find(|atom| atom.id == reference.entity_id)
                 .is_some_and(|atom| {
-                    matches!(
-                        atom.lifecycle,
-                        pl_protocol::ChatAtomLifecycle::Terminal { .. }
-                    )
+                    matches!(atom.lifecycle, crate::ChatAtomLifecycle::Terminal { .. })
                 });
         Ok(ContentWindow {
             offset: range.offset,
@@ -589,7 +611,7 @@ impl CurrentReader {
         cancel: &CancellationToken,
     ) -> Result<()> {
         enum Wake {
-            Notification(Box<pl_protocol::ThreadNotificationEnvelope>),
+            Notification(Box<crate::ThreadNotificationEnvelope>),
             Projection,
             Reset,
         }
@@ -902,10 +924,10 @@ mod tests {
             env.runtime.shutdown_runtime().await?;
             let mut current = ThreadCurrent::new(thread.id.clone(), RuntimeEpoch::new());
             let document = "已批准的计划正文\n".repeat(5000);
-            let plan = pl_protocol::AgentSessionPlanState {
+            let plan = crate::plan_tool::AgentSessionPlanState {
                 revision: 3,
-                state: pl_protocol::AgentSessionPlanPhase::Approved,
-                document: Some(pl_protocol::AgentSessionPlanDocument {
+                state: crate::plan_tool::AgentSessionPlanPhase::Approved,
+                document: Some(crate::plan_tool::AgentSessionPlanDocument {
                     version: 3,
                     markdown: document.clone(),
                     content_hash: crate::canonical_content_hash(document.as_bytes()),
@@ -947,9 +969,9 @@ mod tests {
             let deferred = runtime
                 .deferred
                 .iter()
-                .find(|head| matches!(head, pl_protocol::CurrentStateField::Body { field, .. } if field == "plan"))
+                .find(|head| matches!(head, crate::CurrentStateField::Body { field, .. } if field == "plan"))
                 .context("large State plan must explicitly defer its complete value")?;
-            let pl_protocol::CurrentStateField::Body { reference, byte_length, .. } = deferred else { panic!("plan is a body"); };
+            let crate::CurrentStateField::Body { reference, byte_length, .. } = deferred else { panic!("plan is a body"); };
             let mut bytes = Vec::new();
             while (bytes.len() as u64) < *byte_length {
                 let window = reader
@@ -966,7 +988,7 @@ mod tests {
             }
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&bytes)?,
-                serde_json::to_value(pl_protocol::AgentSessionPlanRuntimeSnapshot::from(&plan))?
+                serde_json::to_value(crate::plan_tool::AgentSessionPlanRuntimeSnapshot::from(&plan))?
             );
             // Closing a temporary State baseline must not close its parent Current reader.
             assert_eq!(reader.snapshot(demand).await?.revision, view.revision);

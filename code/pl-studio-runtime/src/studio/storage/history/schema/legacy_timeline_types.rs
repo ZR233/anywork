@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use pl_protocol::{
+use crate::{
     ChatAtomContent, ChatAtomKind, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, PayloadData,
 };
 
@@ -106,7 +106,7 @@ pub struct TimelineItem {
     pub atom_kind: Option<ChatAtomKind>,
     pub delivery: ChatDeliveryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
+    pub text_channel: Option<crate::ThreadTextChannel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     pub started_at: Option<i64>,
@@ -147,7 +147,7 @@ impl TimelineItem {
     }
 }
 
-use pl_protocol::{ChatAtom, ChatSourceState, CurrentActivityHead, CurrentTurnHead, ThreadStatus};
+use crate::{ChatAtom, ChatSourceState, CurrentActivityHead, CurrentTurnHead, ThreadStatus};
 /// 小 current 与完成切点一起发布，不包含完整 ThreadSnapshot/上下文或增长集合。
 // These nested codecs must remain frozen too: the live current ports use owner references.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,19 +162,19 @@ pub struct CurrentCollectionRef {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CurrentPlanHead {
     pub revision: u64,
-    pub phase: pl_protocol::AgentSessionPlanPhase,
-    pub document: Option<pl_protocol::ContentRef>,
+    pub phase: crate::plan_tool::AgentSessionPlanPhase,
+    pub document: Option<crate::ContentRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CurrentContentPreview {
     pub id: String,
-    pub role: pl_protocol::CurrentContentRole,
+    pub role: crate::CurrentContentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
+    pub text_channel: Option<crate::ThreadTextChannel>,
     pub text: String,
-    pub reference: pl_protocol::ContentRef,
+    pub reference: crate::ContentRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

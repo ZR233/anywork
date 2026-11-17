@@ -30,7 +30,7 @@ use pl_model::model::{
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::ThreadModeId;
+use pl_studio_runtime::ThreadModeId;
 use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpFileV1, McpServerTransport, StudioConfig,
     StudioMcpServerEntry, canonical_mcp_filename,
@@ -6213,8 +6213,8 @@ async fn history_canonical_head(
 }
 
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
-    use pl_protocol::{ChatTerminalOutcome, ThreadTextChannel};
     use pl_studio_runtime::history::{HistoryEntityKind, HistoryEntityState};
+    use pl_studio_runtime::{ChatTerminalOutcome, ThreadTextChannel};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
@@ -6678,7 +6678,7 @@ fn failure_reason(line: &str) -> Option<String> {
 #[cfg(test)]
 mod history_fault_tests {
     use super::*;
-    use pl_protocol::{
+    use pl_studio_runtime::{
         ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle, ChatContentRole,
         ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, ContentOwner,
         ContentRef, ContentTarget, ThreadTextChannel,
@@ -6837,7 +6837,7 @@ mod history_fault_tests {
             atom.completion_seq = None;
             atom.lifecycle = ChatAtomLifecycle::Active {
                 started: None,
-                status: pl_protocol::ChatActiveStatus::Running,
+                status: pl_studio_runtime::ChatActiveStatus::Running,
             };
             let mut head = HistoryEntityHead::from_atom(&atom, None)?;
             head.observation = HistoryObservation::Boundary {

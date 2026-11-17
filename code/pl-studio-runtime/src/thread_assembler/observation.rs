@@ -94,7 +94,7 @@ async fn history_terminal_report_sequences(
 
 pub(super) async fn latest_terminal_turn(
     reader: &crate::history::HistoryReader,
-) -> anyhow::Result<Option<pl_protocol::Turn>> {
+) -> anyhow::Result<Option<crate::Turn>> {
     let mut cursor = None;
     loop {
         let page = reader
@@ -372,7 +372,7 @@ impl SessionRuntime {
     pub(crate) async fn acknowledge_parent_reports(
         &self,
         _store: &crate::studio::StudioStore,
-        child: &pl_protocol::Thread,
+        child: &crate::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
         if let Some(parent) = child.parent_thread_id.as_deref()
             && self.parent_is_acp(parent)
@@ -388,7 +388,8 @@ impl SessionRuntime {
         let parent = child
             .parent_thread_id
             .as_deref()
-            .context("terminal child has no parent").map_err(failure)?;
+            .context("terminal child has no parent")
+            .map_err(failure)?;
         let services = self
             .0
             .state()
@@ -667,9 +668,7 @@ impl SessionRuntime {
                 services
                     .events
                     .agent_execution_identity(parent)
-                    .is_some_and(|(_, binding, _)| {
-                        matches!(binding, pl_protocol::AgentBinding::Acp(_))
-                    })
+                    .is_some_and(|(_, binding, _)| matches!(binding, crate::AgentBinding::Acp(_)))
             })
     }
 }
@@ -795,8 +794,8 @@ mod storage_fault_tests {
         async fn admit(
             &self,
             _: &str,
-            _: pl_protocol::DelegationSettings,
-            _: Option<pl_protocol::studio::NewThreadModelRoute>,
+            _: crate::DelegationSettings,
+            _: Option<crate::NewThreadModelRoute>,
         ) -> Result<(), ThreadAssemblyError> {
             Ok(())
         }
@@ -839,7 +838,7 @@ mod storage_fault_tests {
     }
     impl Fixture {
         fn new(store: StudioStore) -> Result<Self> {
-            let owner = SessionRuntime::open(pl_protocol::SessionId::new("parent")?);
+            let owner = SessionRuntime::open(crate::SessionId::new("parent")?);
             let live = LiveOwners::default();
             let draining = live.clone();
             let syncing = live.clone();
@@ -945,8 +944,8 @@ mod storage_fault_tests {
             })
         }
 
-        fn protocol(id: &str, parent: Option<&str>) -> pl_protocol::Thread {
-            let mut thread = pl_protocol::Thread::placeholder(id);
+        fn protocol(id: &str, parent: Option<&str>) -> crate::Thread {
+            let mut thread = crate::Thread::placeholder(id);
             thread.workspace_id = "project-test".into();
             thread.agent_path = id.into();
             thread.parent_thread_id = parent.map(str::to_owned);
@@ -1050,8 +1049,8 @@ mod storage_fault_tests {
             async fn admit(
                 &self,
                 _: &str,
-                _: pl_protocol::DelegationSettings,
-                _: Option<pl_protocol::studio::NewThreadModelRoute>,
+                _: crate::DelegationSettings,
+                _: Option<crate::NewThreadModelRoute>,
             ) -> Result<(), ThreadAssemblyError> {
                 Ok(())
             }
@@ -1475,7 +1474,7 @@ mod storage_fault_tests {
         /// A fixed, contract-valid terminal report, frozen once for both payload and context. Its Turn
         /// matches save_terminal_report; later checkpoints must never rebuild this original evidence.
         fn frozen_report_body(
-            child: &pl_protocol::Thread,
+            child: &crate::Thread,
             sequence: u64,
             evidence: &str,
         ) -> Result<String> {
@@ -1510,7 +1509,7 @@ mod storage_fault_tests {
             async fn root_delegation(
                 &self,
                 identity: &ThreadActivation,
-            ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+            ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
                 let paths = self
                     .0
                     .registered_session_paths(identity.id())
@@ -1595,10 +1594,7 @@ mod storage_fault_tests {
             }
         }
 
-        async fn save_cold_thread(
-            store: &StudioStore,
-            protocol: &pl_protocol::Thread,
-        ) -> Result<()> {
+        async fn save_cold_thread(store: &StudioStore, protocol: &crate::Thread) -> Result<()> {
             register_test_thread(store, protocol).await?;
             let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
             let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
@@ -1623,8 +1619,8 @@ mod storage_fault_tests {
                     ),
                 )
                 .await?;
-            let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
-                mode: pl_protocol::AgentWorkspaceMode::Directory,
+            let assignment = crate::AgentWorkspaceAssignmentSnapshot {
+                mode: crate::AgentWorkspaceMode::Directory,
                 project_root: store.paths().home().to_string_lossy().into_owned(),
                 root: store.paths().home().to_string_lossy().into_owned(),
                 writable_paths: None,
@@ -1964,7 +1960,7 @@ mod storage_fault_tests {
         }
 
         struct SavedClose {
-            child: pl_protocol::Thread,
+            child: crate::Thread,
             message: pl_core::thread::inbox::ThreadMessage,
             sequence: u64,
         }

@@ -26,8 +26,8 @@ pub fn saved_skill_name(payload: &pl_core::context::OpaquePayload) -> Result<Str
 pub fn saved_skill_activation(
     payload: &pl_core::context::OpaquePayload,
     turn_id: String,
-    cause: pl_protocol::SkillActivationCause,
-) -> Result<Option<pl_protocol::SkillActivation>, PureError> {
+    cause: crate::skill::SkillActivationCause,
+) -> Result<Option<crate::skill::SkillActivation>, PureError> {
     if payload.format() != "pl.tool.skill-view" || payload.version() != 1 {
         return Ok(None);
     }
@@ -35,7 +35,7 @@ pub fn saved_skill_activation(
     if !view.success || !is_main_skill_path(&view.file_path) {
         return Ok(None);
     }
-    Ok(Some(pl_protocol::SkillActivation {
+    Ok(Some(crate::skill::SkillActivation {
         name: view.skill.name,
         source: super::provider::source_label(view.skill.source).into(),
         provider_id: view.skill.provider_id.as_str().into(),

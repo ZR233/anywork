@@ -4,11 +4,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, ensure};
-use pl_model::model::ModelInfo;
-use pl_protocol::studio::{
+use crate::{
     AdmitAttachmentDraftsResponse, StudioAttachmentDraft, StudioAttachmentDraftSource, StudioError,
 };
+use anyhow::{Context, Result, ensure};
+use pl_model::model::ModelInfo;
 use sha2::{Digest, Sha256};
 
 use crate::studio::store::attachment::AttachmentDraftObject;

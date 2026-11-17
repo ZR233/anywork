@@ -7,8 +7,13 @@ pub(crate) use interaction::interaction as bridge_interaction;
 
 use super::presentation::current_state_field;
 use anyhow::Result;
-use pl_protocol::{
+use pl_studio_runtime::plan_tool::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
+};
+use pl_studio_runtime::workflow_tool::{
+    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
+};
+use pl_studio_runtime::{
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
     McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadNotification,
     ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
@@ -75,7 +80,7 @@ pub(super) fn thread_notification(
 }
 
 pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThreadSnapshot> {
-    if value.schema_version != pl_protocol::THREAD_SCHEMA_VERSION {
+    if value.schema_version != pl_studio_runtime::THREAD_SCHEMA_VERSION {
         return Err(protocol_version_mismatch(
             "unsupported thread snapshot schema",
         ));
@@ -106,20 +111,20 @@ pub(crate) fn bridge_thread_snapshot(value: ThreadSnapshot) -> Result<BridgeThre
 
 fn protocol_version_mismatch(message: &str) -> anyhow::Error {
     anyhow::Error::new(
-        pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Protocol,
+        pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::Protocol,
             message,
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch,
+            pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch,
             serde_json::Value::Null,
         ),
     )
 }
 
 pub(crate) fn bridge_session_row(
-    value: pl_protocol::SessionDirectoryRow,
+    value: pl_studio_runtime::SessionDirectoryRow,
 ) -> BridgeSessionDirectoryRow {
     BridgeSessionDirectoryRow {
         session_id: value.session_id,
@@ -135,7 +140,7 @@ pub(crate) fn bridge_session_row(
         workspace_path: value.workspace_path,
         role: value.role,
         backend: match value.backend {
-            pl_protocol::session::AgentBackend::Native { config, status } => {
+            pl_studio_runtime::AgentBackend::Native { config, status } => {
                 BridgeAgentBackend::Native {
                     config: BridgeNativeAgentConfig {
                         route: config.route.map(Into::into),
@@ -144,7 +149,7 @@ pub(crate) fn bridge_session_row(
                     status: bridge_thread_status(status),
                 }
             }
-            pl_protocol::session::AgentBackend::Acp { reference } => BridgeAgentBackend::Acp {
+            pl_studio_runtime::AgentBackend::Acp { reference } => BridgeAgentBackend::Acp {
                 reference: BridgeAcpSessionReference {
                     account_id: reference.account_id,
                     acp_session_id: reference.acp_session_id,
@@ -286,7 +291,7 @@ pub(super) fn turn_budget_limit(value: BudgetLimitSnapshot) -> BridgeTurnBudgetL
     }
 }
 
-pub(super) fn bridge_turn_failure(value: pl_protocol::TurnFailure) -> BridgeTurnFailureDto {
+pub(super) fn bridge_turn_failure(value: pl_studio_runtime::TurnFailure) -> BridgeTurnFailureDto {
     BridgeTurnFailureDto {
         category: format!("{:?}", value.category).to_ascii_lowercase(),
         provider_kind: value
@@ -312,50 +317,56 @@ pub(super) fn turn_phase(value: TurnPhase) -> BridgeTurnPhase {
 }
 
 pub(super) fn wait_presentation(
-    value: pl_protocol::ThreadWaitPresentation,
+    value: pl_studio_runtime::ThreadWaitPresentation,
 ) -> BridgeThreadWaitPresentation {
     BridgeThreadWaitPresentation {
         intent: match value.intent() {
-            pl_protocol::ThreadWaitIntent::Events {
+            pl_studio_runtime::ThreadWaitIntent::Events {
                 targets,
                 timeout_ms,
             } => BridgeThreadWaitIntent::Events {
                 targets: targets.iter().map(wait_target).collect(),
                 timeout_ms: *timeout_ms,
             },
-            pl_protocol::ThreadWaitIntent::Timer { duration_ms } => BridgeThreadWaitIntent::Timer {
-                duration_ms: *duration_ms,
-            },
+            pl_studio_runtime::ThreadWaitIntent::Timer { duration_ms } => {
+                BridgeThreadWaitIntent::Timer {
+                    duration_ms: *duration_ms,
+                }
+            }
         },
         state: match value.state() {
-            pl_protocol::ThreadWaitState::Waiting => BridgeThreadWaitState::Waiting,
-            pl_protocol::ThreadWaitState::Ready => BridgeThreadWaitState::Ready,
-            pl_protocol::ThreadWaitState::TimedOut => BridgeThreadWaitState::TimedOut,
-            pl_protocol::ThreadWaitState::Elapsed => BridgeThreadWaitState::Elapsed,
-            pl_protocol::ThreadWaitState::Cancelled => BridgeThreadWaitState::Cancelled,
-            pl_protocol::ThreadWaitState::Failed => BridgeThreadWaitState::Failed,
-            pl_protocol::ThreadWaitState::Interrupted => BridgeThreadWaitState::Interrupted,
+            pl_studio_runtime::ThreadWaitState::Waiting => BridgeThreadWaitState::Waiting,
+            pl_studio_runtime::ThreadWaitState::Ready => BridgeThreadWaitState::Ready,
+            pl_studio_runtime::ThreadWaitState::TimedOut => BridgeThreadWaitState::TimedOut,
+            pl_studio_runtime::ThreadWaitState::Elapsed => BridgeThreadWaitState::Elapsed,
+            pl_studio_runtime::ThreadWaitState::Cancelled => BridgeThreadWaitState::Cancelled,
+            pl_studio_runtime::ThreadWaitState::Failed => BridgeThreadWaitState::Failed,
+            pl_studio_runtime::ThreadWaitState::Interrupted => BridgeThreadWaitState::Interrupted,
         },
         messages_ready: value.messages_ready(),
     }
 }
 
-fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget {
+fn wait_target(value: &pl_studio_runtime::ThreadWaitTarget) -> BridgeThreadWaitTarget {
     BridgeThreadWaitTarget {
         task_id: value.task_id().to_owned(),
         tool_name: value.tool_name().map(str::to_owned),
         summary: value.summary().map(str::to_owned),
         summary_truncated: value.summary_truncated(),
         status: value.status().map(|status| match status {
-            pl_protocol::ThreadWaitTargetStatus::Running => BridgeThreadWaitTargetStatus::Running,
-            pl_protocol::ThreadWaitTargetStatus::Succeeded => {
+            pl_studio_runtime::ThreadWaitTargetStatus::Running => {
+                BridgeThreadWaitTargetStatus::Running
+            }
+            pl_studio_runtime::ThreadWaitTargetStatus::Succeeded => {
                 BridgeThreadWaitTargetStatus::Succeeded
             }
-            pl_protocol::ThreadWaitTargetStatus::Failed => BridgeThreadWaitTargetStatus::Failed,
-            pl_protocol::ThreadWaitTargetStatus::Cancelled => {
+            pl_studio_runtime::ThreadWaitTargetStatus::Failed => {
+                BridgeThreadWaitTargetStatus::Failed
+            }
+            pl_studio_runtime::ThreadWaitTargetStatus::Cancelled => {
                 BridgeThreadWaitTargetStatus::Cancelled
             }
-            pl_protocol::ThreadWaitTargetStatus::Interrupted => {
+            pl_studio_runtime::ThreadWaitTargetStatus::Interrupted => {
                 BridgeThreadWaitTargetStatus::Interrupted
             }
         }),
@@ -364,7 +375,7 @@ fn wait_target(value: &pl_protocol::ThreadWaitTarget) -> BridgeThreadWaitTarget 
 
 /// 普通问答投影 → bridge typed 投影：问题顺序、权威状态与脱敏标记原样过桥。
 fn model_route_snapshot(
-    route: pl_protocol::ThreadModelRouteSnapshot,
+    route: pl_studio_runtime::ThreadModelRouteSnapshot,
 ) -> BridgeThreadModelRouteSnapshot {
     BridgeThreadModelRouteSnapshot {
         bot_id: route.bot_id,
@@ -400,15 +411,21 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
         execution: value.execution.map(|execution| BridgeAgentExecution {
             turn_id: execution.turn_id().map(str::to_owned),
             phase: match execution.phase() {
-                pl_protocol::AgentExecutionPhase::Preparing => BridgeAgentExecutionPhase::Preparing,
-                pl_protocol::AgentExecutionPhase::AwaitingStorage => {
+                pl_studio_runtime::AgentExecutionPhase::Preparing => {
+                    BridgeAgentExecutionPhase::Preparing
+                }
+                pl_studio_runtime::AgentExecutionPhase::AwaitingStorage => {
                     BridgeAgentExecutionPhase::AwaitingStorage
                 }
-                pl_protocol::AgentExecutionPhase::AwaitingAdmission => {
+                pl_studio_runtime::AgentExecutionPhase::AwaitingAdmission => {
                     BridgeAgentExecutionPhase::AwaitingAdmission
                 }
-                pl_protocol::AgentExecutionPhase::Running => BridgeAgentExecutionPhase::Running,
-                pl_protocol::AgentExecutionPhase::Stopping => BridgeAgentExecutionPhase::Stopping,
+                pl_studio_runtime::AgentExecutionPhase::Running => {
+                    BridgeAgentExecutionPhase::Running
+                }
+                pl_studio_runtime::AgentExecutionPhase::Stopping => {
+                    BridgeAgentExecutionPhase::Stopping
+                }
             },
             id: execution.id().to_owned(),
         }),
@@ -418,17 +435,19 @@ pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRunt
                 id: continuation.id().to_owned(),
                 source_turn_id: continuation.source_turn_id().map(str::to_owned),
                 reason: continuation.reason().map(|reason| match reason {
-                    pl_protocol::ContinuationReason::UserStop => BridgeContinuationReason::UserStop,
-                    pl_protocol::ContinuationReason::HostShutdown => {
+                    pl_studio_runtime::ContinuationReason::UserStop => {
+                        BridgeContinuationReason::UserStop
+                    }
+                    pl_studio_runtime::ContinuationReason::HostShutdown => {
                         BridgeContinuationReason::HostShutdown
                     }
-                    pl_protocol::ContinuationReason::ProcessInterrupted => {
+                    pl_studio_runtime::ContinuationReason::ProcessInterrupted => {
                         BridgeContinuationReason::ProcessInterrupted
                     }
-                    pl_protocol::ContinuationReason::StepLimit => {
+                    pl_studio_runtime::ContinuationReason::StepLimit => {
                         BridgeContinuationReason::StepLimit
                     }
-                    pl_protocol::ContinuationReason::ExecutionFailed => {
+                    pl_studio_runtime::ContinuationReason::ExecutionFailed => {
                         BridgeContinuationReason::ExecutionFailed
                     }
                 }),
@@ -544,7 +563,7 @@ fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     }
 }
 
-pub(super) fn cache_usage(value: pl_protocol::CacheUsageSummary) -> BridgeCacheUsageSummary {
+pub(super) fn cache_usage(value: pl_studio_runtime::CacheUsageSummary) -> BridgeCacheUsageSummary {
     BridgeCacheUsageSummary {
         sample_count: value.sample_count,
         legacy_sample_count_unknown: value.legacy_sample_count_unknown,
@@ -664,11 +683,11 @@ mod tests {
     use super::*;
 
     fn directory_row(
-        backend: pl_protocol::session::AgentBackend,
-        mode: Option<pl_protocol::ThreadModeId>,
+        backend: pl_studio_runtime::AgentBackend,
+        mode: Option<pl_studio_runtime::mode::ThreadModeId>,
         parent_agent_id: Option<String>,
-    ) -> pl_protocol::SessionDirectoryRow {
-        pl_protocol::SessionDirectoryRow {
+    ) -> pl_studio_runtime::SessionDirectoryRow {
+        pl_studio_runtime::SessionDirectoryRow {
             session_id: "session-id".into(),
             agent_id: "agent-id".into(),
             parent_agent_id,
@@ -676,9 +695,9 @@ mod tests {
             workspace_id: "workspace-id".into(),
             title: "Directory title".into(),
             mode,
-            workspace_mode: pl_protocol::ThreadWorkspaceMode::Worktree,
-            delegation_mode: pl_protocol::DelegationMode::Automatic,
-            delegation_preference: pl_protocol::DelegationPreference::Economy,
+            workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Worktree,
+            delegation_mode: pl_studio_runtime::DelegationMode::Automatic,
+            delegation_preference: pl_studio_runtime::DelegationPreference::Economy,
             workspace_path: "/workspace path".into(),
             role: "profile-id".into(),
             backend,
@@ -691,9 +710,9 @@ mod tests {
 
     #[test]
     fn directory_backend_and_optional_mode_preserve_native_and_acp_facts() {
-        use pl_protocol::session::{AcpSessionReference, AgentBackend};
-        let native = pl_protocol::NativeAgentConfig {
-            route: Some(pl_protocol::studio::NewThreadModelRoute {
+        use pl_studio_runtime::{AcpSessionReference, AgentBackend};
+        let native = pl_studio_runtime::NativeAgentConfig {
+            route: Some(pl_studio_runtime::NewThreadModelRoute {
                 account_id: "native-account".into(),
                 model_id: "native-model".into(),
                 effort: Some("high".into()),
@@ -703,13 +722,13 @@ mod tests {
         let cases = [
             directory_row(
                 AgentBackend::Native {
-                    config: pl_protocol::NativeAgentConfig {
+                    config: pl_studio_runtime::NativeAgentConfig {
                         route: None,
                         system_instructions: None,
                     },
                     status: ThreadStatus::Running,
                 },
-                Some(pl_protocol::ThreadModeId::task()),
+                Some(pl_studio_runtime::mode::ThreadModeId::task()),
                 None,
             ),
             directory_row(
@@ -764,7 +783,11 @@ mod tests {
     #[test]
     fn native_thread_optional_mode_keeps_root_and_parent_identity() {
         for (id, mode, parent) in [
-            ("native-root", Some(pl_protocol::ThreadModeId::task()), None),
+            (
+                "native-root",
+                Some(pl_studio_runtime::mode::ThreadModeId::task()),
+                None,
+            ),
             ("native-child", None, Some("native-root".to_owned())),
         ] {
             let mut source = Thread::placeholder(id);
@@ -783,24 +806,24 @@ mod tests {
 
     #[test]
     fn acp_profile_binding_preserves_account_identity() {
-        let source = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+        let source = pl_studio_runtime::AgentBinding::Acp(pl_studio_runtime::AcpAgentConfig {
             account_id: "profile-account".into(),
         });
         let mapped = BridgeAgentBinding::from(source.clone());
         assert!(
             matches!(&mapped, BridgeAgentBinding::Acp { account_id } if account_id == "profile-account")
         );
-        assert_eq!(pl_protocol::AgentBinding::from(mapped), source);
+        assert_eq!(pl_studio_runtime::AgentBinding::from(mapped), source);
     }
 
-    fn business_refs() -> pl_protocol::ThreadBusinessRefs {
-        pl_protocol::ThreadBusinessRefs {
-            plan: Some(pl_protocol::CurrentPlanHead {
+    fn business_refs() -> pl_studio_runtime::ThreadBusinessRefs {
+        pl_studio_runtime::ThreadBusinessRefs {
+            plan: Some(pl_studio_runtime::CurrentPlanHead {
                 revision: 4,
                 phase: AgentSessionPlanPhase::Approved,
                 document: None,
             }),
-            interactions: Some(pl_protocol::CurrentCollectionRef {
+            interactions: Some(pl_studio_runtime::CurrentCollectionRef {
                 owner_id: "runtime-owner".into(),
                 collection: "interactions".into(),
                 revision: 9,
@@ -810,11 +833,11 @@ mod tests {
 
     fn assert_version_mismatch(error: anyhow::Error) {
         let typed = error
-            .downcast_ref::<pl_protocol::studio::StudioError>()
+            .downcast_ref::<pl_studio_runtime::StudioError>()
             .expect("version rejection preserves typed StudioError");
         assert_eq!(
             typed.reason(),
-            Some(pl_protocol::studio::StudioErrorReason::ProtocolVersionMismatch.label())
+            Some(pl_studio_runtime::StudioErrorReason::ProtocolVersionMismatch.label())
         );
     }
 
@@ -854,7 +877,7 @@ mod tests {
             panic!("business refs notification changed kind");
         };
         assert_eq!(references.plan.as_ref().unwrap().revision, 4);
-        assert_eq!(references.interactions.unwrap().database_id, "thread-db");
+        assert_eq!(references.interactions.unwrap().owner_id, "runtime-owner");
     }
 
     #[test]

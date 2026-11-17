@@ -5,10 +5,11 @@ use super::{
     user_input_answer_field, user_input_header_field, user_input_option_description_field,
     user_input_option_label_field, user_input_question_field,
 };
-use crate::{ExecutionItem, ExecutionShape};
+use crate::protocol::*;
+use crate::ExecutionShape;
+use crate::{UserQuestion, UserQuestionOption};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::ChatItem;
-use pl_protocol::*;
 
 pub(super) trait BodySource {
     fn body(&self, key: &str) -> Result<String>;
@@ -223,24 +224,6 @@ fn content_outcome(value: ContentOutcome) -> ThreadContentLifecycle {
     }
 }
 
-pub(in crate::studio) fn execution_state(
-    record: &ChatItem,
-    thread_id: &str,
-) -> Result<ExecutionShape> {
-    let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-    ensure!(
-        atom.completion_item_id.as_deref() == Some(record.header.item_id.as_str())
-            && matches!(atom.lifecycle, ChatAtomLifecycle::Terminal { .. }),
-        "canonical execution envelope identity conflict"
-    );
-    let envelope: serde_json::Value = serde_json::from_slice(&record.payload)?;
-    ensure!(
-        envelope["contract"] == "anywork.chat/1",
-        "unsupported canonical execution payload contract"
-    );
-    decode_state(record, &atom, &envelope, thread_id)
-}
-
 pub(super) fn decode_state(
     record: &impl BodySource,
     atom: &ChatAtom,
@@ -294,45 +277,4 @@ pub(super) fn decode_state(
             atom.id
         ),
     })
-}
-
-pub(in crate::studio) fn execution_item(
-    record: &ChatItem,
-    thread_id: &str,
-    placement: Option<(u64, u64)>,
-) -> Result<ExecutionItem> {
-    let atom: ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-    let envelope: serde_json::Value = serde_json::from_slice(&record.payload)?;
-    let state = execution_state(record, thread_id)?;
-    let ordinal = placement
-        .map(|value| value.0)
-        .or(atom.source_order)
-        .context("canonical execution order is unknown")?;
-    let revision = envelope["sourceEffectSeq"]
-        .as_u64()
-        .or(placement.map(|value| value.1))
-        .context("canonical completion effect is unknown")?;
-    // 已发布旧原件可能没有统一时间字段；typed 正文自身的终态时间仍是原始证据。
-    let terminal = match &state {
-        ExecutionShape::Text(value) => value.lifecycle().terminal_at(),
-        ExecutionShape::Thinking(value) => value.lifecycle().terminal_at(),
-        ExecutionShape::Tool(value) => value.state().terminal_at(),
-        _ => None,
-    };
-    let updated = atom
-        .finished_at
-        .or(terminal)
-        .context("canonical completion time is unknown")?;
-    // 这里只是局部转换值的创建时间；不补写或宣称 lifecycle 的未知开始时间。
-    let created = atom.started_at.unwrap_or(updated);
-    Ok(ExecutionItem::new(
-        atom.id,
-        thread_id.into(),
-        atom.turn_id.unwrap_or_default(),
-        ordinal,
-        revision,
-        created,
-        updated,
-        state,
-    ))
 }

@@ -58,7 +58,7 @@ pub(crate) fn bridge_persistence_queue_state(
 /// 逐 Thread 水位沿用协调器的 `None`/`Some(0)` 区分：`None` 表示该 Thread 没有上报水位的
 /// writer（未知），`Some(0)` 才是已观测到的零，桥接层不在这里折叠两者。
 pub(crate) fn bridge_persistence_queue(
-    snapshot: pl_protocol::PersistenceQueueSnapshot,
+    snapshot: pl_studio_runtime::PersistenceQueueSnapshot,
 ) -> BridgePersistenceQueueSnapshot {
     BridgePersistenceQueueSnapshot {
         statistics_gap: snapshot.statistics_gap,
@@ -76,12 +76,12 @@ pub(crate) fn bridge_persistence_queue(
                 fault_generation: thread.fault_generation,
                 fault: thread.fault.map(|fault| {
                     match fault {
-                        pl_protocol::studio::HistoryFault::QueueFull => "queueFull",
-                        pl_protocol::studio::HistoryFault::WriteFailed => "writeFailed",
-                        pl_protocol::studio::HistoryFault::WriterUnavailable => "writerUnavailable",
-                        pl_protocol::studio::HistoryFault::NoProgress => "noProgress",
-                        pl_protocol::studio::HistoryFault::CheckpointFailed => "checkpointFailed",
-                        pl_protocol::studio::HistoryFault::BlobFailed => "blobFailed",
+                        pl_studio_runtime::HistoryFault::QueueFull => "queueFull",
+                        pl_studio_runtime::HistoryFault::WriteFailed => "writeFailed",
+                        pl_studio_runtime::HistoryFault::WriterUnavailable => "writerUnavailable",
+                        pl_studio_runtime::HistoryFault::NoProgress => "noProgress",
+                        pl_studio_runtime::HistoryFault::CheckpointFailed => "checkpointFailed",
+                        pl_studio_runtime::HistoryFault::BlobFailed => "blobFailed",
                     }
                     .to_owned()
                 }),

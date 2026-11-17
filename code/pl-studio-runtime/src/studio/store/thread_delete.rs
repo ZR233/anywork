@@ -333,8 +333,8 @@ impl StudioStore {
                 .iter()
                 .any(|operation| operation.phase != DeletePhase::Sealed
                     && operation.thread_ids.iter().any(|id| id == thread_id)),
-            pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Conflict,
+            crate::StudioError::new(
+                crate::StudioErrorCode::Conflict,
                 "会话正在永久删除，历史读取已停止；若删除未完成，请从侧栏重试删除",
                 false,
             )

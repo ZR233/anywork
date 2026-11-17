@@ -6,13 +6,6 @@ import '../../../../shared/studio_chrome.dart';
 import '../../../../shared/studio_menu_label.dart';
 import '../state/acp_view_state.dart';
 
-IconData _categoryIcon(AcpConfigCategoryKind category) => switch (category) {
-  AcpConfigCategoryKind.mode => Icons.layers_outlined,
-  AcpConfigCategoryKind.model => Icons.auto_awesome_outlined,
-  AcpConfigCategoryKind.thoughtLevel => Icons.psychology_outlined,
-  _ => Icons.tune_rounded,
-};
-
 String _currentLabel(AcpConfigControlPresentation control) => switch (control) {
   AcpSelectConfigControl(:final currentLabel) => currentLabel,
   AcpLegacyModeConfigControl(:final currentModeLabel) => currentModeLabel,
@@ -45,8 +38,8 @@ String _controlTooltip(
 }
 
 /// Pure configuration toolbar; values and command completion belong to the
-/// existing ACP session owner. Primary slots are category based; all remaining
-/// controls and primary slots that do not fit share one tuning menu.
+/// existing ACP session owner. Every option uses its protocol type and original
+/// position; category metadata never allocates or sorts presentation slots.
 class AcpConfigurationBar extends StatelessWidget {
   const AcpConfigurationBar({
     super.key,
@@ -71,114 +64,80 @@ class AcpConfigurationBar extends StatelessWidget {
         ? context.l10n.acpConfigApplying
         : disabledTooltip ?? context.l10n.acpComposerBlockerNotReady;
     return LayoutBuilder(
-      builder: (context, constraints) {
-        final primary = state.primaryControls;
-        final widths = [
-          for (final control in primary) _triggerWidth(context, control),
-        ];
-        final available = constraints.maxWidth;
-        final fullWidth =
-            widths.fold(0.0, (sum, width) => sum + width) +
-            (primary.length - 1).clamp(0, 2) * 6;
-        var visibleCount = primary.length;
-        if (state.extraControls.isNotEmpty || fullWidth > available) {
-          // Keep the trailing tuning trigger inside this toolbar. The composer
-          // reserves its own fixed action button before giving us this width.
-          var remaining = available - 48;
-          visibleCount = 0;
-          for (final width in widths) {
-            if (width + 6 > remaining) break;
-            remaining -= width + 6;
-            visibleCount++;
-          }
-        }
-        final inline = primary.take(visibleCount).toList();
-        final hidden = primary.skip(visibleCount).toSet();
-        // Use original server ordering inside the tuning menu as well.
-        final overflow = state.controls
-            .where(
-              (control) =>
-                  hidden.contains(control) ||
-                  state.extraControls.contains(control),
-            )
-            .toList();
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (state.errorMessage case final error?)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: StudioInlineMessage(
-                  icon: Icons.error_outline_rounded,
-                  message: context.l10n.acpConfigFailed(error),
-                  color: context.colors.error,
-                ),
+      builder: (context, constraints) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (state.errorMessage case final error?)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: StudioInlineMessage(
+                icon: Icons.error_outline_rounded,
+                message: context.l10n.acpConfigFailed(error),
+                color: context.colors.error,
               ),
-            Row(
-              children: [
-                for (var index = 0; index < inline.length; index++) ...[
-                  if (index > 0) const SizedBox(width: 6),
-                  SizedBox(
-                    width: widths[index],
-                    child: _PrimaryConfigAnchor(
-                      key: _controlKey(inline[index]),
-                      control: inline[index],
-                      interactive: interactive,
-                      lockedMessage: lockedMessage,
-                      onSelected: (value) => _select(inline[index], value),
-                    ),
-                  ),
-                ],
-                if (overflow.isNotEmpty) ...[
-                  if (inline.isNotEmpty) const SizedBox(width: 6),
-                  Flexible(
-                    child: _TuningAnchor(
-                      controls: overflow,
-                      interactive: interactive,
-                      lockedMessage: lockedMessage,
-                      onSelected: _select,
-                      onBooleanChanged: onBooleanChanged,
-                    ),
-                  ),
-                ],
-              ],
             ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _select(AcpConfigControlPresentation control, String value) {
-    if (control is AcpLegacyModeConfigControl) {
-      onSelectLegacyMode(value);
-    } else {
-      onSelectValue(control.id, value);
-    }
-  }
-
-  double _triggerWidth(
-    BuildContext context,
-    AcpConfigControlPresentation control,
-  ) {
-    final painter = TextPainter(
-      text: TextSpan(
-        text: _currentLabel(control),
-        style: context.text.labelMedium,
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final control in state.controls)
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: constraints.maxWidth),
+                  child: control is AcpBooleanConfigControl
+                      ? Tooltip(
+                          message: interactive
+                              ? _controlTooltip(context, control)
+                              : lockedMessage,
+                          child: MergeSemantics(
+                            child: Row(
+                              key: _controlKey(control),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    control.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: context.text.labelMedium,
+                                  ),
+                                ),
+                                Switch(
+                                  value: control.currentValue,
+                                  onChanged: interactive
+                                      ? (value) =>
+                                            onBooleanChanged(control.id, value)
+                                      : null,
+                                ),
+                              ],
+                            ),
+                          ),
+                        )
+                      : _SelectConfigAnchor(
+                          key: _controlKey(control),
+                          control: control,
+                          interactive: interactive,
+                          lockedMessage: lockedMessage,
+                          onSelected: (value) {
+                            if (control is AcpLegacyModeConfigControl) {
+                              onSelectLegacyMode(value);
+                            } else {
+                              onSelectValue(control.id, value);
+                            }
+                          },
+                        ),
+                ),
+            ],
+          ),
+        ],
       ),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-    final width = painter.width.clamp(16.0, 160.0) + 56;
-    painter.dispose();
-    return width;
+    );
   }
 }
 
-class _PrimaryConfigAnchor extends StatelessWidget {
-  const _PrimaryConfigAnchor({
+class _SelectConfigAnchor extends StatelessWidget {
+  const _SelectConfigAnchor({
     super.key,
     required this.control,
     required this.interactive,
@@ -212,115 +171,9 @@ class _PrimaryConfigAnchor extends StatelessWidget {
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: StudioMenuLabel(
-          leading: Icon(
-            control is AcpSelectConfigControl
-                ? _categoryIcon((control as AcpSelectConfigControl).category)
-                : Icons.layers_outlined,
-            size: 15,
-          ),
           label: _currentLabel(control),
           enabled: interactive,
           maxWidth: 160,
-        ),
-      ),
-    ),
-  );
-}
-
-class _TuningAnchor extends StatelessWidget {
-  const _TuningAnchor({
-    required this.controls,
-    required this.interactive,
-    required this.lockedMessage,
-    required this.onSelected,
-    required this.onBooleanChanged,
-  });
-
-  final List<AcpConfigControlPresentation> controls;
-  final bool interactive;
-  final String lockedMessage;
-  final void Function(AcpConfigControlPresentation control, String value)
-  onSelected;
-  final void Function(String id, bool value) onBooleanChanged;
-
-  @override
-  Widget build(BuildContext context) => MenuAnchor(
-    key: const ValueKey(AcpViewKeyValues.configOverflow),
-    menuChildren: [
-      for (final control in controls)
-        if (control is AcpBooleanConfigControl)
-          Tooltip(
-            message: _controlTooltip(context, control),
-            child: SizedBox(
-              width: (MediaQuery.sizeOf(context).width - 48).clamp(
-                120.0,
-                300.0,
-              ),
-              child: SwitchListTile(
-                key: ValueKey(AcpViewKeyValues.configControl(control.id)),
-                dense: true,
-                tileColor: context.colors.surfaceContainerLow,
-                title: Text(
-                  control.name,
-                  style: context.text.bodyMedium?.copyWith(
-                    color: interactive
-                        ? context.colors.onSurface
-                        : context.colors.onSurfaceVariant,
-                  ),
-                ),
-                value: control.currentValue,
-                onChanged: interactive
-                    ? (value) => onBooleanChanged(control.id, value)
-                    : null,
-              ),
-            ),
-          )
-        else
-          SubmenuButton(
-            key: _controlKey(control),
-            menuChildren: [
-              _ChoiceMenu(
-                control: control,
-                interactive: interactive,
-                onSelected: (value) => onSelected(control, value),
-              ),
-            ],
-            child: Tooltip(
-              message: _controlTooltip(context, control),
-              child: SizedBox(
-                width: (MediaQuery.sizeOf(context).width - 112).clamp(
-                  80.0,
-                  240.0,
-                ),
-                child: Text(
-                  '${_controlName(context, control)} · ${_currentLabel(control)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-          ),
-    ],
-    builder: (context, controller, _) => Tooltip(
-      message: interactive ? context.l10n.acpConfigMoreLabel : lockedMessage,
-      child: SizedBox(
-        width: 48,
-        child: TextButton(
-          onPressed: interactive
-              ? () => controller.isOpen ? controller.close() : controller.open()
-              : null,
-          style: TextButton.styleFrom(
-            padding: EdgeInsets.zero,
-            minimumSize: const Size(48, 32),
-            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          ),
-          child: const Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.tune_rounded, size: 16),
-              Icon(Icons.keyboard_arrow_down, size: 14),
-            ],
-          ),
         ),
       ),
     ),
@@ -385,6 +238,16 @@ class _ChoiceMenuState extends State<_ChoiceMenu> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+              child: Semantics(
+                header: true,
+                child: Text(
+                  _controlName(context, control),
+                  style: context.text.titleSmall,
+                ),
+              ),
+            ),
             if (count > 8)
               Padding(
                 padding: const EdgeInsets.all(8),

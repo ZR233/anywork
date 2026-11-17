@@ -2,7 +2,7 @@
 use super::{StudioThreadFactory, errors::resource_error};
 use crate::studio::agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity};
 use crate::thread_assembler::{ChildThreadRequest, ThreadAssemblyError};
-use pl_protocol::{AgentWorkspaceMode, ThreadWorkspaceMode};
+use crate::{AgentWorkspaceMode, ThreadWorkspaceMode};
 use std::path::Path;
 
 impl StudioThreadFactory {
@@ -49,7 +49,7 @@ impl StudioThreadFactory {
     /// rewrites a binding; it only denies activation/continuation and emits a typed workspace error.
     pub(crate) async fn ensure_bot_execution_workspace(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         snapshot: Option<&pl_core::thread::ThreadSnapshot>,
     ) -> Result<(), ThreadAssemblyError> {
         let Some(bot) = self
@@ -239,11 +239,11 @@ mod migration_tests {
         // This private resource-factory test starts after the upstream review admission boundary.
         // Its synthetic delivery identity supplies that boundary's input; it does not prove a
         // model completed a Turn or that the host generated review authority end to end.
-        fn migration_review_target(agent_id: &str) -> pl_protocol::AgentReviewTargetSnapshot {
-            pl_protocol::AgentReviewTargetSnapshot {
+        fn migration_review_target(agent_id: &str) -> crate::AgentReviewTargetSnapshot {
+            crate::AgentReviewTargetSnapshot {
                 agent_id: agent_id.into(),
                 feedback: None,
-                baseline: Some(pl_protocol::AgentReviewBaseline {
+                baseline: Some(crate::AgentReviewBaseline {
                     turn_id: format!("migration-fixture-terminal:{agent_id}"),
                     input_id: None,
                     terminal_sequence: 1,
@@ -264,14 +264,14 @@ mod migration_tests {
         tokio::fs::write(business.join("business.txt"), b"not migration-owned").await?;
         let store =
             crate::studio::StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
-        let mut root = pl_protocol::Thread::placeholder("bot-root");
+        let mut root = crate::Thread::placeholder("bot-root");
         root.workspace_id = "bot-project".into();
         root.root_thread_id = root.id.clone();
         root.workspace_path = business.to_string_lossy().into_owned();
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: root.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Original project".into(),
                 path: root.workspace_path.clone(),
                 ssh_alias: None,
@@ -308,11 +308,11 @@ mod migration_tests {
         let managed = factory.services.bots.workspace_root(&bot);
         assert!(!tokio::fs::try_exists(&managed).await?);
         let config = crate::config::StudioConfig::default_config()?;
-        let selector = config.mode_model_route(&pl_protocol::ThreadModeId::simple())?;
+        let selector = config.mode_model_route(&crate::mode::ThreadModeId::simple())?;
         let route = config
             .models
             .resolve_route(crate::config::root_agent_route_id(), selector)?;
-        let frozen_profile = pl_protocol::AgentProfileSnapshot {
+        let frozen_profile = crate::AgentProfileSnapshot {
             profile_id: "migration-child".into(),
             display_name: "Migration child".into(),
             description: "Workspace migration admission".into(),
@@ -478,7 +478,7 @@ mod migration_tests {
         request.id = "rejected-review".into();
         request.review_target_agent_id = Some(other.id.clone());
         request.review_target = Some(migration_review_target(&other.id));
-        request.review_workspace = Some(pl_protocol::AgentWorkspaceAssignmentSnapshot {
+        request.review_workspace = Some(crate::AgentWorkspaceAssignmentSnapshot {
             mode: AgentWorkspaceMode::Directory,
             project_root: other.workspace_path.clone(),
             root: other.workspace_path.clone(),
@@ -516,12 +516,12 @@ mod migration_tests {
                 ..Default::default()
             })
             .await?;
-        let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
+        let assignment = crate::AgentWorkspaceAssignmentSnapshot {
             mode: AgentWorkspaceMode::Worktree,
             project_root: other.workspace_path.clone(),
             root: other.workspace_path.clone(),
             writable_paths: None,
-            worktree: Some(pl_protocol::AgentWorktreeSnapshot {
+            worktree: Some(crate::AgentWorktreeSnapshot {
                 repository_root: other.workspace_path.clone(),
                 path: other.workspace_path.clone(),
                 base_commit: "a".repeat(40),

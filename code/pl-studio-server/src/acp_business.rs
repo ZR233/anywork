@@ -8,7 +8,9 @@ use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures::stream;
-use pl_protocol::studio::*;
+use pl_studio_runtime::acp_schema::ContentBlock;
+use pl_studio_runtime::*;
+use std::result::Result;
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::AppState;
@@ -16,9 +18,69 @@ use crate::error::ApiError;
 use crate::routes::{ApiJson, StudioApiErrors};
 use frames::OpenFrames;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpPromptRequest {
+    pub target: AcpSessionTarget,
+    #[schema(value_type = Vec<serde_json::Value>)]
+    pub content: Vec<ContentBlock>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpReplaceRequest {
+    pub target: AcpSessionTarget,
+    pub run: AcpRunId,
+    #[schema(value_type = Vec<serde_json::Value>)]
+    pub content: Vec<ContentBlock>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpInterruptRequest {
+    pub target: AcpSessionTarget,
+    pub run: AcpRunId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpConfigureRequest {
+    pub target: AcpSessionTarget,
+    #[schema(value_type = String)]
+    pub config_id: SessionConfigId,
+    #[schema(value_type = serde_json::Value)]
+    pub value: SessionConfigOptionValue,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpSetModeRequest {
+    pub target: AcpSessionTarget,
+    #[schema(value_type = String)]
+    pub mode_id: SessionModeId,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpPermissionAnswerRequest {
+    pub target: AcpSessionTarget,
+    pub permission_id: AcpPermissionId,
+    #[schema(value_type = Option<String>)]
+    pub option_id: Option<PermissionOptionId>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcpListRequest {
+    pub target: AcpSessionTarget,
+    #[schema(value_type = Object)]
+    pub request: ListSessionsRequest,
+}
+
 pub(crate) fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(open))
+        .routes(routes!(commit_draft))
         .routes(routes!(prompt))
         .routes(routes!(replace))
         .routes(routes!(interrupt))
@@ -28,6 +90,17 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(list))
         .routes(routes!(snapshot))
         .routes(routes!(close))
+}
+
+#[utoipa::path(post, path = "/api/v1/acp/sessions/commit-draft", operation_id = "acpSessions.commitDraft",
+    request_body = AcpSessionTarget,
+    responses(StudioApiErrors, (status = 200), (status = 502, body = AcpBusinessFailure)))]
+async fn commit_draft(
+    State(state): State<AppState>,
+    ApiJson(target): ApiJson<AcpSessionTarget>,
+) -> Result<Json<()>, AcpApiError> {
+    state.runtime.commit_acp_draft(target).await?;
+    Ok(Json(()))
 }
 
 /// Preserve business diagnostics, including original RPC data and auth methods.
@@ -421,9 +494,12 @@ mod tests {
         use std::path::PathBuf;
         use std::time::Duration;
 
+        use crate::acp_business::{
+            AcpInterruptRequest, AcpPermissionAnswerRequest, AcpPromptRequest,
+        };
         use anyhow::{Context, Result, ensure};
         use futures::{FutureExt, StreamExt};
-        use pl_protocol::studio::*;
+        use pl_studio_runtime::*;
         use reqwest::{Client, Response};
         use serde::{Serialize, de::DeserializeOwned};
         use tokio::time::{sleep, timeout};
@@ -616,7 +692,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id,
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             }
         }
 

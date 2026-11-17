@@ -2,12 +2,12 @@
 pub(crate) use super::agent_evaluation::validate_idle;
 use super::{SessionRuntime, observation::DurableMessageIdentity};
 use crate::studio::agent_close::terminal_report_id;
-use anyhow::{Context, Result, ensure};
-use pl_core::thread::ThreadSnapshot;
-use pl_protocol::{
+use crate::{
     AgentReviewBaseline, AgentReviewFeedback, AgentReviewTargetSnapshot,
     AgentWorkspaceAssignmentSnapshot,
 };
+use anyhow::{Context, Result, ensure};
+use pl_core::thread::ThreadSnapshot;
 
 /// First-send authority is provenance, never inferred from whether a notification wakes its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,8 +124,7 @@ impl ReviewForward {
         matches!(
             self,
             Self::Unconfirmed {
-                reason:
-                    ReviewForwardReason::SendUnconfirmed(_)
+                reason: ReviewForwardReason::SendUnconfirmed(_)
                     | ReviewForwardReason::StorageUnavailable(_),
                 ..
             }
@@ -249,10 +248,10 @@ impl SessionRuntime {
             ensure!(
                 crate::studio::workspace_receipt::from_snapshot(&reviewer_snapshot)?.as_ref()
                     == Some(request.assignment)
-                    && request.assignment.mode == pl_protocol::AgentWorkspaceMode::Review
+                    && request.assignment.mode == crate::AgentWorkspaceMode::Review
                     && crate::studio::model_route::saved_profile(&reviewer_snapshot)?
                         .is_some_and(|(profile, _)| profile.workspace_mode
-                            == pl_protocol::AgentWorkspaceMode::Review),
+                            == crate::AgentWorkspaceMode::Review),
                 "reviewer frozen authority is no longer valid"
             );
             let parent = reviewer
@@ -586,7 +585,7 @@ impl SessionRuntime {
     async fn review_target_state(
         &self,
         target: &str,
-    ) -> Result<(ThreadSnapshot, Option<pl_protocol::Turn>)> {
+    ) -> Result<(ThreadSnapshot, Option<crate::Turn>)> {
         let services = self
             .0
             .state()
@@ -626,7 +625,7 @@ impl SessionRuntime {
             (current, turn)
         } else {
             let record = services.record(target).await?;
-            let protocol: pl_protocol::Thread = record.into();
+            let protocol: crate::Thread = record.into();
             let current = crate::studio::thread_factory::recovery::load_current_read_only(
                 &services.store,
                 &protocol,
@@ -713,7 +712,7 @@ fn same_delivery(current: &AgentReviewBaseline, expected: &AgentReviewBaseline) 
     current == *expected
 }
 
-fn baseline(snapshot: &ThreadSnapshot, turn: &pl_protocol::Turn) -> AgentReviewBaseline {
+fn baseline(snapshot: &ThreadSnapshot, turn: &crate::Turn) -> AgentReviewBaseline {
     AgentReviewBaseline {
         turn_id: turn.id.clone(),
         input_id: turn.input_id.clone(),

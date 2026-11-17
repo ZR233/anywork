@@ -6,11 +6,11 @@ use super::legacy_timeline_types::CurrentProjection;
 #[cfg(test)]
 use super::legacy_timeline_types::{CurrentCollectionRef, CurrentContentPreview};
 use super::*;
+use crate::protocol::*;
 #[cfg(test)]
 use crate::{ExecutionItem, ExecutionShape};
 use anyhow::Result;
 use pl_core::chat::ChatKey;
-use pl_protocol::*;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -704,7 +704,7 @@ async fn migrate(db: &impl ConnectionTrait) -> Result<()> {
         sources::read(db, &active_sources.into_iter().collect::<Vec<_>>(), effect).await?;
     let bytes = serde_json::to_vec(&current)?;
     ensure!(
-        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        bytes.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
         "migrated current exceeds product envelope budget"
     );
     db.execute_raw(statement(

@@ -1441,10 +1441,8 @@ enabled = false
 
     #[test]
     fn codex_identity_round_trips_and_schema_29_preserves_siwc_and_api_choices() {
+        use crate::{AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo};
         use pl_model::protocol::chatgpt::{CODEX_CLIENT_ID, CODEX_RESOURCE};
-        use pl_protocol::studio::{
-            AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo,
-        };
         let mut config = crate::config::StudioConfig::default_config().unwrap();
         let routes = config.mode_model_routes.clone();
         let mut account = pl_model::config::builtin_account_catalog()
@@ -1667,7 +1665,7 @@ enabled = false
         config.skills.external_dirs = vec!["/readonly/skills".into()];
         config.skills.disabled = vec!["paused-skill".into()];
         config.skills.auto_learn_min_tool_calls = 9;
-        config.ui.language = pl_protocol::studio::StudioUiLanguage::En;
+        config.ui.language = crate::StudioUiLanguage::En;
         let old_models = config.models.clone();
         let old_routes = config.mode_model_routes.clone();
         let old_ui = config.ui.clone();

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 
-use pl_protocol::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
+use crate::mode::{ThreadModeCatalogSnapshot, ThreadModeDescriptor, ThreadModeId};
 use thiserror::Error;
 
 use super::{

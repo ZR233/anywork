@@ -129,47 +129,6 @@ final class TimelineConceptImageInput {
     };
   }
 
-  /// Uses the final journey's production widget finders, scoped to ONE item.
-  /// No dependency on an in-flight owner/key/Driver DTO contract.
-  Map<String, Object?> verifyHorizontalLayout(
-    WidgetTester tester, {
-    required TimelineDisplayUnit item,
-    required List<ThreadAttachmentView> attachments,
-    required Finder itemFinder,
-    required Finder Function(String resourceId) thumbnailFinder,
-  }) {
-    final evidence = verifyItem(item, attachments);
-    expect(itemFinder, findsOneWidget);
-    final rectangles = <Rect>[];
-    for (final attachment in attachments) {
-      final thumbnail = find.descendant(
-        of: itemFinder,
-        matching: thumbnailFinder(attachment.id),
-      );
-      expect(thumbnail, findsOneWidget);
-      final rectangle = tester.getRect(thumbnail);
-      expect(rectangle.width, greaterThan(0));
-      expect(rectangle.height, greaterThan(0));
-      if (rectangles.isNotEmpty) {
-        expect(rectangle.top, closeTo(rectangles.first.top, 1));
-        expect(rectangle.left, greaterThanOrEqualTo(rectangles.last.right));
-      }
-      rectangles.add(rectangle);
-    }
-    return {
-      ...evidence,
-      'thumbnailRects': [
-        for (final rectangle in rectangles)
-          {
-            'left': rectangle.left,
-            'top': rectangle.top,
-            'width': rectangle.width,
-            'height': rectangle.height,
-          },
-      ],
-    };
-  }
-
   Map<String, Object?> toJson() => {
     'threadId': threadId,
     'inputId': inputId,

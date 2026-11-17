@@ -16,6 +16,54 @@ pub(in crate::studio) struct PreparedAcpWorkspace {
 }
 
 impl StudioThreadFactory {
+    pub(in crate::studio) async fn prepare_acp_root_worktree(
+        &self,
+        id: &str,
+        project: &crate::studio::WorkspaceRecord,
+    ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease> {
+        ensure!(
+            project.kind != crate::WorkspaceKind::Standalone,
+            "standalone sessions only support local workspaces"
+        );
+        self.services.worktrees.mark_creating(id);
+        crate::studio::agent_host::workspace_preparation::create_root_session_worktree(
+            &self.services.store,
+            &self.services.worktrees,
+            &self.services.ssh_manager,
+            project,
+            id,
+            &|_, _, _| {},
+        )
+        .await
+    }
+
+    pub(in crate::studio) async fn confirm_acp_worktree(
+        &self,
+        lease: &crate::studio::agent_host::worktree_lease::WorktreeLease,
+        usage: &crate::studio::WorkspaceUsageLease,
+        admission: &impl crate::thread_assembler::WorkspaceBindingAdmission,
+    ) -> Result<()> {
+        self.confirm_worktree_binding(lease, usage, admission).await
+    }
+
+    pub(in crate::studio) fn complete_acp_draft_worktree(&self, id: &str) {
+        self.services.worktrees.clear_creating(id);
+    }
+
+    pub(in crate::studio) async fn preserve_acp_draft_worktree(&self, id: &str) -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        if let Some(lease) = self.services.worktrees.get(id)
+            && lease.state != WorktreeLeaseState::Cleaned
+        {
+            self.services
+                .worktrees
+                .preserve_failed_session_binding(&lease)
+                .await?;
+        }
+        self.services.worktrees.clear_creating(id);
+        Ok(())
+    }
+
     /// New Native and ACP members freeze exactly the same SSH workspace binding.
     pub(in crate::studio) async fn open_remote_workspace(
         &self,
@@ -93,7 +141,7 @@ impl StudioThreadFactory {
         project: &crate::studio::WorkspaceRecord,
         business_root: &str,
         usage: &crate::studio::WorkspaceUsageLease,
-        session_mode: pl_protocol::ThreadWorkspaceMode,
+        session_mode: crate::ThreadWorkspaceMode,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<PreparedAcpWorkspace> {
         let remote = self
@@ -122,7 +170,7 @@ impl StudioThreadFactory {
             .worktrees
             .preserve_workspace_resources(id, identity);
         let workspace = if self.services.worktrees.get(id).is_some()
-            || session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
+            || session_mode == crate::ThreadWorkspaceMode::Worktree
         {
             AgentWorkspace::worktree(&project.path, business_root)
         } else {

@@ -37,7 +37,7 @@ pub struct SpawnReceipt {
     pub agent_id: String,
     pub profile_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<pl_protocol::studio::NewThreadModelRoute>,
+    pub model: Option<pl_protocol::NewThreadModelRoute>,
     pub delegation: DelegationSettings,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<AgentWorkspaceAssignmentSnapshot>,
