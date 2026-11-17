@@ -6751,6 +6751,37 @@ class AppLocalizationsEn extends AppLocalizations {
   String get acpContentThoughtLabel => 'Thinking';
 
   @override
+  String acpProcessGroupSummary(int count, int toolCount) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count activities',
+      one: '1 activity',
+    );
+    String _temp1 = intl.Intl.pluralLogic(
+      toolCount,
+      locale: localeName,
+      other: '$toolCount tools',
+      one: '1 tool',
+    );
+    return 'Process · $_temp0 · $_temp1';
+  }
+
+  @override
+  String get acpProcessGroupRunning => 'Running';
+
+  @override
+  String acpProcessGroupFailed(int count) {
+    String _temp0 = intl.Intl.pluralLogic(
+      count,
+      locale: localeName,
+      other: '$count tools failed',
+      one: '1 tool failed',
+    );
+    return '$_temp0';
+  }
+
+  @override
   String get acpContentAudioLabel => 'Audio content';
 
   @override

@@ -35,6 +35,7 @@ class AcpContentBlockView extends StatelessWidget {
     this.onOpenLink,
     this.imageBuilder,
     this.textStyle,
+    this.fullDetails = false,
   });
 
   final String id;
@@ -43,6 +44,7 @@ class AcpContentBlockView extends StatelessWidget {
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
   final TextStyle? textStyle;
+  final bool fullDetails;
 
   @override
   Widget build(BuildContext context) => switch (block) {
@@ -96,7 +98,12 @@ class AcpContentBlockView extends StatelessWidget {
       :final text,
       :final mimeType,
     ) =>
-      _AcpEmbeddedTextResource(uri: uri, text: text, mimeType: mimeType),
+      _AcpEmbeddedTextResource(
+        uri: uri,
+        text: text,
+        mimeType: mimeType,
+        fullDetails: fullDetails,
+      ),
     AcpBlobResourceBlockPresentation(
       :final uri,
       :final mimeType,
@@ -214,6 +221,13 @@ class _AcpResourceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final uriText = Text(
+      uri,
+      style: context.text.labelSmall?.copyWith(
+        color: context.colors.onSurfaceVariant,
+        fontFamily: studioCodeFontFamily,
+      ),
+    );
     return StudioPanel(
       backgroundColor: context.colors.surfaceContainerLow,
       borderColor: context.colors.outlineVariant,
@@ -232,21 +246,18 @@ class _AcpResourceCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
                   children: [
-                    Flexible(
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: context.text.labelLarge?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                    Text(
+                      label,
+                      style: context.text.labelLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
                       ),
                     ),
                     if (badgeText case final mime? when mime.isNotEmpty) ...[
-                      const SizedBox(width: 8),
-                      StudioPill(label: mime),
+                      Text(mime, style: context.text.labelSmall),
                     ],
                   ],
                 ),
@@ -261,30 +272,31 @@ class _AcpResourceCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(height: 3),
-                SelectableText(
-                  uri,
-                  maxLines: 1,
-                  style: context.text.labelSmall?.copyWith(
-                    color: context.colors.onSurfaceVariant,
-                    fontFamily: studioCodeFontFamily,
-                  ),
+                SelectionContainer.maybeOf(context) == null
+                    ? SelectionArea(child: uriText)
+                    : uriText,
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    IconButton(
+                      tooltip: context.l10n.acpContentCopyUri,
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () =>
+                          Clipboard.setData(ClipboardData(text: uri)),
+                      icon: const Icon(Icons.copy_rounded, size: 15),
+                    ),
+                    if (canOpen && onOpen != null)
+                      TextButton.icon(
+                        onPressed: onOpen,
+                        icon: const Icon(Icons.open_in_new_rounded, size: 15),
+                        label: Text(context.l10n.acpContentOpenLink),
+                      ),
+                  ],
                 ),
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          IconButton(
-            tooltip: context.l10n.acpContentCopyUri,
-            visualDensity: VisualDensity.compact,
-            onPressed: () => Clipboard.setData(ClipboardData(text: uri)),
-            icon: const Icon(Icons.copy_rounded, size: 15),
-          ),
-          if (canOpen && onOpen != null)
-            TextButton.icon(
-              onPressed: onOpen,
-              icon: const Icon(Icons.open_in_new_rounded, size: 15),
-              label: Text(context.l10n.acpContentOpenLink),
-            ),
         ],
       ),
     );
@@ -296,11 +308,13 @@ class _AcpEmbeddedTextResource extends StatefulWidget {
     required this.uri,
     required this.text,
     this.mimeType,
+    this.fullDetails = false,
   });
 
   final String uri;
   final String text;
   final String? mimeType;
+  final bool fullDetails;
 
   @override
   State<_AcpEmbeddedTextResource> createState() =>
@@ -318,20 +332,22 @@ class _AcpEmbeddedTextResourceState extends State<_AcpEmbeddedTextResource> {
       children: [
         InkWell(
           borderRadius: BorderRadius.circular(StudioRadii.xs),
-          onTap: () => setState(() => _expanded = !_expanded),
+          onTap: widget.fullDetails
+              ? null
+              : () => setState(() => _expanded = !_expanded),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 3),
             child: TimelineActivityRow(
               icon: Icons.description_outlined,
               label: widget.uri,
               meta: widget.mimeType,
-              expanded: _expanded,
-              expandable: true,
+              expanded: _expanded || widget.fullDetails,
+              expandable: !widget.fullDetails,
               tooltip: widget.uri,
             ),
           ),
         ),
-        if (_expanded)
+        if (_expanded || widget.fullDetails)
           Padding(
             padding: const EdgeInsets.only(
               left: TimelineActivityRow.contentIndent,
@@ -341,7 +357,7 @@ class _AcpEmbeddedTextResourceState extends State<_AcpEmbeddedTextResource> {
             child: StudioCodeBlock(
               text: widget.text,
               language: widget.mimeType ?? widget.uri,
-              maxHeight: 260,
+              horizontalScroll: false,
             ),
           ),
       ],

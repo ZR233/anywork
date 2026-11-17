@@ -1,4 +1,5 @@
 export 'state/acp_view_state.dart';
+export 'state/acp_timeline_row.dart';
 export 'views/acp_conversation_composer_view.dart';
 export 'views/acp_conversation_content_view.dart';
 export 'views/acp_external_history_dialog.dart';
@@ -10,3 +11,4 @@ export 'widgets/acp_content_block_view.dart';
 export 'widgets/acp_permission_dock.dart';
 export 'widgets/acp_plan_card.dart';
 export 'widgets/acp_tool_card.dart';
+export 'widgets/acp_timeline_process_group_view.dart';

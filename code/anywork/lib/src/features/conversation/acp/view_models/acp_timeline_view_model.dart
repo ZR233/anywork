@@ -1,6 +1,7 @@
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../state/acp_timeline_row.dart';
 import '../state/acp_view_state.dart';
 import 'acp_content_view_model.dart';
 import 'acp_session_view_model.dart';
@@ -51,7 +52,7 @@ AcpTimelineHeaderViewState acpTimelineHeaderViewModel(
     ready: state?.ready ?? false,
     disconnected: state?.disconnected ?? false,
     observationEnded: state?.observationEnded ?? false,
-    itemCount: state?.content.length ?? 0,
+    itemCount: ref.watch(acpTimelineRowsViewModelProvider(threadId)).length,
     hasConversationalContent: state == null
         ? false
         : hasConversationalAcpContent(state.content),
@@ -64,45 +65,91 @@ AcpTimelineHeaderViewState acpTimelineHeaderViewModel(
 }
 
 @riverpod
-AcpTimelineItemPresentation? acpTimelineItemViewModel(
-  Ref ref,
-  String threadId,
-  int index,
-) {
-  final asyncState = ref.watch(acpConversationStateProvider(threadId));
-  final state = asyncState.value;
-  final content = state?.content;
-  final item = content != null && index >= 0 && index < content.length
-      ? content[index]
-      : null;
-  if (item == null) return null;
-  final isLastAndRunning =
-      state?.activeRun != null && index == content!.length - 1;
-  var supersededUpdate = false;
-  if (item case AcpConversationUpdateItem(:final update)) {
-    if (update is AcpAvailableCommandsUpdateView) {
-      supersededUpdate = content!
-          .skip(index + 1)
-          .any(
-            (later) =>
-                later is AcpConversationUpdateItem &&
-                later.update is AcpAvailableCommandsUpdateView,
-          );
-    } else if (update is AcpUsageUpdateView) {
-      supersededUpdate = content!
-          .skip(index + 1)
-          .any(
-            (later) =>
-                later is AcpConversationUpdateItem &&
-                later.update is AcpUsageUpdateView,
-          );
+List<AcpTimelineRow> acpTimelineRowsViewModel(Ref ref, String threadId) {
+  final state = ref.watch(acpConversationStateProvider(threadId)).value;
+  return mapAcpTimelineRows(
+    threadId: threadId,
+    content: state?.content ?? const [],
+    running: state?.activeRun != null,
+  );
+}
+
+@riverpod
+AcpTimelineRow? acpTimelineItemViewModel(Ref ref, String threadId, int index) {
+  final rows = ref.watch(acpTimelineRowsViewModelProvider(threadId));
+  return index >= 0 && index < rows.length ? rows[index] : null;
+}
+
+List<AcpTimelineRow> mapAcpTimelineRows({
+  required String threadId,
+  required List<AcpConversationContentItem> content,
+  required bool running,
+}) {
+  var lastCommands = -1;
+  var lastUsage = -1;
+  for (var index = content.length - 1; index >= 0; index--) {
+    if (content[index] case AcpConversationUpdateItem(:final update)) {
+      if (lastCommands < 0 && update is AcpAvailableCommandsUpdateView) {
+        lastCommands = index;
+      } else if (lastUsage < 0 && update is AcpUsageUpdateView) {
+        lastUsage = index;
+      }
     }
   }
-  return mapAcpTimelineItem(
-    threadId: threadId,
-    index: index,
-    item: item,
-    isLastAndRunning: isLastAndRunning,
-    supersededUpdate: supersededUpdate,
-  );
+
+  final rows = <AcpTimelineRow>[];
+  final process = <AcpTimelineItemPresentation>[];
+  var boundaryId = '$threadId:start';
+
+  void flush() {
+    if (process.isEmpty) return;
+    rows.add(AcpTimelineProcessRow(id: '$boundaryId:process', items: process));
+    process.clear();
+  }
+
+  for (var index = 0; index < content.length; index++) {
+    final source = content[index];
+    if (source case AcpConversationUpdateItem(:final update)) {
+      if ((update is AcpAvailableCommandsUpdateView && index != lastCommands) ||
+          (update is AcpUsageUpdateView && index != lastUsage)) {
+        continue;
+      }
+    }
+    final item = mapAcpTimelineItem(
+      threadId: threadId,
+      index: index,
+      item: source,
+      isLastAndRunning: running && index == content.length - 1,
+    );
+    if (item == null) continue;
+    if (item case AcpTimelineSessionUpdateItem(
+      update: AcpSupersededUpdatePresentation(),
+    )) {
+      continue;
+    }
+    final blocks = switch (item) {
+      AcpTimelineUserMessage(:final blocks) => blocks,
+      AcpTimelineAssistantMessage(:final blocks) => blocks,
+      AcpTimelineThoughtItem(:final blocks) => blocks,
+      _ => null,
+    };
+    if (blocks != null &&
+        !blocks.any(
+          (block) => switch (block) {
+            AcpTextBlockPresentation(:final text) => text.trim().isNotEmpty,
+            _ => true,
+          },
+        )) {
+      continue;
+    }
+    if (item is AcpTimelineUserMessage || item is AcpTimelineAssistantMessage) {
+      flush();
+      rows.add(AcpTimelineMessageRow(item));
+      boundaryId = item.id;
+    } else {
+      process.add(item);
+    }
+  }
+  flush();
+  return List.unmodifiable(rows);
 }
