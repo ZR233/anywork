@@ -1,6 +1,6 @@
 //! The production CLI is a native desktop resource; Harbor remains a local optional consumer.
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -27,8 +27,20 @@ fn binary_name(target: &str) -> &'static str {
     }
 }
 
+fn host_target(os: &str, arch: &str) -> Result<&'static str> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Ok("aarch64-unknown-linux-musl"),
+        ("windows", "x86_64") => Ok("x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => Ok("aarch64-pc-windows-msvc"),
+        ("macos", "x86_64") => Ok("x86_64-apple-darwin"),
+        ("macos", "aarch64") => Ok("aarch64-apple-darwin"),
+        _ => bail!("unsupported anywk host {os}/{arch}"),
+    }
+}
+
 pub(crate) fn build_and_stage(workspace: &Path, destination: &Path, version: &str) -> Result<()> {
-    let target = crate::host_mcp::current_target()?;
+    let target = host_target(std::env::consts::OS, std::env::consts::ARCH)?;
     let commit = std::env::var("PL_GIT_COMMIT")
         .ok()
         .or_else(|| {
@@ -51,7 +63,11 @@ pub(crate) fn build_and_stage(workspace: &Path, destination: &Path, version: &st
     command
         .current_dir(workspace)
         .args([
-            "build",
+            if target.ends_with("-linux-musl") {
+                "zigbuild"
+            } else {
+                "build"
+            },
             "--release",
             "--locked",
             "-p",
@@ -144,6 +160,28 @@ pub(crate) fn validate(directory: &Path, target: &str, version: &str) -> Result<
         "bundled anywk digest mismatch"
     );
     crate::remote_helper::verify_target_image(&bytes, target)?;
+    if target.ends_with("-linux-musl") {
+        let output = Command::new("readelf")
+            .args(["--wide", "--program-headers", "--dynamic"])
+            .arg(&binary)
+            .output()
+            .context("inspect bundled anywk ELF linkage")?;
+        ensure!(
+            output.status.success(),
+            "readelf failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let linkage = String::from_utf8(output.stdout)?;
+        ensure!(
+            !linkage
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some("INTERP"))
+                && !linkage.contains("(NEEDED)"),
+            "bundled musl anywk must be statically linked: {}",
+            binary.display()
+        );
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -158,6 +196,22 @@ pub(crate) fn validate(directory: &Path, target: &str, version: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_targets_use_musl_on_linux_and_native_targets_elsewhere() -> Result<()> {
+        for (os, arch, target) in [
+            ("linux", "x86_64", "x86_64-unknown-linux-musl"),
+            ("linux", "aarch64", "aarch64-unknown-linux-musl"),
+            ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+            ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+            ("macos", "x86_64", "x86_64-apple-darwin"),
+            ("macos", "aarch64", "aarch64-apple-darwin"),
+        ] {
+            assert_eq!(host_target(os, arch)?, target);
+        }
+        assert!(host_target("linux", "riscv64").is_err());
+        Ok(())
+    }
 
     #[test]
     fn resource_checks_reject_changed_bytes_target_version_and_missing_cli() -> Result<()> {
