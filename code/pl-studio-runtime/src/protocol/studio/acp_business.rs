@@ -2,8 +2,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-pub use agent_client_protocol_schema::v1 as acp_schema;
-pub use agent_client_protocol_schema::v1::{
+pub use pl_acp::session::schema as acp_schema;
+pub use pl_acp::session::schema::{
     AgentCapabilities, ListSessionsRequest, ListSessionsResponse, NewSessionResponse,
     PermissionOptionId, PromptResponse, RequestPermissionRequest, SessionConfigId,
     SessionConfigOption, SessionConfigOptionValue, SessionId as AcpSessionId, SessionModeId,

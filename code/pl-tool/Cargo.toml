@@ -22,10 +22,8 @@ pl-tool-skill = { workspace = true }
 pl-tool-bots = { workspace = true }
 pl-tool-media-support = { workspace = true }
 getrandom = { workspace = true }
-h2 = { workspace = true }
 http = { workspace = true }
 bytes = { workspace = true }
-eventsource-stream = { workspace = true }
 sse-stream = { workspace = true }
 sse-stream-rmcp = { workspace = true }
 pl-skill-core = { workspace = true }
@@ -42,7 +40,6 @@ futures = { workspace = true }
 tokio-util = { workspace = true, features = ["rt"] }
 reqwest = { workspace = true }
 which = { workspace = true }
-image = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rmcp = { workspace = true, features = ["auth", "client", "transport-async-rw", "transport-streamable-http-client-reqwest"] }
@@ -51,7 +48,6 @@ pl-output = { workspace = true }
 pl-patch = { workspace = true }
 pl-model = { workspace = true }
 serde_json = { workspace = true }
-serde_path_to_error = { workspace = true }
 encoding_rs = { workspace = true }
 base64 = { workspace = true }
 grep-regex = { workspace = true }
@@ -63,9 +59,9 @@ schemars = { workspace = true }
 serde = { workspace = true }
 
 [dev-dependencies]
+image = { workspace = true }
 pl-core = { workspace = true, features = ["sqlite"] }
 axum = { workspace = true }
-tracing-subscriber = { workspace = true }
 libc = { workspace = true }
 anyhow = { workspace = true }
 

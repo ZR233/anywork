@@ -3,8 +3,8 @@
 
 use super::*;
 use pl_core::chat::{ChatError, ContentBytes, ContentReadRequest, ContentRef, ContentWindow};
+use sea_orm::sqlx::Row;
 use sea_orm::{DatabaseConnection, DatabaseConnectionType};
-use sqlx::Row;
 use std::{ffi::CStr, ptr};
 
 pub(in super::super) async fn read_content(
