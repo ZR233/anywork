@@ -10,7 +10,6 @@ abstract interface class TimelineGroupDisplay {
   bool get isCurrent;
   bool get expanded;
   DisplayBlockRef? get blockReference;
-  String? get before;
   bool get loading;
   Object? get error;
   Iterable<ChatAtom> get atoms;

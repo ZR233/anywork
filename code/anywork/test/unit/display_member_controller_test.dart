@@ -1,264 +1,40 @@
 import 'dart:async';
 
-import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _cut = HistoryCut('cut-group');
 const _ref = DisplayBlockRef(
   blockId: 'group',
-  cut: _cut,
+  cut: HistoryCut('H1'),
   anchorSeq: 1,
-  headSeq: 1,
+  headSeq: 2,
 );
-const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
+const _nextRef = DisplayBlockRef(
+  blockId: 'group',
+  cut: HistoryCut('H2'),
+  anchorSeq: 1,
+  headSeq: 3,
+);
+const _demand = ReadDemand(maxItems: 12, maxBytes: 32768);
 
-void main() {
-  test('sealed head rebases mutable rows onto a native sealed page', () async {
-    final handles = <_Handle>[];
-    final secondOpened = Completer<void>();
-    final controller = DisplayMemberController(
-      reference: _ref,
-      groupClosed: false,
-      demand: _demand,
-      open: (_, _, _, _) async {
-        final handle = _Handle();
-        handles.add(handle);
-        if (handles.length == 2) secondOpened.complete();
-        return handle;
-      },
-    );
-    await Future<void>.delayed(Duration.zero);
-    final handle = handles.single;
-    await handle.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      cut: _cut,
-      revision: 1,
-      sealed: false,
-      entries: [
-        DisplayMemberHead(
-          memberKey: 'row',
-          memberOrder: 1,
-          record: DisplayRecord(
-            contentSource: const CurrentAtomSource(),
-            atom: ChatAtom(
-              id: 'atom',
-              source: const ForegroundTurnChatSource(turnId: 'turn'),
-              sourceOrder: 1,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const ActiveChatAtom(
-                started: null,
-                status: ChatActiveStatus.running,
-              ),
-              contents: const [],
-            ),
-          ),
-        ),
-      ],
-    );
-    final mutableAccepted = Completer<void>();
-    controller.addListener(() {
-      if (controller.page == page && !mutableAccepted.isCompleted) {
-        mutableAccepted.complete();
-      }
-    });
-    handle.reply.complete(page);
-    await mutableAccepted.future;
-    final old = controller.disclosure('row')..expanded = true;
-    controller.rebase(_ref, groupClosed: true);
-    expect(controller.page, isNull);
-    expect(controller.loading, isTrue);
-    expect(controller.awaitingSealed, isTrue);
-    expect(old.retired, isTrue);
-    expect(controller.disclosure('row').expanded, isTrue);
-    await secondOpened.future;
-    final sealedHandle = handles.last;
-    await sealedHandle.pulling.future;
-    final sealed = DisplayMemberPage(
-      block: _ref,
-      cut: _cut,
-      revision: 3,
-      sealed: true,
-      entries: [],
-    );
-    final sealedAccepted = Completer<void>();
-    controller.addListener(() {
-      if (controller.page == sealed && !sealedAccepted.isCompleted) {
-        sealedAccepted.complete();
-      }
-    });
-    sealedHandle.reply.complete(sealed);
-    await sealedAccepted.future;
-    expect(controller.page, same(sealed));
-    expect(controller.awaitingSealed, isFalse);
-    expect(controller.error, isNull);
-    await controller.close();
-    controller.dispose();
-  });
-
-  test('sealed current page stays readable after fixed-page EOF and releases its handle', () async {
-    final handle = _Handle();
-    final controller = DisplayMemberController(
-      reference: _ref,
-      groupClosed: false,
-      demand: _demand,
-      open: (reference, window, demand, _) async => handle,
-    );
-    await handle.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      cut: _cut,
-      revision: 1,
-      sealed: true,
-      entries: [],
-      nextCursor: '50',
-    );
-    final accepted = Completer<void>();
-    controller.addListener(() {
-      if (controller.page == page && !accepted.isCompleted) accepted.complete();
-    });
-    handle.reply.complete(page);
-    await accepted.future;
-    await handle.closed.future;
-    expect(controller.page, same(page));
-    expect(controller.error, isNull);
-    expect(handle.calls, 1);
-    expect(handle.requested, isTrue);
-    await controller.close();
-    controller.dispose();
-  });
-
-  test(
-    'window switch closes original demand and rejects its late failure',
-    () async {
-      final windows = <DisplayMemberWindow>[];
-      final handles = <_Handle>[];
-      final controller = DisplayMemberController(
-        reference: _ref,
-        groupClosed: false,
-        demand: _demand,
-        open: (reference, window, demand, _) async {
-          expect(reference, _ref);
-          expect(demand.maxItems, 1);
-          windows.add(window);
-          final handle = _Handle();
-          handles.add(handle);
-          return handle;
-        },
-      );
-      await Future<void>.delayed(Duration.zero);
-      final old = handles.single;
-      controller.select(const BeforeDisplayMembers(cursor: '50'));
-      expect(old.requested, isTrue);
-      await Future<void>.delayed(Duration.zero);
-      expect(windows, [
-        isA<LatestDisplayMembers>(),
-        isA<BeforeDisplayMembers>(),
-      ]);
-      final current = handles.last;
-      final value = DisplayMemberPage(
-        block: _ref,
-        cut: _cut,
-        revision: 3,
-        sealed: false,
-        entries: [],
-      );
-      current.reply.complete(value);
-      await Future<void>.delayed(Duration.zero);
-      expect(controller.page, same(value));
-      expect(controller.error, isNull);
-      controller.retire();
-      expect(current.requested, isTrue);
-      await controller.close();
-      controller.dispose();
-    },
-  );
-
-  test('Latest to Before to Latest rejects the first Latest late failure with the same page generation', () async {
-    final firstOpen = Completer<DisplayMembers>();
-    final before = _Handle();
-    final latest = _Handle();
-    final windows = <DisplayMemberWindow>[];
-    final controller = DisplayMemberController(
-      reference: _ref,
-      groupClosed: false,
-      demand: _demand,
-      open: (_, window, _, _) {
-        windows.add(window);
-        return switch (windows.length) {
-          1 => firstOpen.future,
-          2 => Future.value(before),
-          _ => Future.value(latest),
-        };
-      },
-    );
-    await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(cursor: '50'));
-    await before.pulling.future;
-    controller.select(const LatestDisplayMembers());
-    await latest.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      cut: _cut,
-      revision: 7,
-      sealed: false,
-      entries: [],
-    );
-    latest.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
-    expect(windows, [
-      isA<LatestDisplayMembers>(),
-      isA<BeforeDisplayMembers>(),
-      isA<LatestDisplayMembers>(),
-    ]);
-    expect(before.requested, isTrue);
-    expect(controller.page, same(page));
-    firstOpen.completeError(StateError('obsolete first Latest'));
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.page, same(page));
-    expect(controller.error, isNull);
-    expect(controller.loading, isFalse);
-    await controller.close();
-    controller.dispose();
-  });
-
-  test('retry retains cleanup failure until the same handle really closes, then accepts a clean page', () async {
-    final failure = StateError('first close failed');
-    final old = _Handle()..closeFailure = failure;
-    final fresh = _Handle();
-    var opens = 0;
-    final controller = DisplayMemberController(
-      reference: _ref,
-      groupClosed: false,
-      demand: _demand,
-      open: (_, _, _, _) async => ++opens == 1 ? old : fresh,
-    );
-    await old.pulling.future;
-    controller.select(const BeforeDisplayMembers(cursor: '50'));
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.cleanupError, same(failure));
-    expect(opens, 1);
-    old.closeFailure = null;
-    old.closeGate = Completer<void>();
-    final retry = controller.retry();
-    await Future<void>.delayed(Duration.zero);
-    expect(old.closeCalls, 2);
-    expect(controller.error, same(failure));
-    expect(
-      opens,
-      1,
-      reason: 'A new page cannot bypass unfinished original cleanup',
-    );
-    old.closeGate!.complete();
-    await retry;
-    await fresh.pulling.future;
-    final atom = ChatAtom(
-      id: 'fresh-member',
+DisplayMemberHead _head(
+  int order, {
+  String? text,
+  bool frozen = false,
+  String? key,
+}) => DisplayMemberHead(
+  memberKey: key ?? 'row-$order',
+  memberOrder: order * 7,
+  record: DisplayRecord(
+    contentSource: frozen
+        ? const FrozenObservation(capturedAt: 100, available: true)
+        : const CurrentAtomSource(),
+    atom: ChatAtom(
+      id: 'atom-$order',
       source: const ForegroundTurnChatSource(turnId: 'turn'),
-      sourceOrder: 1,
+      sourceOrder: order,
       kind: ChatAtomKind.reasoning,
       delivery: ChatDeliveryKind.foreground,
       lifecycle: const ActiveChatAtom(
@@ -266,115 +42,316 @@ void main() {
         status: ChatActiveStatus.running,
       ),
       contents: const [],
-    );
-    final page = DisplayMemberPage(
-      block: _ref,
-      cut: _cut,
-      revision: 2,
-      sealed: false,
-      entries: [
-        DisplayMemberHead(
-          memberKey: 'fresh-key',
-          memberOrder: 1,
-          record: DisplayRecord(
-            atom: atom,
-            contentSource: const CurrentAtomSource(),
-          ),
-        ),
-      ],
-    );
-    fresh.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
-    expect(old.closed.isCompleted, isTrue);
-    expect(old.closeCalls, 2);
-    expect(opens, 2);
-    expect(controller.page, same(page));
-    expect(controller.page!.entries.single.record.atom, same(atom));
-    expect(controller.error, isNull);
-    expect(controller.cleanupError, isNull);
-    await controller.close();
-    controller.dispose();
-  });
+      payload: InlinePayload(bytes: (text ?? 'row-$order').codeUnits),
+    ),
+  ),
+);
+DisplayMemberBatch _batch(
+  List<DisplayMemberHead> entries, {
+  DisplayBlockRef reference = _ref,
+  int offset = 0,
+  bool complete = true,
+}) => DisplayMemberBatch(
+  block: reference,
+  offset: offset,
+  complete: complete,
+  entries: entries,
+);
+Future<void> _drain() => Future<void>.delayed(Duration.zero);
+DisplayMemberController _controller(_Handle handle) => DisplayMemberController(
+  reference: _ref,
+  groupClosed: false,
+  demand: _demand,
+  open: (_, _, _) async => handle,
+);
 
-  test('closing another handle cannot erase an unresolved original cleanup failure', () async {
-    final lateOpen = Completer<DisplayMembers>();
-    final failure = StateError('late original close failed');
-    final original = _Handle()..closeFailure = failure;
-    final current = _Handle()..closeGate = Completer<void>();
-    final fresh = _Handle();
-    var opens = 0;
+void main() {
+  test(
+    '120 members across bounded History pages publish together in owner order',
+    () async {
+      final handle = _Handle();
+      final controller = _controller(handle);
+      addTearDown(controller.close);
+      await handle.pulling.future;
+      for (var offset = 0; offset < 120; offset += 12) {
+        handle.reply.complete(
+          _batch(
+            [
+              for (var index = 0; index < 12; index++)
+                _head(120 - offset - index),
+            ],
+            offset: offset,
+            complete: offset == 108,
+          ),
+        );
+        await _drain();
+        if (offset != 108) {
+          expect(controller.entries, isEmpty);
+          expect(controller.hasSnapshot, isFalse);
+        }
+      }
+      expect(controller.entries.map((e) => e.memberKey), [
+        for (var i = 1; i <= 120; i++) 'row-$i',
+      ]);
+      expect(controller.hasSnapshot, isTrue);
+      expect(controller.error, isNull);
+      expect(handle.closed.isCompleted, isTrue);
+    },
+  );
+
+  for (final eof in [false, true]) {
+    test(
+      'incomplete new cut retains the previous result on ${eof ? 'EOF' : 'failure'}',
+      () async {
+        final old = _Handle();
+        final next = _Handle();
+        var opens = 0;
+        final controller = DisplayMemberController(
+          reference: _ref,
+          groupClosed: false,
+          demand: _demand,
+          open: (_, _, _) async => ++opens == 1 ? old : next,
+        );
+        addTearDown(controller.close);
+        await old.pulling.future;
+        old.reply.complete(_batch([_head(1)]));
+        await _drain();
+        final previous = controller.entries;
+        final disclosure = controller.disclosure('row-1')..expanded = true;
+        controller.rebase(_nextRef, groupClosed: true);
+        expect(disclosure.retired, isTrue);
+        expect(controller.disclosure('row-1').expanded, isTrue);
+        await next.pulling.future;
+        next.reply.complete(
+          _batch(
+            [_head(2, frozen: true)],
+            reference: _nextRef,
+            complete: false,
+          ),
+        );
+        await _drain();
+        expect(controller.entries, same(previous));
+        expect(controller.hasSnapshot, isFalse);
+        if (eof) {
+          next.reply.complete(null);
+        } else {
+          next.reply.completeError(StateError('controlled read failure'));
+        }
+        await _drain();
+        expect(controller.entries, same(previous));
+        expect(
+          controller.error,
+          eof ? isA<ConversationContinuityError>() : isA<StateError>(),
+        );
+        expect(controller.awaitingSealed, isTrue);
+      },
+    );
+  }
+
+  test(
+    'new complete cut preserves expansion and notifies only the changed row',
+    () async {
+      final old = _Handle();
+      final next = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        groupClosed: false,
+        demand: _demand,
+        open: (_, _, _) async => ++opens == 1 ? old : next,
+      );
+      addTearDown(controller.close);
+      await old.pulling.future;
+      old.reply.complete(_batch([_head(1), _head(2)]));
+      await _drain();
+      var first = 0, last = 0;
+      controller.member('row-1').addListener(() => first++);
+      controller.member('row-2').addListener(() => last++);
+      controller.disclosure('row-1').expanded = true;
+      controller.rebase(_nextRef, groupClosed: false);
+      await next.pulling.future;
+      next.reply.complete(
+        _batch([_head(1, text: 'new body'), _head(2)], reference: _nextRef),
+      );
+      await _drain();
+      expect((first, last), (1, 0));
+      expect(controller.disclosure('row-1').expanded, isTrue);
+      expect(controller.error, isNull);
+    },
+  );
+
+  for (final fault in ['cut', 'offset', 'key', 'order', 'empty']) {
+    test(
+      'invalid History member $fault never publishes a complete group',
+      () async {
+        final handle = _Handle();
+        final controller = _controller(handle);
+        addTearDown(controller.close);
+        await handle.pulling.future;
+        handle.reply.complete(switch (fault) {
+          'cut' => _batch([_head(1)], reference: _nextRef),
+          'offset' => _batch([_head(1)], offset: 1),
+          'key' => _batch([_head(1), _head(2, key: 'row-1')]),
+          'order' => _batch([_head(1), _head(1, key: 'other')]),
+          _ => _batch([], complete: false),
+        });
+        await _drain();
+        expect(controller.error, isA<ConversationContinuityError>());
+        expect(controller.hasSnapshot, isFalse);
+        expect(controller.entries, isEmpty);
+      },
+    );
+  }
+
+  test('retiring a pending open joins and closes its late success without publishing', () async {
+    final opened = Completer<DisplayMembers>();
+    final handle = _Handle();
     final controller = DisplayMemberController(
       reference: _ref,
       groupClosed: false,
       demand: _demand,
-      open: (_, _, _, _) {
-        opens++;
-        return switch (opens) {
-          1 => lateOpen.future,
+      open: (_, _, _) => opened.future,
+    );
+    await _drain();
+    controller.retire();
+    var joined = false;
+    final closing = controller.close().then((_) => joined = true);
+    await _drain();
+    expect(joined, isFalse);
+    opened.complete(handle);
+    await closing;
+    expect(handle.requested, isTrue);
+    expect(handle.closed.isCompleted, isTrue);
+    expect(controller.hasSnapshot, isFalse);
+    expect(controller.error, isNull);
+  });
+
+  test(
+    'retry drops pending cut and ignores obsolete acquisition failure',
+    () async {
+      final opened = Completer<DisplayMembers>();
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        groupClosed: false,
+        demand: _demand,
+        open: (_, _, _) => ++opens == 1 ? opened.future : Future.value(fresh),
+      );
+      addTearDown(controller.close);
+      await _drain();
+      await controller.retry();
+      await fresh.pulling.future;
+      fresh.reply.complete(_batch([_head(1)]));
+      await _drain();
+      opened.completeError(StateError('obsolete'));
+      await _drain();
+      expect(controller.hasSnapshot, isTrue);
+      expect(controller.error, isNull);
+    },
+  );
+
+  test(
+    'retry keeps failed original close obligation until that same handle joins',
+    () async {
+      final failure = StateError('close failed');
+      final old = _Handle()..closeFailure = failure;
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        groupClosed: false,
+        demand: _demand,
+        open: (_, _, _) async => ++opens == 1 ? old : fresh,
+      );
+      await old.pulling.future;
+      old.reply.completeError(StateError('read failed'));
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      old.closeFailure = null;
+      old.closeGate = Completer<void>();
+      final retry = controller.retry();
+      await _drain();
+      expect(old.closeCalls, 2);
+      expect(opens, 1);
+      expect(controller.error, same(failure));
+      old.closeGate!.complete();
+      await retry;
+      await fresh.pulling.future;
+      fresh.reply.complete(_batch([_head(1)]));
+      await _drain();
+      expect(controller.cleanupError, isNull);
+      expect(controller.hasSnapshot, isTrue);
+      await controller.close();
+    },
+  );
+
+  test(
+    'closing a different late handle cannot erase an unresolved cleanup error',
+    () async {
+      final late = Completer<DisplayMembers>();
+      final failure = StateError('late original close failed');
+      final original = _Handle()..closeFailure = failure;
+      final current = _Handle()..closeGate = Completer<void>();
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        groupClosed: false,
+        demand: _demand,
+        open: (_, _, _) => switch (++opens) {
+          1 => late.future,
           2 => Future.value(current),
           _ => Future.value(fresh),
-        };
-      },
-    );
-    await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(cursor: '60'));
-    await current.pulling.future;
-    lateOpen.complete(original);
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.error, same(failure));
-    controller.select(const BeforeDisplayMembers(cursor: '40'));
-    await Future<void>.delayed(Duration.zero);
-    current.closeGate!.complete();
-    await Future<void>.delayed(Duration.zero);
-    expect(current.closed.isCompleted, isTrue);
-    expect(
-      controller.cleanupError,
-      same(failure),
-      reason: 'The first handle still owns a failed close obligation',
-    );
-    expect(opens, 2);
-    original.closeFailure = null;
-    await controller.retry();
-    await fresh.pulling.future;
-    fresh.reply.complete(
-      DisplayMemberPage(
-        block: _ref,
-        cut: _cut,
-        revision: 3,
-        sealed: false,
-        entries: [],
-      ),
-    );
-    await Future<void>.delayed(Duration.zero);
-    expect(original.closeCalls, 2);
-    expect(controller.error, isNull);
-    await controller.close();
-    controller.dispose();
-  });
+        },
+      );
+      await _drain();
+      await controller.retry();
+      await current.pulling.future;
+      late.complete(original);
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      final restarting = controller.retry();
+      await _drain();
+      current.closeGate!.complete();
+      await restarting;
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      expect(opens, 2);
+      original.closeFailure = null;
+      await controller.retry();
+      await fresh.pulling.future;
+      expect(original.closeCalls, greaterThanOrEqualTo(2));
+      fresh.reply.complete(_batch([]));
+      await _drain();
+      expect(controller.error, isNull);
+      await controller.close();
+    },
+  );
 }
 
 class _Handle implements DisplayMembers {
-  Completer<DisplayMemberPage?> reply = Completer();
+  Completer<DisplayMemberBatch?> reply = Completer();
   final pulling = Completer<void>();
   final closed = Completer<void>();
-  bool requested = false;
-  bool waiting = false;
-  int calls = 0;
-  int closeCalls = 0;
+  bool requested = false, waiting = false;
+  int calls = 0, closeCalls = 0;
   Object? closeFailure;
   Completer<void>? closeGate;
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     calls++;
     waiting = true;
-    if (!pulling.isCompleted) pulling.complete();
+    if (!pulling.isCompleted) {
+      pulling.complete();
+    }
     final original = reply;
     return original.future
-        .then((page) {
+        .then((batch) {
           if (identical(reply, original)) {
-            reply = Completer<DisplayMemberPage?>();
+            reply = Completer<DisplayMemberBatch?>();
           }
-          return page;
+          return batch;
         })
         .whenComplete(() => waiting = false);
   }
@@ -391,7 +368,11 @@ class _Handle implements DisplayMembers {
   Future<void> close() async {
     closeCalls++;
     await closeGate?.future;
-    if (closeFailure case final failure?) throw failure;
-    if (!closed.isCompleted) closed.complete();
+    if (closeFailure case final failure?) {
+      throw failure;
+    }
+    if (!closed.isCompleted) {
+      closed.complete();
+    }
   }
 }

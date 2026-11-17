@@ -6,48 +6,26 @@ import 'package:flutter/foundation.dart';
 import 'conversation_current_owner.dart';
 import '../state/timeline_display_unit.dart';
 
-const _maxMemberWindowDescriptors = 16;
-
-/// One display-lease-owned bounded member demand, stable across live/history.
+/// One display-lease-owned complete member result, stable across live/history.
+/// ReadDemand limits each transport batch, not the accepted group size.
 final class DisplayMemberController extends ChangeNotifier {
-  factory DisplayMemberController({
-    required DisplayBlockRef reference,
-    required bool groupClosed,
-    required ReadDemand demand,
-    required Future<DisplayMembers> Function(
-      DisplayBlockRef,
-      DisplayMemberWindow,
-      ReadDemand,
-      bool,
-    )
-    open,
-  }) => DisplayMemberController._(
-    groupClosed,
-    reference: reference,
-    demand: demand,
-    open: open,
-  );
-
-  DisplayMemberController._(
-    this._groupClosed, {
+  DisplayMemberController({
     required this.reference,
+    required bool groupClosed,
     required this.demand,
     required this.open,
-  }) {
-    select(const LatestDisplayMembers());
+  }) : _groupClosed = groupClosed {
+    _requiresSealed = groupClosed;
+    _restart();
   }
   DisplayBlockRef reference;
   bool _groupClosed;
   final ReadDemand demand;
-  final Future<DisplayMembers> Function(
-    DisplayBlockRef,
-    DisplayMemberWindow,
-    ReadDemand,
-    bool,
-  )
-  open;
-  DisplayMemberWindow window = const LatestDisplayMembers();
-  DisplayMemberPage? page;
+  final Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand, bool) open;
+  List<DisplayMemberHead> _entries = const [];
+  List<DisplayMemberHead> get entries => _entries;
+  bool sealed = false;
+  bool hasSnapshot = false;
   Object? _error;
   Object? cleanupError;
   Object? get error => cleanupError ?? _error;
@@ -60,49 +38,12 @@ final class DisplayMemberController extends ChangeNotifier {
   final Set<Future<void>> _pulls = {};
   final Map<String, TimelineMemberDisclosure> _disclosures = {};
   final Map<String, ValueNotifier<DisplayMemberHead?>> _rows = {};
-  final List<DisplayMemberWindow> _newer = [];
   Future<void> _joins = Future.value();
 
   bool get isActive => !_retired;
-  bool get awaitingSealed => _requiresSealed && page?.sealed != true;
-  bool get hasNewer => _newer.isNotEmpty;
+  bool get awaitingSealed => _requiresSealed && !sealed;
   ValueListenable<DisplayMemberHead?> member(String key) =>
       _rows.putIfAbsent(key, () => ValueNotifier(null));
-
-  // Only window descriptors are retained, never previous mutable pages. Each
-  // accepted result is one backend cut, including the overlapping anchor row.
-  void older() {
-    final current = page;
-    final cursor = current?.nextCursor;
-    if (loading || current == null || cursor == null) return;
-    _rememberWindow();
-    _select(BeforeDisplayMembers(cursor: cursor));
-  }
-
-  void newer() {
-    if (loading || _newer.isEmpty) return;
-    _select(_newer.removeLast());
-  }
-
-  void holdLatest() {
-    final current = page;
-    if (loading ||
-        window is LatestDisplayMembers ||
-        current == null ||
-        current.entries.isEmpty) {
-      return;
-    }
-    _rememberWindow();
-    _select(const LatestDisplayMembers());
-  }
-
-  void _rememberWindow() {
-    _newer.add(window);
-    if (_newer.length > _maxMemberWindowDescriptors) {
-      _newer.removeAt(0);
-    }
-  }
-
   void rebase(
     DisplayBlockRef next, {
     required bool groupClosed,
@@ -114,13 +55,9 @@ final class DisplayMemberController extends ChangeNotifier {
     }
     reference = next;
     _groupClosed = groupClosed;
-    _newer.clear();
     _requiresSealed = groupClosed;
-    page = null;
-    for (final row in _rows.values) {
-      row.dispose();
-    }
-    _rows.clear();
+    hasSnapshot = false;
+    sealed = false;
     final expanded = {
       for (final entry in _disclosures.entries) entry.key: entry.value.expanded,
     };
@@ -129,54 +66,45 @@ final class DisplayMemberController extends ChangeNotifier {
       _disclosures[entry.key] = TimelineMemberDisclosure()
         ..expanded = entry.value;
     }
-    select(const LatestDisplayMembers());
+    _restart();
   }
 
   TimelineMemberDisclosure disclosure(String memberKey) =>
       _disclosures.putIfAbsent(memberKey, TimelineMemberDisclosure.new);
 
-  /// The accepted block head revoked mutable rows before this independent
-  /// member observation delivered its sealed cut. Keep only disclosure intent.
+  /// Revoke CurrentAtom body scopes synchronously, before any closing animation
+  /// or the independently transported sealed snapshot finishes.
   void requireSealed() {
     if (_retired || _requiresSealed) return;
     _requiresSealed = true;
-    if (page?.sealed == true) return;
+    if (sealed) return;
     loading = true;
-    for (final entry in page?.entries ?? const <DisplayMemberHead>[]) {
+    for (final entry in entries) {
       if (entry.record.contentSource is! CurrentAtomSource) continue;
-      final key = entry.memberKey;
-      final previous = _disclosures[key];
+      final previous = _disclosures[entry.memberKey];
       if (previous == null) continue;
       previous.retire();
-      _disclosures[key] = TimelineMemberDisclosure()
+      _disclosures[entry.memberKey] = TimelineMemberDisclosure()
         ..expanded = previous.expanded;
     }
+    notifyListeners();
   }
 
   void _retireDisclosures({Set<String> keep = const {}}) {
     for (final key in _disclosures.keys.toList()) {
-      if (keep.contains(key)) continue;
-      _disclosures.remove(key)!.retire();
+      if (!keep.contains(key)) _disclosures.remove(key)!.retire();
     }
   }
 
-  void select(DisplayMemberWindow next) {
-    _newer.clear();
-    _select(next);
-  }
-
-  void _select(DisplayMemberWindow next) {
+  void _restart() {
     if (_retired) return;
     _qualification = Object();
     final qualification = _qualification;
     _closeHandle();
-    window = next;
-    // Keep the current bounded page visible until its replacement is accepted.
-    // It is never merged with the new page, even when their revisions differ.
     _error = null;
     loading = true;
     notifyListeners();
-    final pull = _pull(qualification, next);
+    final pull = _pull(qualification);
     _pulls.add(pull);
     unawaited(pull.whenComplete(() => _pulls.remove(pull)));
   }
@@ -188,72 +116,93 @@ final class DisplayMemberController extends ChangeNotifier {
       _closing.remove(handle);
       _close(handle);
     }
-    _select(window);
+    _restart();
   }
 
   bool _eligible(Object qualification) =>
       !_retired && identical(_qualification, qualification);
 
-  Future<void> _pull(Object qualification, DisplayMemberWindow selected) async {
-    DisplayMembers? handle;
+  Future<void> _pull(Object qualification) async {
     try {
       await _joins;
       if (!_eligible(qualification)) return;
       if (_closing.isNotEmpty) {
-        throw cleanupError ?? StateError('Member window still closing');
+        throw cleanupError ?? StateError('Member reader still closing');
       }
-      handle = await open(reference, selected, demand, _groupClosed);
+      final cut = reference;
+      final closedGroup = _groupClosed;
+      final handle = await open(cut, demand, closedGroup);
       if (!_eligible(qualification)) {
         _close(handle);
         return;
       }
       _handle = handle;
-      final value = await handle.next();
-      if (!_eligible(qualification)) return;
-      if (value == null) {
-        if (awaitingSealed) {
+      final pending = <DisplayMemberHead>[];
+      final keys = <String>{};
+      final orders = <int>{};
+      while (_eligible(qualification)) {
+        final batch = await handle.next();
+        if (!_eligible(qualification)) return;
+        if (batch == null) {
           throw const ConversationContinuityError(
-            'Sealed display member snapshot is unavailable',
+            'Incomplete History group result',
           );
         }
-        throw const ConversationContinuityError(
-          'History member window returned no page',
-        );
-      }
-      if (_requiresSealed && !value.sealed) {
-        throw const ConversationContinuityError(
-          'History member page disagrees with its fixed group boundary',
-        );
-      }
-      final previous = page;
-      final structural =
-          loading ||
-          _error != null ||
-          previous?.sealed != value.sealed ||
-          previous?.nextCursor != value.nextCursor ||
-          !listEquals(
-            previous?.entries.map((e) => e.memberKey).toList(),
-            value.entries.map((e) => e.memberKey).toList(),
+        if (batch.block != cut ||
+            batch.offset != pending.length ||
+            batch.entries.length > demand.maxItems ||
+            (!batch.complete && batch.entries.isEmpty)) {
+          throw const ConversationContinuityError(
+            'Inconsistent History group batch',
           );
-      page = value;
-      _retireDisclosures(
-        keep: value.entries.map((entry) => entry.memberKey).toSet(),
-      );
-      loading = false;
-      _error = null;
-      for (final entry in value.entries) {
-        final row = _rows.putIfAbsent(
-          entry.memberKey,
-          () => ValueNotifier(null),
+        }
+        for (final entry in batch.entries) {
+          if (entry.memberKey.isEmpty ||
+              !keys.add(entry.memberKey) ||
+              !orders.add(entry.memberOrder)) {
+            throw const ConversationContinuityError(
+              'Invalid History member identity or order',
+            );
+          }
+          pending.add(entry);
+        }
+        if (!batch.complete) continue;
+        // Transport pages are newest first; owner indices define display order.
+        pending.sort(
+          (left, right) => left.memberOrder.compareTo(right.memberOrder),
         );
-        if (!_sameMember(row.value, entry)) row.value = entry;
+        final next = List<DisplayMemberHead>.unmodifiable(pending);
+        final structural =
+            loading ||
+            _error != null ||
+            sealed != closedGroup ||
+            !listEquals(
+              entries.map((e) => e.memberKey).toList(),
+              next.map((e) => e.memberKey).toList(),
+            );
+        _entries = next;
+        hasSnapshot = true;
+        sealed = closedGroup;
+        _retireDisclosures(keep: keys);
+        loading = false;
+        _error = null;
+        // Publish the complete accepted cut before any synchronous callbacks.
+        for (final entry in next) {
+          if (!_eligible(qualification)) return;
+          final row = _rows.putIfAbsent(
+            entry.memberKey,
+            () => ValueNotifier(null),
+          );
+          if (!_sameMember(row.value, entry)) row.value = entry;
+        }
+        if (!_eligible(qualification)) return;
+        for (final key in _rows.keys.toList()) {
+          if (!keys.contains(key)) _rows[key]!.value = null;
+        }
+        _closeHandle();
+        if (structural) notifyListeners();
+        return;
       }
-      final keys = value.entries.map((entry) => entry.memberKey).toSet();
-      for (final key in _rows.keys.toList()) {
-        if (!keys.contains(key)) _rows.remove(key)!.dispose();
-      }
-      if (structural) notifyListeners();
-      _closeHandle();
     } catch (failure) {
       if (_eligible(qualification)) {
         _error = failure;
@@ -281,9 +230,7 @@ final class DisplayMemberController extends ChangeNotifier {
         }
       } catch (failure) {
         cleanupError = failure;
-        if (!_retired) {
-          notifyListeners();
-        }
+        if (!_retired) notifyListeners();
       }
     });
   }
@@ -299,8 +246,9 @@ final class DisplayMemberController extends ChangeNotifier {
     _retired = true;
     _qualification = Object();
     _closeHandle();
-    page = null;
-    _newer.clear();
+    _entries = const [];
+    hasSnapshot = false;
+    sealed = false;
     for (final row in _rows.values) {
       row.dispose();
     }
@@ -319,6 +267,7 @@ final class DisplayMemberController extends ChangeNotifier {
 
 bool _sameMember(DisplayMemberHead? a, DisplayMemberHead b) =>
     a != null &&
+    a.memberKey == b.memberKey &&
     a.memberOrder == b.memberOrder &&
     _recordValue(a.record) == _recordValue(b.record) &&
     _samePayload(a.record.atom.payload, b.record.atom.payload) &&
@@ -367,6 +316,16 @@ Object _recordValue(DisplayRecord record) {
       CompletedOriginal(:final completionId) => ('completed', completionId),
     },
     atom.id,
+    record.historyEventId,
+    record.historyDetailEventId,
+    record.runId,
+    record.historyState,
+    record.historyObservation,
+    Object.hashAll(
+      record.currentContents.map(
+        (content) => (content.role, content.reference),
+      ),
+    ),
     atom.source,
     _sourceState(atom.sourceState),
     atom.sourceOrder,

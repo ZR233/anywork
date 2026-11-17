@@ -1238,13 +1238,13 @@ mod tests {
                 &fixture.runtime.config_runtime.agent_profiles_snapshot()?,
                 fixture.runtime.config_runtime.read()?.config.delegation,
             )?;
-            // Borrow the tools installed by ordinary ACP preparation. Their original resource
-            // owner must join the actual command before releasing its workspace use.
+            // Normal ACP opening already owns the prepared workspace tools and usage lease.
+            // Exercise that real owner rather than preparing a second test-only binding.
             let tools = resources
                 .workspace_tools
                 .get()
-                .cloned()
-                .context("ordinary ACP workspace tools")?;
+                .context("original prepared workspace tools")?
+                .clone();
             let (transport, definition) = HostMcp::start_bound(
                 host,
                 identity.agent_id,

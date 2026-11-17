@@ -248,19 +248,6 @@ bool _sameCurrentContents(
   return true;
 }
 
-sealed class DisplayMemberWindow {
-  const DisplayMemberWindow();
-}
-
-final class LatestDisplayMembers extends DisplayMemberWindow {
-  const LatestDisplayMembers();
-}
-
-final class BeforeDisplayMembers extends DisplayMemberWindow {
-  const BeforeDisplayMembers({required this.cursor});
-  final String cursor;
-}
-
 final class DisplayMemberHead {
   const DisplayMemberHead({
     required this.memberKey,
@@ -272,26 +259,22 @@ final class DisplayMemberHead {
   final DisplayRecord record;
 }
 
-final class DisplayMemberPage {
-  DisplayMemberPage({
+/// One bounded transport batch of a complete group at its original History cut.
+final class DisplayMemberBatch {
+  DisplayMemberBatch({
     required this.block,
-    required this.cut,
-    required this.revision,
-    required this.sealed,
+    required this.offset,
+    required this.complete,
     required List<DisplayMemberHead> entries,
-    this.nextCursor,
   }) : entries = List.unmodifiable(entries);
   final DisplayBlockRef block;
-  final HistoryCut cut;
-  final int revision;
-  final bool sealed;
+  final int offset;
+  final bool complete;
   final List<DisplayMemberHead> entries;
-  final String? nextCursor;
-  bool get hasOlder => nextCursor != null;
 }
 
 abstract interface class DisplayMembers {
-  Future<DisplayMemberPage?> next();
+  Future<DisplayMemberBatch?> next();
   void requestClose();
   Future<void> close();
 }

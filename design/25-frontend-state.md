@@ -47,7 +47,7 @@ flowchart LR
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
 | 原生 OpenAI 登录状态与待保存授权 | Rust 原生认证所有者 | 账号 Repository 的类型化观察；共享 Native 编辑器只持有认证选择与登录身份 | `loginId + editorId + accountId`；显式取消、编辑意图丢弃或应用关闭，保存按 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证) 认领 |
-| 已加载展示 item 与阅读/跟随意图 | Flutter 呈现 owner | item 引用、item/成员分页边界、展示控制器与局部 UI | Thread + 展示 item 代次；真正释放才退役，回到最新不重建订阅 |
+| 已加载展示 item 与阅读/跟随意图 | Flutter 呈现 owner | item 引用、主列表分页边界、展开组完整轻量头、展示控制器与局部 UI | Thread + 展示 item 代次；真正释放才退役，回到最新不重建订阅 |
 | 光标、输入法组词（composing）、焦点、折叠态与滚动几何 | 组件 / 局部 UI 控制器 | 局部 UI 控制器 | `draftId` 或阅读代次；组件销毁（dispose）时释放 |
 
 History读者绑定稳定数据库身份与 opaque cut；Current 读者绑定 owner/runtimeEpoch/revision。执行所有者退出或更换可让旧 Current 引用 stale，但不会把旧 History cut 改成另一数据库；页面只关闭自己的 reader/watch，不取消 Current 保存或 History pending。冷读取与执行初始化分别按各自存储准入，失败明确返回。
@@ -512,7 +512,7 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollectionRef` 机械接纳到原领域 owner，不暴露旧 `content.current`。形状与空值语义见 [26.6](./26-timeline-content.md#266-业务引用由-state-交付)。引用与可操作业务状态来自同一发布者，不建第二可写模型；Session owner 的有界当前决定查询是可操作问题的唯一交付入口，展开的只读详情不覆盖它。引用 revision 变化只撤销受影响查询和展开窗口，保留历史、其他详情和草稿。
 
-时间线 Set/Prepend/最新 head replace 只接纳 History 页面；明细通过 `group_id`、`row_key`、`entity_id` 与 typed event/body ref 打开有界成员窗口。Current 与 History 使用共同稳定业务身份合并在同一画面，但各自引用不改名。Flutter 不解析 payload、seq 或 ordinal 猜类别，不扫描 atom 找组头；成员页 cursor/数量不覆盖主列表或其他范围，见 [26](./26-timeline-content.md)。
+时间线 Set/Prepend/最新 head replace 只接纳 History 页面；明细通过 `group_id`、`row_key`、`entity_id` 与 typed event/body ref 按同一固定 cut 分批读取并接纳完整成员集合。Current 与 History 使用共同稳定业务身份合并在同一画面，但各自引用不改名。Flutter 不解析 payload、seq 或 ordinal 猜类别，不扫描 atom 找组头；成员传输 cursor 只属于该次完整读取，不作为组内导航或覆盖主列表／其他范围，见 [26](./26-timeline-content.md)。
 
 工作组统一在时间线区域呈现。Current 只提供当前活动、当前 atoms 与正文 overlay，不创建第二个历史 Work 或稳定历史 row；History 只按 anchor 与 `row_key` 提供 Work/Single/member。当前可见边界由 History 事件接纳，旧组与成员 bytes 不因后来终态更新；当前内容读取失败不等于历史已封存或执行已结束。未展开不读参数、工具结果、思考或媒体；折叠撤销该视图自己的读取并 cancel/join。
 
@@ -524,7 +524,7 @@ History row 保留真实 entity、member、source 与 observation 身份；主�
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
-历史页面、Current State、Deterministic 正文、活动 body、成员窗口、事件详情与媒体分别管理读取责任。Future、watch、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。卡片稳定 key 来自 `row_key`／`entity_id`，展开资格绑定 reader/display generation；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
+历史页面、Current State、Deterministic 正文、活动 body、完整成员查询、事件详情与媒体分别管理读取责任。Future、watch、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。卡片稳定 key 来自 `row_key`／`entity_id`，展开资格绑定 reader/display generation；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
 
 工作组成员页由同一显示租约所有者接纳，并向列表结构与各稳定成员分别分发呈现通知；相同成员结构下，一行数据变化不重新构建列表及未变化行。按行观察仅是原有界页的派生读取，不引入逐行后端订阅或第二份业务集合。滚动分页与正文范围读取仍使用原资格，分页缓存有界、离开后退休，具体呈现约定见 [26](./26-timeline-content.md)。
 

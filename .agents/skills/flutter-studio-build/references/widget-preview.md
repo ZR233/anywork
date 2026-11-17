@@ -56,6 +56,11 @@ flutter widget-preview start --headless --no-devtools
   优先复用同次运行的热更新。验证热更新应观察实际源码改动对应的页面变化，临时探针立即恢复。
   预览壳的 padding、卡片工具栏与组件实际约束分别记录；完整组件预览须容纳真实内容，
   不把外层请求尺寸当作内部可用高度，也不通过裁剪或隐藏错误伪造布局通过。
+- 嵌套 `MaterialApp` 设置了产品 `ThemeData`，不代表外层所有局部 `InheritedTheme` 已被隔离。
+  例如预览壳的 `ListTileTheme` 可使亮色产品文字落在暗色活动行背景上；复用项目已有 host，
+  在内层 builder 用 `ListTileTheme(data: Theme.of(context).listTileTheme)` 恢复本层主题归属。
+  先核对真实画面与主题来源，不硬编码颜色、切换预览主题或裁掉异常来“修图”；必要回归可注入
+  冲突祖先主题，验证组件实际使用内层主题，而非仅断言存在一份 `ThemeData`。
 - 截图使用当前支持的官方能力或成熟浏览器工具，不假定预览注册了 Driver extension。
   纯界面 PR 直接使用本次预览图片，无须额外构建原生程序；真实业务边界另行选择对应入口。
 - 正常结束或取消后等待命令终态，核对所属 Flutter、分析服务、DTD 和浏览器退出。

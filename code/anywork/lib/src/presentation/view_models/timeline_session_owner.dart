@@ -236,7 +236,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
 
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required bool groupClosed,
     required ReadDemand demand,
   }) async {
@@ -247,7 +246,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return HistoryGroupMembers.open(
       scope,
       reference: reference,
-      window: window,
       groupClosed: groupClosed,
       demand: demand,
       currentAtoms: () {
@@ -341,13 +339,12 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openDisplayMembers = (reference, window, demand, groupClosed) {
+    intent.openDisplayMembers = (reference, demand, groupClosed) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
       return openDisplayMembers(
         reference: reference,
-        window: window,
         groupClosed: groupClosed,
         demand: demand,
       );
@@ -2095,7 +2092,6 @@ final class HistoryGroupMembers implements DisplayMembers {
   HistoryGroupMembers._(
     this.scope,
     this.reference,
-    this.window,
     this.groupClosed,
     this.demand,
     this.currentAtoms,
@@ -2105,7 +2101,6 @@ final class HistoryGroupMembers implements DisplayMembers {
   static Future<HistoryGroupMembers> open(
     HistoryReadScope scope, {
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required bool groupClosed,
     required ReadDemand demand,
     required List<CurrentAtom> Function() currentAtoms,
@@ -2117,7 +2112,6 @@ final class HistoryGroupMembers implements DisplayMembers {
     return HistoryGroupMembers._(
       scope,
       reference,
-      window,
       groupClosed,
       demand,
       currentAtoms,
@@ -2127,33 +2121,19 @@ final class HistoryGroupMembers implements DisplayMembers {
 
   final HistoryReadScope scope;
   final DisplayBlockRef reference;
-  final DisplayMemberWindow window;
   final bool groupClosed;
   final ReadDemand demand;
   final List<CurrentAtom> Function() currentAtoms;
   final String? Function() currentOwnerId;
   String? _cursor;
-  int _revision = 0;
-  bool _started = false;
+  int _offset = 0;
   bool _done = false;
   bool _closed = false;
 
   @override
-  Future<DisplayMemberPage?> next() async {
+  Future<DisplayMemberBatch?> next() async {
     if (_closed || !scope.isActive || _done) {
       return null;
-    }
-    if (!_started) {
-      _started = true;
-      _cursor = switch (window) {
-        LatestDisplayMembers() => null,
-        BeforeDisplayMembers(:final cursor) => cursor,
-      };
-    }
-    if (window case BeforeDisplayMembers(:final cursor) when cursor.isEmpty) {
-      throw const ConversationContinuityError(
-        'History member window has an empty cursor',
-      );
     }
     final previousCursor = _cursor;
     final page = await scope.groupPage(
@@ -2194,8 +2174,12 @@ final class HistoryGroupMembers implements DisplayMembers {
     final members = page.members.reversed.toList();
     final entries = <DisplayMemberHead>[];
     for (final member in members) {
-      if (member.headSeq > _revision) _revision = member.headSeq;
-      final ownerId = currentOwnerId();
+      if (member.head is! MemberHistoryRow) {
+        throw const ConversationContinuityError(
+          'History group returned a non-member head',
+        );
+      }
+      final ownerId = groupClosed ? null : currentOwnerId();
       final projected = TimelineHistoryProjection.block(member, cut: page.cut);
       final block = projected == null || ownerId == null
           ? projected
@@ -2212,15 +2196,19 @@ final class HistoryGroupMembers implements DisplayMembers {
             record: single.record,
           ),
         );
+      } else {
+        throw const ConversationContinuityError(
+          'History member has no readable entity head',
+        );
       }
     }
-    return DisplayMemberPage(
+    final offset = _offset;
+    _offset += entries.length;
+    return DisplayMemberBatch(
       block: reference,
-      cut: page.cut,
-      revision: _revision,
-      sealed: groupClosed,
+      offset: offset,
+      complete: _done,
       entries: entries,
-      nextCursor: page.next,
     );
   }
 

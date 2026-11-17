@@ -1,11 +1,16 @@
 import 'dart:convert';
 
 import 'package:anywork_client/models.dart';
+import 'package:flutter_chat_core/flutter_chat_core.dart';
+import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/widget_previews.dart';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
@@ -14,6 +19,7 @@ import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_vie
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 
 import 'timeline_preview_fixtures.dart';
+import 'expanded_work_timeline_fixture.dart' show ExpandedWorkPreviewControls;
 
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_wait_blocks.dart';
@@ -44,14 +50,14 @@ Widget liveStatusPreviewHost(Widget child, {double scale = 1}) => MaterialApp(
 );
 
 const liveStatusResponseText =
-    '已经把会话界面收敛为同一套共享模块：**起始页与运行期会话共用外壳、顶栏与输入框，上方时间线只放已结束内容，下方状态栏承载正在进行的工作组**。\n\n'
+    '已经把会话界面收敛为同一套共享模块：**起始页与运行期会话共用外壳、顶栏与输入框，Work 在主时间线连续阅读，状态栏只承载独立正文、通知与交互**。\n\n'
     '### 运行期配置可配性分层\n'
     '- **创建期一次性冻结**：工作区模式与子智能体分发在会话创建后上移至顶栏只读徽标。\n'
     '- **运行期条件锁定**：轮次运行或等待期间锁定模式、主模型与思考强度。\n'
     '- **子智能体只读**：详情展示历史、进展与工作区，主会话保持独立草稿。\n\n'
     '长正文达到可用高度后在区内滚动，向上阅读或选择文字暂停跟随，点击“跟随输出”回到底部。\n\n'
     '接下来继续核对各项交互：保留当前草稿与附件，检查宽窄窗口下的对齐，并逐项确认停止、等待和保存异常的呈现。\n\n'
-    '成员完成后继续留在当前工作组，真实边界确定且成员收束后整组进入时间线。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
+    '成员完成后继续留在原工作组；首个可靠 Single 边界封存工作组，不等待全部成员进入 terminal。继续检查不同文字缩放下的自然高度与阅读位置，确保新内容不会打断正在进行的阅读。';
 
 Widget liveStatusGroupPreview({
   bool idle = false,
@@ -330,55 +336,53 @@ Widget conversationLiveStatusCompactingPreview() => liveStatusPreviewHost(
 
 @Preview(name: '工作组 · 进行中', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusToolsPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(children: [liveStatusGroupPreview()]),
+  _TimelineWorkPreviewHost(work: liveStatusGroupPreview()),
 );
 
 @Preview(name: '工作组 · 调用失败后继续思考（折叠单行）', group: '实时状态栏', size: Size(1067, 110))
 Widget conversationLiveStatusFailedCallPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(
-    children: [
-      _ActivityPreview(
-        activity: const ConversationActivityView(
-          identity: 'preview-failed-call-thinking',
-          kind: ConversationActivityKind.thinking,
-        ),
-        timing: const WorkTiming(startedAt: 154, finishedAt: null),
-        childBuilder: (_) => const TimelineToolDetails(
-          item: TimelineToolPresentation(
-            id: 'preview-failed-call',
-            toolCallId: 'preview-failed-call',
-            name: 'exec',
-            presentationContract: 'builtin.exec@2',
-            statusString: 'failed',
-            arguments: '{"command":"cargo flutter analyze"}',
-            output: r'{"stdout":{"content":""},"stderr":{"content":"静态分析检查失败。"},"exitCode":1}',
-            error: '命令退出码 1',
-            exitCode: 1,
-          ),
+  _TimelineWorkPreviewHost(
+    work: _ActivityPreview(
+      activity: const ConversationActivityView(
+        identity: 'preview-failed-call-thinking',
+        kind: ConversationActivityKind.thinking,
+      ),
+      timing: const WorkTiming(startedAt: 154, finishedAt: null),
+      childBuilder: (_) => const TimelineToolDetails(
+        item: TimelineToolPresentation(
+          id: 'preview-failed-call',
+          toolCallId: 'preview-failed-call',
+          name: 'exec',
+          presentationContract: 'builtin.exec@2',
+          statusString: 'failed',
+          arguments: '{"command":"cargo flutter analyze"}',
+          output: r'{"stdout":{"content":""},"stderr":{"content":"静态分析检查失败。"},"exitCode":1}',
+          error: '命令退出码 1',
+          exitCode: 1,
         ),
       ),
-    ],
+    ),
   ),
 );
 
 @Preview(name: '工作组 · 成员完成待交接', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusIdleGroupPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(children: [liveStatusGroupPreview(idle: true)]),
+  _TimelineWorkPreviewHost(work: liveStatusGroupPreview(idle: true)),
 );
 
 @Preview(name: '工作组 · 已完成', group: '实时状态栏', size: Size(760, 150))
 Widget conversationLiveStatusCompletedGroupPreview() => liveStatusPreviewHost(
-  Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 26),
-    child: liveStatusGroupPreview(history: true),
+  _TimelineWorkPreviewHost(
+    work: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 26),
+      child: liveStatusGroupPreview(history: true),
+    ),
   ),
 );
 
 @Preview(name: '工作组 · 推理详情', group: '实时状态栏', size: Size(760, 260))
 Widget conversationLiveStatusThinkingPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(
-    children: [liveStatusGroupPreview(thinkingOnly: true)],
-  ),
+  _TimelineWorkPreviewHost(work: liveStatusGroupPreview(thinkingOnly: true)),
 );
 
 @Preview(name: '正文 · 长文与跟随', group: '实时状态栏', size: Size(760, 300))
@@ -411,42 +415,40 @@ Widget conversationLiveStatusShortResponsePreview() => liveStatusPreviewHost(
 
 @Preview(name: '等待成员', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusWaitPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(
-    children: [
-      _ActivityPreview(
-        timing: const WorkTiming(startedAt: 100, finishedAt: null),
-        childBuilder: (_) => TimelineWaitDetails(
-          identity: 'preview-wait-member',
-          presentation: ThreadWaitPresentationView(
-            intent: ThreadWaitEventsIntentView(
-              targets: [
-                ThreadWaitTargetView(
-                  taskId: 'explorer',
-                  toolName: 'delegation',
-                  summary: '梳理组件边界',
-                  status: ThreadWaitTargetStatusView.succeeded,
-                ),
-                ThreadWaitTargetView(
-                  taskId: 'reviewer',
-                  toolName: 'delegation',
-                  summary: '复核布局与状态文案',
-                  status: ThreadWaitTargetStatusView.running,
-                ),
-              ],
-              timeoutMs: 300000,
-            ),
-            state: ThreadWaitStateView.waiting,
-            messagesReady: false,
+  _TimelineWorkPreviewHost(
+    work: _ActivityPreview(
+      timing: const WorkTiming(startedAt: 100, finishedAt: null),
+      childBuilder: (_) => TimelineWaitDetails(
+        identity: 'preview-wait-member',
+        presentation: ThreadWaitPresentationView(
+          intent: ThreadWaitEventsIntentView(
+            targets: [
+              ThreadWaitTargetView(
+                taskId: 'explorer',
+                toolName: 'delegation',
+                summary: '梳理组件边界',
+                status: ThreadWaitTargetStatusView.succeeded,
+              ),
+              ThreadWaitTargetView(
+                taskId: 'reviewer',
+                toolName: 'delegation',
+                summary: '复核布局与状态文案',
+                status: ThreadWaitTargetStatusView.running,
+              ),
+            ],
+            timeoutMs: 300000,
           ),
+          state: ThreadWaitStateView.waiting,
+          messagesReady: false,
         ),
       ),
-    ],
+    ),
   ),
 );
 
 @Preview(name: '窄窗 · 160% 文字缩放', group: '实时状态栏', size: Size(360, 380))
 Widget conversationLiveStatusNarrowScaledPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(children: [liveStatusGroupPreview()]),
+  _TimelineWorkPreviewHost(work: liveStatusGroupPreview()),
   scale: 1.6,
 );
 
@@ -504,141 +506,205 @@ Widget conversationLiveStatusWindowPreview() => liveStatusPreviewHost(
 
 @Preview(name: '思考成员 · 概要与正文组合', group: '实时状态栏', size: Size(760, 300))
 Widget conversationReasoningVariantsPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(
-    children: [
-      _ActivityPreview(
-        initiallyExpanded: true,
-        activity: const ConversationActivityView(
-          identity: 'preview-reasoning-variants',
-          kind: ConversationActivityKind.thinking,
-          thinkingSummary: '核对运行期选择器锁定规则',
-        ),
-        timing: const WorkTiming(startedAt: 100, finishedAt: null),
-        childBuilder: (_) => const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            TimelineReasoningView(
-              summary: '梳理会话共享组件与锁定边界',
-              startedAt: 100,
-              finishedAt: null,
-              body: ConversationCurrentWindowView(
-                id: 'summary-body',
-                text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
-              ),
-            ),
-            TimelineReasoningView(
-              summary: '核对运行期选择器锁定规则',
-              startedAt: 100,
-              finishedAt: null,
-            ),
-            TimelineReasoningView(
-              startedAt: 100,
-              finishedAt: null,
-              body: ConversationCurrentWindowView(
-                id: 'body-only',
-                text: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。',
-              ),
-            ),
-          ],
-        ),
+  _TimelineWorkPreviewHost(
+    work: _ActivityPreview(
+      initiallyExpanded: true,
+      activity: const ConversationActivityView(
+        identity: 'preview-reasoning-variants',
+        kind: ConversationActivityKind.thinking,
+        thinkingSummary: '核对运行期选择器锁定规则',
       ),
-    ],
+      timing: const WorkTiming(startedAt: 100, finishedAt: null),
+      childBuilder: (_) => const Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TimelineReasoningView(
+            summary: '梳理会话共享组件与锁定边界',
+            startedAt: 100,
+            finishedAt: null,
+            body: ConversationCurrentWindowView(
+              id: 'summary-body',
+              text: '先核对现有调用链和组件边界，再确认布局、状态文案与自适应高度。',
+            ),
+          ),
+          TimelineReasoningView(
+            summary: '核对运行期选择器锁定规则',
+            startedAt: 100,
+            finishedAt: null,
+          ),
+          TimelineReasoningView(
+            startedAt: 100,
+            finishedAt: null,
+            body: ConversationCurrentWindowView(
+              id: 'body-only',
+              text: '会话运行时保留草稿与附件。工作模式、模型和思考强度在当前轮次执行期间保持锁定。',
+            ),
+          ),
+        ],
+      ),
+    ),
   ),
 );
 
 @Preview(name: '工作组 · 长工具输出', group: '实时状态栏', size: Size(760, 300))
 Widget conversationLiveStatusLongToolPreview() => liveStatusPreviewHost(
-  ConversationActivityBar(
-    children: [
-      _ActivityPreview(
-        initiallyExpanded: true,
-        activity: const ConversationActivityView(
-          identity: 'preview-long-tool-activity',
-          kind: ConversationActivityKind.runningTool,
-          activeTools: [
-            ThreadActivityToolEntry(
-              callId: 'long-tool-output',
-              name: 'exec',
-              summary: 'cargo flutter analyze',
-              arguments: ThreadActivityArgumentsKind.commandLine,
-              state: ThreadActivityToolState.running,
-              startedAt: 100,
-            ),
-          ],
-        ),
-        childBuilder: (_) => TimelineToolDetails(
-          initiallyExpanded: true,
-          item: TimelineToolPresentation(
-            id: 'long-tool-output',
-            toolCallId: 'long-tool-output',
+  _TimelineWorkPreviewHost(
+    work: _ActivityPreview(
+      initiallyExpanded: true,
+      activity: const ConversationActivityView(
+        identity: 'preview-long-tool-activity',
+        kind: ConversationActivityKind.runningTool,
+        activeTools: [
+          ThreadActivityToolEntry(
+            callId: 'long-tool-output',
             name: 'exec',
-            presentationContract: 'builtin.exec@2',
-            statusString: 'running',
-            arguments: '{"command":"cargo flutter analyze"}',
-            output: jsonEncode({
-              'stdout': {
-                'content': [for (var i = 1; i <= 60; i++) '检查第 $i 项：通过。']
-                    .join('\n'),
-              },
-              'stderr': {'content': ''},
-            }),
+            summary: 'cargo flutter analyze',
+            arguments: ThreadActivityArgumentsKind.commandLine,
+            state: ThreadActivityToolState.running,
+            startedAt: 100,
           ),
+        ],
+      ),
+      childBuilder: (_) => TimelineToolDetails(
+        initiallyExpanded: true,
+        item: TimelineToolPresentation(
+          id: 'long-tool-output',
+          toolCallId: 'long-tool-output',
+          name: 'exec',
+          presentationContract: 'builtin.exec@2',
+          statusString: 'running',
+          arguments: '{"command":"cargo flutter analyze"}',
+          output: jsonEncode({
+            'stdout': {
+              'content': [for (var i = 1; i <= 60; i++) '检查第 $i 项：通过。']
+                  .join('\n'),
+            },
+            'stderr': {'content': ''},
+          }),
         ),
       ),
-    ],
+    ),
   ),
 );
 
 @Preview(name: '正文后开启新工作组', group: '实时状态栏', size: Size(760, 340))
 Widget conversationLiveStatusNextGroupPreview() => liveStatusPreviewHost(
-  Column(
-    mainAxisSize: MainAxisSize.min,
-    crossAxisAlignment: CrossAxisAlignment.stretch,
-    children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
-        child: liveStatusGroupPreview(history: true),
-      ),
-      const Padding(
-        padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-        child: Text('前序分析已完成，下面继续执行自动化测试并汇总各工况验证结果。'),
-      ),
-      ConversationActivityBar(
-        children: [
-          _ActivityPreview(
-            activity: const ConversationActivityView(
-              identity: 'preview-next-group-activity',
-              kind: ConversationActivityKind.runningTool,
-              activeTools: [
-                ThreadActivityToolEntry(
-                  callId: 'preview-next-group-cmd',
-                  name: 'exec',
-                  summary: 'cargo flutter test --no-pub test/ui',
-                  arguments: ThreadActivityArgumentsKind.commandLine,
-                  state: ThreadActivityToolState.running,
-                  startedAt: 213,
-                ),
-              ],
-            ),
-            timing: const WorkTiming(startedAt: 213, finishedAt: null),
-            childBuilder: (_) => const TimelineToolDetails(
-              item: TimelineToolPresentation(
-                id: 'preview-next-group-cmd',
-                toolCallId: 'preview-next-group-cmd',
+  _TimelineWorkPreviewHost(
+    work: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 6),
+          child: liveStatusGroupPreview(history: true),
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+          child: Text('前序分析已完成，下面继续执行自动化测试并汇总各工况验证结果。'),
+        ),
+        _ActivityPreview(
+          activity: const ConversationActivityView(
+            identity: 'preview-next-group-activity',
+            kind: ConversationActivityKind.runningTool,
+            activeTools: [
+              ThreadActivityToolEntry(
+                callId: 'preview-next-group-cmd',
                 name: 'exec',
-                presentationContract: 'builtin.exec@2',
-                statusString: 'running',
-                arguments: '{"command":"cargo flutter test --no-pub test/ui"}',
-                output: '',
+                summary: 'cargo flutter test --no-pub test/ui',
+                arguments: ThreadActivityArgumentsKind.commandLine,
+                state: ThreadActivityToolState.running,
+                startedAt: 213,
               ),
+            ],
+          ),
+          timing: const WorkTiming(startedAt: 213, finishedAt: null),
+          childBuilder: (_) => const TimelineToolDetails(
+            item: TimelineToolPresentation(
+              id: 'preview-next-group-cmd',
+              toolCallId: 'preview-next-group-cmd',
+              name: 'exec',
+              presentationContract: 'builtin.exec@2',
+              statusString: 'running',
+              arguments: '{"command":"cargo flutter test --no-pub test/ui"}',
+              output: '',
             ),
           ),
-        ],
-      ),
-    ],
+        ),
+      ],
+    ),
   ),
 );
+
+/// Reuses production Main and existing UI-only preview resources. Work is a
+/// naturally sized bottom sliver, never a child of the limited output dock.
+class _TimelineWorkPreviewHost extends StatefulWidget {
+  const _TimelineWorkPreviewHost({required this.work});
+  final Widget work;
+  @override
+  State<_TimelineWorkPreviewHost> createState() =>
+      _TimelineWorkPreviewHostState();
+}
+
+class _TimelineWorkPreviewHostState extends State<_TimelineWorkPreviewHost> {
+  final _controls = ExpandedWorkPreviewControls();
+  TimelineDisplayMode _mode = TimelineDisplayMode.live;
+  @override
+  void initState() {
+    super.initState();
+    _controls.controller.setMessages([
+      Message.custom(
+        id: 'preview-work-host',
+        authorId: 'assistant',
+        metadata: {
+          chatItemPresentationKey: TimelinePreviewFixtures.item(
+            'preview-work-host',
+            'text',
+            const {'channel': 'final'},
+          ),
+        },
+      ),
+    ], animated: false);
+  }
+
+  @override
+  void dispose() {
+    _controls.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => TimelineView(
+    threadId: 'live-status-preview',
+    controls: _controls,
+    view: TimelineSessionViewState(
+      threadId: 'live-status-preview',
+      generation: 1,
+      mode: _mode,
+      connection: TimelineConnectionPhase.ready,
+    ),
+    canonicalPresentationBuilder: (_, _) => Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      child: widget.work,
+    ),
+    onLoadOlder: () async {},
+    onRetryOlder: () async {},
+    onReturnLive: () async {
+      if (mounted) {
+        setState(() => _mode = TimelineDisplayMode.live);
+      }
+    },
+    onEnterHistory: () {
+      if (mounted && _mode != TimelineDisplayMode.history) {
+        setState(() => _mode = TimelineDisplayMode.history);
+      }
+    },
+    onRetryConnection: () {},
+    onLink: (_) {},
+    isSafeLink: (_) => false,
+    remoteImageBuilder: (_, _) => const SizedBox.shrink(),
+  );
+}
 
 class _ActivityPreview extends StatelessWidget {
   const _ActivityPreview({
