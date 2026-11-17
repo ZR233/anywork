@@ -708,6 +708,7 @@ void main() {
             updatedAt: revision,
             accounts: [
               AcpAuthAccountView(
+                connection: const AcpConnectionStoppedState(),
                 accountId: 'same',
                 connectionRevision: connection,
                 state: isCancel
@@ -937,6 +938,7 @@ void main() {
               updatedAt: 1,
               accounts: [
                 AcpAuthAccountView(
+                  connection: const AcpConnectionStoppedState(),
                   accountId: 'same',
                   connectionRevision: connection,
                   state: AcpCheckingState(operationId: id.value),
@@ -1852,6 +1854,7 @@ void main() {
           updatedAt: 1,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'same',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 1, server: null),
@@ -1869,6 +1872,7 @@ void main() {
           updatedAt: 1,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionStoppedState(),
               accountId: 'same',
               connectionRevision: 7,
               state: AcpCheckingState(operationId: operation.value),
@@ -2527,6 +2531,7 @@ void main() {
             updatedAt: 1,
             accounts: [
               AcpAuthAccountView(
+                connection: const AcpConnectionStoppedState(),
                 accountId: account,
                 connectionRevision: 7,
                 state: AcpCancellingState(operationId: target.value),
@@ -2545,6 +2550,7 @@ void main() {
             updatedAt: 1,
             accounts: [
               AcpAuthAccountView(
+                connection: const AcpConnectionStoppedState(),
                 accountId: 'same',
                 connectionRevision: 7,
                 state: AcpCheckingState(operationId: operation.value),
@@ -2564,6 +2570,7 @@ void main() {
             updatedAt: 1,
             accounts: [
               AcpAuthAccountView(
+                connection: const AcpConnectionStoppedState(),
                 accountId: 'same',
                 connectionRevision: 7,
                 state: AcpCheckingState(operationId: operation.value),

@@ -35,7 +35,9 @@ impl StudioRuntime {
         // 外层是命令边界错误，内层是投影错误；两层都保留为命令错误，不丢弃任何一层。
         self.config_runtime
             .with_consistent_snapshot(|state, catalog| {
-                let acp_accounts = self.acp_auth.settings_view(state.revision, &state.acp)?;
+                let acp_accounts = self
+                    .acp_accounts
+                    .settings_view(state.revision, &state.acp)?;
                 settings_state_response(state, catalog, acp_accounts)
             })
             .map_err(anyhow::Error::from)
@@ -49,7 +51,9 @@ impl StudioRuntime {
         let projected = self
             .config_runtime
             .with_consistent_snapshot(|state, _catalog| {
-                let acp_accounts = self.acp_auth.settings_view(state.revision, &state.acp)?;
+                let acp_accounts = self
+                    .acp_accounts
+                    .settings_view(state.revision, &state.acp)?;
                 settings_config_snapshot(state, acp_accounts)
             })?;
         let config = projected?;

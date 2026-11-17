@@ -57,20 +57,18 @@ impl StudioRuntime {
         );
         // ACP 认证 owner 只持有身份与操作事实；构造期不启动任何外部程序，只把当前配置的
         // 连接身份登记为 `Unchecked`。
-        let acp_auth = super::super::acp_auth::AcpAuthRuntime::new(
+        let acp_accounts = super::super::acp_accounts::AcpAccountRuntime::new(
             store.clone(),
             config_runtime.clone(),
             product_events.clone(),
             local_executor.clone(),
             host_mcp_source.clone(),
         );
-        // 安装 Settings 提交观察者并立即观察当前 canonical 快照；安装、首次观察与后续提交共用
-        // 同一 Settings command 锁，因此不会有提交落在两者之间。
-        acp_auth.install_settings_observer(&config_runtime)?;
         // 官方 server 准备 owner 只持有独立快照与操作槽位；构造期不读取 registry、不写文件。
         let acp_install = super::super::acp_install::AcpInstallRuntime::new(
             store.clone(),
             product_events.clone(),
+            acp_accounts.clone(),
         );
         let acp_detection = super::super::acp_detection::AcpLocalDetectionRuntime::new(
             store.clone(),
@@ -115,7 +113,7 @@ impl StudioRuntime {
             config_runtime.clone(),
             store.clone(),
             product_events.clone(),
-            acp_auth.clone(),
+            acp_accounts.clone(),
         );
         let service_config = config_runtime.clone();
         let service_store = store.clone();
@@ -191,7 +189,7 @@ impl StudioRuntime {
             skills,
             thread_modes,
             account_usage,
-            acp_auth,
+            acp_accounts,
             chatgpt_auth: super::super::chatgpt_auth::ChatGptAuthRuntime::new(),
             acp_install,
             acp_detection,
@@ -232,6 +230,12 @@ impl StudioRuntime {
                     }
                 })
             }))?;
+        // Fallible assembly precedes account activation, so a failed startup cannot leave
+        // eagerly started ACP processes behind. Installation and the first canonical
+        // observation still share the Settings command boundary.
+        runtime
+            .acp_accounts
+            .install_settings_observer(&runtime.config_runtime)?;
         Ok(runtime)
     }
 }

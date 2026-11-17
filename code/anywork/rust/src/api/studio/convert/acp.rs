@@ -8,8 +8,8 @@ use crate::api::studio::types::{
     BridgeAcpAccountUpdate, BridgeAcpAuthAccount, BridgeAcpAuthAction,
     BridgeAcpAuthActiveOperation, BridgeAcpAuthFailure, BridgeAcpAuthFailureCode,
     BridgeAcpAuthMethod, BridgeAcpAuthMethodKind, BridgeAcpAuthSnapshot, BridgeAcpAuthStage,
-    BridgeAcpAuthState, BridgeAcpProvider, BridgeAcpQuotaGroup, BridgeAcpQuotaLimit,
-    BridgeAcpQuotaRemaining, BridgeAcpServerInfo, BridgeAcpUsageFailureCode,
+    BridgeAcpAuthState, BridgeAcpConnectionState, BridgeAcpProvider, BridgeAcpQuotaGroup,
+    BridgeAcpQuotaLimit, BridgeAcpQuotaRemaining, BridgeAcpServerInfo, BridgeAcpUsageFailureCode,
     BridgeAcpUsageObservation, BridgeAcpUsageState,
 };
 
@@ -109,6 +109,7 @@ pub(crate) fn bridge_acp_auth_snapshot(
             .map(|account| BridgeAcpAuthAccount {
                 account_id: account.account_id,
                 connection_revision: account.connection_revision,
+                connection: bridge_acp_connection(account.connection),
                 state: bridge_acp_auth_state(account.state),
                 usage: account.usage.map(bridge_acp_usage),
                 active_operation: account
@@ -116,6 +117,28 @@ pub(crate) fn bridge_acp_auth_snapshot(
                     .map(bridge_acp_auth_active_operation),
             })
             .collect(),
+    }
+}
+
+fn bridge_acp_connection(state: pl_studio_runtime::AcpConnectionState) -> BridgeAcpConnectionState {
+    use pl_studio_runtime::AcpConnectionState as State;
+    match state {
+        State::Stopped => BridgeAcpConnectionState::Stopped,
+        State::Starting => BridgeAcpConnectionState::Starting,
+        State::Ready => BridgeAcpConnectionState::Ready,
+        State::Stopping => BridgeAcpConnectionState::Stopping,
+        State::Retrying {
+            attempt,
+            next_retry_at,
+            failure,
+        } => BridgeAcpConnectionState::Retrying {
+            attempt,
+            next_retry_at,
+            failure: bridge_acp_auth_failure(failure),
+        },
+        State::Blocked { failure } => BridgeAcpConnectionState::Blocked {
+            failure: bridge_acp_auth_failure(failure),
+        },
     }
 }
 

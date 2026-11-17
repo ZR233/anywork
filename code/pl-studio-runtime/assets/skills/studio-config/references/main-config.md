@@ -283,15 +283,28 @@ prompt or session-open request is replayed. Finish active work before changing
 connection settings. The old process and pipes must settle before a replacement
 can start; a display-name edit does not restart the service.
 
-Enabled Antigravity templates whose managed installation is ready are prepared in
-the background at Studio startup and after effective configuration changes. This
-does not block startup, install missing software or start interactive login. An
-authentication-required result keeps the connection and exposes the existing
-login continuation. Ordinary commands remain lazy. Each account/connection
-generation reuses one initialized service for authentication, explicit quota
-queries and independent business sessions; closing one session does not stop the
-account service. Studio shutdown closes all sessions and joins the service process
-tree. No new TOML key is required, and reading settings does not start a process.
+Every enabled ACP account, including ordinary commands, is prepared in the
+background after Studio assembly and effective configuration changes. Invalid
+commands or unavailable managed installations are blocked with a visible reason;
+they are not installed automatically. Preparation does not block startup or start
+interactive login. Authentication-required keeps the same instance for the user's
+explicit login continuation. Authentication, supported quota queries and independent
+business sessions reuse one initialized service; closing one session leaves it alive.
+
+Transient connection/process failures reconnect only after the old instance has
+been reclaimed, using 1, 2, 4, 8, 16, then at most 30 seconds between attempts.
+After an initialized connection survives 60 seconds, the backoff resets. Definition,
+installation, authentication, protocol-version and cleanup failures wait for user
+action. No existing session or request with an unknown result is replayed. Generic
+commands do not inherit Antigravity's private `/usage` capability. Connection and
+authentication state are separate observations; old authentication/quota observations
+are revoked when an instance fails. A successful managed installation wakes its
+blocked enabled accounts.
+
+Setting `enabled = false`, deleting the definition, replacing its connection fields,
+or closing Studio cancels pending reconnects and closes the affected operations and
+sessions before joining the process tree. Renaming does not restart the instance.
+This behavior adds no TOML key, and reading settings never starts a process.
 
 Local detection only checks help/version; it neither downloads nor logs in and
 does not prove authentication. ACP accounts are not Native model-route candidates.

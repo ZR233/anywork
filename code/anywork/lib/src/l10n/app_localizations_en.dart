@@ -13,6 +13,9 @@ class AppLocalizationsEn extends AppLocalizations {
   AppLocalizationsEn([String locale = 'en']) : super(locale);
 
   @override
+  String get acpConnectionReconnecting => 'Reconnecting';
+
+  @override
   String get studioFailureConversationResyncRequired =>
       'Conversation content needs to be synchronized again. Please retry.';
 

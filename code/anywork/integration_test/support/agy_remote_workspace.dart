@@ -446,6 +446,27 @@ final class AgyLocalProcesses {
   final Map<String, LinuxProcessIdentity> _owned = {};
   final List<Map<String, Object?>> exitEvidence = [];
 
+  /// The ACP executable directly owned by this GUI, qualified by PID/starttime.
+  /// Descendant workers belonging to that executable are not extra ACP instances.
+  Future<LinuxProcessIdentity> accountInstance(String command) async {
+    await capture(command);
+    final executable = await File(command).resolveSymbolicLinks();
+    final matches = <LinuxProcessIdentity>[];
+    for (final identity in _owned.values) {
+      if (identity.parentPid == pid &&
+          await identity.readExecutable() &&
+          identity.lastExecutable == executable) {
+        matches.add(identity);
+      }
+    }
+    if (matches.length != 1) {
+      throw StateError(
+        'Expected one owned ACP account instance, found ${matches.length}',
+      );
+    }
+    return matches.single;
+  }
+
   Future<void> capture(String agyCommand, {bool requireAgy = true}) async {
     if (!Platform.isLinux) {
       throw StateError('Independent /proc acceptance requires Linux host');

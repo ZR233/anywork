@@ -72,6 +72,7 @@ final class _AcpUsageTransport extends AccountsTestTransport {
     final failures = startFailures[accountId];
     if (failures != null && failures.isNotEmpty) throw failures.removeAt(0);
     authAccounts[accountId] = AcpAuthAccountView(
+      connection: const AcpConnectionStoppedState(),
       accountId: accountId,
       connectionRevision: expectedConnectionRevision,
       state: AcpCheckingState(operationId: operationId.value),
@@ -302,6 +303,7 @@ void main() {
           updatedAt: 5,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 5, server: null),
@@ -435,6 +437,7 @@ void main() {
         updatedAt: 6,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpVerifiedState(checkedAt: 6, server: null),
@@ -555,6 +558,7 @@ void main() {
           updatedAt: 5,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 5, server: null),
@@ -900,6 +904,7 @@ void main() {
           updatedAt: 15,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 15, server: null),
@@ -941,6 +946,7 @@ void main() {
           updatedAt: 13,
           accounts: [
             AcpAuthAccountView(
+              connection: const AcpConnectionReadyState(),
               accountId: 'acp-1',
               connectionRevision: 7,
               state: AcpVerifiedState(checkedAt: 13, server: null),

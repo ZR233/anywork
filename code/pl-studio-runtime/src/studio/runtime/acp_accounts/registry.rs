@@ -2,7 +2,7 @@
 //!
 //! 这里持有：独立 `acpAuth` revision、已观察的 Settings revision 水位、关闭闸门、每条接入的
 //! 连接身份与操作槽位、本 runtime 生命周期内的已受理操作身份。接入记录的**创建与退役只发生在
-//! [`AcpAuthInner::observe_committed`]**；其它路径（读取、投影、命令准入）都只消费这些事实。
+//! [`AcpAccountInner::observe_committed`]**；其它路径（读取、投影、命令准入）都只消费这些事实。
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,6 +32,7 @@ pub(super) struct Slot {
     pub(super) operation: Option<Arc<Operation>>,
     pub(super) connection: Option<Arc<super::connection::AccountConnection>>,
     pub(super) background_scheduled: bool,
+    pub(super) lifecycle: super::lifecycle::ConnectionLifecycle,
 }
 
 impl Slot {
@@ -93,7 +94,7 @@ impl Slot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ConnectionIdentity {
     revision: u64,
-    enabled: bool,
+    pub(super) enabled: bool,
     release: Option<super::super::acp_install::ReleaseIdentity>,
 }
 impl ConnectionIdentity {
@@ -205,6 +206,7 @@ impl Registry {
                 .map(|(account_id, slot)| AcpAuthAccount {
                     account_id: account_id.clone(),
                     connection_revision: slot.revision,
+                    connection: slot.lifecycle.state.clone(),
                     state: slot.state.clone(),
                     usage: slot.usage.clone(),
                     active_operation: slot.active_operation(),
@@ -214,7 +216,7 @@ impl Registry {
     }
 }
 
-pub(super) struct AcpAuthInner {
+pub(super) struct AcpAccountInner {
     pub(super) store: StudioStore,
     pub(super) config: ConfigRuntime,
     pub(super) events: ProductEventBus,
@@ -225,7 +227,7 @@ pub(super) struct AcpAuthInner {
     registry: Mutex<Registry>,
 }
 
-impl AcpAuthInner {
+impl AcpAccountInner {
     pub(super) fn new(
         store: StudioStore,
         config: ConfigRuntime,
@@ -297,6 +299,7 @@ impl AcpAuthInner {
                             operation: None,
                             connection: None,
                             background_scheduled: false,
+                            lifecycle: Default::default(),
                         },
                     );
                     changed = true;
@@ -320,8 +323,10 @@ impl AcpAuthInner {
                     .map(|operation| operation.operation_id.clone());
                 slot.identity = identity;
                 slot.background_scheduled = false;
+                slot.lifecycle.reset();
                 if let Some(connection) = slot.connection.take() {
                     connection.signal_cancel();
+                    slot.lifecycle.state = crate::AcpConnectionState::Stopping;
                     retiring.push(connection);
                 }
                 slot.retired = false;
@@ -360,6 +365,7 @@ impl AcpAuthInner {
                 slot.retired = true;
                 if let Some(connection) = slot.connection.take() {
                     connection.signal_cancel();
+                    slot.lifecycle.state = crate::AcpConnectionState::Stopping;
                     retiring.push(connection);
                 }
                 if let Some(operation) = slot.operation.as_ref() {
@@ -512,6 +518,7 @@ impl AcpAuthInner {
             registry.snapshot()
         };
         self.emit(snapshot);
+        self.retirement_wake.notify_one();
     }
 }
 
@@ -551,6 +558,7 @@ mod tests {
             retired: false,
             connection: None,
             background_scheduled: false,
+            lifecycle: Default::default(),
             operation: Some(operation(3, 7, crate::AcpAuthAction::QueryUsage)),
         }
     }
@@ -578,6 +586,7 @@ mod tests {
                     retired: false,
                     connection: None,
                     background_scheduled: false,
+                    lifecycle: Default::default(),
                     operation: Some(operation(3, 7, action.clone())),
                 },
             );
@@ -617,6 +626,7 @@ mod tests {
                 retired: false,
                 connection: None,
                 background_scheduled: false,
+                lifecycle: Default::default(),
                 operation: Some(operation(3, 7, crate::AcpAuthAction::QueryUsage)),
             },
         );

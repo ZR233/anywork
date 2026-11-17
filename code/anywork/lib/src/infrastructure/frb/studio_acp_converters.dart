@@ -273,10 +273,32 @@ AcpAuthAccountView _acpAuthAccountFromFrb(frb.BridgeAcpAuthAccount value) =>
     AcpAuthAccountView(
       accountId: value.accountId,
       connectionRevision: _frbInt(value.connectionRevision),
+      connection: _acpConnectionFromFrb(value.connection),
       state: _acpAuthStateFromFrb(value.state),
       usage: value.usage == null ? null : _acpUsageFromFrb(value.usage!),
       activeOperation: _acpAuthActiveOperationFromFrb(value.activeOperation),
     );
+
+AcpConnectionStateView _acpConnectionFromFrb(
+  frb.BridgeAcpConnectionState value,
+) => switch (value) {
+  frb.BridgeAcpConnectionState_Stopped() => const AcpConnectionStoppedState(),
+  frb.BridgeAcpConnectionState_Starting() => const AcpConnectionStartingState(),
+  frb.BridgeAcpConnectionState_Ready() => const AcpConnectionReadyState(),
+  frb.BridgeAcpConnectionState_Stopping() => const AcpConnectionStoppingState(),
+  frb.BridgeAcpConnectionState_Retrying(
+    :final attempt,
+    :final nextRetryAt,
+    :final failure,
+  ) =>
+    AcpConnectionRetryingState(
+      attempt: attempt,
+      nextRetryAt: _frbInt(nextRetryAt),
+      failure: _acpFailureFromFrb(failure),
+    ),
+  frb.BridgeAcpConnectionState_Blocked(:final failure) =>
+    AcpConnectionBlockedState(failure: _acpFailureFromFrb(failure)),
+};
 
 AcpAuthActiveOperationView? _acpAuthActiveOperationFromFrb(
   frb.BridgeAcpAuthActiveOperation? value,

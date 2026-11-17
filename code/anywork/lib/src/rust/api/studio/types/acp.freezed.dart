@@ -846,6 +846,458 @@ as BridgeAcpAuthFailure,
 }
 
 /// @nodoc
+mixin _$BridgeAcpConnectionState {
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState()';
+}
+
+
+}
+
+/// @nodoc
+class $BridgeAcpConnectionStateCopyWith<$Res>  {
+$BridgeAcpConnectionStateCopyWith(BridgeAcpConnectionState _, $Res Function(BridgeAcpConnectionState) __);
+}
+
+
+/// Adds pattern-matching-related methods to [BridgeAcpConnectionState].
+extension BridgeAcpConnectionStatePatterns on BridgeAcpConnectionState {
+/// A variant of `map` that fallback to returning `orElse`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeMap<TResult extends Object?>({TResult Function( BridgeAcpConnectionState_Stopped value)?  stopped,TResult Function( BridgeAcpConnectionState_Starting value)?  starting,TResult Function( BridgeAcpConnectionState_Ready value)?  ready,TResult Function( BridgeAcpConnectionState_Retrying value)?  retrying,TResult Function( BridgeAcpConnectionState_Blocked value)?  blocked,TResult Function( BridgeAcpConnectionState_Stopping value)?  stopping,required TResult orElse(),}){
+final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped() when stopped != null:
+return stopped(_that);case BridgeAcpConnectionState_Starting() when starting != null:
+return starting(_that);case BridgeAcpConnectionState_Ready() when ready != null:
+return ready(_that);case BridgeAcpConnectionState_Retrying() when retrying != null:
+return retrying(_that);case BridgeAcpConnectionState_Blocked() when blocked != null:
+return blocked(_that);case BridgeAcpConnectionState_Stopping() when stopping != null:
+return stopping(_that);case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// Callbacks receives the raw object, upcasted.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case final Subclass2 value:
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult map<TResult extends Object?>({required TResult Function( BridgeAcpConnectionState_Stopped value)  stopped,required TResult Function( BridgeAcpConnectionState_Starting value)  starting,required TResult Function( BridgeAcpConnectionState_Ready value)  ready,required TResult Function( BridgeAcpConnectionState_Retrying value)  retrying,required TResult Function( BridgeAcpConnectionState_Blocked value)  blocked,required TResult Function( BridgeAcpConnectionState_Stopping value)  stopping,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped():
+return stopped(_that);case BridgeAcpConnectionState_Starting():
+return starting(_that);case BridgeAcpConnectionState_Ready():
+return ready(_that);case BridgeAcpConnectionState_Retrying():
+return retrying(_that);case BridgeAcpConnectionState_Blocked():
+return blocked(_that);case BridgeAcpConnectionState_Stopping():
+return stopping(_that);}
+}
+/// A variant of `map` that fallback to returning `null`.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case final Subclass value:
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? mapOrNull<TResult extends Object?>({TResult? Function( BridgeAcpConnectionState_Stopped value)?  stopped,TResult? Function( BridgeAcpConnectionState_Starting value)?  starting,TResult? Function( BridgeAcpConnectionState_Ready value)?  ready,TResult? Function( BridgeAcpConnectionState_Retrying value)?  retrying,TResult? Function( BridgeAcpConnectionState_Blocked value)?  blocked,TResult? Function( BridgeAcpConnectionState_Stopping value)?  stopping,}){
+final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped() when stopped != null:
+return stopped(_that);case BridgeAcpConnectionState_Starting() when starting != null:
+return starting(_that);case BridgeAcpConnectionState_Ready() when ready != null:
+return ready(_that);case BridgeAcpConnectionState_Retrying() when retrying != null:
+return retrying(_that);case BridgeAcpConnectionState_Blocked() when blocked != null:
+return blocked(_that);case BridgeAcpConnectionState_Stopping() when stopping != null:
+return stopping(_that);case _:
+  return null;
+
+}
+}
+/// A variant of `when` that fallback to an `orElse` callback.
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return orElse();
+/// }
+/// ```
+
+@optionalTypeArgs TResult maybeWhen<TResult extends Object?>({TResult Function()?  stopped,TResult Function()?  starting,TResult Function()?  ready,TResult Function( int attempt,  PlatformInt64 nextRetryAt,  BridgeAcpAuthFailure failure)?  retrying,TResult Function( BridgeAcpAuthFailure failure)?  blocked,TResult Function()?  stopping,required TResult orElse(),}) {final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped() when stopped != null:
+return stopped();case BridgeAcpConnectionState_Starting() when starting != null:
+return starting();case BridgeAcpConnectionState_Ready() when ready != null:
+return ready();case BridgeAcpConnectionState_Retrying() when retrying != null:
+return retrying(_that.attempt,_that.nextRetryAt,_that.failure);case BridgeAcpConnectionState_Blocked() when blocked != null:
+return blocked(_that.failure);case BridgeAcpConnectionState_Stopping() when stopping != null:
+return stopping();case _:
+  return orElse();
+
+}
+}
+/// A `switch`-like method, using callbacks.
+///
+/// As opposed to `map`, this offers destructuring.
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case Subclass2(:final field2):
+///     return ...;
+/// }
+/// ```
+
+@optionalTypeArgs TResult when<TResult extends Object?>({required TResult Function()  stopped,required TResult Function()  starting,required TResult Function()  ready,required TResult Function( int attempt,  PlatformInt64 nextRetryAt,  BridgeAcpAuthFailure failure)  retrying,required TResult Function( BridgeAcpAuthFailure failure)  blocked,required TResult Function()  stopping,}) {final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped():
+return stopped();case BridgeAcpConnectionState_Starting():
+return starting();case BridgeAcpConnectionState_Ready():
+return ready();case BridgeAcpConnectionState_Retrying():
+return retrying(_that.attempt,_that.nextRetryAt,_that.failure);case BridgeAcpConnectionState_Blocked():
+return blocked(_that.failure);case BridgeAcpConnectionState_Stopping():
+return stopping();}
+}
+/// A variant of `when` that fallback to returning `null`
+///
+/// It is equivalent to doing:
+/// ```dart
+/// switch (sealedClass) {
+///   case Subclass(:final field):
+///     return ...;
+///   case _:
+///     return null;
+/// }
+/// ```
+
+@optionalTypeArgs TResult? whenOrNull<TResult extends Object?>({TResult? Function()?  stopped,TResult? Function()?  starting,TResult? Function()?  ready,TResult? Function( int attempt,  PlatformInt64 nextRetryAt,  BridgeAcpAuthFailure failure)?  retrying,TResult? Function( BridgeAcpAuthFailure failure)?  blocked,TResult? Function()?  stopping,}) {final _that = this;
+switch (_that) {
+case BridgeAcpConnectionState_Stopped() when stopped != null:
+return stopped();case BridgeAcpConnectionState_Starting() when starting != null:
+return starting();case BridgeAcpConnectionState_Ready() when ready != null:
+return ready();case BridgeAcpConnectionState_Retrying() when retrying != null:
+return retrying(_that.attempt,_that.nextRetryAt,_that.failure);case BridgeAcpConnectionState_Blocked() when blocked != null:
+return blocked(_that.failure);case BridgeAcpConnectionState_Stopping() when stopping != null:
+return stopping();case _:
+  return null;
+
+}
+}
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Stopped extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Stopped(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Stopped);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.stopped()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Starting extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Starting(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Starting);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.starting()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Ready extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Ready(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Ready);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.ready()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Retrying extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Retrying({required this.attempt, required this.nextRetryAt, required this.failure}): super._();
+
+
+ final  int attempt;
+ final  PlatformInt64 nextRetryAt;
+ final  BridgeAcpAuthFailure failure;
+
+/// Create a copy of BridgeAcpConnectionState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpConnectionState_RetryingCopyWith<BridgeAcpConnectionState_Retrying> get copyWith => _$BridgeAcpConnectionState_RetryingCopyWithImpl<BridgeAcpConnectionState_Retrying>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Retrying&&(identical(other.attempt, attempt) || other.attempt == attempt)&&(identical(other.nextRetryAt, nextRetryAt) || other.nextRetryAt == nextRetryAt)&&(identical(other.failure, failure) || other.failure == failure));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,attempt,nextRetryAt,failure);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.retrying(attempt: $attempt, nextRetryAt: $nextRetryAt, failure: $failure)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpConnectionState_RetryingCopyWith<$Res> implements $BridgeAcpConnectionStateCopyWith<$Res> {
+  factory $BridgeAcpConnectionState_RetryingCopyWith(BridgeAcpConnectionState_Retrying value, $Res Function(BridgeAcpConnectionState_Retrying) _then) = _$BridgeAcpConnectionState_RetryingCopyWithImpl;
+@useResult
+$Res call({
+ int attempt, PlatformInt64 nextRetryAt, BridgeAcpAuthFailure failure
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpConnectionState_RetryingCopyWithImpl<$Res>
+    implements $BridgeAcpConnectionState_RetryingCopyWith<$Res> {
+  _$BridgeAcpConnectionState_RetryingCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpConnectionState_Retrying _self;
+  final $Res Function(BridgeAcpConnectionState_Retrying) _then;
+
+/// Create a copy of BridgeAcpConnectionState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? attempt = null,Object? nextRetryAt = null,Object? failure = null,}) {
+  return _then(BridgeAcpConnectionState_Retrying(
+attempt: null == attempt ? _self.attempt : attempt // ignore: cast_nullable_to_non_nullable
+as int,nextRetryAt: null == nextRetryAt ? _self.nextRetryAt : nextRetryAt // ignore: cast_nullable_to_non_nullable
+as PlatformInt64,failure: null == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
+as BridgeAcpAuthFailure,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Blocked extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Blocked({required this.failure}): super._();
+
+
+ final  BridgeAcpAuthFailure failure;
+
+/// Create a copy of BridgeAcpConnectionState
+/// with the given fields replaced by the non-null parameter values.
+@JsonKey(includeFromJson: false, includeToJson: false)
+@pragma('vm:prefer-inline')
+$BridgeAcpConnectionState_BlockedCopyWith<BridgeAcpConnectionState_Blocked> get copyWith => _$BridgeAcpConnectionState_BlockedCopyWithImpl<BridgeAcpConnectionState_Blocked>(this, _$identity);
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Blocked&&(identical(other.failure, failure) || other.failure == failure));
+}
+
+
+@override
+int get hashCode {
+    return Object.hash(runtimeType,failure);
+}
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.blocked(failure: $failure)';
+}
+
+
+}
+
+/// @nodoc
+abstract mixin class $BridgeAcpConnectionState_BlockedCopyWith<$Res> implements $BridgeAcpConnectionStateCopyWith<$Res> {
+  factory $BridgeAcpConnectionState_BlockedCopyWith(BridgeAcpConnectionState_Blocked value, $Res Function(BridgeAcpConnectionState_Blocked) _then) = _$BridgeAcpConnectionState_BlockedCopyWithImpl;
+@useResult
+$Res call({
+ BridgeAcpAuthFailure failure
+});
+
+
+
+
+}
+/// @nodoc
+class _$BridgeAcpConnectionState_BlockedCopyWithImpl<$Res>
+    implements $BridgeAcpConnectionState_BlockedCopyWith<$Res> {
+  _$BridgeAcpConnectionState_BlockedCopyWithImpl(this._self, this._then);
+
+  final BridgeAcpConnectionState_Blocked _self;
+  final $Res Function(BridgeAcpConnectionState_Blocked) _then;
+
+/// Create a copy of BridgeAcpConnectionState
+/// with the given fields replaced by the non-null parameter values.
+@pragma('vm:prefer-inline') $Res call({Object? failure = null,}) {
+  return _then(BridgeAcpConnectionState_Blocked(
+failure: null == failure ? _self.failure : failure // ignore: cast_nullable_to_non_nullable
+as BridgeAcpAuthFailure,
+  ));
+}
+
+
+}
+
+/// @nodoc
+
+
+class BridgeAcpConnectionState_Stopping extends BridgeAcpConnectionState {
+  const BridgeAcpConnectionState_Stopping(): super._();
+
+
+
+
+
+
+
+@override
+bool operator ==(Object other) {
+    return identical(this, other) || (other.runtimeType == runtimeType&&other is BridgeAcpConnectionState_Stopping);
+}
+
+
+@override
+int get hashCode => runtimeType.hashCode;
+
+@override
+String toString() {
+    return 'BridgeAcpConnectionState.stopping()';
+}
+
+
+}
+
+
+
+
+/// @nodoc
 mixin _$BridgeAcpQuotaRemaining {
 
 

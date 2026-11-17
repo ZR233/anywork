@@ -11,7 +11,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'acp.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeAcpAccountCatalog {
   final List<BridgeAcpAccountTemplate> templates;
@@ -184,6 +184,7 @@ class BridgeAcpAccountUpdate {
 class BridgeAcpAuthAccount {
   final String accountId;
   final BigInt connectionRevision;
+  final BridgeAcpConnectionState connection;
   final BridgeAcpAuthState state;
   final BridgeAcpUsageObservation? usage;
 
@@ -193,6 +194,7 @@ class BridgeAcpAuthAccount {
   const BridgeAcpAuthAccount({
     required this.accountId,
     required this.connectionRevision,
+    required this.connection,
     required this.state,
     this.usage,
     this.activeOperation,
@@ -202,6 +204,7 @@ class BridgeAcpAuthAccount {
   int get hashCode =>
       accountId.hashCode ^
       connectionRevision.hashCode ^
+      connection.hashCode ^
       state.hashCode ^
       usage.hashCode ^
       activeOperation.hashCode;
@@ -213,6 +216,7 @@ class BridgeAcpAuthAccount {
           runtimeType == other.runtimeType &&
           accountId == other.accountId &&
           connectionRevision == other.connectionRevision &&
+          connection == other.connection &&
           state == other.state &&
           usage == other.usage &&
           activeOperation == other.activeOperation;
@@ -439,6 +443,28 @@ sealed class BridgeAcpAuthState with _$BridgeAcpAuthState {
   const factory BridgeAcpAuthState.failed({
     required BridgeAcpAuthFailure failure,
   }) = BridgeAcpAuthState_Failed;
+}
+
+@freezed
+sealed class BridgeAcpConnectionState with _$BridgeAcpConnectionState {
+  const BridgeAcpConnectionState._();
+
+  const factory BridgeAcpConnectionState.stopped() =
+      BridgeAcpConnectionState_Stopped;
+  const factory BridgeAcpConnectionState.starting() =
+      BridgeAcpConnectionState_Starting;
+  const factory BridgeAcpConnectionState.ready() =
+      BridgeAcpConnectionState_Ready;
+  const factory BridgeAcpConnectionState.retrying({
+    required int attempt,
+    required PlatformInt64 nextRetryAt,
+    required BridgeAcpAuthFailure failure,
+  }) = BridgeAcpConnectionState_Retrying;
+  const factory BridgeAcpConnectionState.blocked({
+    required BridgeAcpAuthFailure failure,
+  }) = BridgeAcpConnectionState_Blocked;
+  const factory BridgeAcpConnectionState.stopping() =
+      BridgeAcpConnectionState_Stopping;
 }
 
 enum BridgeAcpProvider { antigravity }

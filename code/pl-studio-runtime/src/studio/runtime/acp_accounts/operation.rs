@@ -7,8 +7,9 @@ use crate::{AcpAuthAction, AcpAuthFailureCode, AcpAuthStage, AcpAuthState};
 use tokio::sync::watch;
 
 use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
-use super::mapping::{AcpFailure, map_auth_error, map_auth_server, map_progress, protocol_action};
-use super::registry::{AcpAuthInner, Operation};
+use super::mapping::{AcpFailure, map_auth_error, map_auth_server, map_progress};
+use super::registry::{AcpAccountInner, Operation};
+use super::strategy::AcpAgentStrategy;
 
 /// 一次操作的启动意图；全部字段来自受理时的 canonical 配置快照与请求本身。
 pub(super) struct OperationPlan {
@@ -19,7 +20,11 @@ pub(super) struct OperationPlan {
 }
 
 /// 操作只租用账户连接；结束不取消或回收共享进程。
-pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, plan: OperationPlan) {
+pub(super) async fn run(
+    inner: Arc<AcpAccountInner>,
+    operation: Arc<Operation>,
+    plan: OperationPlan,
+) {
     if operation.cancel.is_cancelled() {
         inner.complete_operation(
             &operation.account_id,
@@ -30,7 +35,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         );
         return;
     }
-    let runtime = super::admission::AcpAuthRuntime {
+    let runtime = super::admission::AcpAccountRuntime {
         inner: inner.clone(),
     };
     let connection = runtime.connection(&plan.definition);
@@ -71,7 +76,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
                 },
                 None,
             );
-            let runtime = super::admission::AcpAuthRuntime {
+            let runtime = super::admission::AcpAccountRuntime {
                 inner: inner.clone(),
             };
             let _ = inner.config.with_acp_snapshot(|revision, snapshot| {
@@ -90,12 +95,15 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         tracing::warn!(account_id = %operation.account_id,
             "ACP server does not support independent probe session close; remote resources remain until account shutdown");
     }
+    let strategy = AcpAgentStrategy::for_definition(&plan.definition);
     let (progress, mut receiver) = watch::channel(pl_acp::auth::AuthProgress::Initializing);
     let request = pl_acp::auth::AuthRequest {
         probe_cwd: dunce::simplified(&prepared.probe_dir)
             .to_string_lossy()
             .into_owned(),
-        action: protocol_action(&plan.action),
+        action: strategy
+            .action(&plan.action)
+            .expect("admitted ACP strategy action"),
         commands: plan.commands,
         cleanup: pl_acp::auth::CleanupBudget::new(PROCESS_CLEANUP_LIMIT),
         cancellation: operation.cancel.clone(),
@@ -131,8 +139,26 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         );
         let _ = connection.wait().await;
     }
-    let (state, usage) =
-        terminal_result(Some(protocol), &operation, &plan.action, &receiver.borrow());
+    let (mut state, mut usage) = terminal_result(
+        Some(protocol),
+        &operation,
+        &plan.action,
+        strategy,
+        &receiver.borrow(),
+    );
+    if connection
+        .as_ref()
+        .is_ok_and(|connection| connection.is_closing())
+        && matches!(state, AcpAuthState::Verified { .. })
+    {
+        state = AcpFailure {
+            code: AcpAuthFailureCode::Transport,
+            stage: AcpAuthStage::Initialize,
+            retryable: true,
+        }
+        .into_state();
+        usage = None;
+    }
     inner.complete_operation(
         &operation.account_id,
         operation.generation,
@@ -140,7 +166,7 @@ pub(super) async fn run(inner: Arc<AcpAuthInner>, operation: Arc<Operation>, pla
         state,
         usage,
     );
-    let runtime = super::admission::AcpAuthRuntime {
+    let runtime = super::admission::AcpAccountRuntime {
         inner: inner.clone(),
     };
     let _ = inner
@@ -157,10 +183,11 @@ fn terminal_result(
     protocol: Option<Result<pl_acp::auth::AuthOutcome, pl_acp::auth::AuthError>>,
     operation: &Operation,
     action: &AcpAuthAction,
+    strategy: AcpAgentStrategy,
     last_progress: &pl_acp::auth::AuthProgress,
 ) -> (AcpAuthState, Option<crate::AcpUsageObservation>) {
     match protocol {
-        Some(Ok(pl_acp::auth::AuthOutcome::Verified { server, usage })) => {
+        Some(Ok(pl_acp::auth::AuthOutcome::Verified { server, report })) => {
             let checked_at = crate::studio::unix_seconds();
             let state = AcpAuthState::Verified {
                 checked_at,
@@ -169,11 +196,10 @@ fn terminal_result(
             let usage_update =
                 matches!(action, AcpAuthAction::QueryUsage).then(|| crate::AcpUsageObservation {
                     checked_at,
-                    state: usage.map_or(
+                    state: report.and_then(|report| strategy.report(report)).unwrap_or(
                         crate::AcpUsageState::Failed {
                             code: crate::AcpUsageFailureCode::InvalidResponse,
                         },
-                        super::usage::map_report,
                     ),
                 });
             (state, usage_update)

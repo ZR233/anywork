@@ -35,6 +35,7 @@ AcpAuthSnapshotView _snapshot(int revision, AcpAuthStateView state) =>
       updatedAt: revision,
       accounts: [
         AcpAuthAccountView(
+          connection: const AcpConnectionStoppedState(),
           accountId: 'acp-1',
           connectionRevision: 7,
           state: state,

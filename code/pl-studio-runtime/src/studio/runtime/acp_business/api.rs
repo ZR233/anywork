@@ -26,7 +26,7 @@ pub(crate) struct AcpBusinessOwner {
     config: crate::config::ConfigRuntime,
     store: crate::studio::StudioStore,
     events: crate::studio::ProductEventBus,
-    connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
+    connections: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
 }
 
 struct MemberOpen {
@@ -198,7 +198,7 @@ impl AcpBusinessOwner {
         config: crate::config::ConfigRuntime,
         store: crate::studio::StudioStore,
         events: crate::studio::ProductEventBus,
-        connections: crate::studio::runtime::acp_auth::AcpAuthRuntime,
+        connections: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
     ) -> Self {
         Self {
             factory,
@@ -619,7 +619,7 @@ impl StudioRuntime {
             self.config_runtime.clone(),
             self.store.clone(),
             self.agent_facility.product_events.clone(),
-            self.acp_auth.clone(),
+            self.acp_accounts.clone(),
         );
         let cwd = match &previous {
             Some(agent) => match &agent.backend {

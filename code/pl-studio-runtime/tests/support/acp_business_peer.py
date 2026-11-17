@@ -6,6 +6,8 @@ with (root / 'spawns').open('a') as log:
     log.write(str(os.getpid()) + '\n')
 (root / 'process-cwd').write_text(os.getcwd())
 next_session = 0
+next_probe = 0
+probe_sessions = set()
 stdio_endpoints = set()
 stdio_capabilities = set()
 stdio_sessions = 0
@@ -20,6 +22,12 @@ for line in sys.stdin:
     method=msg['method']
     with (root / 'calls').open('a') as log:
         log.write(method + '\n')
+    if method.startswith('session/'):
+        params = msg.get('params', {})
+        probe = ((method == 'session/new' and not params.get('mcpServers', []))
+                 or params.get('sessionId') in probe_sessions)
+        with (root / ('probe-calls' if probe else 'business-calls')).open('a') as log:
+            log.write(method + '\n')
     if 'id' not in msg:
         assert method == 'session/cancel', method
         continue
@@ -42,6 +50,16 @@ for line in sys.stdin:
         if mode == 'auth':
             emit({'jsonrpc':'2.0','id':rid,'error':{'code':-32000,'message':'Authentication required',
                   'data':{'instruction':'Use server login'}}})
+            continue
+        # Auth probes use an empty MCP list and a private cwd. Business fault modes
+        # target the session with Host MCP; they must not block the account's probe.
+        if method == 'session/new' and not msg['params'].get('mcpServers', []):
+            next_probe += 1
+            sid = 'probe-' + str(next_probe)
+            probe_sessions.add(sid)
+            with (root / 'sessions').open('a') as log:
+                log.write(json.dumps({'id':sid, 'cwd':msg['params']['cwd'], 'mcp':False}) + '\n')
+            emit({'jsonrpc':'2.0','id':rid,'result':{'sessionId':sid}})
             continue
         if mode == 'mcp-http':
             servers=msg['params'].get('mcpServers', [])

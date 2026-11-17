@@ -15,7 +15,7 @@ use super::super::acp_worker::PROCESS_CLEANUP_LIMIT;
 use super::mapping::{acp_error, ensure_operation_id};
 use super::operation::{self, OperationPlan};
 use super::registry::{
-    AcceptedAction, AcceptedIntent, AcpAuthInner, ConnectionIdentity, Operation,
+    AcceptedAction, AcceptedIntent, AcpAccountInner, ConnectionIdentity, Operation,
 };
 use crate::config::{AcpDefinitionsSnapshot, ConfigRuntime, SettingsCommitObserver};
 use crate::studio::{ProductEventBus, StudioStore};
@@ -28,20 +28,20 @@ pub(super) const MAX_ACCEPTED_STARTS: usize = 4096;
 
 /// 认证 owner 本体；`Clone` 只克隆共享句柄，不复制事实。
 #[derive(Clone)]
-pub(crate) struct AcpAuthRuntime {
-    pub(super) inner: Arc<AcpAuthInner>,
+pub(crate) struct AcpAccountRuntime {
+    pub(super) inner: Arc<AcpAccountInner>,
 }
 
 /// 认证命令的受理结果：canonical 快照与是否改变了领域事实。
 ///
 /// 回执（receipt）由 runtime 用同一 `resource_stamp`/`command_receipt` 风格组装，owner 不复制
 /// 第二套回执构造。
-pub(crate) struct AcpAuthAcceptance {
+pub(crate) struct AcpAccountAcceptance {
     pub snapshot: AcpAuthSnapshot,
     pub changed: bool,
 }
 
-impl AcpAuthRuntime {
+impl AcpAccountRuntime {
     pub(crate) fn new(
         store: StudioStore,
         config: ConfigRuntime,
@@ -49,11 +49,11 @@ impl AcpAuthRuntime {
         source: Executor,
         mcp_source: crate::host_mcp_assets::HostMcpSource,
     ) -> Self {
-        let runtime = Self {
-            inner: Arc::new(AcpAuthInner::new(store, config, events, source, mcp_source)),
-        };
-        runtime.start_retirement_driver();
-        runtime
+        Self {
+            inner: Arc::new(AcpAccountInner::new(
+                store, config, events, source, mcp_source,
+            )),
+        }
     }
 
     /// 安装 Settings 提交观察者，并立即取得当前 canonical 快照的接入身份。
@@ -63,6 +63,7 @@ impl AcpAuthRuntime {
         config.install_settings_observer(Arc::new(AcpSettingsObserver {
             inner: Arc::downgrade(&self.inner),
         }))?;
+        self.start_lifecycle_driver();
         Ok(())
     }
 
@@ -72,7 +73,7 @@ impl AcpAuthRuntime {
     }
 
     /// 受理一次认证操作；命令立即返回受理身份，不等待人工登录或进程退出。
-    pub(crate) fn start(&self, request: StartAcpAuthRequest) -> Result<AcpAuthAcceptance> {
+    pub(crate) fn start(&self, request: StartAcpAuthRequest) -> Result<AcpAccountAcceptance> {
         ensure_operation_id(&request.operation_id)?;
         let inner = Arc::clone(&self.inner);
         let requested = request.clone();
@@ -80,7 +81,7 @@ impl AcpAuthRuntime {
         self.inner
             .config
             .with_acp_snapshot(move |revision, config| {
-                AcpAuthInner::admit(inner, revision, config, requested)
+                AcpAccountInner::admit(inner, revision, config, requested)
             })?
     }
 
@@ -88,7 +89,7 @@ impl AcpAuthRuntime {
     ///
     /// 已进入收束阶段（`Closing`）的操作不再接受取消：此时协议结果已确定，只等资源停止，UI 也
     /// 不再提供取消入口。
-    pub(crate) fn cancel(&self, request: CancelAcpAuthRequest) -> Result<AcpAuthAcceptance> {
+    pub(crate) fn cancel(&self, request: CancelAcpAuthRequest) -> Result<AcpAccountAcceptance> {
         ensure_operation_id(&request.operation_id)?;
         ensure_operation_id(&request.target_operation_id)?;
         let mut registry = self.inner.lock();
@@ -135,7 +136,7 @@ impl AcpAuthRuntime {
             // 已经取消并发布：重复取消不推进 revision、不重复发信号。
             let snapshot = registry.snapshot();
             drop(registry);
-            return Ok(AcpAuthAcceptance {
+            return Ok(AcpAccountAcceptance {
                 snapshot,
                 changed: false,
             });
@@ -166,7 +167,7 @@ impl AcpAuthRuntime {
         // 先发布取消中，再发信号：收尾与终态仍由 operation supervisor 在资源停止后发布。
         cancel.cancel();
         self.inner.emit(snapshot.clone());
-        Ok(AcpAuthAcceptance {
+        Ok(AcpAccountAcceptance {
             snapshot,
             changed: true,
         })
@@ -176,15 +177,37 @@ impl AcpAuthRuntime {
     ///
     /// 封闭发生在同一 owner 锁内、先于任何取消与 join 快照，因此不会有新 worker 在此期间登记。
     pub(crate) fn signal_cancel(&self) {
-        let operations: Vec<Arc<Operation>> = {
+        let (operations, snapshot) = {
             let mut registry = self.inner.lock();
+            let changed = !registry.closed;
             registry.closed = true;
-            registry
+            let retiring = registry
+                .retiring
+                .iter()
+                .map(|account| account.account_id.clone())
+                .collect::<std::collections::BTreeSet<_>>();
+            for (id, slot) in &mut registry.slots {
+                slot.lifecycle.retry_at = None;
+                slot.lifecycle.state = if slot.connection.is_some() || retiring.contains(id) {
+                    crate::AcpConnectionState::Stopping
+                } else {
+                    crate::AcpConnectionState::Stopped
+                };
+            }
+            let operations = registry
                 .slots
                 .values()
                 .filter_map(|slot| slot.operation.clone())
-                .collect()
+                .collect::<Vec<_>>();
+            let snapshot = changed.then(|| {
+                registry.bump();
+                registry.snapshot()
+            });
+            (operations, snapshot)
         };
+        if let Some(snapshot) = snapshot {
+            self.inner.emit(snapshot);
+        }
         for connection in self.connections() {
             connection.signal_cancel();
         }
@@ -244,7 +267,7 @@ impl AcpAuthRuntime {
                 issues.push(error.to_string());
             }
         }
-        if let Err(error) = self.join_retirement_driver(deadline).await {
+        if let Err(error) = self.join_lifecycle_driver(deadline).await {
             issues.push(error.to_string());
         }
         if let Some(issue) = self.inner.lock().retirement_issue.clone() {
@@ -261,19 +284,19 @@ impl AcpAuthRuntime {
 /// Settings 提交观察者适配器：只持有 owner 的 `Weak`，避免 ConfigRuntime ↔ 运行时 owner 的
 /// `Arc` 环。
 struct AcpSettingsObserver {
-    inner: std::sync::Weak<AcpAuthInner>,
+    inner: std::sync::Weak<AcpAccountInner>,
 }
 
 impl SettingsCommitObserver for AcpSettingsObserver {
     fn settings_committed(&self, snapshot: &crate::ConfigRuntimeSnapshot) {
         if let Some(inner) = self.inner.upgrade() {
             inner.observe_committed(snapshot.revision, &snapshot.acp);
-            AcpAuthRuntime { inner }.background_prepare(snapshot.revision, &snapshot.acp);
+            AcpAccountRuntime { inner }.background_prepare(snapshot.revision, &snapshot.acp);
         }
     }
 }
 
-impl AcpAuthInner {
+impl AcpAccountInner {
     /// 在 Settings command 边界内完成一次准入。
     ///
     /// `settings_revision` 与 `config` 来自同一串行边界，因此 plan、连接身份、期望 revision 与
@@ -283,7 +306,26 @@ impl AcpAuthInner {
         settings_revision: u64,
         config: &AcpDefinitionsSnapshot,
         request: StartAcpAuthRequest,
-    ) -> Result<AcpAuthAcceptance> {
+    ) -> Result<AcpAccountAcceptance> {
+        Self::admit_operation(inner, settings_revision, config, request, false)
+    }
+
+    pub(super) fn admit_background(
+        inner: Arc<Self>,
+        settings_revision: u64,
+        config: &AcpDefinitionsSnapshot,
+        request: StartAcpAuthRequest,
+    ) -> Result<AcpAccountAcceptance> {
+        Self::admit_operation(inner, settings_revision, config, request, true)
+    }
+
+    fn admit_operation(
+        inner: Arc<Self>,
+        settings_revision: u64,
+        config: &AcpDefinitionsSnapshot,
+        request: StartAcpAuthRequest,
+        background: bool,
+    ) -> Result<AcpAccountAcceptance> {
         let Some(account) = config.definitions.get(&request.account_id).cloned() else {
             return Err(acp_error(
                 StudioErrorCode::NotFound,
@@ -299,7 +341,8 @@ impl AcpAuthInner {
             ));
         }
         if matches!(request.action, crate::AcpAuthAction::QueryUsage)
-            && account.definition.template_kind().is_none()
+            && !super::strategy::AcpAgentStrategy::for_definition(&account.definition)
+                .supports_usage()
         {
             return Err(acp_error(
                 StudioErrorCode::InvalidArgument,
@@ -368,12 +411,12 @@ impl AcpAuthInner {
             // 同一意图重试：返回当前 canonical 快照，不再产生任何副作用。
             let snapshot = registry.snapshot();
             drop(registry);
-            return Ok(AcpAuthAcceptance {
+            return Ok(AcpAccountAcceptance {
                 snapshot,
                 changed: false,
             });
         }
-        if registry.accepted.len() >= MAX_ACCEPTED_STARTS {
+        if !background && registry.accepted.len() >= MAX_ACCEPTED_STARTS {
             return Err(acp_error(
                 StudioErrorCode::Overloaded,
                 "已受理的 ACP 认证操作身份过多，请重启运行时后重试",
@@ -446,10 +489,24 @@ impl AcpAuthInner {
             };
             slot.operation = Some(Arc::clone(&operation));
             slot.state = initial;
+            // An explicit check/login supersedes a scheduled initial check, without a second
+            // command identity or a second process. Background work has no public dedup entry.
+            slot.background_scheduled = true;
+            if !background {
+                slot.lifecycle.retry_at = None;
+                if !matches!(slot.lifecycle.state, crate::AcpConnectionState::Ready) {
+                    slot.lifecycle.state = crate::AcpConnectionState::Starting;
+                }
+                if let Some(connection) = slot.connection.as_ref() {
+                    connection.launch_now.notify_one();
+                }
+            }
         }
-        registry
-            .accepted
-            .insert(request.operation_id.clone(), intent);
+        if !background {
+            registry
+                .accepted
+                .insert(request.operation_id.clone(), intent);
+        }
         registry.bump();
         let snapshot = registry.snapshot();
         let task = tokio::spawn(operation::run(
@@ -464,7 +521,7 @@ impl AcpAuthInner {
             .expect("new operation is private until registry unlock") = Some(task);
         drop(registry);
         inner.emit(snapshot.clone());
-        Ok(AcpAuthAcceptance {
+        Ok(AcpAccountAcceptance {
             snapshot,
             changed: true,
         })
@@ -511,7 +568,7 @@ mod tests {
 
     /// 用真实受理身份的冻结字段占用槽位；busy 状态与占用操作保持一致。
     fn occupy_slot(runtime: &StudioRuntime, action: AcpAuthAction) -> (u64, u64) {
-        let mut registry = runtime.acp_auth.inner.lock();
+        let mut registry = runtime.acp_accounts.inner.lock();
         let generation = registry.mint_generation();
         let slot = registry
             .slots
@@ -540,7 +597,7 @@ mod tests {
         runtime: &StudioRuntime,
         expected_connection_revision: u64,
     ) -> crate::AcpAuthBusyRejection {
-        let error = match runtime.acp_auth.start(StartAcpAuthRequest {
+        let error = match runtime.acp_accounts.start(StartAcpAuthRequest {
             operation_id: "second".into(),
             account_id: "account".into(),
             expected_connection_revision,
@@ -570,7 +627,7 @@ mod tests {
         for action in [AcpAuthAction::Check, AcpAuthAction::QueryUsage] {
             let (home, runtime) = test_runtime().await?;
             let (revision, generation) = occupy_slot(&runtime, action.clone());
-            let snapshot_revision = runtime.acp_auth.inner.lock().revision;
+            let snapshot_revision = runtime.acp_accounts.inner.lock().revision;
             // 请求动作与占用方不同也只投影占用方的真实身份与动作。
             let rejection = busy_rejection(&runtime, revision);
             assert_eq!(
@@ -589,7 +646,7 @@ mod tests {
                 }
             );
             // fake 操作没有 supervisor 句柄：按真实终态路径释放槽位后再关闭运行时。
-            runtime.acp_auth.inner.complete_operation(
+            runtime.acp_accounts.inner.complete_operation(
                 "account",
                 generation,
                 revision,
@@ -611,7 +668,7 @@ mod tests {
         let (frozen_revision, generation) = occupy_slot(&runtime, AcpAuthAction::QueryUsage);
         // 模拟 observe_committed 的身份变化分支：账号已换新修订，旧操作仍在收束。
         let current_revision = {
-            let mut registry = runtime.acp_auth.inner.lock();
+            let mut registry = runtime.acp_accounts.inner.lock();
             let slot = registry
                 .slots
                 .get_mut("account")
@@ -640,7 +697,7 @@ mod tests {
             }
         );
         // fake 操作没有 supervisor 句柄：按真实终态路径释放槽位后再关闭运行时。
-        runtime.acp_auth.inner.complete_operation(
+        runtime.acp_accounts.inner.complete_operation(
             "account",
             generation,
             frozen_revision,
@@ -658,10 +715,10 @@ mod tests {
     async fn busy_slice_is_immutable_after_the_occupant_finishes() -> Result<()> {
         let (_home, runtime) = test_runtime().await?;
         let (revision, generation) = occupy_slot(&runtime, AcpAuthAction::Check);
-        let snapshot_revision = runtime.acp_auth.inner.lock().revision;
+        let snapshot_revision = runtime.acp_accounts.inner.lock().revision;
         let rejection = busy_rejection(&runtime, revision);
         // 占用方终态：快照修订前进、槽位释放。
-        runtime.acp_auth.inner.complete_operation(
+        runtime.acp_accounts.inner.complete_operation(
             "account",
             generation,
             revision,
@@ -671,7 +728,7 @@ mod tests {
             },
             None,
         );
-        let advanced = runtime.acp_auth.inner.lock().revision;
+        let advanced = runtime.acp_accounts.inner.lock().revision;
         assert!(advanced > snapshot_revision);
         // 已返回的切面不被占用方后续终态改写。
         assert_eq!(rejection.acp_auth_busy.snapshot_revision, snapshot_revision);
@@ -684,7 +741,7 @@ mod tests {
             }
         );
         // 槽位已释放：新的 start 不再被 Busy 拒绝。
-        let accepted = runtime.acp_auth.start(StartAcpAuthRequest {
+        let accepted = runtime.acp_accounts.start(StartAcpAuthRequest {
             operation_id: "after-settle".into(),
             account_id: "account".into(),
             expected_connection_revision: revision,
@@ -698,9 +755,9 @@ mod tests {
     #[tokio::test]
     async fn idle_admission_and_non_busy_errors_carry_no_fabricated_details() -> Result<()> {
         let (_home, runtime) = test_runtime().await?;
-        let revision = runtime.acp_auth.inner.lock().slots["account"].revision;
+        let revision = runtime.acp_accounts.inner.lock().slots["account"].revision;
         // 未占用：正常受理，没有任何错误详情。
-        let accepted = runtime.acp_auth.start(StartAcpAuthRequest {
+        let accepted = runtime.acp_accounts.start(StartAcpAuthRequest {
             operation_id: "first".into(),
             account_id: "account".into(),
             expected_connection_revision: revision,
@@ -708,7 +765,7 @@ mod tests {
         })?;
         assert!(accepted.changed);
         // 非 Busy 拒绝不附加虚构字段。
-        let stale = match runtime.acp_auth.start(StartAcpAuthRequest {
+        let stale = match runtime.acp_accounts.start(StartAcpAuthRequest {
             operation_id: "second".into(),
             account_id: "account".into(),
             expected_connection_revision: revision + 100,

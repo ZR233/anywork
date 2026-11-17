@@ -108,6 +108,7 @@ AccountStrings accountStrings(AppLocalizations l10n) => AccountStrings({
   'acp.preparing': l10n.acpInstallStageDownload,
   'acp.ready': l10n.acpInstallReadyTitle,
   'acp.checking': l10n.acpAuthRowChecking,
+  'acp.reconnecting': l10n.acpConnectionReconnecting,
   'acp.needsLogin': l10n.acpAuthRowRequired,
   'acp.authenticating': l10n.acpAuthRowAuthenticating,
   'acp.verifying': l10n.acpAuthRowVerifying,

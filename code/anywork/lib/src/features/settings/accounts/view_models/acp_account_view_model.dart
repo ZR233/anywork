@@ -161,6 +161,16 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
         const AcpUncheckedState();
   }
 
+  AcpConnectionStateView? get _connection =>
+      _key.creating || _service.auth.value.stale
+      ? null
+      : _service.auth.value.value
+            ?.account(
+              _key.target.id,
+              connectionRevision: _key.connectionRevision,
+            )
+            ?.connection;
+
   bool get _preparedForEditor =>
       !_service.install.value.stale &&
       _provider != null &&
@@ -474,7 +484,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
   /// Usage is owned by the ACP auth observation; this command only requests
   /// an explicit refresh and never creates a local quota cache.
   Future<void> queryUsage() async {
-    if (_service.auth.value.stale ||
+    if (_provider == null ||
+        _service.auth.value.stale ||
         _auth.isBusy ||
         _auth is! AcpVerifiedState ||
         !_currentConnection) {
@@ -520,15 +531,21 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
               : install.isReady
               ? AcpPresentationPhase.ready
               : AcpPresentationPhase.idle
-        : switch (auth) {
-            AcpCheckingState() => AcpPresentationPhase.checking,
-            AcpRequiredState() => AcpPresentationPhase.needsLogin,
-            AcpAuthenticatingState() => AcpPresentationPhase.authenticating,
-            AcpVerifyingState() => AcpPresentationPhase.verifying,
-            AcpVerifiedState() => AcpPresentationPhase.connected,
-            AcpCancellingState() => AcpPresentationPhase.cancelling,
-            AcpClosingState() => AcpPresentationPhase.closing,
-            AcpFailedState() => AcpPresentationPhase.failed,
+        : switch ((_connection, auth)) {
+            (AcpConnectionRetryingState(), _) =>
+              AcpPresentationPhase.reconnecting,
+            (AcpConnectionStartingState(), _) => AcpPresentationPhase.checking,
+            (AcpConnectionStoppingState(), _) => AcpPresentationPhase.closing,
+            (AcpConnectionBlockedState(), _) => AcpPresentationPhase.failed,
+            (_, AcpCheckingState()) => AcpPresentationPhase.checking,
+            (_, AcpRequiredState()) => AcpPresentationPhase.needsLogin,
+            (_, AcpAuthenticatingState()) =>
+              AcpPresentationPhase.authenticating,
+            (_, AcpVerifyingState()) => AcpPresentationPhase.verifying,
+            (_, AcpVerifiedState()) => AcpPresentationPhase.connected,
+            (_, AcpCancellingState()) => AcpPresentationPhase.cancelling,
+            (_, AcpClosingState()) => AcpPresentationPhase.closing,
+            (_, AcpFailedState()) => AcpPresentationPhase.failed,
             _ => AcpPresentationPhase.idle,
           };
     final actions = <AcpAccountAction>[
@@ -544,7 +561,8 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       ] else if (!showInstall) ...[
         if (auth.isBusy && _cancelAuth?.operation != auth.operationId)
           AcpAccountAction.cancelAuthentication,
-        if (auth is AcpVerifiedState &&
+        if (_provider != null &&
+            auth is AcpVerifiedState &&
             !auth.isBusy &&
             !_service.auth.value.stale &&
             _currentConnection)
@@ -601,11 +619,13 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
             : safeAccountError(templateError, _strings)) ??
         _service.auth.value.failure?.message ??
         (_provider == null ? null : _service.install.value.failure?.message);
-    final canonicalError = showInstall && install is AcpInstallFailedState
-        ? install.failure.message
-        : auth is AcpFailedState
-        ? auth.failure.message
-        : null;
+    final canonicalError = switch ((_connection, auth)) {
+      (_, _) when showInstall && install is AcpInstallFailedState =>
+        install.failure.message,
+      (AcpConnectionBlockedState(:final failure), _) => failure.message,
+      (_, AcpFailedState(:final failure)) => failure.message,
+      _ => null,
+    };
     final error =
         (_provider != null && _service.install.value.stale) ||
             _service.auth.value.stale
@@ -618,11 +638,6 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
       connectionRevision: _key.connectionRevision,
       strings: _strings,
     );
-    final subtitleText =
-        auth is AcpCancelledState ||
-            (showInstall && install is AcpInstallCancelledState)
-        ? _strings['acp.subtitle.cancelled']
-        : _strings['acp.subtitle.${phase.name}'];
     return AccountAcpViewState(
       preparedForEditor: _preparedForEditor,
       claimedOperationId: _intent?.operationId,
@@ -638,7 +653,7 @@ class AcpAccountViewModel extends _$AcpAccountViewModel {
                   (showInstall && install is AcpInstallCancelledState)
             ? _strings['acp.cancelled']
             : _strings['acp.${phase.name}'],
-        subtitle: subtitleText.isEmpty ? null : subtitleText,
+        subtitle: null,
         message: _template?.automaticInstall.isAvailable == false && showInstall
             ? _strings['unsupportedPlatform']
             : preparing
