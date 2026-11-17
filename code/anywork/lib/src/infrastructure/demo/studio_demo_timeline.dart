@@ -566,7 +566,7 @@ bool _demoSameTailLayout(CurrentRunSnapshot before, CurrentRunSnapshot after) {
   return jsonEncode(layout(before)) == jsonEncode(layout(after));
 }
 
-extension _DemoPresentationQueries on _DemoReader {
+extension _DemoPresentationQueries on _DemoReadSource {
   DisplayBlockBody fitDisplay(DisplayBlockBody body) => switch (body) {
     SingleDisplayBlock(:final record, :final visibility) => SingleDisplayBlock(
       visibility: visibility,

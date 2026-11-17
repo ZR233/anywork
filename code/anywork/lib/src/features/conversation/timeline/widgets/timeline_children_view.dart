@@ -27,7 +27,7 @@ class TimelineChildrenView extends StatefulWidget {
   final int generation;
   final Future<void> Function()? onLoadOlder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
-  final Widget Function(ChatAtom atom)? atomBuilder;
+  final Widget Function(ChatItemPresentation item)? atomBuilder;
   final bool Function() isDisplayActive;
 
   @override
@@ -76,9 +76,8 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
             MessageGroupStatus? groupStatus,
           }) {
             final presentation = chatItemPresentationOf(message)!;
-            final atom = presentation.atom;
-            if (atom != null && widget.atomBuilder != null) {
-              return widget.atomBuilder!(atom);
+            if (presentation.atom != null && widget.atomBuilder != null) {
+              return widget.atomBuilder!(presentation);
             }
             return ChatItemView(
               key: ValueKey((widget.generation, message.id)),

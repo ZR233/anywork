@@ -78,12 +78,6 @@ Map<String, Object?> _threadWaitToJson(ThreadWaitPresentationView wait) => {
   if (wait.messagesReady != null) 'messagesReady': wait.messagesReady,
 };
 
-Map<String, Object?> completedEntryToJson(CompletedEntry entry) => {
-  'recordId': entry.recordId,
-  'completionSeq': entry.completionSeq,
-  'atom': chatAtomToJson(entry.atom),
-};
-
 Map<String, Object?> chatScopeToJson(ChatScope scope) => {
   'queryClass': switch (scope.queryClass) {
     ExactChatClass(:final value) => {'kind': 'class', 'value': value},

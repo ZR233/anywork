@@ -372,10 +372,17 @@ pub struct BridgeCurrentContentRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentStateField {
-    pub field: String,
-    pub reference: BridgeCurrentContentRef,
-    pub byte_length: u64,
+pub enum BridgeCurrentStateField {
+    Body {
+        field: String,
+        reference: BridgeCurrentContentRef,
+        byte_length: u64,
+    },
+    Collection {
+        field: String,
+        reference: BridgeCurrentCollectionRef,
+        count: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

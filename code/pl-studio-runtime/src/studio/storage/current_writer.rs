@@ -58,7 +58,7 @@ impl CurrentSource {
         }
     }
 
-    /// Binds a `start_current`/`restore_current` owner without attaching a cold/history store.
+    /// Binds a `start_current`/`restore_current` owner without attaching a checkpoint store.
     /// Closing reads the owner's final producer handoff only after its real resource close.
     pub(crate) fn from_thread(handle: ThreadHandle) -> Self {
         let capture = handle.clone();

@@ -12,7 +12,7 @@
 
 Current 和 History 没有共同事务、共同切点或 ACK。Current 可先显示仍在执行的内容；后续 canonical 历史事件出现时，Flutter 以稳定 `row_key`／`entity_id` 并入同一画面。不能把两个存储的可见性描述成原子，也不能从 Current 字段推断某个历史事件一定已提交。
 
-新的 Native 写入不再产生 `CompletedEntry`、`ChatBatch`、`ChatPlacement`、`ActivitySnapshot.completedThrough` 或 presentation writer 状态。旧 v24 wire 类型只存在于冻结迁移 schema，用于读取旧 fixture 和一次性迁移。
+新的 Native 写入只产生 Current 与 schema 25 History 事实。旧 v24 wire 类型只存在于冻结迁移 schema，用于读取旧 fixture 和一次性迁移。
 
 ## 26.2 历史事件、Work 与 Single
 
@@ -61,7 +61,7 @@ Current 由原 State assembler 生成，`CurrentReader` 是 snapshot/watch、col
 
 `CurrentView` 包含当前 owner/revision、schema 18 `ThreadSnapshot` 和 `CurrentProjection`。Projection 只携带 logical status、execution presence、当前 activity/turn、真实 sources、当前 atoms、Plan/交互引用、有界 previews 和 collection refs。`CurrentAtom` 不携带历史完成身份。
 
-大字段通过 `CurrentStateField` 明确 deferred：runtime 的 todo、活跃技能、MCP/LSP server、progress、MCP health、workflow 与 plan，以及 activity 的 tools.active、latestStarted 与 thinkingSummary。小头中的空占位不是完整值；读取方必须沿 reference 的 owner、domain、entity、key、generation 和长度按偏移读取原始 JSON。冷 current 与热 owner 使用同一形状，不维护两套冷/热 DTO。
+大字段通过 tagged `CurrentStateField` 明确 deferred：runtime 的 `todo`、`progress`、`mcpHealth`、`workflow`、`plan` 等为 Body；`activeSkills`、`activeMcpServers`、`activeLspServers` 与 activity 的 `tools.active` 为 Collection；`thinkingSummary`、`tools.latestStarted` 等单值为 Body。字段超过 2 KiB 才 deferred，Collection 的 `count` 是完整总量，页条目可为 Inline 或 `CurrentPayloadData::Deferred`，大项不复制进 State。小头空占位不是完整值；调用方按 reference 的 owner、generation、offset 与 length 读取。generation 是 opaque namespace，冷/热公式不公开；两种来源使用同一 State shape，不维护两套 DTO。
 
 state 元数据、usage、live usage、耗时和 controls 不等正文或 collection。Current 正文观察只随该 owner/generation 增长或替换；token 变化可以只发 body 更新，不推动历史事件或全 State 重建。当前正文终态也不必然已有 canonical 历史。
 

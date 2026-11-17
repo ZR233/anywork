@@ -46,7 +46,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 ## 15.2 独立追加历史
 
-每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 类型是 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`；不存在 `CompletedEntry`、`ChatBatch`、`ChatPlacement`、`ActivitySnapshot.completedThrough` 或展示桥接类型。
+每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 只使用 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`。旧 v24 wire 只允许出现在冻结迁移 schema。
 
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 
@@ -62,15 +62,26 @@ History writer 先在数据库事务外固定 RAM pending 根，再开始 SQLite
 
 投影交给 History 的 `PreparedEffect` 使用 `retained_resources` 表达本 effect 的真实交付与 repair 资源；`turn_id` 可以为空，只有能由原任务证明时才填写。该计划不复制 `latestTask`，也不创建 `history_tool_tasks`。资源身份、摘要和引用冲突使事件接纳失败，不能先发布完成 head 再补资源。
 
+Native 通过 `ThreadHandle::attach_history(HistorySinkHandle)` 安装独立 History 端口，不附加 legacy checkpoint store。
+Core 交付 `HistoryExport { effect, original ThreadSnapshot observation cut, output_claim }`，不创建 checkpoint；
+原可靠预算、类型化压力和执行安全点继续约束接纳，输出预留随同一原件转移。Native 单观察者投影后交给原 History writer。
+Core Current 的累计用量同步复用该原件的 `PreparedAccounting` 提取，不等待历史提交，JSON 保留已知累计证据。
+Current 捕获、保存和物理关闭不等待 History fence；历史失败保留原件并报告自己的故障，不能确认或清除 Current 保存责任。
+
 ## 15.3 CurrentReader
 
 `CurrentReader` 是本 State assembler 的唯一薄观察端口，提供 snapshot、watch、collection page、body read、body watch 和 close。metadata watch、内容 watch 与 owner、`runtimeEpoch`、`run_id` 来自同一 owner 和同一 state cut；没有第二个 State reducer、旧 `ConversationStateFeed` 二次 apply、历史 tail 拼接或 GUI ACK。
 
 `CurrentView` 由 owner/revision、schema 18 `ThreadSnapshot` 和 `CurrentProjection` 组成。当前正文、collection、Plan 与交互只使用 `CurrentContentRef` 或 `CurrentCollectionRef`，不出现旧完成项或历史 body 引用。`CurrentAtom` 只描述当前业务来源和执行事实，不携带 completion ID 或 completion sequence，也不能据此推断历史中已经存在 canonical 原件。
 
-State 中可能持续增长或单字段超过小头预算的值使用显式 `CurrentStateField` deferred 引用，包括 runtime 的 `todo`、`activeSkills`、`activeMcpServers`、`activeLspServers`、`progress`、`mcpHealth`、`workflow`、`plan`，以及 activity 的 `tools.active`、`tools.latestStarted`、`thinkingSummary`。内联占位不是完整值；读取方必须沿所属 owner 的 body 端口按 generation 和偏移读取原始 JSON，不能猜测空值。冷 `current.json` 通过同一形状生成引用，不要求为冷/热维护两套 DTO。
+State 中可能增长或超过小头预算的值使用 tagged `CurrentStateField`：
 
-热 owner 的 Current 正文来自原 ThreadLiveFeed owner 维护的派生索引，多个引用共享同一不可变内容而不复制全文；冷 owner 从完整 JSON 的同一 State/body 形状重建引用。磁盘 `current.json` 不是发送给 Flutter 的小 DTO，UI 也不会为了 State metadata 或 usage 预读整个正文。
+- `Body { field, reference: CurrentContentRef, byteLength }`：用于 `todo`、`progress`、`mcpHealth`、`workflow`、`plan`、`thinkingSummary`、`tools.latestStarted` 等单值。
+- `Collection { field, reference: CurrentCollectionRef, count }`：用于 `activeSkills`、`activeMcpServers`、`activeLspServers` 与 `tools.active`。`count` 是完整集合总量，不是页长度。
+
+State 字段序列化不超过 2 KiB 时保持内联，超过阈值才 deferred。集合页条目为 `CurrentPayloadData::Inline` 或 `CurrentPayloadData::Deferred { reference, byteLength }`；大条目不复制进 State。内联占位不是完整值，读取方不能猜测空值。generation 是 opaque 身份，调用方不推导 live/cold 命名公式，也不跨 namespace 比较。
+
+热 owner 的 Current Body/Collection 来自原 ThreadLiveFeed 的 StateResources 共享索引，多个引用共享同一不可变内容；冷 owner 从完整 JSON 的同一 State shape 重建引用。State assembler 不读成第二份常驻大 State，磁盘 `current.json` 不是发送给 Flutter 的小 DTO，UI 也不会为了 metadata 或 usage 预读整个正文。
 
 runtime usage、live usage、时机、工具与后台计数、todo/progress、controls 等轻量指标可先由 State 交付；正文、collection 和 deferred field 的读取失败不阻塞这些可用指标。当前模型输出 token 只更新其正文 owner，不触发历史 SQL。
 

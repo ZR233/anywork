@@ -13,19 +13,16 @@ import '../../studio/stores/domain_sync.dart';
 import '../../studio/thread_frames.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
-import 'conversation_content_impl.dart';
 import 'conversation_state_owner.dart';
 import 'state_reducer.dart';
 import 'thread_stream_gate.dart';
 import 'input_turn_facts.dart';
 import '../domain/conversation_errors.dart';
 
-/// One canonical state mirror, one independent state feed owner and one content
-/// feed owner. No public setter.
+/// One canonical Current state mirror and its independent observation owner.
 final class ConversationSessionImpl implements ConversationSession {
   ConversationSessionImpl(
     this.threadId, {
-    required ConversationTransport transport,
     required CurrentTransport currentTransport,
     required ReadDemand stateDemand,
     required this.directory,
@@ -41,10 +38,6 @@ final class ConversationSessionImpl implements ConversationSession {
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,
-    );
-    _content = ConversationContentImpl(
-      threadId: threadId,
-      transport: transport,
     );
     _directoryLease = _scope.acquireLease(
       'conversation-directory',
@@ -63,7 +56,6 @@ final class ConversationSessionImpl implements ConversationSession {
   final InputFactRegistry _inputFacts;
   final LatestValue<ThreadSessionState> _source;
   late final ConversationStateOwner _state;
-  late final ConversationContentImpl _content;
   late final DirectoryObservation<ThreadMetadataFrame> _directoryDemand;
   late final _SessionDirectoryLease _directoryLease;
   late final Observation _directoryObservation;
@@ -77,36 +69,26 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   ValueObservation<ThreadSessionState> get source => _source;
   @override
-  ConversationContent get content => _content;
-  @override
-  ValueObservation<ActivitySnapshot?> get activity => _content.activity;
-  @override
   // The session's real visible demand: the state owner turns on first, so
   // this must already read true during that synchronous window, or a
   // reentrant visibility switch cannot revoke the stale stack.
-  bool get isActive => _state.hasDemand || _content.hasDemand;
+  bool get isActive => _state.hasDemand;
   @override
   bool get isClosed => _closed;
 
   void setVisible(bool visible) {
-    final generation = ++_visibilityGeneration;
+    _visibilityGeneration++;
     if (!visible) {
       _cancelResync();
       _state.setDemand(false);
-      _content.setDemand(false);
       _source.publish(state.copyWith(sync: const DomainSyncStatus()));
       return;
     }
     if (_closed) throw StateError('Conversation is closed');
     // State opens first: its synchronous connecting publication may reenter
     // visibility switching. A reentrant revoke (or an A -> B -> A cascade)
-    // bumps the generation, so this stale stack can never resurrect content
-    // demand; only the newest stack owns the recovery. A synchronous close
-    // from that publication seals this session, so it must also stop here
-    // instead of demanding from a closed content owner.
+    // bumps the generation, so this stale stack can never resurrect demand.
     _state.setDemand(true);
-    if (_closed || generation != _visibilityGeneration) return;
-    _content.setDemand(true);
   }
 
   SessionDirectoryRow? get _identity => _directoryDemand.state.value.frame?.row;
@@ -225,7 +207,6 @@ final class ConversationSessionImpl implements ConversationSession {
   @override
   void refresh() {
     _state.refresh();
-    _content.refresh();
   }
 
   @override
@@ -252,10 +233,7 @@ final class ConversationSessionImpl implements ConversationSession {
 
   Future<CloseReport> retire({ClientCloseBudget? budget}) {
     setVisible(false);
-    return Future.wait([
-      _state.joinRetired(budget: budget),
-      _content.joinRetired(budget: budget),
-    ]).then(
+    return Future.wait([_state.joinRetired(budget: budget)]).then(
       (reports) => CloseReport(
         unresolved: [for (final report in reports) ...report.unresolved],
       ),
@@ -279,37 +257,22 @@ final class ConversationSessionImpl implements ConversationSession {
     final directoryClosing = budget == null
         ? _joinDirectoryRelease()
         : _scope.close(budget: budget);
-    // Seal both owners synchronously before joining either: a blocked state
-    // join must not leave content admitting or ACKing until the budget expires.
-    // Either side failing never skips the other side's close.
     final stateClosing = _state.close(budget: budget);
-    final contentClosing = _content.close(budget: budget);
     Object? closeError;
     StackTrace? closeStack;
     CloseReport? stateFeed;
-    CloseReport? content;
     try {
       stateFeed = await stateClosing;
     } catch (error, stack) {
       closeError = error;
       closeStack = stack;
     }
-    try {
-      content = await contentClosing;
-    } catch (error, stack) {
-      closeError ??= error;
-      closeStack ??= stack;
-    }
     final directory = await directoryClosing;
     if (closeError != null) {
       Error.throwWithStackTrace(closeError, closeStack!);
     }
     return CloseReport(
-      unresolved: [
-        ...?stateFeed?.unresolved,
-        ...?content?.unresolved,
-        ...directory.unresolved,
-      ],
+      unresolved: [...?stateFeed?.unresolved, ...directory.unresolved],
     );
   }
 
@@ -317,7 +280,6 @@ final class ConversationSessionImpl implements ConversationSession {
       Future.wait([
         _scope.retryCleanup(budget: budget),
         _state.retryCleanup(budget: budget),
-        _content.retryCleanup(budget: budget),
       ]).then(
         (reports) => CloseReport(
           unresolved: [for (final report in reports) ...report.unresolved],

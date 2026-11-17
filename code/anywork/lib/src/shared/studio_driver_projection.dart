@@ -513,16 +513,6 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
   );
 }
 
-Map<String, Object?> _timelineEnvelopeFacts(CompletedEntry entry) => {
-  'recordId': entry.recordId,
-  'completionSeq': entry.completionSeq,
-  'source': _sourceFacts(entry.atom.source),
-  'outcome': switch (entry.atom.lifecycle) {
-    TerminalChatAtom(:final outcome) => outcome.name,
-    _ => null,
-  },
-};
-
 TimelineItemFacts _atomFacts(ChatAtom atom) {
   if (atom.payload != null) {
     return _timelineItemFacts(ChatItemPresentation.decode(atom));
@@ -603,12 +593,9 @@ TimelineScrollDiagnostic? _timelineScrollFacts(
   );
 }
 
-TimelineItemFacts _timelineItemFacts(
-  ChatItemPresentation item, {
-  CompletedEntry? timeline,
-}) {
+TimelineItemFacts _timelineItemFacts(ChatItemPresentation item) {
   try {
-    return _loadedItemFacts(item, timeline: timeline);
+    return _loadedItemFacts(item);
   } on FormatException catch (error) {
     // Only the current in-memory presentation is inspected here; no I/O error
     // can be relabelled by this per-item diagnostic boundary.
@@ -623,15 +610,11 @@ TimelineItemFacts _timelineItemFacts(
       channel: null,
       presentationContract: item.presentationContract,
       diagnostic: error.toString(),
-      timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
     );
   }
 }
 
-TimelineItemFacts _loadedItemFacts(
-  ChatItemPresentation item, {
-  CompletedEntry? timeline,
-}) {
+TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
   final data = item.data;
   final outcome = _diagnosticObject(data['outcome']);
   final state = _diagnosticObject(data['state']);

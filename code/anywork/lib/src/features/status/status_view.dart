@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
@@ -38,8 +39,16 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   final _errors = <String, String>{};
   void Function()? _closeRetention;
   bool _refreshScheduled = false;
-  CurrentStateField? _skillsField;
+  CollectionCurrentStateField? _skillsField;
   List<String> _deferredSkills = const [];
+  String? _skillsContinuation;
+  int _skillsTotal = 0;
+  bool _skillsLoading = false;
+  final _stateCollections = <String, List<String>>{};
+  final _stateCollectionFields = <String, CollectionCurrentStateField>{};
+  final _stateCollectionContinuations = <String, String?>{};
+  final _stateCollectionTotals = <String, int>{};
+  final _stateCollectionLoading = <String>{};
   final _displayObservations = <void Function()>{};
 
   @override
@@ -53,48 +62,91 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
     // rebuild while an operation is pending and the menu has no listeners.
     ref.listen(threadSessionStoreProvider(threadId), (previous, next) {
       if (!_sameStrings(
-        previous?.runtime?.activeSkills ?? const [],
-        next.runtime?.activeSkills ?? const [],
-      ) ||
+            previous?.runtime?.activeSkills ?? const [],
+            next.runtime?.activeSkills ?? const [],
+          ) ||
           _deferredField(previous?.runtime, 'activeSkills') !=
               _deferredField(next.runtime, 'activeSkills')) {
         unawaited(_loadDeferredSkills());
         _scheduleRefresh();
       }
+      for (final name in ['activeMcpServers', 'activeLspServers']) {
+        if (_deferredField(previous?.runtime, name) !=
+            _deferredField(next.runtime, name)) {
+          unawaited(_loadStateCollection(name));
+        }
+      }
     });
     ref.listen(threadMcpProvider(threadId), (_, _) => _scheduleRefresh());
     unawaited(_loadDeferredSkills());
+    unawaited(_loadStateCollection('activeMcpServers'));
+    unawaited(_loadStateCollection('activeLspServers'));
     return _project();
   }
 
-  CurrentStateField? _deferredField(
-    ThreadRuntimeView? runtime,
-    String name,
-  ) => runtime?.deferred.where((field) => field.field == name).firstOrNull;
+  CurrentStateField? _deferredField(ThreadRuntimeView? runtime, String name) =>
+      runtime?.deferred.where((field) => field.field == name).firstOrNull;
 
-  Future<void> _loadDeferredSkills() async {
+  Future<void> _loadDeferredSkills({bool nextPage = false}) async {
     if (!ref.mounted) return;
     final runtime = ref.read(threadSessionStoreProvider(threadId)).runtime;
-    final field = _deferredField(runtime, 'activeSkills');
-    if (field == _skillsField) return;
+    final field =
+        _deferredField(runtime, 'activeSkills') as CollectionCurrentStateField?;
+    if (field == _skillsField && !nextPage) return;
+    if (_skillsLoading) return;
     if (field == null) {
       _skillsField = null;
       _deferredSkills = const [];
+      _skillsContinuation = null;
+      _skillsTotal = 0;
       _scheduleRefresh();
       return;
     }
+    final changed = field != _skillsField;
     final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
     if (lease == null || lease.isRetired) return;
     _skillsField = field;
+    if (changed) {
+      _deferredSkills = const [];
+      _skillsContinuation = null;
+      _skillsTotal = field.count;
+    }
+    _skillsLoading = true;
+    _scheduleRefresh();
     final scope = lease.openCurrentScope(generation: lease.generation);
     var loaded = false;
     try {
-      final value = await scope.readStateField(field);
+      final page = await scope.pageStateCollection(
+        field,
+        continuation: nextPage ? _skillsContinuation : null,
+        demand: const ReadDemand(maxItems: 20, maxBytes: 64 * 1024),
+      );
       if (!ref.mounted || _skillsField != field || lease.isRetired) return;
-      if (value is! List || value.any((item) => item is! String)) {
-        throw const FormatException('activeSkills must be a string list');
+      if (page.revision != field.reference.revision) {
+        throw const ConversationStateFieldDiscontinuity();
       }
-      _deferredSkills = List.unmodifiable(value.cast<String>());
+      final skills = <String>[];
+      for (final entry in page.entries) {
+        final payload = switch (entry.payload) {
+          InlineCurrentPayload() => entry.payload,
+          DeferredCurrentPayload(:final reference, :final byteLength) =>
+            InlineCurrentPayload(
+              bytes: await _readStatePayload(scope, reference, byteLength),
+            ),
+        };
+        final value = jsonDecode(utf8.decode(payload.bytes));
+        if (value is! String) {
+          throw const FormatException('activeSkills entry must be a string');
+        }
+        skills.add(value);
+      }
+      if (!ref.mounted || _skillsField != field || lease.isRetired) return;
+      final combined = nextPage
+          ? <String>[..._deferredSkills, ...skills]
+          : skills;
+      _deferredSkills = List.unmodifiable(combined);
+      _skillsContinuation = page.continuation;
+      _skillsTotal = field.count;
       _errors.remove('state:activeSkills');
       loaded = true;
     } catch (error) {
@@ -103,11 +155,119 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
       }
     } finally {
       if (!loaded) _skillsField = null;
+      _skillsLoading = false;
       scope.retire();
       unawaited(scope.close());
       if (ref.mounted) _scheduleRefresh();
     }
   }
+
+  Future<List<int>> _readStatePayload(
+    CurrentQueryScope scope,
+    CurrentContentRef reference,
+    int byteLength,
+  ) async {
+    final bytes = <int>[];
+    while (bytes.length < byteLength) {
+      final remaining = byteLength - bytes.length;
+      final window = await scope.readBody(
+        reference: reference,
+        range: ContentRange(
+          offset: bytes.length,
+          maxBytes: remaining < 64 * 1024 ? remaining : 64 * 1024,
+        ),
+      );
+      if (window.offset != bytes.length ||
+          window.generation != reference.generation ||
+          window.availableThrough != byteLength ||
+          window.bytes.isEmpty) {
+        throw const ConversationStateFieldDiscontinuity();
+      }
+      bytes.addAll(window.bytes);
+    }
+    return bytes;
+  }
+
+  Future<void> _loadStateCollection(
+    String name, {
+    bool nextPage = false,
+  }) async {
+    if (!ref.mounted) return;
+    final runtime = ref.read(threadSessionStoreProvider(threadId)).runtime;
+    final field = runtime?.deferredField(name);
+    if (field is! CollectionCurrentStateField) return;
+    if (_stateCollectionFields[name] == field && !nextPage) return;
+    if (_stateCollectionLoading.contains(name)) return;
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    if (lease == null || lease.isRetired) return;
+    final changed = _stateCollectionFields[name] != field;
+    _stateCollectionFields[name] = field;
+    if (changed) {
+      _stateCollections[name] = const [];
+      _stateCollectionContinuations[name] = null;
+      _stateCollectionTotals[name] = field.count;
+    }
+    _stateCollectionLoading.add(name);
+    _scheduleRefresh();
+    final scope = lease.openCurrentScope(generation: lease.generation);
+    try {
+      final page = await scope.pageStateCollection(
+        field,
+        continuation: nextPage ? _stateCollectionContinuations[name] : null,
+        demand: const ReadDemand(maxItems: 20, maxBytes: 64 * 1024),
+      );
+      if (!ref.mounted ||
+          lease.isRetired ||
+          _stateCollectionFields[name] != field) {
+        return;
+      }
+      final values = switch (page.entries) {
+        final entries => await Future.wait([
+          for (final entry in entries) _stateCollectionValue(scope, entry),
+        ]),
+      };
+      _stateCollections[name] = List.unmodifiable(
+        nextPage ? [...?_stateCollections[name], ...values] : values,
+      );
+      _stateCollectionContinuations[name] = page.continuation;
+      _stateCollectionTotals[name] = field.count;
+      _errors.remove('state:$name');
+    } catch (error) {
+      if (ref.mounted && _stateCollectionFields[name] == field) {
+        _errors['state:$name'] = error.toString();
+      }
+    } finally {
+      _stateCollectionLoading.remove(name);
+      scope.retire();
+      unawaited(scope.close());
+      if (ref.mounted) _scheduleRefresh();
+    }
+  }
+
+  Future<String> _stateCollectionValue(
+    CurrentQueryScope scope,
+    CurrentCollectionEntry entry,
+  ) async {
+    final payload = switch (entry.payload) {
+      InlineCurrentPayload() => entry.payload,
+      DeferredCurrentPayload(:final reference, :final byteLength) =>
+        InlineCurrentPayload(
+          bytes: await _readStatePayload(scope, reference, byteLength),
+        ),
+    };
+    final value = jsonDecode(utf8.decode(payload.bytes));
+    if (value is! String) {
+      throw const FormatException('State collection entry must be a string');
+    }
+    return value;
+  }
+
+  Future<void> loadNextMcpServers() =>
+      _loadStateCollection('activeMcpServers', nextPage: true);
+  Future<void> loadNextLspServers() =>
+      _loadStateCollection('activeLspServers', nextPage: true);
+
+  Future<void> loadNextSkills() => _loadDeferredSkills(nextPage: true);
 
   /// Visibility borrows this VM's observation without extending the business
   /// lease. Source updates do not rebuild the owner of admitted commands.
@@ -175,8 +335,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   StartedItemsState _project() {
     final runtime = ref.read(threadSessionStoreProvider(threadId)).runtime;
     final skills = runtime?.activeSkills;
-    final skillsDeferred =
-        _deferredField(runtime, 'activeSkills') != null;
+    final skillsDeferred = _deferredField(runtime, 'activeSkills') != null;
     final mcp = ref.read(threadMcpProvider(threadId));
     final lspState = ref
         .read(anyworkClientProvider)
@@ -194,32 +353,69 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
         if (key.startsWith('lsp:$bindingId:'))
           'lsp:${key.substring('lsp:$bindingId:'.length)}',
     };
+    final mcpServices = <StartedService>[
+      for (final server in mcp.value?.servers ?? const <ThreadMcpServerState>[])
+        StartedService(
+          id: server.id,
+          name: server.id,
+          status: switch (server.lifecycle) {
+            ThreadMcpLifecycleKind.available => StartedServiceStatus.ready,
+            ThreadMcpLifecycleKind.connecting =>
+              StartedServiceStatus.connecting,
+            ThreadMcpLifecycleKind.shuttingDown =>
+              StartedServiceStatus.stopping,
+            ThreadMcpLifecycleKind.unavailable => StartedServiceStatus.failed,
+            ThreadMcpLifecycleKind.unsupported =>
+              StartedServiceStatus.unsupported,
+          },
+          diagnostic: server.message,
+        ),
+    ];
+    final mcpNames = _stateCollections['activeMcpServers'] ?? const <String>[];
+    final knownMcp = {for (final service in mcpServices) service.id};
+    for (final name in mcpNames) {
+      if (knownMcp.add(name)) {
+        mcpServices.add(
+          StartedService(
+            id: name,
+            name: name,
+            status: StartedServiceStatus.ready,
+          ),
+        );
+      }
+    }
+    final lspServices = <StartedService>[
+      for (final server in lspSnapshot?.servers ?? const <LspServerStateView>[])
+        _lspService(server),
+    ];
+    final lspNames = _stateCollections['activeLspServers'] ?? const <String>[];
+    final knownLsp = {for (final service in lspServices) service.id};
+    for (final name in lspNames) {
+      if (knownLsp.add(name)) {
+        lspServices.add(
+          StartedService(
+            id: name,
+            name: name,
+            status: StartedServiceStatus.ready,
+          ),
+        );
+      }
+    }
     return StartedItemsState(
       skills: skillsDeferred ? _deferredSkills : skills ?? const [],
-      mcp: [
-        for (final server
-            in mcp.value?.servers ?? const <ThreadMcpServerState>[])
-          StartedService(
-            id: server.id,
-            name: server.id,
-            status: switch (server.lifecycle) {
-              ThreadMcpLifecycleKind.available => StartedServiceStatus.ready,
-              ThreadMcpLifecycleKind.connecting =>
-                StartedServiceStatus.connecting,
-              ThreadMcpLifecycleKind.shuttingDown =>
-                StartedServiceStatus.stopping,
-              ThreadMcpLifecycleKind.unavailable => StartedServiceStatus.failed,
-              ThreadMcpLifecycleKind.unsupported =>
-                StartedServiceStatus.unsupported,
-            },
-            diagnostic: server.message,
-          ),
-      ],
-      lsp: [
-        for (final server
-            in lspSnapshot?.servers ?? const <LspServerStateView>[])
-          _lspService(server),
-      ],
+      skillsTotal: skillsDeferred ? _skillsTotal : skills?.length ?? 0,
+      skillsHasMore: skillsDeferred && _skillsContinuation != null,
+      skillsLoading: _skillsLoading,
+      mcpStateTotal: _stateCollectionTotals['activeMcpServers'] ?? 0,
+      mcpStateHasMore:
+          _stateCollectionContinuations['activeMcpServers'] != null,
+      mcpStateLoading: _stateCollectionLoading.contains('activeMcpServers'),
+      lspStateTotal: _stateCollectionTotals['activeLspServers'] ?? 0,
+      lspStateHasMore:
+          _stateCollectionContinuations['activeLspServers'] != null,
+      lspStateLoading: _stateCollectionLoading.contains('activeLspServers'),
+      mcp: mcpServices,
+      lsp: lspServices,
       mcpSync: mcp.sync,
       lspSync: lspState?.sync ?? const DomainSyncStatus(),
       pending: Set.unmodifiable({

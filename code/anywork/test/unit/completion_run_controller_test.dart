@@ -64,16 +64,16 @@ void main() {
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('old-a', 1), displayWork('old-b', 2)],
-          placement: ChatPlacement.prepend,
+          placement: TimelineApplyPlacement.prepend,
           through: 3,
         ),
-        placement: ChatPlacement.prepend,
+        placement: TimelineApplyPlacement.prepend,
       );
       final oldTail = stock.messages.last;
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('next-a', 4), displayWork('next-b', 5)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
       );
@@ -106,7 +106,7 @@ void main() {
       await controller.applyFixtureUpdate(
         displayBatch(
           [],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 1,
           through: 1,
           live: CurrentRunSnapshot(
@@ -148,12 +148,12 @@ void main() {
       for (final batch in [
         displayBatch(
           [displayWork('existing', 4)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
         displayBatch(
           [displayWork('existing', 2)],
-          placement: ChatPlacement.prepend,
+          placement: TimelineApplyPlacement.prepend,
           through: 3,
         ),
       ]) {
@@ -165,7 +165,7 @@ void main() {
       await adapter.applyFixtureUpdate(
         displayBatch(
           [displayWork('valid', 4)],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: 3,
         ),
       );
@@ -176,7 +176,7 @@ void main() {
     },
   );
 
-  for (final placement in ChatPlacement.values) {
+  for (final placement in TimelineApplyPlacement.values) {
     test(
       'failed component Future for ${placement.name} preserves position, Main and shared intent until a correct retry',
       () async {
@@ -209,13 +209,13 @@ void main() {
         final gate = Completer<void>();
         component.failure = gate.future;
         final batch = switch (placement) {
-          ChatPlacement.set => displayBatch([displayWork('next', 5)]),
-          ChatPlacement.prepend => displayBatch(
+          TimelineApplyPlacement.set => displayBatch([displayWork('next', 5)]),
+          TimelineApplyPlacement.prepend => displayBatch(
             [displayWork('next', 2)],
             placement: placement,
             through: 3,
           ),
-          ChatPlacement.append => displayBatch(
+          TimelineApplyPlacement.append => displayBatch(
             [displayWork('next', 4)],
             placement: placement,
             from: 3,
@@ -243,7 +243,7 @@ void main() {
         await projection.applyFixtureUpdate(
           displayBatch(
             [displayWork('next', 4)],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: 3,
           ),
         );

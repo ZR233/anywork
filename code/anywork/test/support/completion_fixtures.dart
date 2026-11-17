@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import 'dart:convert';
 
 import 'package:anywork_client/conversation.dart';
@@ -60,7 +63,7 @@ CompletedEntry completionEntry(
 
 ChatBatch completedBatch(
   List<CompletedEntry> entries, {
-  ChatPlacement placement = ChatPlacement.set,
+  TimelineApplyPlacement placement = TimelineApplyPlacement.set,
   int? from,
   int? through,
   String? before,

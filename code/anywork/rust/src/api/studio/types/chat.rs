@@ -1,96 +1,9 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::BridgeError;
-
-#[derive(Debug, Clone)]
-pub struct BridgeConversationFrame {
-    pub thread_id: String,
-    pub subscription_id: String,
-    pub delivery_sequence: u64,
-    pub event: BridgeConversationEvent,
-}
-
-#[derive(Debug, Clone)]
-pub enum BridgeConversationEvent {
-    Chat { batch: Box<BridgeChatBatch> },
-    Failure { error: BridgeError },
-    Closed,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BridgeReadDemand {
     pub max_items: u32,
     pub max_bytes: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeChatClassFilter {
-    Class { value: String },
-    All,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeChatScope {
-    pub query_class: BridgeChatClassFilter,
-    pub parent_id: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCompletedEntry {
-    pub record_id: String,
-    pub completion_seq: u64,
-    pub atom: BridgeChatAtom,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeChatPlacement {
-    Set,
-    Prepend,
-    Append,
-}
-
-#[derive(Debug, Clone)]
-pub enum BridgePayloadData {
-    Inline {
-        bytes: Vec<u8>,
-    },
-    Deferred {
-        reference: BridgeContentRef,
-        byte_length: u64,
-    },
-}
-
-/// A mechanical FRB boundary for the canonical pl-protocol ChatBatch.
-#[derive(Debug, Clone)]
-pub struct BridgeChatBatch {
-    pub placement: BridgeChatPlacement,
-    pub entries: Vec<BridgeCompletedEntry>,
-    pub before: Option<String>,
-    pub from_seq: Option<u64>,
-    pub through_seq: u64,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeChatAtom {
-    pub id: String,
-    pub completion_item_id: Option<String>,
-    pub completion_seq: Option<u64>,
-    pub source: BridgeChatSourceId,
-    pub source_state: Option<BridgeChatSourceState>,
-    pub source_order: Option<u64>,
-    pub kind: BridgeChatAtomKind,
-    pub delivery: BridgeChatDeliveryKind,
-    pub lifecycle: BridgeChatAtomLifecycle,
-    pub turn_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub tool: Option<BridgeChatToolIdentity>,
-    pub wait: Option<super::BridgeThreadWaitPresentation>,
-    pub text_channel: Option<BridgeThreadTextChannel>,
-    pub content_present: Option<bool>,
-    pub started_at: Option<i64>,
-    pub finished_at: Option<i64>,
-    pub contents: Vec<BridgeChatAtomContent>,
-    pub payload: Option<BridgePayloadData>,
 }
 
 #[derive(Debug, Clone)]
@@ -190,12 +103,6 @@ pub enum BridgeChatContentRole {
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeChatAtomContent {
-    pub role: BridgeChatContentRole,
-    pub reference: BridgeContentRef,
-}
-
-#[derive(Debug, Clone)]
 pub enum BridgeChatSourceLifecycle {
     Unknown,
     Active,
@@ -208,39 +115,6 @@ pub struct BridgeChatSourceState {
     pub lifecycle: BridgeChatSourceLifecycle,
     pub started: Option<BridgeChatFactPosition>,
     pub ended: Option<BridgeChatFactPosition>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeContentRef {
-    pub database_id: String,
-    pub target: BridgeContentTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeContentTarget {
-    ItemPayload {
-        item_id: String,
-    },
-    Body {
-        owner: BridgeContentOwner,
-        key: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BridgeContentOwner {
-    DisplayObservation {
-        block_id: String,
-        member_key: String,
-    },
-    Item {
-        item_id: String,
-    },
-    Current {
-        domain: String,
-        id: String,
-        revision: u64,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,17 +145,4 @@ pub struct BridgeContentWindow {
     pub generation: String,
     pub available_through: u64,
     pub sealed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeContentManifestEntry {
-    pub key: String,
-    pub payload: Vec<u8>,
-    pub reference: BridgeContentRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeContentManifestPage {
-    pub entries: Vec<BridgeContentManifestEntry>,
-    pub continuation: Option<String>,
 }

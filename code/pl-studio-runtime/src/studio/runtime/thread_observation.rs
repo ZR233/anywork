@@ -7,8 +7,6 @@
 //! projection, so an ordinary commit neither parks this observer behind the owner's command queue
 //! nor waits for the disk. Durable history is read back once when the projection is installed on a
 //! Thread whose work started earlier, and by the explicit cold recovery of an unloaded child.
-#[cfg(test)]
-use crate::{ExecutionItem, ExecutionShape};
 mod billing;
 mod directory;
 pub(in crate::studio) mod publication;
@@ -35,7 +33,6 @@ use crate::studio::storage::thread_writer::{
     HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
 };
 // Read-only source types used with this owner's original report readability watch.
-pub(crate) use crate::history::HistoryStore;
 pub(crate) use crate::studio::storage::thread_writer::HistoryStatus;
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
@@ -1130,7 +1127,7 @@ impl ThreadObservations {
             }
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            let Some(checkpoint) =
+            let Some(current) =
                 crate::studio::thread_factory::recovery::load_current_for_recovery(
                     &services.store,
                     &child,
@@ -1141,12 +1138,12 @@ impl ThreadObservations {
             };
             // A cold child's interruption is a fact the list must publish: a restart otherwise loses
             // "stopped, waiting for the main agent" for every member that is not loaded again. This
-            // reads only the saved checkpoint — no activation, no workspace, no model request.
+            // reads only the complete saved Current — no activation, no workspace, no model request.
             directory::publish_cold_scheduling_state(
                 services,
                 &child,
                 &member.agent,
-                &checkpoint.state.to_paused_snapshot(),
+                &current.state.to_paused_snapshot(),
             )
             .await?;
             services
@@ -1323,7 +1320,7 @@ pub(in crate::studio) struct PendingHandoff {
 }
 
 impl PendingHandoff {
-    pub(in crate::studio) fn publishes_current(&self) -> bool {
+    pub(in crate::studio) fn is_live(&self) -> bool {
         self.mode == HandoffMode::Live
     }
 
@@ -1474,7 +1471,7 @@ impl LiveOwner {
         let history = projector.store.history(id).await?;
         let history_reader = history.reader();
         let database_id = history.database_id().to_owned();
-        let usage = live_usage(projector, id, snapshot);
+        let usage = snapshot.usage_summary.clone();
         // Seed the bounded active slice once. The channel owns allocation continuity; only a
         // retired identity referenced by a late reliable fact needs an exact durable lookup.
         let effects = handle.effects().await?;
@@ -1795,36 +1792,13 @@ impl LiveOwner {
         self.prepare_terminal_delivery(services)?;
         self.prepare_handoff(services, snapshot)?;
         if let Some(binding) = &self.binding {
-            let prepared =
-                binding
-                    .conversation
-                    .admit_prepared(binding, &self.channel, &mut self.retained)?;
-            if self
-                .retained
-                .pending
-                .as_ref()
-                .is_some_and(PendingHandoff::publishes_current)
-            {
-                self.feed.publish_business_refs(
-                    prepared.sequence,
-                    self.feed
-                        .publication()
-                        .current()
-                        .map(|source| source.current.business_refs())
-                        .unwrap_or_else(pl_protocol::ThreadBusinessRefs::empty),
-                );
-            }
+            binding.conversation.admit_prepared(binding, &self.channel, &mut self.retained)?;
         }
         #[cfg(test)]
         if self.binding.is_none() {
             let retained = &mut *self.retained;
             if let Some(pending) = retained.pending.as_mut() {
                 pending.admitted = true;
-                if let Some(current) = Arc::make_mut(&mut pending.prepared).current_state.take()
-                    && pending.publishes_current()
-                {
-                    self.feed.publish_conversation(current)?;
-                }
             }
         }
         self.publish_retained()?;
@@ -2275,7 +2249,6 @@ impl LiveOwner {
         if let Some(current) = self.retained.projection.current_state() {
             self.feed.publish_conversation(current)?;
         }
-        self.publish_retained()?;
         Ok(())
     }
 
@@ -2291,7 +2264,7 @@ impl LiveOwner {
             &self.thread.id,
             snapshot,
             at,
-            &self.retained.usage,
+            &snapshot.usage_summary,
         )?;
         let mut model_route = crate::studio::model_route::projected(snapshot)?;
         let same_identity = match (self.model_route_published.as_ref(), model_route.as_ref()) {
@@ -2396,148 +2369,6 @@ impl Drop for LiveOwner {
     fn drop(&mut self) {
         if let Some(binding) = &self.binding {
             binding.conversation.detach_execution(binding);
-        }
-    }
-}
-
-/// The one cold read of a live projection: the durable facts of the work it is installed onto.
-///
-/// The current owner snapshot is deliberately compact — it no longer holds the process bodies a
-/// running Turn committed earlier — so a projection installed mid-Turn would be unable to resolve an
-/// identity a later effect still references. Reading the running and newest Turn's committed items
-/// once, together with the hidden dispositions of the inputs still in play, closes that gap without
-/// putting a history read on the commit or preview path.
-#[cfg(test)]
-async fn cold_seed(
-    store: &StudioStore,
-    thread: &pl_protocol::Thread,
-    snapshot: &ThreadSnapshot,
-    channel: &HistoryChannel,
-    retained: &[Arc<pl_core::thread::ThreadEffectBatch>],
-) -> Result<(
-    Vec<crate::ExecutionItem>,
-    std::collections::BTreeSet<String>,
-)> {
-    use std::collections::BTreeSet;
-
-    // Capture before reading history: core may already have pruned the terminal Turn from
-    // its current snapshot, but the reliable queue still owns the recovery commit's references.
-    let pending = channel.unprojected_writes();
-    let mut turn_ids = BTreeSet::new();
-    let mut input_ids = BTreeSet::new();
-    let mut item_ids = BTreeSet::new();
-    for state in std::iter::once(snapshot).chain(pending.iter().map(|write| &write.state)) {
-        for turn in state.turns.iter() {
-            turn_ids.insert(turn.turn_id.clone());
-            input_ids.extend(turn.input_id.iter().cloned());
-        }
-        input_ids.extend(state.inputs.iter().map(|record| record.input.id.clone()));
-        item_ids.extend(
-            state
-                .tasks
-                .values()
-                .map(|task| crate::studio::thread_projection::order::tool_id(&task.call_id)),
-        );
-        item_ids.extend(
-            state
-                .permissions
-                .values()
-                .map(|record| crate::studio::thread_projection::order::tool_id(&record.call_id)),
-        );
-        item_ids.extend(
-            state.inbox.iter().map(|record| {
-                crate::studio::thread_projection::order::message_id(&record.message.id)
-            }),
-        );
-    }
-    for write in &pending {
-        // Reuse the projection's identity enumeration, including tool results whose attempt
-        // already left the checkpoint. Do not maintain a second interpretation of effect kinds.
-        let referenced = crate::studio::thread_projection::project_effect_items(
-            thread,
-            &write.state,
-            &write.effect,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &BTreeSet::new(),
-        )?;
-        for item in referenced.items {
-            if !item.turn_id.is_empty() {
-                turn_ids.insert(item.turn_id.clone());
-            }
-            item_ids.insert(item.id);
-        }
-        input_ids.extend(referenced.unresolved_inputs);
-        item_ids.extend(referenced.unresolved_calls);
-    }
-    // Storage admission may lag behind core publication. These immutable effects remain in core
-    // until durable acknowledgement, including recovery facts absent from both the pruned snapshot
-    // and the admission queue. Enumerate their references before the first history read.
-    for effect in retained {
-        if let Some(turn) = &effect.turn {
-            turn_ids.insert(turn.turn_id.clone());
-            input_ids.extend(turn.input_id.iter().cloned());
-        }
-        if let Some(attempt) = &effect.attempt {
-            turn_ids.insert(attempt.turn_id.clone());
-        }
-        for change in effect.inputs.iter() {
-            use pl_core::thread::input::InputChange;
-            input_ids.insert(match change {
-                InputChange::Accepted(record) => record.input.id.clone(),
-                InputChange::Transition { id, .. } => id.clone(),
-            });
-        }
-        for task in effect.tasks.iter() {
-            turn_ids.insert(task.turn_id.clone());
-        }
-        item_ids.extend(
-            effect
-                .tasks
-                .iter()
-                .map(|record| &record.call_id)
-                .chain(effect.permissions.iter().map(|record| &record.call_id))
-                .chain(effect.deliveries.iter().map(|record| &record.call_id))
-                .chain(effect.delivery_repairs.iter().map(|record| &record.call_id))
-                .map(|id| crate::studio::thread_projection::order::tool_id(id)),
-        );
-        item_ids.extend(
-            effect.inbox.iter().map(|record| {
-                crate::studio::thread_projection::order::message_id(&record.message.id)
-            }),
-        );
-    }
-    item_ids.extend(input_ids.iter().cloned());
-    if turn_ids.is_empty() && item_ids.is_empty() {
-        return Ok((Vec::new(), BTreeSet::new()));
-    }
-    let history = store.history(&thread.id).await?;
-    history.prepare_activation().await?;
-    item_ids.extend(
-        turn_ids
-            .iter()
-            .map(|id| crate::studio::thread_projection::order::turn_id(id)),
-    );
-    let items = history.execution_seeds(item_ids).await?;
-    let hidden = history.hidden_input_identities(input_ids).await?;
-    Ok((items.into_values().collect(), hidden))
-}
-
-/// Cumulative usage the live projection folds further effects onto.
-///
-/// The history writer's reported summary is the value a hot increment, a reconnect and a cold
-/// restore agree on; a checkpoint that was loaded before any report seeds the same value.
-fn live_usage(
-    projector: &ObservationServices,
-    id: &str,
-    snapshot: &ThreadSnapshot,
-) -> UsageSummary {
-    let coordinator = projector.store.thread_persistence();
-    match coordinator.usage(id) {
-        Some(usage) => usage,
-        None => {
-            coordinator.seed_usage(id, snapshot.usage_summary.clone());
-            snapshot.usage_summary.clone()
         }
     }
 }
@@ -2649,11 +2480,29 @@ async fn run(
             .cloned();
         // The projection stays isolated behind `catch_unwind`, so a panicking projection is
         // still reported as an error instead of taking down the observation worker.
-        let result =
+        // A closed physical owner hands its final Current to the independent JSON writer before
+        // archive reconciliation. A failed History write cannot postpone that final save/join.
+        let mut current_close = if current.lifecycle == ThreadLifecycle::Closed {
+            if let Some(live) = worker.live.as_ref() {
+                Some(live.retained.store.close_current(&worker.thread).await)
+            } else { None }
+        } else { None };
+        let mut result =
             std::panic::AssertUnwindSafe(worker.project(&current, products, detail.as_ref()))
                 .catch_unwind()
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("Thread product projection panicked")));
+        if current.lifecycle == ThreadLifecycle::Closed && current_close.is_none()
+            && let Some(live) = worker.live.as_ref()
+        {
+            current_close = Some(live.retained.store.close_current(&worker.thread).await);
+        }
+        if let Some(Err(close)) = current_close {
+            result = Err(match result {
+                Ok(()) => close,
+                Err(archive) => archive.context(format!("independent Current close also failed: {close:#}")),
+            });
+        }
         match result {
             Ok(()) => {
                 worker.continuous = true;
@@ -2747,6 +2596,16 @@ async fn run(
                 }
             }
             Err(error) => {
+                // Archive faults do not revoke the original Current publisher. Its latest RAM
+                // preview and State keep following this physical owner without a history read.
+                if let Some(live) = worker.live.as_mut() {
+                    if let Err(current_error) = live.stream(&current).await {
+                        worker.state.progress.send_modify(|progress| {
+                            progress.error = Some(Arc::new(current_error));
+                        });
+                    }
+                    live.observe_storage(&current, detail.as_ref());
+                }
                 worker.continuous = false;
                 worker.live_floor = worker.live_floor.max(current.commit_sequence);
                 worker
@@ -3132,6 +2991,8 @@ impl ProjectionWorker {
         let live = live
             .as_mut()
             .expect("live projection owner was just installed");
+        live.stream(snapshot).await?;
+        live.observe_storage(snapshot, persistence);
         live.first_send &= *continuous;
         // The projection owner is the single producer of realtime content: it folds every admitted
         // fact exactly once, publishes it into the shared session and broadcasts the typed change,
@@ -3160,7 +3021,7 @@ impl ProjectionWorker {
                     .next()
                 {
                     let sequence = export.effect.sequence;
-                    binding.storage.admit_export(id, export.as_ref().clone())?;
+                    binding.storage.admit_export(id, export.clone())?;
                     // The reliable native queue now owns the original export even if its disk
                     // writer fails. Current saving has no dependency on this acknowledgement.
                     thread.release_history_through(sequence)?;
@@ -3245,6 +3106,7 @@ impl ProjectionWorker {
 #[cfg(test)]
 mod live_feed_tests {
     use super::*;
+    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn state_lag_resets_before_replay_and_closure_wins_over_buffered_frames() {

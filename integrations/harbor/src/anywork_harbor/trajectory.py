@@ -88,21 +88,14 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
         for event in by_thread[thread]:
             data = event["data"]
             payload = decode_json(artifacts.content(data["payload"]))
-            payloads[data["header"]["appendSeq"]] = payload
+            payloads[data["header"]["event"]["eventId"]] = payload
             if data["atom"]["kind"] == "inference":
                 inference = payload.get("data", {}).get("inferenceId")
-                effect = payload.get("sourceEffectSeq")
-                if inference in bills[thread] and effect is not None:
-                    inference_effects.setdefault(effect, []).append(inference)
+                if inference in bills[thread]:
+                    inference_effects.setdefault(inference, []).append(inference)
 
         def order(event):
-            atom = event["data"]["atom"]
-            position = atom["lifecycle"].get("started") or atom["lifecycle"].get("ended")
-            return (
-                (position["effectSeq"], position["suborder"], event["data"]["header"]["appendSeq"])
-                if position
-                else (float("inf"), event["data"]["header"]["appendSeq"], 0)
-            )
+            return event["data"]["header"]["event"]["seq"]
 
         def new_step(inference=None, steps=steps, inference_steps=inference_steps):
             step = {
@@ -121,7 +114,7 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
             data = event["data"]
             atom = data["atom"]
             contents = defaultdict(list)
-            for content in data["contents"]:
+            for content in artifacts.manifest_contents(data["contentsManifest"]):
                 contents[content["role"]].append(artifacts.content(content).decode("utf-8"))
             body = "".join(contents["body"])
             source = atom["source"]
@@ -139,12 +132,16 @@ def _convert_run_to_atif(artifacts: RunArtifacts) -> Trajectory:
                 )
                 continue
             inference = atom.get("attemptId")
-            payload = payloads[data["header"]["appendSeq"]]
+            payload = payloads[data["header"]["event"]["eventId"]]
             if atom["kind"] == "inference":
                 inference = payload.get("data", {}).get("inferenceId")
             if atom.get("tool") and inference is None:
-                started = atom["lifecycle"].get("started")
-                candidates = inference_effects.get(started["effectSeq"], []) if started else []
+                candidates = [
+                    value
+                    for values in inference_effects.values()
+                    for value in values
+                    if value and value == atom.get("attemptId")
+                ]
                 if len(candidates) == 1:
                     inference = candidates[0]
             if atom["kind"] == "turnReceipt":

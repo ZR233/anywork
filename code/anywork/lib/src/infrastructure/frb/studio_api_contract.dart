@@ -1751,27 +1751,6 @@ class FrbStudioTransport
   }
 
   @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) => _openConversationOwner(
-    threadId,
-    () => frb_chat.openConversationFeed(
-      threadId: threadId,
-      scope: frb_chat_types.BridgeChatScope(
-        queryClass: switch (scope.queryClass) {
-          ExactChatClass(:final value) =>
-            frb_chat_types.BridgeChatClassFilter.class_(value: value),
-          AllChatClasses() => const frb_chat_types.BridgeChatClassFilter.all(),
-        },
-        parentId: scope.parentId,
-      ),
-      demand: _readDemandToFrb(demand),
-    ),
-  );
-
-  @override
   Future<HistoryReader> openHistoryReader(
     String threadId, {
     required int historyProtocolVersion,
@@ -1827,29 +1806,6 @@ class FrbStudioTransport
       reader.threadId;
       reader.initialView;
       return reader;
-    });
-  }
-
-  Future<FrbConversationFeed> _openConversationOwner(
-    String threadId,
-    Future<frb_chat.BridgeConversationFeed> Function() open,
-  ) {
-    final entry = contentScope.open<_FrbRawConversationFeed>('conversation', (
-      operation,
-    ) async {
-      await _ensureReady();
-      final handle = await _bridgeCall(open);
-      return _FrbRawConversationFeed(operation.resourceId, handle);
-    });
-    return _publishRaw(entry, (raw) {
-      raw.requestCleanup = entry.requestClose;
-      final feed = FrbConversationFeed._(entry, raw);
-      _validateConversationIdentity(
-        threadId,
-        feed.threadId,
-        feed.subscriptionId,
-      );
-      return feed;
     });
   }
 
@@ -2623,19 +2579,5 @@ StudioShutdownReport _shutdownReportFromFrb(
       frb_shutdown.BridgePendingPersistence_Drained() =>
         const DrainedStudioPendingPersistence(),
     },
-  );
-}
-
-void _validateConversationIdentity(
-  String requested,
-  String actual,
-  String subscriptionId,
-) {
-  if (requested == actual && subscriptionId.isNotEmpty) return;
-  throw const StudioFailure(
-    code: StudioFailureCode.internal,
-    message: 'Conversation feed identity does not match its request',
-    retryable: false,
-    correlationId: 'client-conversation-identity',
   );
 }

@@ -43,7 +43,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-agent-tool` | 独立工具声明、拥有型且返回 Send future 的消费契约、唯一动态擦除句柄，以及可选的 typed 参数、schema 与原始错误保留适配；不持有注册表、调度、授权或资源退休状态机 |
 | `pl-agent-tool-macros` | 参数派生与 typed 工具转发薄宏；复用接口库的作者适配，不生成调度、授权、任务或关闭机制 |
 | `pl-lifecycle` | 弱作用域能力、父子资源归属、同步解绑、异步构造接管、关闭回执与失败原实例重试；不拥有业务数据或业务关闭顺序 |
-| `pl-core` | 上下文、模型与会话线程的通用契约，Anywork 工具上下文与结果特化、注册/冻结/授权/退休治理，内存线程所有者、当前状态检查点、不可变效果（effect），以及产品无关的 `Session` 原子完成集合、发布顺序、pending、统一分页与冻结详情读取 |
+| `pl-core` | 上下文、模型与会话线程的通用契约，Anywork 工具上下文与结果特化、注册/冻结/授权/退休治理，内存 Thread owner、完整 Current 与有界 effect window；产品 History、Work/Single 分组和 GUI 读取归 Studio |
 | `pl-model` | 账号配置、厂商协议与传输层、模型目录、配置值对象、路由解析、厂商图像 API、媒体编码、提示缓存、用量计量及核心模型会话适配 |
 | `pl-acp` | 外部智能体的 ACP 协商、认证与业务会话协议，类型化请求、有序更新及错误定义；不持有产品业务状态或操作系统进程 |
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
@@ -91,8 +91,8 @@ SSH 远程开发场景中，技能发现与目录选择的过滤、排序由宿�
 ## 2.3 存储与投影
 
 活动线程的内存状态是执行期的唯一事实源：
-- **`pl-core` 存储契约**：默认纯内存运行，导出检查点与不可变效果；`Session` 统一读取尚未提交的不可变完成项与持久历史，完成时分配发布序号，提交后回收 pending。它不拥有活动预览、产品封口语义或展示分组，也不依赖产品协议；通用 SQLite 会话存储及检查点/效果查询保持独立职责。
-- **Studio 产品层投影与持久化**：拥有业务完成语义、可变执行事实与实时活动，一次准备完成项后原子发布，并将同一批次交既有 writer 与 checkpoint 同事务保存。历史统一读模型与实时事件见 [26](./26-timeline-content.md)，不另建 GUI 历史缓存；冷读不激活模型、工具或执行所有者。
+- **`pl-core` 存储契约**：默认纯内存运行，提供完整 Current、可替换状态快照与有界 effect window。effect window 保存尚未交给产品 History 的 original observation cut；它不分配产品 event seq、不拥有 Work/Single 分组或 GUI 历史缓存。通用 SQLite/ColdStore 的独立 checkpoint/effect 契约仍可存在，但不作为 Native Current/History 的共同写链。
+- **Studio 产品层投影与持久化**：Current assembler 拥有当前业务投影和有界正文/集合引用；History classifier 把可靠 effect 转成 schema 25 事件与不可变 body。Current writer 周期保存完整 `current.json`，带 original observation cut 的 effect 交给独立 HistoryChannel；二者不共同提交。Cold read 不激活模型、工具或执行 owner；展示合同见 [26](./26-timeline-content.md)。
 - **统计与跨层类型导入**：可丢弃的调用统计由全局 `calls.sqlite` 独立写入。Studio 通过通用的扩展 CAS 接口保存业务状态并提交模型上下文投影，桌面界面仅消费规范的产品 DTO。账号配置、工具配置与业务协议分别从 `pl-model`、`pl-tool` 与 `pl-protocol` 直接导入，不经由 `pl-core` 镜像中转。
 
 存储与内核契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。

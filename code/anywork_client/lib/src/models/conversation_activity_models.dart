@@ -285,7 +285,6 @@ bool _sameDetails(
 /// 不读取历史，不发起详情 query，不用较早到达的摘要帧清除正文。
 ConversationActivityView? projectConversationActivity({
   required ThreadActivityView? activity,
-  required ActivitySnapshot? snapshot,
   ThreadBusinessRefs? businessRefs,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
@@ -297,24 +296,12 @@ ConversationActivityView? projectConversationActivity({
     }
     return null;
   }
-  final hasActiveText =
-      snapshot?.entries.any(
-        (entry) =>
-            entry.atom.kind == ChatAtomKind.text &&
-            entry.atom.lifecycle is ActiveChatAtom,
-      ) ??
-      false;
   final kind = switch (activity.kind) {
     ThreadActivityKind.preparing => ConversationActivityKind.preparing,
     ThreadActivityKind.compacting => ConversationActivityKind.compacting,
     ThreadActivityKind.waitingApi => ConversationActivityKind.thinking,
     ThreadActivityKind.thinking => ConversationActivityKind.thinking,
-    // The attempt can retain its coarse responding phase after a text part has
-    // ended. Only a real unfinished text atom still owns a live response.
-    ThreadActivityKind.responding =>
-      hasActiveText
-          ? ConversationActivityKind.responding
-          : ConversationActivityKind.thinking,
+    ThreadActivityKind.responding => ConversationActivityKind.responding,
     ThreadActivityKind.planning => ConversationActivityKind.planning,
     ThreadActivityKind.runningTool => ConversationActivityKind.runningTool,
     ThreadActivityKind.awaitingApproval =>
@@ -324,10 +311,7 @@ ConversationActivityView? projectConversationActivity({
   };
   // A coarse responding summary belongs to that response, not to the next
   // thinking interval. Keep a separately typed thinking summary unchanged.
-  final summary =
-      activity.kind == ThreadActivityKind.responding && !hasActiveText
-      ? ''
-      : _singleLine(activity.summary);
+  final summary = _singleLine(activity.summary);
   return ConversationActivityView(
     identity: activity.identity,
     kind: kind,

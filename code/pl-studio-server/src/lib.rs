@@ -5,7 +5,6 @@
 
 mod acp_business;
 mod bots;
-mod conversation;
 mod error;
 mod routes;
 mod security;
@@ -47,7 +46,6 @@ pub(crate) struct AppState {
     normal_requests: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     shutdown: CancellationToken,
-    conversations: Arc<conversation::Conversations>,
     timelines: Arc<timeline::Timelines>,
 }
 
@@ -58,7 +56,6 @@ impl AppState {
             normal_requests: Arc::new(Semaphore::new(MAX_REQUESTS)),
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             shutdown,
-            conversations: Arc::new(conversation::Conversations::default()),
             timelines: Arc::new(timeline::Timelines::default()),
         }
     }

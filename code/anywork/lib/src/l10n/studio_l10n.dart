@@ -331,7 +331,6 @@ extension StudioLocalizationsX on BuildContext {
         l10n.studioFailureCodeStaleRevision,
       StudioFailureReason.conversationResyncRequired =>
         l10n.studioFailureConversationResyncRequired,
-      StudioFailureReason.staleViewCursor => l10n.studioFailureStaleViewCursor,
       StudioFailureReason.concurrentNext => l10n.studioFailureConcurrentNext,
       StudioFailureReason.protocolVersionMismatch =>
         l10n.studioFailureCodeProtocol,

@@ -319,9 +319,6 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) committed_at: i64,
     pub(in crate::studio) run_id: RuntimeEpoch,
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
-    pub(in crate::studio) current_state: Option<Arc<super::CurrentState>>,
-    /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) execution_order: u64,
     /// Visibility/group changes accepted from the independent HistoryClassifier.
     pub(in crate::studio) boundary_inputs: Arc<BTreeMap<String, observations::Observation>>,
     pub(in crate::studio) history_changes: Arc<[HistoryEntityChange]>,
@@ -468,25 +465,48 @@ fn history_sources(sources: &[pl_protocol::ChatSourceState]) -> Vec<HistorySourc
         .collect()
 }
 
-fn retained_resources(effect: &ThreadEffectBatch) -> Result<Vec<super::history_facts::RetainedResourceFact>, ProjectionError> {
+fn retained_resources(
+    effect: &ThreadEffectBatch,
+) -> Result<Vec<super::history_facts::RetainedResourceFact>, ProjectionError> {
     let mut facts = BTreeMap::new();
-    let mut retain = |call_id: &str, reference: pl_core::context::ResourceReference| -> Result<(), ProjectionError> {
+    let mut retain = |call_id: &str,
+                      reference: pl_core::context::ResourceReference|
+     -> Result<(), ProjectionError> {
         let key = (call_id.to_owned(), reference.id().to_owned());
         if let Some(old) = facts.get(&key) {
             if old != &reference {
-                return Err(ProjectionError::History("contradictory delivered resource references".into()));
+                return Err(ProjectionError::History(
+                    "contradictory delivered resource references".into(),
+                ));
             }
-        } else { facts.insert(key, reference); }
+        } else {
+            facts.insert(key, reference);
+        }
         Ok(())
     };
     for delivery in effect.deliveries.iter() {
-        for reference in super::resource_references(delivery)? { retain(&delivery.call_id, reference)?; }
+        for reference in super::resource_references(delivery)? {
+            retain(&delivery.call_id, reference)?;
+        }
     }
-    for repair in effect.delivery_repairs.iter() { retain(&repair.call_id, repair.reference.clone())?; }
-    Ok(facts.into_iter().map(|((call_id, _), reference)| {
-        let turn_id = effect.tasks.iter().find(|task| task.call_id == call_id).map(|task| task.turn_id.clone());
-        super::history_facts::RetainedResourceFact { call_id, turn_id, reference }
-    }).collect())
+    for repair in effect.delivery_repairs.iter() {
+        retain(&repair.call_id, repair.reference.clone())?;
+    }
+    Ok(facts
+        .into_iter()
+        .map(|((call_id, _), reference)| {
+            let turn_id = effect
+                .tasks
+                .iter()
+                .find(|task| task.call_id == call_id)
+                .map(|task| task.turn_id.clone());
+            super::history_facts::RetainedResourceFact {
+                call_id,
+                turn_id,
+                reference,
+            }
+        })
+        .collect())
 }
 
 fn review_delivery_facts(
@@ -577,11 +597,6 @@ impl PreparedEffect {
                     .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(self.accounting.retained_bytes())
-            .saturating_add(
-                self.current_state
-                    .as_ref()
-                    .map_or(0, |state| state.metadata_bytes()),
-            )
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
             .saturating_add(
@@ -591,19 +606,6 @@ impl PreparedEffect {
                     .sum::<u64>(),
             )
     }
-}
-
-fn completion_bytes(id: &str, payload: &[u8], contents: &pl_core::chat::ChatContents) -> u64 {
-    contents.iter().fold(
-        (id.len() as u64).saturating_add(payload.len() as u64),
-        |bytes, (key, content)| {
-            bytes
-                .saturating_add(key.owner.as_str().len() as u64)
-                .saturating_add(key.key.len() as u64)
-                .saturating_add(content.data.len() as u64)
-                .saturating_add(RETAINED_ENTRY_OVERHEAD)
-        },
-    )
 }
 
 /// Cheap retained-memory estimate of one prepared batch.
@@ -1250,50 +1252,6 @@ impl TurnResult {
         }
     }
 
-    pub(in crate::studio) fn observe_completion(
-        &mut self,
-        record: &pl_core::chat::ChatItem,
-        thread_id: &str,
-    ) -> anyhow::Result<()> {
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
-        self.observe_identity(&atom.id);
-        if matches!(
-            atom.kind,
-            pl_protocol::ChatAtomKind::Text | pl_protocol::ChatAtomKind::ToolCall
-        ) {
-            let order = atom
-                .source_order
-                .context("report execution order is unknown")?;
-            match crate::studio::runtime::chat_item::execution_state(record, thread_id)? {
-                ExecutionShape::Text(text) => {
-                    let key = (order, atom.id);
-                    match text.channel() {
-                        ThreadTextChannel::Final => {
-                            self.finals.insert(key, text.text().into());
-                        }
-                        ThreadTextChannel::Commentary => {
-                            self.commentary.insert(key, text.text().into());
-                            while self.commentary.len() > TURN_COMMENTARY_PARTS {
-                                self.commentary.pop_first();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                ExecutionShape::Tool(tool)
-                    if self
-                        .last_tool
-                        .as_ref()
-                        .is_none_or(|(last, _)| order >= *last) =>
-                {
-                    self.last_tool = Some((order, tool))
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
     /// Result facts of one durable Turn slice, used by the cold recovery paths.
     #[cfg(test)]
     pub(in crate::studio) fn from_items(items: &[ExecutionItem]) -> Self {
@@ -1537,19 +1495,6 @@ impl LiveProjection {
         self.current.activity()
     }
 
-    fn freeze_current(
-        &mut self,
-        thread: &pl_protocol::Thread,
-        state: &ThreadSnapshot,
-        effect: &ThreadEffectBatch,
-    ) -> Result<Arc<super::CurrentState>, ProjectionError> {
-        let active = self.current_texts();
-        self.sync_provenance()?;
-        self.current
-            .observe(thread, state, effect.sequence, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))
-    }
-
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
         self.previews
             .iter()
@@ -1727,12 +1672,12 @@ impl LiveProjection {
             .run
             .clone()
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
+        let before = self
+            .observation_inputs(&thread.id, state)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
-        let before = self
-            .observation_inputs(&thread.id)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
         #[cfg(test)]
@@ -1752,9 +1697,8 @@ impl LiveProjection {
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let current_state = self.freeze_current(thread, state, effect)?;
         let boundary_inputs = self
-            .retain_boundary_inputs(&thread.id, before)
+            .retain_boundary_inputs(&thread.id, state, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
@@ -1762,7 +1706,6 @@ impl LiveProjection {
             committed_at: effect.committed_at,
             run_id: run.clone(),
             accounting,
-            current_state: Some(current_state),
             boundary_inputs,
             history_changes: provenance
                 .0
@@ -1785,7 +1728,6 @@ impl LiveProjection {
             history_turn_details: Arc::new(history_turn_details),
             history_sources: history_sources(&provenance.1).into(),
             retained_resources: retained_resources(effect)?.into(),
-            execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
@@ -1825,11 +1767,11 @@ impl LiveProjection {
             .run
             .clone()
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
+        let before = self
+            .observation_inputs(&thread.id, state)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
-        let before = self
-            .observation_inputs(&thread.id)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
         self.complete_provenance(
@@ -1841,9 +1783,8 @@ impl LiveProjection {
         )
         .await?;
         self.retire_effect_source(effect)?;
-        let current_state = self.freeze_current(thread, state, effect)?;
         let boundary_inputs = self
-            .retain_boundary_inputs(&thread.id, before)
+            .retain_boundary_inputs(&thread.id, state, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
@@ -1851,7 +1792,6 @@ impl LiveProjection {
             committed_at: effect.committed_at,
             run_id: run.clone(),
             accounting,
-            current_state: Some(current_state),
             boundary_inputs,
             history_changes: provenance
                 .0
@@ -1874,7 +1814,6 @@ impl LiveProjection {
             history_turn_details: Arc::new(history_turn_details),
             history_sources: history_sources(&provenance.1).into(),
             retained_resources: retained_resources(effect)?.into(),
-            execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
@@ -3892,12 +3831,12 @@ mod append_only_history_tests {
             part: ObservedPartKind::OutputText,
         });
         terminal.model_member_content_available =
-            Arc::from([pl_core::model::ModelContentAvailableMember {
+            vec![pl_core::model::ModelContentAvailableMember {
                 turn_id: final_text.turn_id.clone(),
                 attempt_id: final_text.attempt_id.clone(),
                 generation: final_text.generation,
                 identity: final_text.identity.clone(),
-            }]);
+            }];
         terminal.model_member_starts = Arc::from([final_text]);
         let receipt = ModelMemberReceipt {
             item: CompletionPresentationItem {
@@ -3944,7 +3883,12 @@ mod append_only_history_tests {
             crate::history::HistoryEventKind::BoundaryObserved
         );
         assert_eq!(boundary.entity.entity_id, "A");
-        let frozen = serde_json::to_vec(&boundary.event.bodies)?;
+        let frozen = boundary
+            .event
+            .bodies
+            .iter()
+            .flat_map(|body| body.bytes.iter().copied())
+            .collect::<Vec<_>>();
         let frozen = String::from_utf8_lossy(&frozen);
         assert!(frozen.contains("BOUNDARY_PREFIX"));
         assert!(
@@ -3986,7 +3930,7 @@ mod append_only_history_tests {
                     let mut event = HistoryEvent::new(
                         format!("event-{group}-{offset}"),
                         crate::history::HistoryEventKind::RunStarted,
-                        sequence,
+                        sequence as i64,
                     );
                     event.header.run_id = Some(format!("run-{group}-{offset}"));
                     event
@@ -4081,7 +4025,10 @@ mod append_only_history_tests {
     {
         use pl_core::{
             model::ModelToolCall,
-            thread::task::{TaskRecord, TaskStatus},
+            thread::{
+                TurnRecord,
+                task::{TaskRecord, TaskStatus},
+            },
         };
         use pl_protocol::{ChatAtomKind, ChatAtomLifecycle};
 
@@ -4145,7 +4092,7 @@ mod append_only_history_tests {
             ..Default::default()
         };
         let (_, prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        let current = prepared.current_state.context("current State")?;
+        let current = prepared.current_state.as_ref().context("current State")?;
         let tool_id = super::super::order::tool_id(&invocation.call_id);
         let atom = current
             .projection()
@@ -4248,7 +4195,10 @@ mod append_only_history_tests {
             let (_, prepared) = projection
                 .prepare(&thread, &start, &ThreadSnapshot::default(), false)
                 .await?;
-            let current = prepared.current_state.context("active compaction")?;
+            let current = prepared
+                .current_state
+                .as_ref()
+                .context("active compaction")?;
             let atom = current
                 .projection()
                 .atoms
@@ -4274,7 +4224,10 @@ mod append_only_history_tests {
             let (_, prepared) = projection
                 .prepare(&thread, &finish, &ThreadSnapshot::default(), false)
                 .await?;
-            let current = prepared.current_state.context("settled compaction")?;
+            let current = prepared
+                .current_state
+                .as_ref()
+                .context("settled compaction")?;
             assert!(
                 current
                     .projection()

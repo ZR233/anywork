@@ -20,6 +20,8 @@ enum Recipient {
 
 enum StorageWrite {
     Pending(PendingNativeDelivery),
+    PendingSource(PendingNativeDelivery),
+    ClearPendingSource(PendingNativeDelivery),
     ReviewDelivery(super::review_delivery::ReviewDeliveryFact),
 }
 
@@ -150,8 +152,28 @@ impl AgentServices {
         Ok(saved)
     }
 
-    /// Both storage writes use the same installation, attachment and cleanup owner. Pending delivery
-    /// commits its marker before inbox admission; the review receipt carrier remains source-owned.
+    pub(super) async fn persist_pending_native_source(
+        &self,
+        owner: &SessionRuntime,
+        source: &str,
+        pending: PendingNativeDelivery,
+    ) -> Result<()> {
+        self.write_storage_message(owner, source, StorageWrite::PendingSource(pending))
+            .await
+    }
+
+    pub(super) async fn clear_pending_native_source(
+        &self,
+        owner: &SessionRuntime,
+        source: &str,
+        pending: PendingNativeDelivery,
+    ) -> Result<()> {
+        self.write_storage_message(owner, source, StorageWrite::ClearPendingSource(pending))
+            .await
+    }
+
+    /// All operations use the same installation, attachment and cleanup owner. Recipient and
+    /// source-owned markers commit through Current; the review receipt carrier remains source-owned.
     /// The caller must not hold the source/recipient identity gate while joining this.
     async fn write_storage_message(
         &self,
@@ -172,6 +194,7 @@ impl AgentServices {
                     && (state.sealed_agents.contains_key(parent) || state.closing)
                     && !state.unpublished_children.contains_key(parent)
                     && !state.preparing_children.contains_key(parent);
+                let source_write = !matches!(write, StorageWrite::Pending(_));
                 if state
                     .creating
                     .get(parent)
@@ -209,7 +232,7 @@ impl AgentServices {
                             EntryPurpose::Execution
                                 if (entry.native()?.ready
                                     || closing_inbox
-                                    || matches!(write, StorageWrite::ReviewDelivery(_)))
+                                    || source_write)
                                     && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>
                             {
@@ -219,7 +242,7 @@ impl AgentServices {
                                 }
                             }
                             EntryPurpose::Execution
-                                if matches!(write, StorageWrite::ReviewDelivery(_))
+                                if source_write
                                     && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Closed =>
                             {
@@ -297,6 +320,22 @@ impl AgentServices {
                         )
                         .await?;
                     }
+                    StorageWrite::PendingSource(pending) => {
+                        super::pending_delivery::persist_pending_marker(&thread, pending).await?;
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
+                    }
+                    StorageWrite::ClearPendingSource(pending) => {
+                        super::pending_delivery::clear_pending_marker(&thread, pending).await?;
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
+                    }
                     StorageWrite::ReviewDelivery(fact) => {
                         use pl_core::thread::extensions::ExtensionMutation;
                         let extension_id = fact.extension_id();
@@ -309,7 +348,6 @@ impl AgentServices {
                                 }])
                                 .await?;
                         }
-                        owner.synchronize_observation(parent).await?;
                         let saved = thread
                             .snapshot()
                             .extensions
@@ -338,7 +376,6 @@ impl AgentServices {
                                 }])
                                 .await?;
                         }
-                        owner.synchronize_observation(parent).await?;
                         self.store
                             .conversation_store(parent)
                             .await?

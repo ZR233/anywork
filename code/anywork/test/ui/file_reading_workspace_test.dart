@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import '../support/test_app_lifecycle.dart';
 
 import 'dart:async';
@@ -159,7 +162,7 @@ void main() {
                 blockOrder: filePosition,
               ),
             ],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: filePosition - 1,
           ),
         );
@@ -226,7 +229,7 @@ void main() {
                 blockOrder: filePosition + 1,
               ),
             ],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: filePosition,
           ),
         );

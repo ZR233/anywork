@@ -6,17 +6,11 @@ use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor}
 use pl_protocol::{ChatAtom, ChatAtomLifecycle, ContentTarget};
 
 #[derive(Debug, Clone)]
-enum CapturedBody {
-    Current(Arc<super::super::current::CurrentContent>),
-    Preview(Arc<ContentBlock>),
-}
-
-#[derive(Debug, Clone)]
 pub(in crate::studio) struct Observation {
     atom: ChatAtom,
     thread_id: String,
     shape: Option<ExecutionShape>,
-    bodies: BTreeMap<String, CapturedBody>,
+    bodies: BTreeMap<String, Arc<ContentBlock>>,
 }
 
 impl Observation {
@@ -39,25 +33,22 @@ impl Observation {
             let ContentTarget::Body { owner, key } = &body.reference.target else {
                 anyhow::bail!("boundary content is not a producer body");
             };
-            let content = match self
+            let block = self
                 .bodies
                 .get(key)
-                .context("boundary member has no retained body cut")?
-            {
-                CapturedBody::Current(content) => content.content(),
-                CapturedBody::Preview(block) => Arc::new(ChatContent {
-                    descriptor: ContentDescriptor {
-                        key: ChatContentKey {
-                            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-                            key: key.clone(),
-                        },
-                        byte_length: block.len() as u64,
-                        generation: 1,
-                        media_type: Some("text/plain; charset=utf-8".into()),
+                .context("boundary member has no retained producer body")?;
+            let content = Arc::new(ChatContent {
+                descriptor: ContentDescriptor {
+                    key: ChatContentKey {
+                        owner: crate::studio::conversation_identity::content_owner_key(owner)?,
+                        key: key.clone(),
                     },
-                    data: ContentData::text(block.clone()),
-                }),
-            };
+                    byte_length: block.len() as u64,
+                    generation: 1,
+                    media_type: Some("text/plain; charset=utf-8".into()),
+                },
+                data: ContentData::text(block.clone()),
+            });
             contents.push(content);
         }
         let mut event = HistoryEvent::new(
@@ -99,72 +90,150 @@ impl Observation {
                 bytes
                     .saturating_add(key.len() as u64)
                     .saturating_add(RETAINED_ENTRY_OVERHEAD)
-                    .saturating_add(match body {
-                        CapturedBody::Current(value) => value.descriptor.byte_length,
-                        CapturedBody::Preview(value) => value.len() as u64,
-                    })
+                    .saturating_add(body.len() as u64)
             },
         )
     }
 }
+
+#[derive(Debug, Default)]
+struct ProducerCut {
+    shape: Option<ExecutionShape>,
+    fields: BTreeMap<BodyKey, Arc<ContentBlock>>,
+}
+
+fn producer_cuts(state: &ThreadSnapshot) -> BTreeMap<String, ProducerCut> {
+    let mut cuts = BTreeMap::<String, ProducerCut>::new();
+    if let Some(active) = state.model_progress.as_ref() {
+        let progress = &active.progress;
+        for failed in &progress.observation().failed {
+            capture_model_parts(
+                &mut cuts,
+                &active.attempt_id,
+                failed.generation,
+                &failed.parts,
+                false,
+            );
+        }
+        capture_model_parts(
+            &mut cuts,
+            &active.attempt_id,
+            progress.observation().generation,
+            progress.parts(),
+            true,
+        );
+    }
+    for (task_id, progress) in &state.tool_progress {
+        let task = state.tasks.get(task_id).or_else(|| {
+            state
+                .terminal_tasks
+                .iter()
+                .find(|task| task.id == task_id.as_str())
+        });
+        let Some(task) = task else {
+            continue;
+        };
+        if progress.bytes() == 0 {
+            continue;
+        }
+        cuts.entry(super::super::order::tool_id(&task.call_id))
+            .or_default()
+            .fields
+            .insert(BodyKey::host(TOOL_RESULT_FIELD), progress.content());
+    }
+    cuts
+}
+
+fn capture_model_parts(
+    cuts: &mut BTreeMap<String, ProducerCut>,
+    attempt_id: &str,
+    generation: u32,
+    parts: &pl_core::model::ModelParts,
+    include_shape: bool,
+) {
+    for part in parts.iter() {
+        let Some((id, field, shape)) = super::observation_start(
+            attempt_id,
+            generation,
+            part.identity(),
+            &ThreadContentLifecycle::streaming(),
+        ) else {
+            continue;
+        };
+        let cut = cuts.entry(id).or_default();
+        if include_shape {
+            cut.shape.get_or_insert(shape);
+        }
+        cut.fields.insert(field, part.content().clone());
+    }
+}
+
 impl LiveProjection {
-    fn observation_input(&self, thread_id: &str, atom: &ChatAtom) -> Result<Observation> {
-        let preview = self.previews.get(&atom.id);
-        let shape = self
-            .items
-            .get(&atom.id)
-            .filter(|item| !item.is_terminal())
+    fn observation_input(
+        &self,
+        thread_id: &str,
+        cuts: &BTreeMap<String, ProducerCut>,
+        atom: &ChatAtom,
+    ) -> Result<Observation> {
+        let item = self.items.get(&atom.id).filter(|item| !item.is_terminal());
+        let cut = cuts.get(&atom.id);
+        let shape = item
             .map(|item| static_state(item.state()))
-            .or_else(|| preview.map(|preview| preview.shape.clone()));
-        let current = self.current.snapshot();
-        let mut bodies = BTreeMap::new();
+            .or_else(|| cut.and_then(|cut| cut.shape.as_ref()).map(static_state))
+            .context("boundary member has no resident shape or exact producer cut")?;
+        let mut bodies = item
+            .map(|item| {
+                crate::studio::runtime::chat_item::content_fields(item.state())
+                    .map_err(|error| ProjectionError::History(error.to_string()))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(cut) = cut {
+            bodies.extend(cut.fields.clone());
+        }
         for body in &atom.contents {
-            let ContentTarget::Body { owner, key } = &body.reference.target else {
+            let ContentTarget::Body { key, .. } = &body.reference.target else {
                 continue;
             };
-            let block = preview.and_then(|preview| {
-                preview
-                    .fields
-                    .iter()
-                    .find(|(field, _)| field.as_key() == *key)
-                    .map(|(_, block)| block.clone())
-            });
-            if let Some(block) = block {
-                bodies.insert(key.clone(), CapturedBody::Preview(block));
-            } else if let Some(current) = &current {
-                let owner = crate::studio::conversation_identity::content_owner_key(owner)?;
-                if let Some(content) = current.contents().get(&ChatContentKey {
-                    owner,
-                    key: key.clone(),
-                }) {
-                    bodies.insert(key.clone(), CapturedBody::Current(content.clone()));
-                }
+            if !bodies.keys().any(|field| field.as_key() == key.as_str()) {
+                anyhow::bail!("boundary member has no exact producer body for {key}");
             }
         }
         Ok(Observation {
             atom: atom.clone(),
             thread_id: thread_id.into(),
-            shape,
-            bodies,
+            shape: Some(shape),
+            bodies: bodies.into_iter().map(|(key, block)| (key.as_key().to_owned(), block)).collect(),
         })
     }
     pub(super) fn observation_inputs(
         &self,
         thread_id: &str,
+        state: &ThreadSnapshot,
     ) -> Result<BTreeMap<String, Observation>> {
+        let cuts = producer_cuts(state);
         self.atom_starts
             .values()
-            .map(|atom| Ok((atom.id.clone(), self.observation_input(thread_id, atom)?)))
+            .map(|atom| {
+                Ok((
+                    atom.id.clone(),
+                    self.observation_input(thread_id, &cuts, atom)?,
+                ))
+            })
             .collect()
     }
     pub(super) fn retain_boundary_inputs(
         &self,
         thread_id: &str,
+        state: &ThreadSnapshot,
         mut before: BTreeMap<String, Observation>,
     ) -> Result<Arc<BTreeMap<String, Observation>>> {
-        // Active post-effect producers own the newer cut. A retired producer retains its exact
-        // pre-terminal cut; the later canonical result can never replace an old group's bytes.
-        before.extend(self.observation_inputs(thread_id)?);
+        // Existing producers keep the cut captured before the effect changed this projection. Only
+        // identities first started by the effect are added now; a terminal canonical result can
+        // never replace an older member's boundary bytes.
+        for (id, input) in self.observation_inputs(thread_id, state)? {
+            before.entry(id).or_insert(input);
+        }
         Ok(Arc::new(before))
     }
 }

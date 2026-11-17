@@ -1,10 +1,8 @@
 import '../../../lifecycle.dart' show ClientCloseBudget;
 import '../../../conversation_ports.dart';
 import '../../../models.dart';
-import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart' show CloseReport;
 import '../../observation/latest_value.dart';
-import 'content_state.dart';
 import 'conversation_state.dart';
 
 abstract interface class ConversationRepository {
@@ -19,11 +17,6 @@ abstract interface class ConversationRepository {
   Iterable<ThreadSessionState> get sessionStates;
   ValueObservation<String?> get visibleThreadId;
   void setVisibleThread(String? threadId);
-  Future<ConversationContent> openRecords({
-    required String threadId,
-    required ChatScope scope,
-    required ReadDemand demand,
-  });
   Future<CloseReport> close({ClientCloseBudget? budget});
   Future<CloseReport> retryCleanup({required ClientCloseBudget budget});
 }
@@ -32,17 +25,10 @@ abstract interface class ConversationSession {
   String get threadId;
   ThreadSessionState get state;
   ValueObservation<ThreadSessionState> get source;
-  ConversationContent get content;
-  ValueObservation<ActivitySnapshot?> get activity;
   bool get isActive;
   bool get isClosed;
   void refresh();
   Future<ThreadWorkspace> resyncRuntime();
-}
-
-abstract interface class ConversationBatchConsumer {
-  Future<void> applyBatch(ChatBatch batch);
-  Future<void> applyActivity(ActivitySnapshot snapshot);
 }
 
 /// Pure immutable-history queries. Results are pages, never an implicit UI apply.
@@ -98,56 +84,6 @@ abstract interface class CurrentQueryScope {
   });
   CurrentBodyWatch watchBody({
     required CurrentContentRef reference,
-    required ContentRange range,
-  });
-  void retire();
-  Future<CloseReport> close({ClientCloseBudget? budget});
-}
-
-abstract interface class ConversationContent implements ConversationQueries {
-  String get threadId;
-  ValueObservation<ChatUiState<bool>> get state;
-  ValueObservation<ActivitySnapshot?> get activity;
-  bool get hasDemand;
-  bool get isClosed;
-  AttemptId? get currentAttemptId;
-  int get ownedAttemptCount;
-  Future<void> get ready;
-  Observation attachConsumer(
-    ConversationBatchConsumer consumer, {
-    required ReadDemand demand,
-  });
-  Future<CloseReport> close({ClientCloseBudget? budget});
-  Future<CloseReport> joinRetired({ClientCloseBudget? budget});
-  void refresh();
-  ConversationQueryScope openScope({required int generation});
-}
-
-abstract interface class ConversationQueries {
-  String get threadId;
-  ConversationQueryScope openScope({required int generation});
-}
-
-abstract interface class ConversationQueryScope {
-  int get generation;
-  String get threadId;
-  int get pendingQueries;
-  bool get isActive;
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  });
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  });
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  });
-  Stream<ContentWindow> watchContent({
-    required ContentRef reference,
     required ContentRange range,
   });
   void retire();

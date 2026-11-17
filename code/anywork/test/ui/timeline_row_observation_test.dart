@@ -175,7 +175,7 @@ void main() {
         await adapter.applyFixtureUpdate(
           displayBatch(
             [displaySingle(chatMessage('next', completionSeq: 2))],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: 1,
           ),
         );

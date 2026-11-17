@@ -12,9 +12,29 @@ abstract final class TimelineHistoryProjection {
 
   static DisplayBlock? block(HistoryTimelineEntry entry) => _block(entry);
 
-  static DisplayBlock? _block(HistoryTimelineEntry entry) {
+  static DisplayBlock? eventDetail(HistoryEventDetail detail) {
+    final head = detail.head;
+    if (head == null) return null;
+    return _blockFromHead(
+      rowKey: detail.header.rowKey ?? 'event:${detail.header.eventId}',
+      anchorSeq: detail.header.seq,
+      head: head,
+    );
+  }
+
+  static DisplayBlock? _block(HistoryTimelineEntry entry) => _blockFromHead(
+    rowKey: entry.rowKey,
+    anchorSeq: entry.anchorSeq,
+    head: entry.head,
+  );
+
+  static DisplayBlock? _blockFromHead({
+    required String rowKey,
+    required int anchorSeq,
+    required HistoryRowHead head,
+  }) {
     final DisplayBlockBody? body;
-    switch (entry.head) {
+    switch (head) {
       case WorkHistoryRow(:final head):
         body = WorkDisplayBlock(
           timing: WorkTiming(
@@ -42,11 +62,7 @@ abstract final class TimelineHistoryProjection {
         return null;
     }
     if (body == null) return null;
-    return DisplayBlock(
-      id: entry.rowKey,
-      blockOrder: entry.anchorSeq,
-      body: body,
-    );
+    return DisplayBlock(id: rowKey, blockOrder: anchorSeq, body: body);
   }
 
   static SingleDisplayBlock? _single(

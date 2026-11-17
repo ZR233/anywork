@@ -157,7 +157,7 @@ impl ThreadHandle {
         Self::resume(id, model, None)
     }
 
-    /// Starts the directly callable current owner without selecting it for old production callers.
+    /// Starts one fresh Current owner under a new runtime epoch.
     pub fn start_current(
         id: String,
         model: DynModelSession,
@@ -288,6 +288,7 @@ impl ThreadHandle {
             InitialState::Checkpoint(Some(_)) | InitialState::RestoredCurrent(_)
         );
         let current_paused = matches!(&initial, InitialState::RestoredCurrent(_));
+        let current_owner = !matches!(&initial, InitialState::Checkpoint(_));
         let (published, state, restored_history_fence, restored_current) = match initial {
             InitialState::Checkpoint(Some(checkpoint)) => {
                 let history_fence = checkpoint.history_fence;
@@ -417,6 +418,7 @@ impl ThreadHandle {
         owner.publish_snapshot();
         tokio::spawn(owner.run(receiver));
         Ok(Self {
+            current_owner,
             runtime_epoch,
             final_current: final_current_rx,
             current_dirty: current_dirty_rx,
@@ -1125,6 +1127,14 @@ impl ThreadHandle {
         response.await.map_err(|_| ThreadError::Closed)?
     }
 
+    /// Installs the independent History export sink and its existing reliable-output budget.
+    /// Current capture and physical close never await this sink's archive receipt.
+    pub async fn attach_history(&self, store: super::super::history_sink::HistorySinkHandle) -> Result<(), ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.commands.send(Command::AttachHistory(store, reply)).await.map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
     /// Continues new model/tool admission after a hard storage fault was recovered.
     ///
     /// `generation` is the fault generation the caller verified, taken from the reported typed
@@ -1250,6 +1260,11 @@ impl ThreadHandle {
     /// Reports whether the owner was released after its admitted effects became durable.
     fn durably_released(&self) -> bool {
         let snapshot = self.snapshot();
+        if self.current_owner {
+            // This acknowledges physical Core shutdown only. Current JSON and immutable History
+            // have independent host owners and report their own failures.
+            return snapshot.lifecycle == ThreadLifecycle::Closed;
+        }
         snapshot.lifecycle == ThreadLifecycle::Closed
             && snapshot.persistence.error.is_none()
             && (!snapshot.persistence.attached

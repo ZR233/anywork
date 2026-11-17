@@ -118,7 +118,7 @@ pub async fn completed_prompt(
 pub fn current_demand() -> ReadDemand {
     ReadDemand {
         max_items: 64,
-        max_bytes: 1024 * 1024,
+        max_bytes: 64 * 1024,
     }
 }
 

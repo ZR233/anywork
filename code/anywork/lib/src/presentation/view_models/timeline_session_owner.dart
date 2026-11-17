@@ -325,13 +325,13 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return () => _currentDisplays.remove(display);
   }
 
-  void _recordBatch(ChatPlacement placement) {
+  void _recordBatch(TimelineApplyPlacement placement) {
     switch (placement) {
-      case ChatPlacement.set:
+      case TimelineApplyPlacement.set:
         _appliedSets++;
-      case ChatPlacement.prepend:
+      case TimelineApplyPlacement.prepend:
         _appliedPrepends++;
-      case ChatPlacement.append:
+      case TimelineApplyPlacement.append:
         _appliedAppends++;
     }
   }
@@ -1236,7 +1236,10 @@ final class TimelineSessionOwner {
       current._admitTerminalHistory(page.entries);
       try {
         if (resetWindow) {
-          await current._presentation!.applyBlocks(blocks, ChatPlacement.set);
+          await current._presentation!.applyBlocks(
+            blocks,
+            TimelineApplyPlacement.set,
+          );
         } else {
           await current._presentation!.replaceBlocks(blocks);
         }
@@ -1250,7 +1253,7 @@ final class TimelineSessionOwner {
       if (resetWindow) {
         current._before = page.next;
         current._hasOlder = page.next != null;
-        current._recordBatch(ChatPlacement.set);
+        current._recordBatch(TimelineApplyPlacement.set);
       }
     });
     current._firstOrder = current._firstLoadedOrder;
@@ -1296,7 +1299,7 @@ final class TimelineSessionOwner {
         try {
           await presentation.applyBlocks(
             TimelineHistoryProjection.blocks(entries.reversed),
-            ChatPlacement.set,
+            TimelineApplyPlacement.set,
           );
         } catch (error) {
           throw _TimelineApplyFailure(error);
@@ -1318,7 +1321,7 @@ final class TimelineSessionOwner {
     final blocks = TimelineHistoryProjection.blocks(entries.reversed);
     next._before = olderCursor;
     next._firstOrder = blocks.firstOrNull?.blockOrder;
-    next._recordBatch(ChatPlacement.set);
+    next._recordBatch(TimelineApplyPlacement.set);
     next._hasOlder = olderCursor != null;
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
@@ -1553,7 +1556,7 @@ final class TimelineSessionOwner {
           try {
             await current._presentation!.applyBlocks(
               blocks,
-              ChatPlacement.prepend,
+              TimelineApplyPlacement.prepend,
             );
             await current._presentation!.trimNewest(
               current.loadedCount > current._historyRowLimit
@@ -1577,7 +1580,7 @@ final class TimelineSessionOwner {
         );
         current._before = page.next;
         current._hasOlder = page.next != null;
-        current._recordBatch(ChatPlacement.prepend);
+        current._recordBatch(TimelineApplyPlacement.prepend);
       });
       if (identical(_current, current) &&
           !current.isRetired &&

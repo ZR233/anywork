@@ -35,7 +35,7 @@ final class TimelineFixtureBatch {
     this.live,
   });
   final List<DisplayBlock> blocks;
-  final ChatPlacement placement;
+  final TimelineApplyPlacement placement;
   final int? fromOrder;
   final int throughOrder;
   final String? before;
@@ -44,7 +44,7 @@ final class TimelineFixtureBatch {
 
 TimelineFixtureBatch displayBatch(
   List<DisplayBlock> blocks, {
-  ChatPlacement placement = ChatPlacement.set,
+  TimelineApplyPlacement placement = TimelineApplyPlacement.set,
   int? from,
   int? through,
   String? before,
@@ -62,7 +62,7 @@ TimelineFixtureBatch displayBatch(
 extension ApplyComponentFixture on TimelineMessageController {
   Future<void> applyFixtureUpdate(
     TimelineFixtureBatch update, {
-    ChatPlacement? placement,
+    TimelineApplyPlacement? placement,
   }) => applyBlocks(update.blocks, placement ?? update.placement);
 }
 

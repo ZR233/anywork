@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import '../support/test_app_lifecycle.dart';
 import '../support/test_statistics_feed.dart';
 
@@ -207,7 +210,7 @@ void main() {
         if (!oldPage.isCompleted) {
           oldPage.complete(
             historyFixturePage(
-              displayBatch([], placement: ChatPlacement.prepend),
+              displayBatch([], placement: TimelineApplyPlacement.prepend),
             ),
           );
         }
@@ -313,7 +316,7 @@ void main() {
         historyFixturePage(
           displayBatch([
             displaySingle(chatMessage('late-old-page')),
-          ], placement: ChatPlacement.prepend),
+          ], placement: TimelineApplyPlacement.prepend),
         ),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');

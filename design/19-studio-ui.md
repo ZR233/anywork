@@ -327,11 +327,11 @@ ACP 首条非空消息的发送动作直接创建并开始会话，不设置独�
 
 计划确认界面只保留完整标题、图文状态、正文、输入与动作，不附二级描述或重复的阅读／决定引导。阅读面板的状态与动作集中在紧凑头部，反馈栏不重复确认标题及常驻快捷键说明；必要输入提示、真实错误与提交进度仍须可见。窄窗自然换行，不以截断标题、缩小字号或命中区换取紧凑，具体契约见 [13.5](./13-plan.md#135-与任务模式提示词及桌面界面的协作边界)。
 
-工作卡与活动详情首次默认折叠，不因内容变化自动展开；展开意图按稳定 block_id 保留。开放尾卡右侧统一显示从建组开始的经过时间，包含闲置与暂停；真实活动阶段和单成员耗时仍沿原 owner。冻结组不增长，未结束观察不表述为成功。同组开始/结束保留行 key，跨组结束为新 key。折叠在动画前撤销局部读取资格，动静呈现切换不关闭共享业务资源。正文共用主题感知 Markdown，向上滚动/选择暂停跟随。
+工作卡与活动详情首次默认折叠，不因内容变化自动展开；展开意图按稳定 `row_key`／`entity_id` 保留。Current overlay 右侧显示真实活动时间；History Work 使用真实 `started_at`／`finished_at`，未知时不推算。旧组成员不增长，未结束边界观察不表述为成功。同组开始/结束保留 member identity，跨组结束使用新身份。折叠先撤销局部 Current/History 读取资格，动静切换不关闭共享业务资源。正文共用主题感知 Markdown，向上滚动或选择时暂停跟随。
 
-历史发布按整个会话 blocks 创建顺序推进；未结束正文可挡后继历史位置，但不挡 live 展示。当前尾组以 Rust current_work_id 定位，Active/Resting/Unrestored/Sealed 按 [26](./26-timeline-content.md) 派生，不按来源、活动 Turn 或窗口末项猜测。全终态冷尾组静态显示，不标未恢复；只有真实未收束/不可用冷成员提示未恢复。静态尾卡不进入历史 controller，保留首次可见时分配的 block_order，同 ID 恢复活动保留展开与读取 owner，只挂载一处。开放跨夜不累计闲置墙钟，缺可靠依据的组耗时隐藏。窗口关闭先撤销自身资格。
+历史主列表按 schema 25 Work/Single anchor 顺序；旧页保持自己的 `HistoryCut`，新 event 只进入新查询。Current activity/Final preview 由 `CurrentProjection` 单独形成 overlay，不依赖 History 分页末项或旧展示位置。History Work 的成员与 bytes 封存后不变；Current 换代以 Reset 替换 overlay。UI 用稳定 `row_key`／`entity_id` 合并，不把一致关系表述为跨存储原子。窗口关闭先撤销自己的 reader/watch。
 
-纯呈现投影集中选择 Timeline 工作区、正文区及特殊提示，Flutter 不配对或重分组。已有同源正文 renderer 时只显示一次真实输出，不叠加普通“正在输出”；上一正文结束后清除旧摘要，不能凭有界窗口缺正文推断无活动。问答遮蔽不删除实时数据，停止请求不伪造终态；展开、滚动和跟随沿原 display lease。
+纯呈现投影集中选择 Timeline 工作区、正文区和提示，Flutter 不配对或重分组。同一稳定行只在 Current 与 History 各有一份身份映射；历史 bytes 不被 Current 覆盖。已有同源正文 renderer 时只显示一次真实输出；上一正文结束后清除旧摘要，有界窗口缺正文不能推断无活动。问答遮蔽不删除 Current 数据，停止请求不伪造终态；展开、滚动和跟随使用该视图自己的 reader 资格。
 
 实时栏使用低对比主题表面、细边框与紧凑标题，正文、活动详情及回执沿同一阅读轴展开；只有真实可展开内容才显示箭头。流式正文区与活动详情区的滚动条遵循 §19.7，不常驻轨道或滑块，也不因为滚动条显隐改变阅读宽度。
 
@@ -365,7 +365,7 @@ Plan 当前态、确认决定、文档版本与历史快照遵循 [13](./13-plan
 
 Markdown 渲染器消费所在子树的既有主题，不在内部重置标题字号或分隔线策略。常规正文沿用基准主题与组件公开默认值；Plan 文档的紧凑标题和无 H1 分隔线仅由其局部文档主题特化，不能改变普通 Markdown，也不能被更内层通用渲染覆盖。
 
-列表复用已有 ChatController/Chat 的公开能力，一条 item 含正文和附件时仍是一消息，内部复用媒体，不扩展附件兄弟拓扑。Set/Prepend/Append 的唯一接纳语义见 [26](./26-timeline-content.md)，历史组头不 Update；当前开放组直接消费权威窗口，保留展开意图及原成员 scope。不自写 controller、通用列表、像素修复或全历史 diff。不兼容/Deferred 是可读且非零高度的独立卡片，不消失、不伪造作者/时间。
+列表复用已有 timeline controller 的公开能力，一条 canonical row 含正文和附件时仍是一行，内部复用媒体，不扩展附件兄弟拓扑。Set、Prepend 与最新 head replace 的唯一接纳语义见 [26.8](./26-timeline-content.md#268-flutter-唯一窗口与串行-apply)，不追加旧历史 tail；Current overlay 保留独立读取与展开意图。不自写 controller、通用列表、像素修复或全历史 diff。不兼容/Deferred 是可读且非零高度的独立卡片，不消失、不伪造作者/时间。
 
 所有生产正文入口——消息、实时栏、问答、Plan、展开详情——由父布局提供有限宽度。优先用 Flutter Text/RichText softWrap、Expanded/Flexible、LayoutBuilder 及现有 Markdown 的公开配置/builder；段落、长中文、长英文/URL、行内代码、代码块与表格按可用宽度自然换行，不横向撑破阅读列、不用 clip/ellipsis 隐藏完整正文。只有明确的摘要行可省略，展开内容完整可读。
 

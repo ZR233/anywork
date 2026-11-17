@@ -854,6 +854,10 @@ mod tests {
     mod tool_restart {
         use super::*;
         use crate::studio::storage::history::HistoryStore;
+        use pl_core::{
+            context::{ContextRecord, ContextSnapshot, ContextSource},
+            model::ModelToolCall,
+        };
 
         #[tokio::test]
         async fn archived_tool_arguments_and_originals_survive_the_migration_transaction()

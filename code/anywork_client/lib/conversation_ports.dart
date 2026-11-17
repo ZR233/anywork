@@ -3,13 +3,7 @@ import 'dart:async';
 import 'models.dart';
 
 abstract interface class ConversationTransport
-    implements HistoryTransport, CurrentTransport {
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  });
-}
+    implements HistoryTransport, CurrentTransport {}
 
 abstract interface class HistoryTransport {
   Future<HistoryReader> openHistoryReader(
@@ -133,81 +127,4 @@ abstract interface class CurrentBodyWatch {
   Stream<ContentWindow> get windows;
   void requestClose();
   Future<void> close();
-}
-
-abstract interface class ConversationFeed {
-  String get threadId;
-  String get subscriptionId;
-  ConversationReader get reader;
-
-  /// Completion-only Chat/Activity, Failure or Closed; never State or GUI presentation.
-  Stream<ConversationFrame> get events;
-  Future<void> acknowledge(int deliverySequence);
-  void requestClose();
-  Future<void> close();
-}
-
-abstract interface class ConversationReader {
-  String get threadId;
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  });
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  });
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  });
-  ConversationContentWatch watchContent({
-    required ContentRef reference,
-    required ContentRange range,
-  });
-  void requestClose();
-  Future<void> close();
-}
-
-abstract interface class ConversationContentWatch {
-  Stream<ContentWindow> get windows;
-  void requestClose();
-  Future<void> close();
-}
-
-final class ConversationFrame {
-  const ConversationFrame({
-    required this.threadId,
-    required this.subscriptionId,
-    required this.deliverySequence,
-    required this.event,
-  });
-  final String threadId;
-  final String subscriptionId;
-  final int deliverySequence;
-  final ConversationEvent event;
-}
-
-sealed class ConversationEvent {
-  const ConversationEvent();
-}
-
-final class ConversationChatEvent extends ConversationEvent {
-  const ConversationChatEvent({required this.batch});
-  final ChatBatch batch;
-}
-
-final class ConversationActivityEvent extends ConversationEvent {
-  const ConversationActivityEvent({required this.snapshot});
-  final ActivitySnapshot snapshot;
-}
-
-final class ConversationFailureEvent extends ConversationEvent {
-  const ConversationFailureEvent({required this.failure});
-  final StudioFailure failure;
-}
-
-final class ConversationClosedEvent extends ConversationEvent {
-  const ConversationClosedEvent();
 }

@@ -67,18 +67,6 @@ pub struct ProductEventBus {
     child_interactions: Arc<std::sync::Mutex<ChildInteractionsProjection>>,
 }
 
-#[cfg(test)]
-impl ProductEventBus {
-    pub(crate) async fn commit_test_thread(&self, thread: &pl_protocol::Thread) -> anyhow::Result<()> {
-        let (session, agent) = super::records::directory_facts_from_thread(thread);
-        self.commit_directory(super::store::directory::DirectoryDelta {
-            session_upserts: session.into_iter().collect(),
-            agent_upserts: vec![agent],
-            ..Default::default()
-        }).await?;
-        Ok(())
-    }
-}
 
 #[derive(Default)]
 struct ProductStateRevisions {

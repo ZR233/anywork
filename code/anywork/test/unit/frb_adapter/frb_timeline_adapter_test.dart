@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import '../../support/frb_test_lifecycle.dart';
 
 import 'dart:async';
@@ -98,7 +101,7 @@ void main() {
         final batch = (frame.event as ConversationChatEvent).batch;
         expect(frame.threadId, 'thread-A');
         expect(frame.subscriptionId, 'sub-1');
-        expect(batch.placement, ChatPlacement.values[placement.index]);
+        expect(batch.placement, TimelineApplyPlacement.values[placement.index]);
         expect(batch.before, 'opaque:中文:before');
         expect(
           batch.fromSeq,
@@ -184,7 +187,7 @@ void main() {
       'opaque:before',
       const dto.BridgeReadDemand(maxItems: 20, maxBytes: 65536),
     ));
-    expect(batch.placement, ChatPlacement.prepend);
+    expect(batch.placement, TimelineApplyPlacement.prepend);
     final atom = batch.entries.single.atom;
     expect(atom.id, 'older-member');
     expect(atom.completionItemId, 'older');

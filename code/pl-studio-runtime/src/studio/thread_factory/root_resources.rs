@@ -537,7 +537,6 @@ impl StudioThreadFactory {
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             protocol_thread,
-            None,
         )
         .await
         .map_err(|error| resource_error("open Thread persistence", error))?;

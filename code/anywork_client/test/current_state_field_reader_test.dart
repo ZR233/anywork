@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:test/test.dart';
 
@@ -42,7 +41,7 @@ void main() {
         reader: reader,
         isEligible: () => !reader.requested,
       );
-      final field = CurrentStateField(
+      final field = BodyCurrentStateField(
         field: 'activeSkills',
         reference: _reference,
         byteLength: bytes.length,
@@ -65,7 +64,7 @@ void main() {
       isEligible: () => !reader.requested,
     );
     final reading = scope.readStateField(
-      const CurrentStateField(
+      const BodyCurrentStateField(
         field: 'progress',
         reference: CurrentContentRef(
           ownerId: 'owner',
@@ -118,7 +117,7 @@ void main() {
       reader: reader,
       isEligible: () => !reader.requested,
     );
-    final field = CurrentStateField(
+    final field = BodyCurrentStateField(
       field: 'progress',
       reference: _reference,
       byteLength: bytes.length,
@@ -131,5 +130,74 @@ void main() {
       bytes.length - 64 * 1024,
     ]);
     expect((await scope.close()).complete, isTrue);
+  });
+
+  test(
+    'State collection heads page through Current and retain full count',
+    () async {
+      const collection = CurrentCollectionRef(
+        ownerId: 'owner',
+        collection: 'state:runtime:activeSkills',
+        revision: 7,
+      );
+      const field = CollectionCurrentStateField(
+        field: 'activeSkills',
+        reference: collection,
+        count: 301,
+      );
+      final reader = TestCurrentReader();
+      final pages = <(CurrentCollectionRef, String?, ReadDemand)>[];
+      reader.onPage = (reference, continuation, demand) async {
+        pages.add((reference, continuation, demand));
+        return CurrentCollectionPage(
+          revision: reference.revision,
+          entries: const [],
+          continuation: continuation == null ? 'next-page' : null,
+        );
+      };
+      final scope = CurrentReadScope(
+        threadId: 'thread',
+        generation: 1,
+        reader: reader,
+        isEligible: () => !reader.requested,
+      );
+
+      final first = await scope.pageStateCollection(
+        field,
+        demand: const ReadDemand(maxItems: 7, maxBytes: 4096),
+      );
+      expect(first.continuation, 'next-page');
+      expect(field.count, 301);
+      expect(pages.single.$1, collection);
+      expect(pages.single.$2, isNull);
+      expect((await scope.close()).complete, isTrue);
+    },
+  );
+
+  test('CurrentStateField JSON keeps body and collection disjoint', () {
+    final body = CurrentStateField.fromJson({
+      'kind': 'body',
+      'field': 'progress',
+      'reference': {
+        'ownerId': 'owner',
+        'domain': 'state:runtime',
+        'entityId': 'state',
+        'contentKey': 'progress',
+        'generation': '2',
+      },
+      'byteLength': 17,
+    });
+    final collection = CurrentStateField.fromJson({
+      'kind': 'collection',
+      'field': 'activeSkills',
+      'reference': {
+        'ownerId': 'owner',
+        'collection': 'state:runtime:activeSkills',
+        'revision': 7,
+      },
+      'count': 301,
+    });
+    expect(body, isA<BodyCurrentStateField>());
+    expect(collection, isA<CollectionCurrentStateField>());
   });
 }

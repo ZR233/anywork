@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
@@ -19,6 +20,10 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
   LiveWindowPagingState _work = const LatestLiveWindow();
   bool _loadingCurrentAtoms = false;
   Object? _currentAtomsError;
+  CollectionCurrentStateField? _activityToolsField;
+  List<ThreadActivityToolEntry> _activityTools = const [];
+  String? _activityToolsContinuation;
+  bool _loadingActivityTools = false;
 
   @override
   LiveStatusView? build(String threadId) {
@@ -51,6 +56,7 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
     final conversations = ref.read(anyworkClientProvider).conversations;
     if (conversations.visibleThreadId.value != threadId) return null;
     final session = ref.read(threadSessionStoreProvider(threadId));
+    unawaited(_loadActivityTools(session.activity));
     final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
     final active = lease != null && !lease.retirement.value;
     final live = active ? lease.live.value : null;
@@ -76,7 +82,7 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         interactions: session.interactions,
         businessRefs: session.businessRefs,
         activeTurnId: session.activeTurn?.turnId,
-        activity: session.activity,
+        activity: _activityWithLoadedTools(session.activity),
         latestLive: live,
         hasContentOwner: active,
       ),
@@ -86,6 +92,8 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
       loadingCurrentAtoms: _loadingCurrentAtoms,
       currentAtomsError:
           _currentAtomsError ?? lease?.currentCollectionError.value,
+      hasMoreActivityTools: _activityToolsContinuation != null,
+      loadingActivityTools: _loadingActivityTools,
     );
     // Diagnostics borrow the very object rendered by this component, not a second projection.
     if (active) lease.liveStatus = view;
@@ -131,5 +139,128 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
         }
       }
     }());
+  }
+
+  void loadNextActivityTools() {
+    unawaited(
+      _loadActivityTools(
+        ref.read(threadSessionStoreProvider(threadId)).activity,
+        nextPage: true,
+      ),
+    );
+  }
+
+  ThreadActivityView? _activityWithLoadedTools(ThreadActivityView? activity) {
+    final field = activity?.deferredField('tools.active');
+    if (field is! CollectionCurrentStateField) return activity;
+    if (_activityToolsField != field) return activity;
+    return ThreadActivityView(
+      threadId: activity!.threadId,
+      identity: activity.identity,
+      revision: activity.revision,
+      turnId: activity.turnId,
+      executionId: activity.executionId,
+      inputId: activity.inputId,
+      attemptId: activity.attemptId,
+      kind: activity.kind,
+      summary: activity.summary,
+      summaryTruncated: activity.summaryTruncated,
+      thinkingSummary: activity.thinkingSummary,
+      thinkingSeconds: activity.thinkingSeconds,
+      tools: ThreadActivityTools(
+        count: field.count.toInt(),
+        background: activity.tools.background,
+        active: _activityTools,
+        latestStarted: activity.tools.latestStarted,
+      ),
+      deferred: activity.deferred,
+    );
+  }
+
+  Future<void> _loadActivityTools(
+    ThreadActivityView? activity, {
+    bool nextPage = false,
+  }) async {
+    await Future<void>.value();
+    if (!ref.mounted) return;
+    final field = activity?.deferredField('tools.active');
+    if (field is! CollectionCurrentStateField ||
+        _activityToolsField == field && !nextPage ||
+        _loadingActivityTools) {
+      return;
+    }
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    if (lease == null || lease.isRetired) return;
+    if (_activityToolsField != field) {
+      _activityToolsField = field;
+      _activityTools = const [];
+      _activityToolsContinuation = null;
+    }
+    _loadingActivityTools = true;
+    state = _project();
+    final scope = lease.openCurrentScope(generation: lease.generation);
+    try {
+      final page = await scope.pageStateCollection(
+        field,
+        continuation: nextPage ? _activityToolsContinuation : null,
+        demand: const ReadDemand(maxItems: 20, maxBytes: 64 * 1024),
+      );
+      if (!ref.mounted ||
+          lease.isRetired ||
+          _activityToolsField != field ||
+          page.revision != field.reference.revision) {
+        return;
+      }
+      final loaded = <ThreadActivityToolEntry>[];
+      for (final entry in page.entries) {
+        final payload = switch (entry.payload) {
+          InlineCurrentPayload() => entry.payload,
+          DeferredCurrentPayload(:final reference, :final byteLength) =>
+            InlineCurrentPayload(
+              bytes: await _readActivityPayload(scope, reference, byteLength),
+            ),
+        };
+        loaded.add(
+          decodeCurrentActivityToolState(
+            jsonDecode(utf8.decode(payload.bytes)),
+          ),
+        );
+      }
+      _activityTools = List.unmodifiable(
+        nextPage ? [..._activityTools, ...loaded] : loaded,
+      );
+      _activityToolsContinuation = page.continuation;
+    } finally {
+      _loadingActivityTools = false;
+      scope.retire();
+      unawaited(scope.close());
+      if (ref.mounted) state = _project();
+    }
+  }
+
+  Future<List<int>> _readActivityPayload(
+    CurrentQueryScope scope,
+    CurrentContentRef reference,
+    int byteLength,
+  ) async {
+    final bytes = <int>[];
+    while (bytes.length < byteLength) {
+      final remaining = byteLength - bytes.length;
+      final window = await scope.readBody(
+        reference: reference,
+        range: ContentRange(
+          offset: bytes.length,
+          maxBytes: remaining < 64 * 1024 ? remaining : 64 * 1024,
+        ),
+      );
+      if (window.offset != bytes.length ||
+          window.generation != reference.generation ||
+          window.availableThrough != byteLength ||
+          window.bytes.isEmpty) {
+        throw const ConversationStateFieldDiscontinuity();
+      }
+      bytes.addAll(window.bytes);
+    }
+    return bytes;
   }
 }

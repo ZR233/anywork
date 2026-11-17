@@ -166,24 +166,22 @@ impl CurrentReader {
                 }
             }
         }
+        let saved = self.saved_current().await;
+        ensure!(slot.is_current(position.epoch), stale());
+        let saved = saved?;
+        self.check_open()?;
+        CurrentState::from_saved(&saved)
+    }
+
+    async fn saved_current(&self) -> Result<Arc<pl_core::thread::current::ThreadCurrent>> {
+        let runtime = &self.inner.runtime;
         let thread = runtime.read_protocol_thread(self.thread_id()).await?;
         runtime.check_thread_read_access(&thread)?;
-        let saved = runtime
-            .store
-            .state_for(&thread.workspace_id, self.thread_id())?
-            .load_current()
-            .await?;
-        ensure!(slot.is_current(position.epoch), stale());
+        let saved = runtime.store.state_for(&thread.workspace_id, self.thread_id())?.load_current().await?;
         self.check_open()?;
-        match saved {
-            Some(saved) => CurrentState::from_saved(&saved),
-            None => Err(StudioError::new(
-                StudioErrorCode::NotFound,
-                "This Thread has no recoverable current snapshot",
-                false,
-            )
-            .into()),
-        }
+        saved.map(Arc::new).ok_or_else(|| StudioError::new(
+            StudioErrorCode::NotFound, "This Thread has no recoverable current snapshot", false,
+        ).into())
     }
 
     fn metadata_revision(&self, current: &CurrentState) -> Result<u64> {
@@ -193,7 +191,7 @@ impl CurrentReader {
             .thread_observations
             .observation_slot(self.thread_id());
         let (position, _) = slot.capture();
-        let revision = if let Some(feed) = position.source {
+        let revision = if let Some(feed) = position.source.filter(|feed| !feed.is_delivery_closed()) {
             ensure!(
                 feed.current_conversation()
                     .is_some_and(|source| source.current.owner_id() == current.owner_id()),
@@ -229,10 +227,17 @@ impl CurrentReader {
                 .thread_observations
                 .observation_slot(self.thread_id());
             let (position, _) = slot.capture();
+            // A passive baseline reads complete JSON once. Both original State assembly and
+            // Current projection consume that same immutable cut, even during activation.
+            let saved = if position.source.as_ref().is_none_or(|source| source.is_delivery_closed()) {
+                self.saved_current().await.map(Some)
+            } else { Ok(None) };
+            if !slot.is_current(position.epoch) { continue; }
+            let saved = saved?;
             let opened = self
                 .inner
                 .runtime
-                .open_current_state_feed(self.thread_id(), cancellation.child_token())
+                .open_current_state_feed(self.thread_id(), cancellation.child_token(), saved.clone())
                 .await;
             let mut state = match opened {
                 Ok(state) => state,
@@ -255,7 +260,10 @@ impl CurrentReader {
                 else {
                     anyhow::bail!("current State assembler did not return a baseline");
                 };
-                let current = self.current(cancellation).await?;
+                let current = match saved.as_ref() {
+                    Some(saved) => CurrentState::from_saved(saved)?,
+                    None => self.current(cancellation).await?,
+                };
                 let view = CurrentView {
                     revision: CurrentRevision {
                         owner_id: current.owner_id().into(),
@@ -279,6 +287,9 @@ impl CurrentReader {
                 Ok(view) => return Ok((view, state)),
                 Err(error) => {
                     state.close().await?;
+                    if error.downcast_ref::<StudioError>().is_some_and(|error| error.reason() == Some("staleCurrentReference")) {
+                        continue;
+                    }
                     return Err(error);
                 }
             }
@@ -615,19 +626,27 @@ impl CurrentReader {
                             Err(error) => return Err(error),
                         }
                     };
-                    if let Some(current) = current.filter(|current| current.owner_id() == view.revision.owner_id) {
+                    let qualified = match current.filter(|current| current.owner_id() == view.revision.owner_id) {
+                        Some(current) => match self.metadata_revision(&current) {
+                            Ok(revision) => Some((current, revision)),
+                            Err(error) if error.downcast_ref::<StudioError>().is_some_and(|error| error.reason() == Some("staleCurrentReference")) => None,
+                            Err(error) => return Err(error),
+                        },
+                        None => None,
+                    };
+                    if let Some((current, revision)) = qualified {
                         match wake {
                             Wake::Notification(mut notification) => {
                                 if matches!(notification.notification, ThreadNotification::InteractionChanged { .. }) {
                                     notification.notification = ThreadNotification::BusinessRefsChanged { references: current.business_refs() };
                                 }
-                                view.revision.revision = self.metadata_revision(&current)?;
+                                view.revision.revision = revision;
                                 frame = CurrentFrame::Notification { revision: view.revision.clone(), notification };
                             }
                             Wake::Projection => {
                                 if current.projection() == &view.projection { continue; }
                                 view.projection = current.projection().clone();
-                                view.revision.revision = self.metadata_revision(&current)?;
+                                view.revision.revision = revision;
                                 frame = CurrentFrame::Projection {
                                     revision: view.revision.clone(), projection: Box::new(view.projection.clone()),
                                 };

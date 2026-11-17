@@ -618,7 +618,7 @@ impl FrozenTool {
         &self,
         input: OpaquePayload,
         mut context: CallContext,
-        cold: Option<crate::thread::cold::ColdStoreHandle>,
+        cold: Option<crate::thread::cold::StorageHandle>,
         cold_error: Option<Arc<crate::thread::cold::ColdStoreError>>,
     ) -> Result<ToolOutput, ToolError> {
         crate::error_record::catch_boundary("tool execution", async {
@@ -678,7 +678,7 @@ fn authorization_active(authorization: Option<&ToolAuthorization>) -> bool {
 }
 
 fn fence_error(
-    store: Option<&crate::thread::cold::ColdStoreHandle>,
+    store: Option<&crate::thread::cold::StorageHandle>,
     thread_id: &str,
     error: Arc<crate::thread::cold::ColdStoreError>,
 ) -> ToolError {

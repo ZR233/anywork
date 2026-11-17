@@ -1,18 +1,5 @@
 part of 'studio_api.dart';
 
-ThreadStreamFrame _threadStreamFrameFromFrb(
-  frb.BridgeThreadSubscriptionUpdate value,
-) {
-  return value.when(
-    snapshot: (completedHistoryVersion, snapshot) => ThreadSnapshotFrame(
-      workspace: _threadWorkspaceFromSnapshot(snapshot),
-      completedHistoryVersion: completedHistoryVersion,
-      schemaVersion: snapshot.schemaVersion,
-    ),
-    notification: _threadNotificationFrameFromEnvelope,
-  );
-}
-
 ThreadStreamFrame _threadNotificationFrameFromEnvelope(
   frb.BridgeThreadNotificationEnvelope envelope,
 ) {

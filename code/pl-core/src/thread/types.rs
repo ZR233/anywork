@@ -34,6 +34,8 @@ struct EffectWindowState {
 pub struct HistoryExport {
     pub effect: Arc<ThreadEffectBatch>,
     pub state: ThreadSnapshot,
+    /// Transient reliable-output reservation transferred with this exact export.
+    pub output_claim: Option<String>,
 }
 
 /// Shared transient live effect window: one [`ThreadEffectBatch`] per commit that is not durable
@@ -103,12 +105,12 @@ impl EffectWindow {
         self.write().batches.push_back(batch);
     }
 
-    pub(super) fn push_current(&self, export: HistoryExport) {
+    pub(super) fn push_current(&self, export: Arc<HistoryExport>) {
         let mut state = self.write();
         state.batches.push_back(export.effect.clone());
         state
             .current_exports
-            .insert(export.effect.sequence, Arc::new(export));
+            .insert(export.effect.sequence, export);
     }
 
     pub(super) fn current_page(

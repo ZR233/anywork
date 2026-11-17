@@ -2,7 +2,7 @@ part of 'studio_demo_api.dart';
 
 final class _DemoHistoryReader implements HistoryReader {
   _DemoHistoryReader(this._api, this.threadId, this._history)
-    : reader = _DemoReader(
+    : reader = _DemoReadSource(
         _api,
         threadId,
         _history,
@@ -15,7 +15,7 @@ final class _DemoHistoryReader implements HistoryReader {
   @override
   final String threadId;
   final _DemoHistory _history;
-  final _DemoReader reader;
+  final _DemoReadSource reader;
   bool _closed = false;
 
   @override
@@ -440,7 +440,7 @@ final class _DemoHistoryReader implements HistoryReader {
 
 final class _DemoCurrentReader implements CurrentReader {
   _DemoCurrentReader(this._api, this.threadId, this._history)
-    : reader = _DemoReader(
+    : reader = _DemoReadSource(
         _api,
         threadId,
         _history,
@@ -453,7 +453,7 @@ final class _DemoCurrentReader implements CurrentReader {
   @override
   final String threadId;
   final _DemoHistory _history;
-  final _DemoReader reader;
+  final _DemoReadSource reader;
   final Map<CurrentContentRef, ContentRef> _content = {};
   bool _closed = false;
 
@@ -477,9 +477,56 @@ final class _DemoCurrentReader implements CurrentReader {
   CurrentView get initialView => _snapshot();
 
   CurrentView _snapshot() {
-    final workspace = _api
-        ._demoWorkspace(threadId)
-        .copyWith(interactions: const []);
+    var workspace = _api._demoWorkspace(threadId);
+    final deferred = <CurrentStateField>[];
+    final collections = <CurrentCollectionRef>[];
+    CurrentCollectionRef? deferCollection(String name, List<Object?> values) {
+      if (_demoEncoded(values) <= 2048) return null;
+      final signature = jsonEncode(values);
+      if (_history._stateCollectionSignatures[name] != signature) {
+        _history._stateCollectionSignatures[name] = signature;
+        _history.stateCollectionVersions[name] =
+            (_history.stateCollectionVersions[name] ?? 0) + 1;
+        _history.stateCollections[name] = List.unmodifiable(values);
+      }
+      final reference = CurrentCollectionRef(
+        ownerId: _history.epoch,
+        collection: 'state:runtime:$name',
+        revision: _history.stateCollectionVersions[name]!,
+      );
+      deferred.add(
+        CollectionCurrentStateField(
+          field: name,
+          reference: reference,
+          count: values.length,
+        ),
+      );
+      collections.add(reference);
+      return reference;
+    }
+
+    final runtime = workspace.runtime;
+    final skills = deferCollection(
+      'activeSkills',
+      runtime.activeSkills.cast<Object?>(),
+    );
+    final mcp = deferCollection(
+      'activeMcpServers',
+      runtime.activeMcpServers.cast<Object?>(),
+    );
+    final lsp = deferCollection(
+      'activeLspServers',
+      runtime.activeLspServers.cast<Object?>(),
+    );
+    workspace = workspace.copyWith(
+      interactions: const [],
+      runtime: runtime.copyWith(
+        activeSkills: skills == null ? runtime.activeSkills : const [],
+        activeMcpServers: mcp == null ? runtime.activeMcpServers : const [],
+        activeLspServers: lsp == null ? runtime.activeLspServers : const [],
+        deferred: deferred,
+      ),
+    );
     final tail = reader.livePage(
       const ReadDemand(maxItems: 128, maxBytes: 256 * 1024),
     );
@@ -598,7 +645,7 @@ final class _DemoCurrentReader implements CurrentReader {
               ),
         interactions: interactions,
         previews: const [],
-        collections: [?interactions],
+        collections: [...collections, ?interactions],
       ),
     );
   }
@@ -640,6 +687,76 @@ final class _DemoCurrentReader implements CurrentReader {
     required ReadDemand demand,
   }) async {
     _checkOpen();
+    if (reference.ownerId == _history.epoch &&
+        reference.collection.startsWith('state:runtime:')) {
+      final name = reference.collection.substring('state:runtime:'.length);
+      final values = _history.stateCollections[name];
+      if (values == null ||
+          _history.stateCollectionVersions[name] != reference.revision) {
+        throw _demoStale();
+      }
+      final start = continuation == null ? 0 : int.tryParse(continuation) ?? 0;
+      final entries = <CurrentCollectionEntry>[];
+      var next = start;
+      while (next < values.length && entries.length < demand.maxItems) {
+        final ordinal = next++;
+        final bytes = utf8.encode(jsonEncode(values[ordinal]));
+        CurrentPayloadData payload = InlineCurrentPayload(bytes: bytes);
+        var entry = CurrentCollectionEntry(
+          id: '$ordinal',
+          position: ordinal,
+          payload: payload,
+        );
+        int encoded(CurrentCollectionEntry value) => _demoEncoded({
+          'revision': reference.revision,
+          'entries': [
+            {
+              'id': value.id,
+              'position': value.position,
+              'payload': switch (value.payload) {
+                InlineCurrentPayload(:final bytes) => {
+                  'kind': 'inline',
+                  'bytes': bytes,
+                },
+                DeferredCurrentPayload(:final byteLength) => {
+                  'kind': 'deferred',
+                  'byteLength': byteLength,
+                },
+              },
+            },
+          ],
+          'continuation': next < values.length ? '$next' : null,
+        });
+        if (encoded(entry) > demand.maxBytes) {
+          payload = DeferredCurrentPayload(
+            reference: CurrentContentRef(
+              ownerId: _history.epoch,
+              domain: 'collection:${reference.collection}',
+              entityId: '$ordinal',
+              contentKey: 'entry',
+              generation: '${reference.revision}',
+            ),
+            byteLength: bytes.length,
+          );
+          entry = CurrentCollectionEntry(
+            id: '$ordinal',
+            position: ordinal,
+            payload: payload,
+          );
+          if (entries.isEmpty && encoded(entry) > demand.maxBytes) {
+            throw _demoQueryFailure(
+              'InvalidDemand: State collection entry does not fit',
+            );
+          }
+        }
+        entries.add(entry);
+      }
+      return CurrentCollectionPage(
+        revision: reference.revision,
+        entries: entries,
+        continuation: next < values.length ? '$next' : null,
+      );
+    }
     if (reference.ownerId != _history.epoch ||
         reference.collection != 'interactions' ||
         reference.revision != _history.interactionRevision) {
@@ -699,6 +816,30 @@ final class _DemoCurrentReader implements CurrentReader {
       body = _history.planDocument;
     } else if (reference.domain.startsWith('collection:')) {
       final collection = reference.domain.substring('collection:'.length);
+      if (collection.startsWith('state:runtime:')) {
+        final name = collection.substring('state:runtime:'.length);
+        final ordinal = int.tryParse(reference.entityId);
+        final values = _history.stateCollections[name];
+        final version = _history.stateCollectionVersions[name];
+        if (ordinal == null ||
+            values == null ||
+            ordinal < 0 ||
+            ordinal >= values.length ||
+            reference.contentKey != 'entry' ||
+            reference.generation != '$version') {
+          throw _demoStale();
+        }
+        body = _DemoBody()
+          ..append(utf8.encode(jsonEncode(values[ordinal])))
+          ..sealed = true;
+        return ContentWindow(
+          offset: range.offset,
+          bytes: body.range(range.offset, range.maxBytes),
+          generation: reference.generation,
+          availableThrough: body.length,
+          sealed: true,
+        );
+      }
       final key = (collection, reference.entityId, reference.contentKey);
       body = _history.currentBodies.putIfAbsent(key, () {
         final row = _api

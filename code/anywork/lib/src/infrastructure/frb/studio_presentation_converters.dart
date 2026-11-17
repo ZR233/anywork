@@ -451,11 +451,28 @@ CurrentContentRef _currentContentRefFromFrb(
 
 CurrentStateField _currentStateFieldFromFrb(
   frb_presentation.BridgeCurrentStateField value,
-) => CurrentStateField(
-  field: value.field,
-  reference: _currentContentRefFromFrb(value.reference),
-  byteLength: _exactTimelineInt(value.byteLength, 'State field byte length'),
-);
+) => switch (value) {
+  frb_presentation.BridgeCurrentStateField_Body(
+    :final field,
+    :final reference,
+    :final byteLength,
+  ) =>
+    BodyCurrentStateField(
+      field: field,
+      reference: _currentContentRefFromFrb(reference),
+      byteLength: _exactTimelineInt(byteLength, 'State field byte length'),
+    ),
+  frb_presentation.BridgeCurrentStateField_Collection(
+    :final field,
+    :final reference,
+    :final count,
+  ) =>
+    CollectionCurrentStateField(
+      field: field,
+      reference: _currentCollectionRefFromFrb(reference),
+      count: _exactTimelineInt(count, 'State collection count'),
+    ),
+};
 
 frb_presentation.BridgeCurrentContentRef _currentContentRefToFrb(
   CurrentContentRef value,

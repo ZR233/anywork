@@ -179,13 +179,6 @@ struct ThreadStatus {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
 struct RegisteredCurrentWriter {
     directory_key: String,
     writer: Arc<super::current_writer::CurrentWriter>,
@@ -404,13 +397,6 @@ impl ThreadPersistenceCoordinator {
         Ok(writer)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "current-only API is intentionally not wired to production before #470"
-        )
-    )]
     pub(crate) fn release_current_writer(
         &self,
         thread_id: &str,

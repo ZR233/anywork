@@ -1,168 +1,147 @@
 # 07 - 会话线程实时流
 
-产品级低频主题流（topic）及其作用域见 [18](./18-studio-state.md) §18.2.1；它们与本文定义的会话线程（`Thread`）状态流、时间线（`Timeline`）内容源按职责组合，不汇合为单一的全局 GUI 事件流。前端选中某个会话时仅订阅该线程的状态流与内容源，并按所属根会话订阅费用统计。切换会话、离开页面或关闭应用时，必须先令旧订阅代次（generation）失效，再取消并等待释放旧句柄，确保迟到帧绝不写入新会话；共享主题流的最后一个观察者离开时立即释放底层订阅。
+本文描述 Native 会话的 Current、History 与产品主题传输边界。Current/History 的存储与恢复权威见 [15](./15-session-storage.md)，时间线呈现见 [26](./26-timeline-content.md)，客户端资源所有权见 [25](./25-frontend-state.md)，产品状态查询见 [18](./18-studio-state.md)。ACP 继续遵循 [28](./28-acp.md)，不套用 Native Current 或 History 保证。
 
-所有有界等待均支持取消；故障、滞后与关闭明确可观察。聊天重连关闭旧句柄并由新 Set 建立切点，后续仅 Append；其他现役领域沿自身 snapshot 恢复，不恢复实时 query 轮询、第二投影或全量历史缓存。
+## 7.1 三类独立观察
 
-Native current 解耦的目标及阶段边界见 [15](./15-session-storage.md#native-current-与历史解耦的目标合同)：实时状态从 RAM 读取，完整已合并流进入独立 current 周期快照，逐 token 变化不形成历史事件或磁盘写入；历史与 current 的保存、故障及确认相互独立。冷恢复的旧观察只显示为已暂停的上次状态，不授予旧执行资格。本文下述依赖 checkpoint、历史水位或展示快照共同交接的内容在生产切换前描述现状，不作为新 current 的提交或恢复门槛。
-
-## 7.1 业务事实、完成历史与实时观察
-
-Runtime 的唯一产品投影持续消费可靠 effect，一次生成业务当前态及不可变完成项，先发布可查询完成批次，再将同一 PreparedEffect 交既有 writer。无 GUI 订阅仍维护业务与保存事实；只跳过无需求的对外编码和事件泵，不积压无界 UI 日志。
-
-模型调用尚未结束时，独立成员的可靠完成也必须沿同一 effect 路径到达；可合并 progress 不是完成通道。逐成员接纳、最终回执幂等与取消收束见 [26 §26.1](./26-timeline-content.md#261-两个完成点与唯一所有者)。原完成级 Activity 不继续假装已结束成员活跃；GUI 展示组可以保留它的轻量终态引用直到整组交接，不能保活已落盘正文或增大帧预算掩盖累积。
-
-会话内容有两种明确用途：[26](./26-timeline-content.md) 的原 ConversationFeed/ChatBatch/Activity 服务完成级消费者；GUI Timeline feed 仅交付 Timeline/Failure/Closed，以冻结展示块和同切面 live 窗口完成整组交接。两种内容流均不转发 State，State 沿独立状态流交付。Flutter 不根据原完成项猜分组或退役成员。State 保留输入、workspace、交互等真实业务领域；低频目录身份不被迟到会话快照反写。
-
-业务文档/集合读取引用按 [26 的 State 合同](./26-timeline-content.md#266-业务引用由-state-交付)进入必有的 Snapshot.business_refs 与 BusinessRefsChanged 通知；只在原 Plan/交互资源头变化时更新，不受 token 或 Chat 进度驱动。基线先登记再捕获，引用发布前必须可由原 reader 解析；冷无执行源仍交付已保存的业务引用。沿原 State schema、epoch/revision 和信用升级，不另建业务通道、全局版本或 ACK。
-
-open 先登记被动接收者，再捕获同切面的完成上界 H0 与活动快照。首个 Chat 为到 H0 的 Set，接纳后才交付该活动快照；后继每次固定一个目标 H，按原完成集合补读到目标后交付同切面 Activity。源资格失效或无法证明连续时终结原流，新句柄用 Set 重同步，不在原流 reset 或重放业务命令。
-
-完成记录从原 Session/pending/SQLite 读取；展示冻结头从原 effect 待保存索引/快照表读取，不建立可靠展示 cut 队列。watch 只保留最新切面并唤醒，原 Core Effect/HistoryChannel 保存职责不变。原完成 feed 仍按完成 through 对齐 Activity；GUI 按独立展示位置 P 追赶目标，每帧只退役已经交付的相同 block_id，追至目标才替换完整 live。取消/关闭先撤销准入，再汇合原资源，未接纳事实不能 ACK。
-
-每项真实完成立即进入历史，不等前台组封口。客户端通过类型化 Run 引用按需读取段明细；Main 工作代表始终 Deferred，不读取成员正文/媒体。窗口、预算与折叠释放见 [26](./26-timeline-content.md#2682-活动与成员展开的资源边界)。
-
-## 7.2 领域版本与实时内容
-
-execution、authoring、configuration、metrics、context 是独立当前态领域，可复用同一个连接/owner，但使用各自封闭载荷与版本。指标变化不得通过全局 revision 驱动配置、草稿或历史更新。Session/incarnation、领域 revision、活动 generation/revision、timelineEpoch/append_seq 与 transport deliverySequence 各有职责，不能混用。
-
-轮次、任务、交互、Todo、存储、上下文和统计继续由既有权威所有者发布 typed replace 或增量。取消、失败、预算限制和 stepLimit 保留真实类型化终态；子智能体单轮上限为 256 步，自动压缩不计停止预算。Turn 完成不表示后台工具/子任务结束；执行终态与可靠保存独立。
-
-长实时文本由原 Rust 当前内容 owner 以稳定内容身份和 generation 维护；Activity 只含有界活动观察与引用，展开后通过 ContentWindow 接纳范围。追加不随 token 换代，替换才变 generation。SDK/Flutter 不归约原始 token 或 LiveDelta；过期引用明确 stale，不回读私有执行上下文补正文。
-
-Chat、Activity、State 共用原有界 Frame、信用和实际编码预算；大正文/当前集合使用独立范围或集合页，不用客户端 staging 拼超大事务。独立内容订阅有界且可取消，其他领域的分块协议不扩展为第二聊天历史。
-
-### 内容源增量、分块共享与工具输出捕获
-
-以下分块与增量仅用于 Runtime 当前活动及其事件，完成 Session 没有字段修订或 UpdateItem。实时内容按稳定身份与活动基准交付，完成时冻结一次：
-- **实时与完成分离**：未结束正文驻留 Runtime 当前活动；可靠结束后生成不可变完成项并交同一 PreparedEffect 保存，不发布可变历史或 saved 更新。文本来源保留 user、parentAgent、commentary、final 等真实语义。执行/保存故障走各自领域，不向正文插入伪造终态。
-- **模型流式分块的写时复制（`ModelParts`）**：模型生成期间的 `ModelProgress` 每帧仅将新数据块（chunk）追加到当前变化的观察身份上。投影内部使用分块容器 `ModelParts` 组织已填满的数据块（`filled`）与正在增长的尾块（`tail`）：当无外部观察者持有旧帧克隆时原地追加；一旦某帧被观察者克隆持有，后续修改仅按写时复制（copy-on-write）克隆被编辑的单个数据块（以及在尾块转入已填满列表时复制一次块索引表），从而消除长响应流式输出期间的整表克隆开销。
-- **工具实时输出窗口与可靠输出预算**：运行中工具（如终端命令执行）通过共享不可变的 `ContentBlock` 链向线程仅提交变化部分（携带不透明输出标识如 `command-output` 及 `Append{chunk}` 或 `Replace{text}`）。内核所有者在接纳增量前，先按应用增量后的总字节数核扣该调用的可靠输出预留额度（超出则取消该调用并保留已接收内容）。实时观察窗口另设独立的内存上限（`MAX_TOOL_PROGRESS_BYTES`、`MAX_TOOL_PROGRESS_PARTS`）：触顶时生产端显式轮转为 `Replace(有界后缀)`，如实表达头部已被裁剪；这仅影响实时预览窗口，不影响底层完整归档与可靠结果保存。模型工具调用的参数流（`ToolInputStarted` / `Delta` / `Completed`）与工具正文共享 `MAX_OUTPUT_BYTES` 高水位计费，未闭合或解析失败的参数仅保留诊断回执，绝不交付执行。
-- **命令输出落盘上限与模型可见截断**：
-  - **单命令捕获落盘上限**：后端通过 `capture_limit_bytes`（默认 `MAX_CAPTURE_BYTES`）与 `capture_storage_cost` 在接纳每个数据块前计算落盘字节成本（若同时写入合并日志与分流日志则双向计费），并将 `stdout`/`stderr` 数据块按读取顺序排入同一个有界修复计划，交由单命令唯一的写入任务异步刷盘。当触及落盘上限时，作为**预期容量终止**取消命令、等待进程退出并归档已落盘字节，返回类型化的 `OutputLimitExceeded`（包含上限、已保留字节与被拒字节），不视为存储故障（`OutputStorageFault`）。
-  - **可靠输出存储故障与重试义务（`OutputRetryObligation`）**：若捕获写入、刷盘或归档过程中发生真实的磁盘 I/O 故障，生产端立即通过可靠通道上报并阻断后续模型与工具准入；显式重试按稳定身份将同一份已接收字节重新落盘，成功后将持久化资源引用按原调用身份追加回已提交的工具结果元数据中（无论该条目是否仍在前端实时滑动窗口内）。
-  - **模型可见输出上限**：后端可通过 `model_output_bytes_cap` 声明进入模型上下文的可见正文总字节上限（按 UTF-8 字节数而非字符数计量，覆盖 `stdout` 与 `stderr` 可见正文之和，工具元数据不计入，省略提示行本身计入预算），由 `pl-output` 对保留的首尾片段做一次性投影截断。
-  - **捕获所有权切分（`CommandCaptureOwnership`）**：本地命令由宿主管理器负责接纳与单写入任务刷盘；SSH 远程命令在派生协议中将同一上限下发给远端 `pl-remote-helper`，由远端辅助进程在写入前计费并在触顶时终止捕获、上报实际计费回执。LSP 与 Git 工作树等无归档读者的内部命令显式使用 `RemoteCapture::None`，不创建命令日志文件。
-
-## 7.3 背压控制
-
-会话广播复用 Tokio 的有界广播和变化通知，每个消费者独立维护交付水位、预算和取消责任。慢消费者不阻塞执行、可靠保存或其他消费者；无法证明连续时显式重同步，不能丢失终态后继续宣称连续。终态及待决交互由权威状态或可靠历史保留，重订阅必须可恢复，而不是靠无界传输队列保存。
-
-FRB 的消费确认与在途上限遵循 §7.10；HTTP 与原生消费者同样限制待交付内容，内部等待可取消。GUI 断开只解除自己的观察，不取消待决交互、后台执行或飞书订阅。只有明确的业务取消与运行时关闭才能按各自契约改变执行和交互状态。
-
-## 7.4 SDK 唯一归约与前端只读投影
-
-SDK 各领域 Repository 是当前态唯一 Dart writer，FRB 只做一次类型映射，ViewModel 只从已提交快照派生不可变 ViewState。Flutter 不把 snapshot 拆为伪事件再归约，也不保存 competing mirror。首帧、恢复和版本缺口仅更新受影响域，不清理草稿或无关状态。
-
-GUI 主时间线由 Flutter 的唯一应用所有者带已应用游标按需领取；SDK 只转发读取能力。历史组件操作成功且原资格仍有效后，共同公开尾部与游标，不等待绘制。空历史更新不枚举主列表，翻页仅返回结果；固定切面、响应重放及预算合同见 [26](./26-timeline-content.md#265-展示协议与同切面交付)。完成原件仍使用独立 `ChatBatch` 与原信用机制。
-
-迟到结果按首次 await 前冻结的会话、incarnation、operationId、领域/草稿版本和附件归属结算。未知结果保留原意图，不自动重发。选择 null 仍为合法新会话草稿，流恢复或目录新增不能擅自选中历史会话。
-
-## 7.5 产品级事件流（Product Stream）
-
-项目列表、根/子线程目录、后台任务、全局设置、账号额度用量以及 MCP/LSP 服务健康状态使用独立的低频产品级事件流（`Product stream`）。产品流不传输轮次或时间线条目的高频增量。目录提交仍产生原领域变更，桌面侧栏则通过列表结构和精确 threadId 元数据的独立 pull 观察消费，不再同时订阅旧全局目录 topic 来驱动界面刷新。目录通知不改动轮次、时间线条目、交互或运行时状态内容；结构、定向通知与版本契约见 [18.7.1](./18-studio-state.md#1871-可变目录的查询观察)，客户端接纳见 [25.6](./25-frontend-state.md#256-只读模型与细粒度呈现)。
-
-产品主题的 Dart 传输端口返回显式观察资源及其单消费者帧流。流监听取消只负责停止该消费者；资源关闭等待真实 native cancel 确认、句柄释放和底层流清理。关闭失败保留同一资源，后续显式清理重试才再次调用原生关闭入口；不能通过重复取消流或打开替代来源冒充原句柄已释放。领域池继续管理 topic、引用数、代次、连接状态和重连，作用域仅管理创建、停止与收束；同一 topic 的其他需求仍然有效。
-
-Rust 侧主题接收凭证的生命周期及最后订阅者离开后的通道回收遵循 [18.2.1](./18-studio-state.md#1821-按职责订阅)。回收的是通知通道，不是领域事实或订阅期间的业务执行；正常重订阅以新登记和当前基线恢复，不承诺重放已回收通道中的事件。
-
-## 7.6 FRB 与 HTTP 传输边界
-
-FRB 桌面桥接层与 HTTP SSE 服务端共用同一套运行时订阅 API，不各自维护流状态机：
-- **端点与订阅顺序**：HTTP 产品流端点为 `GET /api/v1/events/product`，线程状态流端点为 `GET /api/v1/threads/{thread_id}/state/events`；原 `/events` 仅交付完成级内容。订阅建立时一律先注册接收通道、再读取当前基线状态（如自更新主题流 `Updater` 先登记接收者再读取当前更新状态），确保建连期间完成的后台状态变更不会漏发。
-- **完成级会话 SSE**：原线程 events 消费 Runtime ConversationFeed，交付 Chat/Activity/Failure/Closed，Chat 交付完成记录，Activity 交付完成前缀绑定的最新活动快照。GUI 内容改用同会话 `/timeline` 展示接口，不再同时订阅原完成内容流后自行合并；独立 State 观察保持。HTTP 不重组卡片；原 State 握手 `completedHistoryVersion=1` 保留，GUI 另严格检查 `presentation_version=1`，不支持或缺失时明确 ProtocolVersionMismatch。
-- **需求与恢复**：scope、条数/字节、from_seq/through_seq 遵循 [26](./26-timeline-content.md)。重连新 handle 取得 Set；Last-Event-ID 不是完成接纳位置，不支持旧恢复参数或流内 Reset。
-- **独立内容读取**：Main 段代表页、Run 明细、真实 Children、按完成 ID 和内容范围查询共用原 read lease，各 scope 的 cursor 独立；查询不受 SSE/FRB credit 阻塞，不提供跨连接 durable replay。
-- **内存驻留与关闭**：统一 feed 在连接存活期间持有正式 reader/订阅作用域，不在 HTTP 新建平行会话登记或内容缓存。正文发送最多保留一个有界排队帧；发送背压、断连及服务端关闭均保留原取消语义，先取消并 join 真实 feed 再释放作用域。重叠订阅与临时激活各自管理所有权。
-- **快照点查与技能激活通知**：FRB 的 `readThreadSnapshot` 与 HTTP 的 `GET /api/v1/threads/{thread_id}` 调用同一快照查询入口，返回不含历史条目的当前线程完整状态。技能（`Skill`）激活通过常规的终态技能条目与 `threadRuntimeUpdated` 通知表达，激活来源为强类型的 `Tool { toolCallId } | UserGesture { invocationId }`，资源位置为类型化资源基址（resource base），时间线据此区分“智能体调用激活”与“用户手动激活”（压缩重置与冷恢复语义见 [10](./10-skills.md) §10.6）。
-- **滞后重同步与心跳**：产品流发生滞后或收到客户端携带 `Last-Event-ID` 的重连请求时，立即下发 `stale` 事件要求客户端重读 `/api/v1/state`。SSE 连接每 15 秒发送一次注释行心跳（comment heartbeat），心跳不占用业务序号，且 FRB 与 HTTP 各自的传输缓冲区互不共享序号或取消句柄。会话标题的自动生成与提交统一通过 `ThreadDirectoryChanged` 增量事件发布（见 [18](./18-studio-state.md)），不设平行的标题通知帧。
-
-### HTTP 读取资格的传递
-
-会话 SSE 的查询参数必须包含 `maxItems`、`maxBytes`；可选参数互斥地选择真实 Children 或完整 Run 引用（database_id、index_version、start_seq），省略选择 Main。成功打开后，`X-Anywork-Conversation` 响应头返回原 feed 订阅身份；独立查询以同名请求头携带，并与 Thread 校验。它定位原 read lease，不替代授权、scope 或 cursor。
-
-HTTP 适配器只在原读取所有者存活期间索引该读取能力，不另建 Session、业务观察源或正文缓存。连接退出、重同步或服务端关闭先封闭新查询，再分别收束真实 feed 与 read owner；任一侧失败仍处理另一侧。已接纳短读按原 owner 结束，能力失效后的新请求明确返回读取资格失效，不能重开 reader 接受旧 before。
-
-| 方法与 Thread 内路径 | 请求内容 | 返回内容 |
+| 观察 | 内容 | 生命周期 |
 | --- | --- | --- |
-| `POST /chat/older` | before、demand | Prepend ChatBatch |
-| `POST /timeline/open` | presentationVersion、readerProtocolVersion、demand | OpenTimeline，回显版本与初始游标 |
-| `POST /timeline/next` | after、原读取资格 | ViewUpdate；无变化达到等待期限时返回 204，不分配游标 |
-| `POST /timeline/older` | before、demand、原读取资格 | 纯查询 TimelinePage |
-| `POST /timeline/live-older` | before、demand、原读取资格 | TailSnapshot |
-| `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
-| `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，本次页观察 sealed 后结束；冷 saved-only 页固定后结束不代表业务块封组，见 [26.7](./26-timeline-content.md#267-内容成员窗口与资源) |
-| `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
-| `POST /contents/read` | reference、range | ContentWindow |
-| `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |
-| `POST /current/page` | reference、continuation、demand | CurrentCollectionPage |
+| Current | 当前 run 的 State、projection、collection 与正文 | 由 `CurrentReader` 打开和关闭 |
+| History | 不可变事件、Work/Single/member 页面、event/body 与 change | 由 `HistoryReader` 打开和关闭 |
+| 产品主题 | 目录、设置、账号、统计、更新器、MCP/LSP 等低频领域 | 由各领域 owner 的 typed topic 提供 |
 
-这些路径以 `/api/v1/threads/{thread_id}` 为前缀；Main 按段代表跳读，Run/Children 按完成 seq 分页，continuation 不互换。`POST /chat/completed` 接受 recordId/demand，经原 lease 返回有界 CompletedEntry。查询不占发送位置或信用；内容 watch 只关闭自身观察，会话流仍为单未确认普通批次。
+三者不建立共同游标、共同确认或共同提交。Current 可先出现尚未形成 canonical History 的正文；History 也可在冷页面中独立读取。Flutter 只按稳定业务身份组合显示，不把两个存储的可见性描述成原子。
 
-## 7.7 实时运行事实与前端细粒度投影
+Native 会话只使用上述 Current/History 端口，不再叠加第二套完成流、展示 reader 或 UI 确认协议。旧 v24 wire 只在冻结迁移 schema 中读取。
 
-会话各领域版本独立，执行相关轮次、活动与交互由所属 owner 维护一致提交；前端按字段选择不可变当前切片。统计、上下文、配置、创作不共享一个触发全工作区重建的全局 revision，完成历史也不随 token 或计时更新。
+## 7.2 Current 观察
 
-运行中模型调用的词元用量严格区分两类来源：
-- **`live`（实时尽力观察）**：由模型适配器或运行时所有者在流式输出期间提供的实时增量观测。若底层协议不提供流式词元计数，则保持为未知，严禁使用字符数、字节数或本地计时器伪造词元数。`live` 观察不写入持久化 `UsageSummary`。
-- **`authoritative`（权威终态事实）**：请求尝试完成回执或已持久化的计量事实。当尝试结束时，由 `authoritative` 事实原子覆盖并清除 `live` 标记；重订阅首帧必须同步携带当前的 `live` / `authoritative` 状态。
+`CurrentReader` 是原 State assembler 的唯一薄观察端口。它提供：
 
-状态栏吞吐速度投影仅接受同一 `live` 观察内成对出现的有效输出词元数与含首字等待的总响应时长；若任一字段缺失，则完整沿用规范运行时状态中最近一次已确认的成对聚合样本，禁止跨不同尝试拼凑分子与分母（样本选择与保持语义详见 [18](./18-studio-state.md) §18.8）。所有用户可见的实时字段均须具备从「后端所有者 → 事件/快照 → 客户端归并器 → 水位校验 → 选择器投影 → 可见租约」的完整可追踪链路，不依赖切页、延迟等待或前端轮询刷新状态。
+- snapshot：一次有界 Current 基线；
+- watch：同一 owner 的 Reset、notification 与 projection；
+- collection page：由 `CurrentCollectionRef` 选择 bounded page；
+- body read/watch：由 `CurrentContentRef` 与范围读取当前正文；
+- close：封闭本 reader 的 metadata/body watch 和 page 读取，并等待真实 join。
 
-## 7.8 统计 FRB 推送与关闭
+owner、`runtimeEpoch`、`run_id`、`CurrentRevision` 与正文 generation 都来自同一资源。watch 首次总是给 Reset；连续通知沿用原 State assembler 顺序。若出现 Lagged、resync、owner 失效或无法证明连续，返回新的小型 Reset，不 replay History，也不另建 reducer。
 
-统计桌面界面（GUI）采用独立的强类型推送流（Typed Feed），由 FRB `StreamSink` 向 Dart `Stream` 主动推送头部摘要与传输状态，既不暴露需由 Dart 逐帧拉取的 `next` 远程调用，也不通过通用产品信封或聚合引导快照（Bootstrap）传输完整统计快照。Rust 内部等待 `watch` 通道更新属于受管生产者的内部驱动而非接口轮询，不得将该等待逻辑移交至 Dart 事件泵。领域事实来源与不可变统计材料的有界读取契约见 [18.2.2](./18-studio-state.md#1822-统计观察与不可变读取)；其他产品主题与会话线程传输层维持各自现役协议，不因统计模块独立切片而改变。
+`CurrentStateField` 是带 `kind` 的封闭联合：
 
-推送流首帧固定下发当前基线，后续帧交付已发布统计材料或状态的版本化增量；流缺口、类型化错误与连接关闭均显式可观察。由于统计视图属于可覆盖的只读投影，慢消费者的待发送槽位仅保留最新发布版本；但待发帧必须完整保留其真实来源与材料身份，不得将合并省略的中间状态伪装成严格连续的业务增量。
+- `Body { field, reference: CurrentContentRef, byteLength }`
+- `Collection { field, reference: CurrentCollectionRef, count }`
 
-`StreamSink` 投递成功不等同于 Dart 侧已完成消费。每条统计推送流在同一时刻至多允许两个未确认（Unacknowledged）数据帧在途（首帧基线计入同一配额）；`StatisticsRepository` 完成数据转换与归约后，按投递序号（`delivery sequence`）的连续前缀向后端发送确认（ACK）。重复的旧序号确认保持幂等，超出已发送序号的确认直接拒绝；投递序号与所有者／材料修订号、持久化落盘票据（Ticket）分属不同版本域，互不替代。仅在 `StreamSink` 前置有界通道不足以证明原生端口在途数据有界，容量许可必须一直持有至收到消费确认。
+State 只保留字段名与引用。字段序列化超过 2 KiB 才 deferred；小于等于阈值的值保持内联。runtime 的 `activeSkills`、`activeMcpServers`、`activeLspServers` 与 activity 的 `tools.active` 使用 Collection，`count` 是完整集合真实总量，不是当前页行数。`todo`、`progress`、`mcpHealth`、`workflow`、`plan` 以及 activity 的 `thinkingSummary` 等使用 Body。
 
-取消信号优先于容量等待；传输层的 `Failure` 或 `Closed` 终态事件至多发送一次，且无需等待数据帧 ACK 即可收束。发生故障时不得仅记录日志后跳帧继续，关闭流时也不得以丢弃 `JoinHandle`、调用 `Stream.cancel` 或依赖垃圾回收（GC）冒充收束完成。`requestClose` 先封闭准入并触发取消，`close` 则等待生产者任务、`StreamSink` 与已登记的读取操作全部真实退出后才释放容量许可；若关闭等待被取消或超时，仍须保留原汇合（Join）责任。重新发起观察时建立全新基线，既不重放业务命令，也不用旧句柄或点查结果修补新推送流的水位。
+集合页条目使用 `CurrentPayloadData::Inline` 或 `CurrentPayloadData::Deferred { reference, byteLength }`；条目大时只返回 body 引用。调用方沿 reference 的 owner、generation 与范围读取，不把整个集合拼成第二份常驻 State。Body 也按 64 KiB 窗口读取，并核对 generation、长度与 EOF。
 
-## 7.9 账号领域观察与背压
+热 owner 的资源由原 ThreadLiveFeed 的 State resource index 持有，多个 Current 引用共享同一不可变内容；冷 current 从 JSON 建立同 shape 的引用。外部只看到 opaque generation 和 owner，不能推导 live/cold 命名公式，也不能把 live 与 cold 的 revision 相互比较或复用。
 
-账号配置、模型目录/详情、用量与 ACP 各自保留事实来源与修订号，经类型化端口交给对应领域仓储；不从旧 GUI 聚合状态分发，不借账号页面再归并一份 canonical。读取形状见 [18.2.3](./18-studio-state.md#1823-账号领域摘要与按需详情)。
+`thread_snapshot` 等一次性 Current 查询同样打开 `CurrentReader` 并复用该 assembler，只返回有界 State；它不重新 project 全数组、不等待 History usage，也不安装第二个执行 owner。
 
-观察传递完整领域状态而非必须逐帧重放的业务增量，慢消费者可合并到最新状态。每条观察只保留一个待交付的最新状态，并至多允许一个在途的下一帧读取；消费方完成当前归约后才请求后继，原生等待由真实来源变化唤醒，不定时轮询。首帧与后续帧具有相同身份契约，读取和订阅原子登记避免丢失唤醒。该简单背压不引入统计的材料作用域、分页或显式数据 ACK，也不将无界原生端口投递冒充有界推送。
+关闭 CurrentReader 会先同步撤销本 reader 新准入，再取消并 join 它拥有的 metadata/body watch 和 page 读取。调用方先取消与父 reader 后关闭等交错都真实收束；关闭 Current 不关闭 HistoryReader 或 HistoryStore。
 
-变化通知仅唤醒从原所有者取得最新快照，不持有第二份可变业务状态；重同步只影响对应来源。账号/详情代次切换后旧结果不能发布到新观察，查询失败保留最近有效内容及来源。列表帧不夹带完整模型目录，按需详情不因其他账号更新重复物化。
+## 7.3 History 观察
 
-关闭同步封闭准入并唤醒等候者，等待打开、在途读取、消费者和原生资源真实退出；失败或超时保留原句柄与汇合责任。页面取消观察只结束显示需求，不终止目录同步、用量请求或 ACP 操作；业务任务由运行时与领域仓储继续登记并纳入应用退出。
+`HistoryReader` 提供固定 cut 的纯查询：
 
-## 7.10 会话推送、交付确认与关闭
+- 主时间线与业务行页面；
+- 按 group 的 member 页面；
+- event 页、event 详情与 body 目录；
+- body 范围读取；
+- Turn、Source、Cost 与 Accounting 查询；
+- 从已有 cut 等待后续 change。
 
-主时间线通过原会话读取注册表登记 `TimelineReader`，不建立独立时间线注册表。`next` 最长等待 25 秒，无变化返回无正文的 204；120 秒没有请求、在途主读取或子观察时回收。查询与子观察持原读取租约并计入活动资格；最后请求完成后重新开始空闲计时。`next` 和 `close` 不占普通请求池，读取器仍受原流配额约束。关闭先同步撤销准入，再汇合原资源并释放其配额，不等待旧主事件流的完成通知，也不关闭共享执行。旧 `GET /timeline/events` 已删除，没有转发入口。
+History change 只唤醒调用方重新查询有界范围，不携带完成、消费或保存 ACK，也不要求客户端推进 server cursor。新页面使用调用方捕获的 `HistoryCut`；阅读更早页面时保留同一 cut。换 Thread、reader、数据库或 cut 后旧 cursor 失效。
 
-HTTP 的 `/api/v1/threads/{thread_id}/events` 仅交付内容并提供原读取租约；`/api/v1/threads/{thread_id}/state/events` 独立交付状态快照与通知，不授予内容读取能力。两个 SSE 各有有界发送窗口和关闭责任，不保留原组合事件流的兼容分支。FRB 与 SDK 使用相同的领域边界，传输确认按各自现役协议处理。
+History 读取不促发 Current 保存，不激活模型或工具，也不从 Current source 状态重算历史组。一个 HistoryReader 关闭只释放自身资格，不关闭共享 HistoryStore 或其他 reader。
 
-会话观察绑定同一注册 Session、读取资格和被动 observation slot。事件与切点遵循 [26](./26-timeline-content.md)，不是旧状态/内容流的兼容壳。多 GUI、HTTP、机器人各自持需求；登记与捕获必须防漏，接收者数量提示不替代证明。打开与旧页不装配执行，idle pending 也属于有效来源。
+## 7.4 HTTP 边界
 
-State 与内容分别观察原所有者，使用独立的接收、消费及确认通道。State 首帧和后续通知由唯一的被动状态观察实现组装，保留可靠通知顺序、连续版本与 Lagged 语义；完成级内容通道交付完成补读和 Activity，GUI 展示通道交付冻结块与 live 切面，均不重复组装 State。打开状态观察与内容读取都不激活执行。正文消费、内容信用等待与翻页不得阻塞运行时、上下文、轮次、交互、业务引用或存储状态的交付；状态也不能从活动或正文重建。活动可合并最新值，完成事实只从原集合按前缀补读，完成前缀与活动退役仍由内容 owner 原子接纳；GUI 历史块与同 ID live 退役沿独立展示水位原子接纳，不以独立 State 的到达代替该屏障。
+Current 与 History 分别 open，均返回 `readerId`，后续请求用 `X-Anywork-Conversation` 指定原读取资格。
 
-FRB 的状态句柄与完成原件句柄各有唯一 producer、独立订阅身份、投递序号和信用；每句柄最多一个未确认普通数据批次（状态首快照与内容首 Set 均计入各自额度），单帧和待发/在途总字节均有上界。StreamSink.add 成功仅表示端口接纳。Frame 保留会话、订阅身份及递增 deliverySequence，不在 ChatBatch/Message 再复制身份。Failure/Closed 在各自 producer 退出时至多尝试一次，复用该句柄最后 sent 序号，首普通帧前可为零，不占 credit、不 ACK、不等待确认且有固定字节上限。
+Current 端点：
 
-SDK 各 feed owner 唯一发送自身 ACK：Chat 在 applyBatch 完成且原 lease 有效后 ready，Activity 在活动接纳完成后 ready，State 在所属会话 Repository 提交后 ready；只确认同句柄连续帧前缀，状态确认不经过内容消费队列。Failure/Closed 先分类，构成所属通道的接纳资格屏障，不进入普通 ACK。重复旧 ACK 幂等，未发送或其他句柄 ACK 拒绝；转投无界队列、提前确认未消费内容或增大信用窗口不算接纳。
+| 路径 | 用途 |
+| --- | --- |
+| `POST /current/open` | 检查 `currentProtocolVersion`，建立 CurrentReader 并返回 owner id |
+| `POST /current/snapshot` | 有界 Current 基线 |
+| `POST /current/watch` | SSE `CurrentFrame`，事件名为 `current` |
+| `POST /current/page` | Current collection page |
+| `POST /current/body/read` | 有界 Current body window |
+| `POST /current/body/watch` | SSE `ContentWindow`，事件名为 `body` |
+| `POST /current/close` | 撤销本 reader 的 watch/page 并 join |
 
-内容 facade 组合内容 feed 与私有 read lease，独立状态 facade 只持状态观察。loadOlder 锁外直接查询，不获取 producer 挂起 recv/credit 所持 native feed 锁，不排进其命令队列、不带 delivery sequence 或 ACK。会话 owner 按同一可见需求持有两种观察，但各有代次和局部恢复：状态失连续重建状态基线，不重开有效内容窗口或清空草稿；内容重连也不回退有效状态。打开前登记取消与汇合责任，尚未启动 events 就退役也要回收。producer 终止只关闭自己的 feed，已准入 query 仍由 read owner 收束；显式 requestClose 同步封闭自有资源新准入，close 等待全部自有资源，任一侧失败仍收束其余资源并保留 unresolved 责任。页面隐藏、切换与应用关闭覆盖状态和内容两种观察，旧代次迟到结果不能恢复准入。外部另开的 reader 和共享执行不因此关闭；取消一次等待、Stream.cancel 或丢句柄不等于 join。
+History 端点：
 
-正文 watch 沿用领域当前态的按需领取方式，不用裸 StreamSink 承担取消或背压证明。FRB facade 内登记不透明 watch 身份，`openContentWatch(reference,range)` 建立原 read lease 的范围观察，`nextContentWindow(watchId)` 至多一个 Future 在途，返回当前有界 ContentWindow 或 EOF；只有消费当前结果后才领取后继。同一 watch 的重叠领取明确拒绝，源变化唤醒等待，允许合并中间窗口，不定时轮询、不推原始文本 delta，也不占聊天流信用或增加 ACK。
+| 路径 | 用途 |
+| --- | --- |
+| `POST /history/open` | 检查 `historyProtocolVersion` 并建立 HistoryReader |
+| `POST /history/capture` | 捕获 opaque cut |
+| `POST /history/timeline` | Work/Single 主页面 |
+| `POST /history/group` | member 页面 |
+| `POST /history/turns` | Turn 页面 |
+| `POST /history/events` | 按 query 的 event 页面 |
+| `POST /history/event` | 精确 event 详情 |
+| `POST /history/bodies` | event 的 body 目录 |
+| `POST /history/body` | 有界 body 范围 |
+| `POST /history/costs` | 费用页 |
+| `POST /history/accounting` | 累计用量 head |
+| `POST /history/changed` | SSE `changed` / `closed` 通知 |
+| `POST /history/close` | 撤销本 HistoryReader |
 
-`requestCloseContentWatch(watchId)` 同步封闭并取消该 watch，`closeContentWatch(watchId)` 等待在途领取和原生观察真实结束后才移除；失败保留原身份供重试。SDK `watchContent` 将这一能力映射为单消费者 Stream，暂停时停止领取，取消／折叠／原显示租约退役时先请求取消再 join。facade 显式关闭覆盖所有自有 watch 及 feed/read 两侧，但单独关闭 watch 不关闭原 read lease 或共享执行。每个 watch 只保留一个待取最新来源及一个在途窗口，range 与实际传输编码受内容窗口上限约束，活跃 watch 数受有界资源准入。
+端点均以 `/api/v1/threads/{thread_id}` 为前缀。SSE 只承担 Current/watch 与 History/change；普通 page/body 查询不占另一个流的信用。连接使用有界发送窗口，断连与 close 都先封闭准入，再 join 原 reader/watch。
 
-传输端 `ConversationReader.watchContent` 返回显式 `ConversationContentWatch`，只提供 `windows` 单消费者 Stream、同步 `requestClose()` 与可重试 `close()`；SDK read scope 持有这个原观察句柄，页面侧 `ConversationQueryScope.watchContent` 仍只暴露 Stream。它复用现有显式观察资源模式，不增加内容来源或缓存。窗口流的取消先停止交付并请求取消，原生 join 由句柄的 `close()` 负责；SDK 收束订阅和原句柄两侧，任一失败仍尝试另一侧。不能用重复 `StreamSubscription.cancel()` 代替重试原 watch 的 join，也不能仅因 Stream done、取消 Future 结束或 facade 的其他侧成功就认定观察资源已经释放。EOF、错误和退役均须收束原句柄；失败保留原身份与未决责任，后续明确重试 `close()`，不重开观察来冒充回收。
+协议版本或 schema 不匹配立即返回类型化 Protocol mismatch，不探测旧字段或降级为旧 reader。
 
-页面销毁只解除自己的观察租约；最后观察退出才由领域 owner 收束共享 feed，不停止 Session、Turn、writer、后台任务或其他消费者。presentation detach 取消未接纳交付并退出对应观察，不提前 ACK。应用退出仍由唯一协调器负责，机器人发送确认遵循 [27](./27-bots.md)。
+## 7.5 FRB 与 SDK
 
-## 7.11 可变目录的 pull 观察
+FRB 机械映射同一组 Current/History 类型并转发显式句柄，不生成第二套 State reducer、历史列表或 frame 水位。SDK 会话 owner 通过 Current 提交 State 的唯一 Dart 写入口；History 页面交给 Flutter 时间线 owner。
 
-可变目录查询采用领域专用的不透明观察句柄，而不是连续推送的 StreamSink producer。open 绑定不可变 query/window 或 thread ID，并在首读前登记变化；next 每次只交付一份完整当前结果及其实际 stamp。SDK 验证目标并提交只读模型后才请求下一帧，同句柄拒绝并发 next，不引入目录 ACK 或无界中转。
+Current 与 History 的 reader、collection page、body read、watch 和 close 都是独立资源。SDK 不跨 AppGraph 共享原生句柄，不以 `StreamSink.add` 成功证明业务消费，也不在 Dart 建无界中转队列。组件只关闭自己的观察租约；关闭失败保留原 owner 和重试责任。
 
-requestClose 同步封闭本观察的新准入并唤醒等待，close 汇合该句柄已准入的 next/read 和迟到 open；同查询如需恢复，重建的是原完整窗口，不从全局目录首页拼补。错误保留在原观察，不关闭业务 Session、其他消费者或独立会话内容 feed。该机制复用账号 pull 观察的生命周期，但不将两种领域泛化为通用同步总线；目录事实与窗口成本见 [18.7](./18-studio-state.md#187-项目侧栏)，Client 与呈现责任见 [25.6](./25-frontend-state.md#256-只读模型与细粒度呈现)。
+Flutter 时间线应用规则见 [26.8](./26-timeline-content.md#268-flutter-唯一窗口与串行-apply)。
 
-### 可靠开始与首次内容可读
+## 7.6 产品主题流
 
-Native 模型成员的 Started 保持与内容独立的真实开始。ContentAvailable 沿同一可靠成员准入通道，每公开 part 至多一次，在下一归一化事件前交接；call registry、预算、effect/journal 和原保存责任共同覆盖，不能依赖仅保最新值的 progress/watch。显示边界使用其真实位置，不改原 start_fact，也不分配完成 ID/seq。Started/ContentAvailable/Completed 保持真实顺序；空正文、完整返回、权威终值和失败取消的展示规则见 [26](./26-timeline-content.md)。不新增传输通道、DTO 副本或 ACP 义务。
+项目、会话/智能体目录、设置、账号、ACP、MCP/LSP、模型统计、更新器、启动进度与持久化状态使用各自 typed topic。主题只承载领域 owner 已发布的事实，不承载轮次 token 或 History 正文。
 
-三种成员事实统一使用原调用 cancellation：reserve 等待可取消，取得 permit 后 send 前复查并释放本次临时预算；已 send 后必须等待同一 owner 的真实接纳或 typed 拒绝，不 drop、重发、伪造 ACK 或套总超时丢事实。发送前取消映射原 Cancelled 收束，不转成供应商重试错误；已从 accumulator 取出的条目和计费通过原 partial/presentation 返回材料保全。Owner 接纳不等待 SQLite，关闭先关闭/排空 receiver 再 join 原调用。网络 300 秒 idle 仍只计 provider_read；member_capacity/member_reply/durability_wait 是本地阶段，不冒充网络超时。
+主题订阅先登记再捕获基线；最后观察者释放后回收通道。通道关闭不是业务资源删除，重订阅使用新基线。无关领域变更不能触发会话 Current/History 重建。
 
-ModelRuntime 从原调用令牌派生 `CancellationToken::child_token()`，使调用方取消在返回时已传递至 collector 和成员发送检查，不依赖外层 future 再次轮询。物理 session 关闭只取消本次调用的子令牌，并继续等待原 invocation 收束，不反向取消调用方令牌。
+侧栏目录使用 §7.11 的固定 query/window pull；其他简单可变领域可使用一个最新待交付值和一个在途读取。统计领域保留其自身有界 typed feed 与消费确认，不能把该机制扩张成 Native Current/History ACK。
+
+## 7.7 用量、活动与状态栏
+
+当前 usage、live usage、活动阶段、工具计数、todo/progress 与控件资格来自 Current State。State 的轻量 metadata 不等待正文或集合读取；正文读取失败不撤销仍有效的 usage 与执行指标。
+
+作者性终态用量由 Current 的累计摘要与 History 的 Accounting/usage 事件分别承载。当前指标不能证明 History 已提交，History cut 也不能反推当前 owner 是否存活。展示层不通过全量历史回填缺口，不从日志或字符数估算未知用量。
+
+<a id="78-统计-frb-推送与关闭"></a>
+
+## 7.8 统计 FRB 推送
+
+统计桌面界面使用独立 typed feed 推送头部摘要与传输状态，不从 bootstrap 或全量 History 读取统计数据。首帧是当前基线，后续交付已发布统计材料或版本化增量；慢消费者的待发送槽只保留最新可替代版本。
+
+统计 feed 可以在自身协议中保留有界在途帧、delivery sequence 与连续消费确认。该确认属于 StatisticsRepository 与统计 producer，不是 Native Current/History 的保存或历史 ACK。取消、Failure/Closed、reader join 与材料读取仍由统计 owner 管理。
+
+<a id="79-账号领域观察与背压"></a>
+
+## 7.9 账号与 ACP 领域观察
+
+账号配置、模型目录、用量与 ACP 各自保留事实来源和 revision，通过 typed port 交给对应领域 Repository。Provider/FRB 不合并第二份 canonical，页面重建不主动探测外部服务，迟到结果不得写入换代后的 owner。
+
+ACP 使用其官方会话更新与能力协商，不转换为 Native Current/History、Work/Single、History schema 或保存确认。Native 与 ACP 共用页面路由和资源 UI 边界，但不因此共享业务游标。
+
+<a id="710-会话推送交付确认与关闭"></a>
+
+## 7.10 会话资源生命周期
+
+打开 Current 或 History 都不会启动模型。CurrentReader 可读取 RAM owner 或已保存 current；HistoryReader 仅读取 schema 25 数据库。页面隐藏只释放自己的 reader/watch，不停止运行中的 Thread、Current writer 或 History pending。
+
+关闭顺序是先同步封闭准入，再取消等待，最后 join 该 owner 已登记资源。Current 父 reader 的关闭覆盖自己的 watch；超时或调用方取消都不能遗弃已准入 future。HistoryReader 关闭不关闭共享 store，应用全局关闭另行等待所有 reader 与 writer。
+
+## 7.11 可变目录 pull
+
+目录 query 由不透明句柄绑定固定 query/window 或 thread ID。首次与后续 frame 都来自同一权威切面，携带完整有序 ID、边界和 `ResourceStamp`。SDK 接纳当前帧后才请求下一个，同句柄拒绝并发请求。
+
+关闭同步撤销准入并唤醒等待，再 join 已准入读取。换查询或窗口创建新观察；旧结果不能补入新窗口，也不以目录事件重建第二份过滤结果。目录事实与窗口预算归 [18.7.1](./18-studio-state.md#1871-可变目录的查询观察)。

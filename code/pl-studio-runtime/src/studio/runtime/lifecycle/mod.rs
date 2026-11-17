@@ -1149,14 +1149,14 @@ mod startup_fault_tests {
             .or_else(|| manifest.entries.first()).context("preserved manifest")?.reference.clone();
         let detail = reader.read_body(reference, 0, 128).await?;
         assert_eq!(detail.bytes, "preserved detail 中文\n".as_bytes());
-        assert!(detail.eof);
+        assert_eq!(detail.bytes.len() as u64, detail.total_length);
         assert!(
             runtime
                 .session_of("cold")
                 .and_then(|session| session.observed_thread("cold"))
                 .is_none()
         );
-        reader.close().await?;
+        reader.close().await;
         runtime.shutdown_runtime().await?;
         Ok(())
     }

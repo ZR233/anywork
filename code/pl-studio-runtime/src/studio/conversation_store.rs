@@ -330,30 +330,13 @@ impl ConversationStore {
         anyhow::ensure!(
             pending.write.effect.thread_id == self.history.thread_id()
                 && pending.prepared.sequence == pending.write.effect.sequence
-                && pending
-                    .prepared
-                    .current_state
-                    .as_ref()
-                    .is_none_or(|current| current.revision() == pending.prepared.sequence)
                 && pending.prepared.accounting.thread_id == self.history.thread_id(),
             "prepared effect does not match the accepted original"
         );
         if pending.admitted {
             return Ok(pending.prepared.clone());
         }
-        let source = if pending.publishes_current() {
-            pending
-                .prepared
-                .current_state
-                .as_ref()
-                .map(|current| self.publication.prepare(current.clone()))
-                .transpose()?
-        } else {
-            None
-        };
-        let mut prepared = pending.prepared.as_ref().clone();
-        prepared.current_state = None;
-        let prepared = Arc::new(prepared);
+        let prepared = pending.prepared.clone();
         let previous_retention = super::storage::thread_writer::ProjectionRetention {
             resident_bytes: retained
                 .projection
@@ -377,16 +360,11 @@ impl ConversationStore {
                     }),
                 },
             )?;
-            channel.prepare_with(Some(&pending.write), prepared.clone(), || {
-                if let Some(source) = source {
-                    self.publication.apply(source);
-                }
-                Ok(())
-            })
+            channel.accept_prepared(Some(&pending.write), prepared.clone())
         })();
         if let Err(error) = handoff {
-            // Publication did not run: the original Store rows and pending batch
-            // still own the material. Restore their charge before releasing admission.
+            // The independent Current publication is already visible. Only this archive
+            // admission failed; retain its exact original and restore the archive charge.
             return match channel.set_projection_retention(previous_retention) {
                 Ok(()) => Err(error),
                 Err(retention) => {

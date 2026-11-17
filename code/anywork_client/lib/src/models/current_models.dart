@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'chat_models.dart';
 import 'conversation_activity_models.dart';
-import 'thread_activity_models.dart' show ThreadActivityToolState;
+import 'thread_activity_models.dart';
 import 'thread_directory_models.dart' show ThreadStatusView;
 import 'thread_models.dart' show ThreadTextChannel;
 import 'timeline_todo.dart';
@@ -240,6 +240,27 @@ WorkflowRuntimeView decodeCurrentWorkflowState(Object? value) {
               modeDeleted: run['modeDeleted'] as bool? ?? false,
             ),
           },
+  );
+}
+
+ThreadActivityToolEntry decodeCurrentActivityToolState(Object? value) {
+  final object = _object(value, 'activityTool');
+  return ThreadActivityToolEntry(
+    callId: _string(object['callId'], 'activityTool.callId'),
+    taskId: object['taskId'] as String?,
+    name: _string(object['name'], 'activityTool.name'),
+    summary: _string(object['summary'], 'activityTool.summary'),
+    arguments: ThreadActivityArgumentsKind.values.byName(
+      _string(object['arguments'], 'activityTool.arguments'),
+    ),
+    state: ThreadActivityToolState.values.byName(
+      _string(object['state'], 'activityTool.state'),
+    ),
+    ordinal: object['ordinal'] as int?,
+    startedAt: object['startedAt'] as int?,
+    wait: object['wait'] == null
+        ? null
+        : _wait(_object(object['wait'], 'activityTool.wait')),
   );
 }
 

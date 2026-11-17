@@ -20,7 +20,7 @@ pub struct TaskAccess {
     effect_window: Arc<EffectWindow>,
     thread_id: String,
     /// Durable store handle, if this Thread is persisted. Reads only; it never keeps the owner alive.
-    cold: Option<cold::ColdStoreHandle>,
+    cold: Option<cold::StorageHandle>,
     commands: mpsc::WeakSender<mailbox::MailboxCommand>,
     caller: String,
     may_wait: bool,

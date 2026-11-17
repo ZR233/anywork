@@ -9,7 +9,7 @@ use tracing::Instrument;
 pub(super) enum ColdFlushTicket {
     AlreadySatisfied,
     Pending {
-        store: ColdStoreHandle,
+        store: StorageHandle,
         thread_id: String,
         through: u64,
         deletion: CancellationToken,
@@ -452,7 +452,7 @@ pub trait ColdStore: Send + Sync + fmt::Debug + 'static {
         async { Ok(None) }
     }
 }
-trait ErasedColdStore: Send + Sync + fmt::Debug {
+pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch);
     fn reserve_observed_item(
         &self,
@@ -477,6 +477,10 @@ trait ErasedColdStore: Send + Sync + fmt::Debug {
     fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
     fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError>;
+    fn admit_history(&self, _thread_id: &str, _export: Arc<super::HistoryExport>) -> Result<(), ColdStoreError> {
+        Err(ColdStoreError { source: Box::new(std::io::Error::other("checkpoint backend cannot accept independent History exports")) })
+    }
+    fn is_history(&self) -> bool { false }
     fn flush<'a>(
         &'a self,
         thread_id: &'a str,
@@ -488,7 +492,7 @@ trait ErasedColdStore: Send + Sync + fmt::Debug {
         task_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<DurableToolTask>, ColdStoreError>>;
 }
-impl<T: ColdStore> ErasedColdStore for T {
+impl<T: ColdStore> ErasedStorage for T {
     fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
         ColdStore::fold_usage(self, summary, effect);
     }
@@ -547,14 +551,17 @@ impl<T: ColdStore> ErasedColdStore for T {
     }
 }
 
+/// Legacy checkpoint backend. Current owners explicitly reject this port.
+#[derive(Debug, Clone)]
+pub struct ColdStoreHandle(pub(super) StorageHandle);
+impl ColdStoreHandle {
+    pub fn new(store: impl ColdStore) -> Self { Self(StorageHandle(Arc::new(store))) }
+}
+
 /// Shared store handle; Thread ownership and mutable model/tool instances remain private.
 #[derive(Debug, Clone)]
-pub struct ColdStoreHandle(Arc<dyn ErasedColdStore>);
-impl ColdStoreHandle {
-    /// Erases one backend; independent Threads may share its asynchronous writer.
-    pub fn new(store: impl ColdStore) -> Self {
-        Self(Arc::new(store))
-    }
+pub(crate) struct StorageHandle(pub(crate) Arc<dyn ErasedStorage>);
+impl StorageHandle {
 
     pub(crate) fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
         self.0.fold_usage(summary, effect);
@@ -613,6 +620,11 @@ impl ColdStoreHandle {
 
     /// Waits for the fixed effect fence, without transferring store ownership to a tool.
     pub(crate) async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
+        if self.0.is_history() {
+            // This internal legacy fence has no meaning for Current owners. The host joins its
+            // independent History queue explicitly and Current has its own capture/save port.
+            return Ok(());
+        }
         self.0.flush(thread_id, sequence).await
     }
 
@@ -784,6 +796,10 @@ impl Owner {
         &mut self,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<(), ThreadError> {
+        if self.current_task_start_ordinal.is_some() {
+            self.state.required_durable_sequence = None;
+            return Ok(());
+        }
         let Some(required) = self.state.required_durable_sequence else {
             return Ok(());
         };
@@ -872,7 +888,7 @@ impl Owner {
             return Err(ThreadError::Storage(error.clone()));
         }
         let handed_over = self.pending_effects.front().is_none_or(|pending| {
-            pending.write.effect.sequence <= self.state.persistence.admitted_sequence
+            pending.write.effect().sequence <= self.state.persistence.admitted_sequence
         });
         // The byte threshold is what makes a release premature; an in-flight operation that could
         // not reserve its output is transient backpressure the next reservation clears, so it does
@@ -1343,7 +1359,7 @@ impl Owner {
         // latch that only reflected a transient background conflict.
         let handed_over = match self.pending_effects.front() {
             Some(pending) => {
-                pending.write.effect.sequence <= self.state.persistence.admitted_sequence
+                pending.write.effect().sequence <= self.state.persistence.admitted_sequence
             }
             None => true,
         };
@@ -1408,9 +1424,7 @@ impl Owner {
                         None => {
                             // An unencodable batch keeps the pessimistic `u64::MAX` weight, exactly
                             // like the previous fold-based accounting did.
-                            let bytes = pending
-                                .write
-                                .effect
+                            let bytes = pending.write.effect()
                                 .encode()
                                 .map_or(u64::MAX, |payload| payload.content().len() as u64);
                             pending.encoded_bytes = Some(bytes);
@@ -1565,7 +1579,7 @@ impl Owner {
         let pending = self
             .pending_effects
             .front()
-            .map(|pending| pending.write.effect.sequence)
+            .map(|pending| pending.write.effect().sequence)
             .unwrap_or(0);
         self.state.persistence.admitted_sequence.max(pending)
     }
@@ -1584,21 +1598,20 @@ impl Owner {
             if self.interrupt.is_deleting() {
                 return;
             }
-            // Commits made before storage was attached already have transfer checkpoints. Fold
-            // them in order before admission so each retained checkpoint carries its own total.
-            if pending.write.effect.sequence
-                > pending
-                    .write
-                    .checkpoint
-                    .state
-                    .usage_summary
-                    .applied_sequence
+            // A legacy transfer folds its own checkpoint. Independent History exports already
+            // carry the original Current observation and never create or mutate a checkpoint.
+            if let super::owner::PendingWrite::Checkpoint(write) = &mut pending.write
+                && write.effect.sequence > write.checkpoint.state.usage_summary.applied_sequence
             {
-                store.fold_usage(&mut self.state.usage_summary, &pending.write.effect);
-                pending.write.checkpoint.state.usage_summary = self.state.usage_summary.clone();
+                store.fold_usage(&mut self.state.usage_summary, &write.effect);
+                write.checkpoint.state.usage_summary = self.state.usage_summary.clone();
             }
-            let sequence = pending.write.effect.sequence;
-            match store.0.admit(&self.id, pending.write.clone()) {
+            let sequence = pending.write.effect().sequence;
+            let accepted = match &pending.write {
+                super::owner::PendingWrite::Checkpoint(write) => store.0.admit(&self.id, write.clone()),
+                super::owner::PendingWrite::History(export) => store.0.admit_history(&self.id, export.clone()),
+            };
+            match accepted {
                 Ok(()) => {
                     self.state.persistence.admitted_sequence = sequence;
                     self.pending_effects.pop_front();
@@ -1631,6 +1644,9 @@ impl Owner {
     }
 
     pub(super) fn prepare_flush(&mut self) -> Result<ColdFlushTicket, ThreadError> {
+        if self.current_task_start_ordinal.is_some() {
+            return Ok(ColdFlushTicket::AlreadySatisfied);
+        }
         if self.interrupt.is_deleting() {
             return Err(ThreadError::Closed);
         }
@@ -1672,6 +1688,10 @@ impl Owner {
     }
 
     pub(super) async fn flush_cold(&mut self) -> Result<(), ThreadError> {
+        if self.current_task_start_ordinal.is_some() {
+            self.admit_cold();
+            return Ok(());
+        }
         // Preserving close also owes the final facts the bounded queue could not take yet. Wait
         // only for their handover, then fix the normal admitted watermark. Hard failures still
         // return immediately, and permanent deletion remains the only cancellation of preservation.

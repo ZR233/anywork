@@ -1,4 +1,4 @@
-//! Recipient-owned pending Native deliveries and their Current-backed recovery.
+//! Current-owned pending Native delivery obligations and their recovery.
 //!
 //! A marker is a delivery obligation, not a second history or report projection. It carries the
 //! exact immutable message until the recipient's Current proves acceptance, then it is deleted.
@@ -28,6 +28,7 @@ pub(super) const PENDING_NATIVE_DELIVERY_EXTENSION_PREFIX: &str = "studio.pendin
 #[serde(rename_all = "camelCase")]
 pub(super) enum PendingNativeDeliveryKind {
     ParentReport,
+    ReviewDecision,
     ReviewException,
     AcpResult,
 }
@@ -51,7 +52,7 @@ pub(super) enum PendingNativeDeliverySource {
     },
 }
 
-/// Exact original delivery material. The extension key is the final inbox message ID.
+/// Exact original delivery material. The extension key is its stable message ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PendingNativeDelivery {
@@ -67,6 +68,8 @@ pub(super) struct PendingNativeDelivery {
 struct ParentReportIdentity {
     child_id: String,
     commit_sequence: u64,
+    #[serde(default)]
+    review: Option<serde::de::IgnoredAny>,
 }
 
 impl PendingNativeDelivery {
@@ -109,6 +112,28 @@ impl PendingNativeDelivery {
         Self::new(kind, message, source, wake)
     }
 
+    /// Source-owned decision marker retained until review feedback or its exception is settled.
+    pub(super) fn review_decision(message: ThreadMessage) -> Result<Self> {
+        ensure!(
+            message.payload.format() == "pl.studio.turn-report" && message.payload.version() == 3,
+            "review decision requires the immutable terminal report"
+        );
+        let report: ParentReportIdentity = serde_json::from_str(message.payload.content())?;
+        ensure!(
+            report.review.is_some(),
+            "review decision requires a structured review result"
+        );
+        Self::new(
+            PendingNativeDeliveryKind::ReviewDecision,
+            message,
+            PendingNativeDeliverySource::Terminal {
+                child_id: report.child_id,
+                terminal_sequence: report.commit_sequence,
+            },
+            false,
+        )
+    }
+
     fn new(
         kind: PendingNativeDeliveryKind,
         message: ThreadMessage,
@@ -134,6 +159,19 @@ impl PendingNativeDelivery {
         &self.source
     }
 
+    pub(super) fn is_review_decision(&self) -> bool {
+        self.kind == PendingNativeDeliveryKind::ReviewDecision
+    }
+
+    pub(super) fn terminal_sequence(&self) -> Option<u64> {
+        match &self.source {
+            PendingNativeDeliverySource::Terminal {
+                terminal_sequence, ..
+            } => Some(*terminal_sequence),
+            PendingNativeDeliverySource::AcpResult { .. } => None,
+        }
+    }
+
     pub(super) fn extension_id(&self) -> String {
         format!(
             "{PENDING_NATIVE_DELIVERY_EXTENSION_PREFIX}{}",
@@ -141,7 +179,7 @@ impl PendingNativeDelivery {
         )
     }
 
-    fn encode(&self) -> Result<OpaquePayload> {
+    pub(super) fn encode(&self) -> Result<OpaquePayload> {
         Ok(OpaquePayload::new(
             PENDING_NATIVE_DELIVERY_FORMAT,
             PENDING_NATIVE_DELIVERY_VERSION,
@@ -149,7 +187,7 @@ impl PendingNativeDelivery {
         )?)
     }
 
-    fn decode(extension_id: &str, payload: &OpaquePayload) -> Result<Self> {
+    pub(super) fn decode(extension_id: &str, payload: &OpaquePayload) -> Result<Self> {
         ensure!(
             payload.format() == PENDING_NATIVE_DELIVERY_FORMAT
                 && payload.version() == PENDING_NATIVE_DELIVERY_VERSION,
@@ -186,17 +224,48 @@ impl PendingNativeDelivery {
                     child_id,
                     terminal_sequence,
                 },
-            ) => ensure!(
-                !child_id.is_empty()
-                    && *terminal_sequence > 0
-                    && self.message.id
-                        == crate::studio::agent_close::terminal_report_id(
-                            child_id,
-                            *terminal_sequence
-                        )
-                    && self.message.source_id == format!("studio.child:{child_id}"),
-                "parent report pending identity mismatch"
-            ),
+            ) => {
+                let report: ParentReportIdentity =
+                    serde_json::from_str(self.message.payload.content())?;
+                ensure!(
+                    !child_id.is_empty()
+                        && *terminal_sequence > 0
+                        && self.message.id
+                            == crate::studio::agent_close::terminal_report_id(
+                                child_id,
+                                *terminal_sequence
+                            )
+                        && self.message.source_id == format!("studio.child:{child_id}")
+                        && report.child_id == *child_id
+                        && report.commit_sequence == *terminal_sequence,
+                    "parent report pending identity mismatch"
+                );
+            }
+            (
+                PendingNativeDeliveryKind::ReviewDecision,
+                PendingNativeDeliverySource::Terminal {
+                    child_id,
+                    terminal_sequence,
+                },
+            ) => {
+                let report: ParentReportIdentity =
+                    serde_json::from_str(self.message.payload.content())?;
+                ensure!(
+                    !child_id.is_empty()
+                        && *terminal_sequence > 0
+                        && self.message.id
+                            == crate::studio::agent_close::terminal_report_id(
+                                child_id,
+                                *terminal_sequence
+                            )
+                        && self.message.source_id == format!("studio.child:{child_id}")
+                        && report.child_id == *child_id
+                        && report.commit_sequence == *terminal_sequence
+                        && report.review.is_some()
+                        && !self.wake,
+                    "review decision pending identity mismatch"
+                );
+            }
             (
                 PendingNativeDeliveryKind::ReviewException,
                 PendingNativeDeliverySource::Terminal {
@@ -296,7 +365,8 @@ fn parse_acp_source(message: &ThreadMessage) -> Result<PendingNativeDeliverySour
 }
 
 impl SessionRuntime {
-    /// Reads only recipient Current markers. Absence is not interpreted as an old delivery.
+    /// Reads only explicit markers in one Thread's Current. Absence never reconstructs work from
+    /// History; recipient deliveries and source-owned review decisions are classified by kind.
     pub(super) async fn pending_native_deliveries(
         &self,
         recipient: &pl_protocol::Thread,
@@ -329,7 +399,12 @@ impl SessionRuntime {
         &self,
         recipient: &pl_protocol::Thread,
     ) -> Result<usize> {
-        let pending = self.pending_native_deliveries(recipient).await?;
+        let pending = self
+            .pending_native_deliveries(recipient)
+            .await?
+            .into_iter()
+            .filter(|delivery| !delivery.is_review_decision())
+            .collect::<Vec<_>>();
         let count = pending.len();
         if count == 0 {
             return Ok(0);
@@ -357,6 +432,10 @@ pub(super) async fn complete_pending_native_delivery(
     pending: PendingNativeDelivery,
     allow_wake: bool,
 ) -> Result<()> {
+    ensure!(
+        !pending.is_review_decision(),
+        "source-owned review decision is not a recipient delivery"
+    );
     let extension_id = pending.extension_id();
     let marker_revision = ensure_marker(thread, &extension_id, &pending).await?;
 
@@ -421,7 +500,7 @@ pub(super) async fn complete_pending_native_delivery(
                 expected_revision: record.revision,
             }])
             .await?;
-            services
+        services
             .store
             .conversation_store(recipient)
             .await?
@@ -492,6 +571,45 @@ async fn ensure_marker(
     Ok(record.revision)
 }
 
+pub(super) async fn persist_pending_marker(
+    thread: &ThreadHandle,
+    pending: &PendingNativeDelivery,
+) -> Result<()> {
+    ensure!(
+        pending.is_review_decision(),
+        "only a source-owned review decision uses the source marker path"
+    );
+    let extension_id = pending.extension_id();
+    ensure_marker(thread, &extension_id, pending).await?;
+    Ok(())
+}
+
+pub(super) async fn clear_pending_marker(
+    thread: &ThreadHandle,
+    pending: &PendingNativeDelivery,
+) -> Result<bool> {
+    ensure!(
+        pending.is_review_decision(),
+        "only a source-owned review decision uses the source marker path"
+    );
+    let extension_id = pending.extension_id();
+    let Some(record) = thread.snapshot().extensions.get(&extension_id).cloned() else {
+        return Ok(false);
+    };
+    let saved = PendingNativeDelivery::decode(&extension_id, &record.payload)?;
+    ensure!(
+        saved == *pending,
+        "pending Native delivery marker changed before cleanup"
+    );
+    thread
+        .mutate_extensions(vec![ExtensionMutation::Delete {
+            id: extension_id,
+            expected_revision: record.revision,
+        }])
+        .await?;
+    Ok(true)
+}
+
 enum AcceptedIdentity {
     Matching(u64),
     Conflict,
@@ -536,68 +654,4 @@ fn native_execution_options(
         .native()
         .map_err(|error| anyhow::anyhow!("pending delivery recipient is not Native: {error}"))?;
     Ok(native.execution)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn parent_report() -> PendingNativeDelivery {
-        let message = ThreadMessage {
-            id: crate::studio::agent_close::terminal_report_id("child", 7),
-            source_id: "studio.child:child".into(),
-            kind: AgentMessageKind::Report,
-            payload: OpaquePayload::new(
-                "pl.studio.turn-report",
-                3,
-                serde_json::json!({
-                    "childId": "child",
-                    "commitSequence": 7,
-                    "turn": {"turnId": "turn"},
-                    "turnId": "turn",
-                    "inputId": null
-                })
-                .to_string(),
-            )
-            .expect("valid fixture payload"),
-            context: vec![ContextContent::Text {
-                text: "terminal report".into(),
-            }],
-        };
-        PendingNativeDelivery::from_terminal_message(message, true)
-            .expect("valid parent report marker")
-    }
-
-    #[test]
-    fn parent_report_marker_round_trips_exact_message() {
-        let pending = parent_report();
-        let extension_id = pending.extension_id();
-        let payload = pending.encode().expect("encode pending marker");
-        let decoded =
-            PendingNativeDelivery::decode(&extension_id, &payload).expect("decode pending marker");
-
-        assert_eq!(decoded, pending);
-        assert_eq!(
-            payload.format(),
-            PENDING_NATIVE_DELIVERY_FORMAT,
-            "marker format identifies its domain"
-        );
-        assert_eq!(
-            payload.version(),
-            PENDING_NATIVE_DELIVERY_VERSION,
-            "marker version is explicitly pinned"
-        );
-    }
-
-    #[test]
-    fn parent_report_marker_rejects_a_changed_digest() {
-        let mut pending = parent_report();
-        pending.message_digest = "sha256:changed".into();
-        let payload = pending.encode().expect("encode corrupted marker");
-
-        assert!(
-            PendingNativeDelivery::decode(&pending.extension_id(), &payload).is_err(),
-            "a saved marker whose digest differs from its exact message must fail closed"
-        );
-    }
 }

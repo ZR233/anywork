@@ -25,8 +25,18 @@ pub(super) struct NestedScope {
     pub invocations: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
+pub(super) enum PendingWrite {
+    Checkpoint(cold::ThreadWrite),
+    History(Arc<HistoryExport>),
+}
+impl PendingWrite {
+    pub(super) fn effect(&self) -> &Arc<ThreadEffectBatch> {
+        match self { Self::Checkpoint(write) => &write.effect, Self::History(export) => &export.effect }
+    }
+}
+
 pub(super) struct PendingEffect {
-    pub(super) write: cold::ThreadWrite,
+    pub(super) write: PendingWrite,
     /// Encoded byte length of this effect, measured at most once while it stays pending.
     ///
     /// Pressure admission must not re-serialize the whole still-pending queue on every model step:
@@ -130,7 +140,7 @@ pub(super) struct Owner {
     pub(super) capacity: ContextCapacity,
     pub(super) effect_window: Arc<EffectWindow>,
     pub(super) pending_effects: std::collections::VecDeque<PendingEffect>,
-    pub(super) cold: Option<cold::ColdStoreHandle>,
+    pub(super) cold: Option<cold::StorageHandle>,
     /// Durable history fence carried by the checkpoint until a store proves it owns the history.
     pub(super) restored_history_fence: u64,
     pub(super) cold_error: Option<Arc<cold::ColdStoreError>>,
@@ -554,6 +564,7 @@ impl Owner {
                     let _ = reply.send(result);
                 }
                 Command::AttachCold(store, reply) => {
+                    let store = store.0;
                     let result = if self.current_task_start_ordinal.is_some() {
                         Err(ThreadError::CurrentCheckpointStore)
                     } else if self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open {
@@ -573,6 +584,19 @@ impl Owner {
                             self.publish_snapshot();
                             Ok(())
                         }
+                    };
+                    let _ = reply.send(result);
+                }
+                Command::AttachHistory(store, reply) => {
+                    let result = if self.current_task_start_ordinal.is_none()
+                        || self.cold.is_some() || self.state.lifecycle != ThreadLifecycle::Open
+                    {
+                        Err(ThreadError::InvalidIdentity)
+                    } else {
+                        self.cold = Some(store.into_storage());
+                        self.admit_cold();
+                        self.publish_snapshot();
+                        Ok(())
                     };
                     let _ = reply.send(result);
                 }
@@ -900,6 +924,10 @@ impl Owner {
 
     /// Commits the resident facts as exactly one effect batch.
     fn publish_once(&mut self) -> Result<(), ThreadError> {
+        // A just-ended task may still have the last real producer preview needed at this history
+        // boundary. Current retires it below; the immutable export keeps that original cut.
+        let history_progress = self.current_task_start_ordinal.is_some()
+            .then(|| self.state.tool_progress.clone());
         let revision = self.state.interaction_collection_revision_for(
             &self.published,
             &self.state.interactions,
@@ -977,13 +1005,18 @@ impl Owner {
         if self.current_task_start_ordinal.is_some() {
             // The explicit current owner exports facts independently. It never creates a
             // transfer checkpoint, queues a second current body, or waits for its history receipt.
-            let export = HistoryExport {
+            let mut history_state = self.state.clone();
+            if let Some(progress) = history_progress { history_state.tool_progress = progress; }
+            let export = Arc::new(HistoryExport {
                 effect,
-                state: self.state.clone(),
-            };
+                state: history_state,
+                output_claim,
+            });
             self.state.retain_live_facts()?;
             self.published = self.state.clone();
-            self.effect_window.push_current(export);
+            self.effect_window.push_current(export.clone());
+            self.pending_effects.push_back(PendingEffect { write: PendingWrite::History(export), encoded_bytes });
+            self.admit_cold();
             self.publish_snapshot();
             return Ok(());
         }
@@ -998,11 +1031,11 @@ impl Owner {
         // publish that commits no effect (handled above) drops the claim, so the operation's own
         // boundary releases its still-untransferred ceiling instead.
         self.pending_effects.push_back(PendingEffect {
-            write: cold::ThreadWrite {
+            write: PendingWrite::Checkpoint(cold::ThreadWrite {
                 effect: effect.clone(),
                 checkpoint,
                 output_claim,
-            },
+            }),
             encoded_bytes,
         });
         self.effect_window.push(effect);

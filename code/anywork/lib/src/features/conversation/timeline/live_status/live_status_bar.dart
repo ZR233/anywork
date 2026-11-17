@@ -110,6 +110,23 @@ class LiveStatusBar extends ConsumerWidget {
       );
     }
 
+    if (aggregate.hasMoreActivityTools || aggregate.loadingActivityTools) {
+      final notifier = ref.read(liveStatusViewModelProvider(threadId).notifier);
+      children.add(
+        ConversationActivityBar(
+          children: [
+            if (aggregate.loadingActivityTools)
+              const LinearProgressIndicator()
+            else
+              TextButton(
+                onPressed: notifier.loadNextActivityTools,
+                child: Text(context.l10n.interactionDetailsNextPage),
+              ),
+          ],
+        ),
+      );
+    }
+
     final reference = sessionState.businessRefs?.interactions;
     final detailLease = ref.read(timelineSessionOwnerProvider).lease(threadId);
     if (barState.showInteractionDetails &&

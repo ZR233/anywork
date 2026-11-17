@@ -14,6 +14,7 @@ pub mod current;
 pub mod extensions;
 mod facts;
 pub mod inbox;
+pub mod history_sink;
 pub mod input;
 pub mod interactions;
 pub mod journal;

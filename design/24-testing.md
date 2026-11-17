@@ -63,7 +63,7 @@ Linux 自动集成可通过 `ANYWORK_CI_TEST_INPUTS` 显式消费同次 workflow
 
 Linux 原生宿主首次加载打包桥接库时使用系统 [dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html) 的 `RTLD_DEEPBIND`，优先从桥接库及其依赖解析符号，避免系统与 Flutter 导出的栈展开函数混用。该库由进程持有，随后 Dart 重开同一库，不另建加载器或桥接实例。
 
-轮次终态与时间线接纳独立推进。保存内容的库存读取须先等当前 Main 接纳该轮受理的输入，再固定原读取窗口；固定后仍严格核对窗口、轮次、输入、完成记录与正文身份，不能在读取失败后改用另一窗口或旧轮次内容。
+轮次终态与 History 接纳独立推进。内容验收先等目标输入对应的 Current 事实出现，再 capture HistoryCut 并按 Turn/input/message 身份定位 canonical event；固定后核对 typed head 与 body，读取失败不能改用另一 cut 或旧轮内容。
 
 启动与原生退出回调可能属于不同的 Dart 错误隔离区。启动 owner 须在原隔离区登记覆盖成功与失败的收束通知，关闭方只等待这项真实完成事实；启动调用方仍接收原始失败，未完成的初始化仍须在退出期限内如实报告为未收束。
 
@@ -73,6 +73,10 @@ Linux 原生宿主首次加载打包桥接库时使用系统 [dlopen](https://ma
 测试；纯 UI 变更只增加环境解析依赖，不选择 Rust、helper 或桌面构建作业。
 
 除已确认的纯版本 Release 变更外，`ci-gate` 始终汇总分类结果，只接受计划明确允许的 skipped；必需作业因上游失败或取消被连带 skipped 时 gate 失败。纯版本 Release 的 `ci-gate` 明确跳过，分类作业自身失败时仍运行并报告失败。建议把仓库 required check 配成稳定名 `ci-gate`；修改 workflow 本身不会自动配置 required check。
+
+集成测试只通过产品正式公开接口验证完整行为，不为测试增加条件编译接口、可见性或生产转发入口。
+无法在该边界内成立的测例移除，不通过恢复旧接口或私有装配通道保留。生产迁移先整体完成，
+编写期间可用 `cargo check` 核对语法与接口；随后按新设计重构测试并集中执行验证。
 
 ## 24.1 现有测试基础设施
 
@@ -136,7 +140,7 @@ Plan 保存重开旅程支持 `manual-gui --preset plan-recovery --inspect`，�
 原隔离 home、模拟供应商、捕获与退出核对运行；`--inspect` 仅为各次 debug 启动增加官方
 Flutter Driver 入口，不替代原 Plan 状态与恢复断言。
 `history-fault --inspect` 显式使用 debug 与同一官方 Driver 入口；默认模式仍为 Profile，
-两者共享真实 SQLite 持锁和 Retry／Resume 流程，不混用两种构建模式的计时证据。
+两者共享真实 SQLite 持锁、History retry 和 Current 独立保存状态，不混用两种构建模式的计时证据。
 其他专用 preset 不因此开放交互扩展。
 Linux 的合成用户 home 同时提供独立的标准 XDG Documents 配置，避免读取操作者的桌面配置，
 也不为验收在生产实现中增加工作区路径回退；各次关闭的 launcher 失败必须传播，不能冒充原生退出码证明。
@@ -163,12 +167,7 @@ Linux 的合成用户 home 同时提供独立的标准 XDG Documents 配置，�
 
 `realtime-presentation` 原生用例的首字等待与正文可读观察复用严格对端的显式闸门：活动栏布局后才放出首个文本增量，原正文窗口读取并布局后才允许后续增量和完成。闸门只控制外部供应商，不提供产品状态；手动观察仍使用原有节奏，自动检查不依赖短暂流窗口或截图耗时。
 
-`history-fault` 的三次人工阶段确认分别证明首次持久化、锁内失败重试、释放锁后的保存重放
-及显式继续执行。锁内必须读取同一数据库的完整水位和目标原件计数，读取失败不能按缺证据
-通过；锁超时使本轮持锁证明失败。释放只有在原持锁线程成功提交并汇合后才记成功。
-延后执行的工具在本次自有合成项目记录执行凭据，结合精确类型与身份的持久原件证明工具
-及最终回答各一次，不能用宽泛字符串命中数大于零替代。正常退出必须同时核对真实成功
-状态及原生退出报告，无信号、取消或强制回收的后代；取消清理与自然退出分别记录。
+`history-fault` 的三次人工阶段分别证明首次 History flush、锁内失败保留 pending、释放锁后的重试及 Current 独立保存。锁内读取目标 History event/body 与 pending 摘要，只读失败不能按“已恢复”通过；Current `snapshot_revision` 与 History cut 分别记录，不构造共同水位。释放只有原持锁线程成功提交并汇合后才记成功。延后工具按精确 call/task/event 身份证明工具与最终回答各一次，不能用字符串命中数替代。
 
 `realtime-presentation --realtime-focus stop-background` 是有限的补图入口，仅复用既有
 parallel／background 与 cancel／continue 两段、原 provider gate 和生产截图函数。
@@ -189,13 +188,13 @@ A 晚结束和保存重开的两次原生进程，不顺带重跑其余 concept 
 详情、Viewer、原窗口撤销与冷重开证据，不重复完整 concept 的推理、热更新和热切换故事。
 它在验收自有普通 PNG 上使用 Linux `F_SETLEASE` 写租约，阻塞生产 reader 的真实文件打开；
 收到真实 lease-break 通知，且原生测试已观察到同 call/task 的后台移交后，才明确解除租约。
-输入附件源与被租约保护的工具源分开，图片字节、工具、原一秒移交期限、权限与提交路径不变。
+输入附件源与被租约保护的工具源分开，图片 bytes、工具身份、原一秒移交期限、权限与提交路径不变。
 租约由隔离的受管进程持有，不向生产装配增加等待钩子；失败、取消与超时先解除租约并 join，
 再等待所属 reader/GUI 收束。文件系统不支持、内核自动降级或身份未命中都明确失败，
 不能退化为固定延时、随机重跑或接受前台结果。非 Linux 平台不以静默跳过计为通过。
 纯附件的严格对端匹配没有用户 prompt 前缀的文件名/图片序列，仍核数量、顺序和字节摘要；
 已发送 canonical 输入与发送前草稿分别取证。冷重开必须复用同一隔离 home 并核原输入、
-完成记录和资源身份，热 feed 重开不替代持久化证明。
+canonical History event/body 和资源身份；热 Current 重开不替代持久化证明。
 
 新结束记录遵循 [26](./26-timeline-content.md) 的当前组规则，不强制落为旧 MainSingle。
 旧已保存 MainSingle 仍须在非空 history19 迁移后可读、可打开 Viewer 且正确释放，
@@ -214,17 +213,17 @@ SDK/UI 只验类型映射、不同组行身份、冻结观察静态语义、普�
 并保留保存/停止/审批/错误提示、窄窗与大字号的行为门槛。原生仅补受影响场景，
 不以旧 closing 实时更新断言代替新冻结合同，也不无故重跑未变化重型套件。
 
-`timeline-history` 的流式分页观察以原选中会话、活动 Turn、source 和 live 展示项为准：沿原三十秒资格等待冻结同一 lease、current display、未完成文本与生产者非空 preview，再在原活动区观察的三十秒额度内核对同一 live 项的生产组件和真实正文布局。非空 live 项已经替代无内容活动条时，不再要求旧活动条 key 同时挂载，也不为满足测试给生产界面补回旧组件。加载历史页前后仍核对原 Turn、display、live 项、正文引用及已接纳前缀；完成 Main、旧会话、未布局组件或仅有内存 preview 不能替代流式可见证据，不延长 provider pacing 或等待期限。
+`timeline-history` 分页观察以选中会话的 HistoryReader 为准：capture 固定 cut，读取首 HistoryTimelinePage，滚动加载 older page，再核对稳定 row_key/entity_id、anchor 和 body reference。CurrentReader 同时提供 activity/Final preview；Current order、History event seq 与 Flutter selection generation 分别记录。真实页面布局只能证明该 view 可见，不能反过来证明 Current 或 History 的接纳位置。
 
 正文自动跟随后，可见证据核对同一已接纳正文首部或尾部的真实字形，并逐层计算生产滚动视图的实际裁剪；不要求首字始终停留在屏幕内。完整消费的 SDK 读取等待原消费者就绪，直接消费已接纳数据，不为正常成员接纳额外推进布局。保留原期限、正文总量、运行期读取、原作用域关闭和零待处理查询断言，不重新打开 Main；资源关闭与失败重试继续由原所有者负责。
 
-时间线按所有者分层证明：Rust Studio 投影负责 item 类别、可靠边界、成员归属/顺序、空正文、纯附件、读图归属、逆序终态、后台交错、多 current 片段与同批退役；存储/读取证明同事务、原事实独立、来源输入依据、具名内容迁移及失败重开、已迁移损坏拒绝、版本、旧库和 RAM/SQLite 交接。初始化迁移、真实容量压力、普通积压排空及 close/cancel 分别保护原队列责任。Dart 只验机械映射、一条 item 一条 Message、成员窗口及局部 UI/资源资格；纯 Flutter 验布局与交互，少量官方原生集成穿过真实跨层、持久化、credit 与重开。不在 Dart 重测分组算法，不以截图或旧派生缓存代证完整源事实重建。
+时间线证据按独立 owner 分层：Current assembler 证明 State/Watch、deferred Body/Collection、owner/generation 与 body/collection 关闭；HistoryWriter/Reader 证明 schema 25 event/body、RAM pending 与 DB cut、Work/Single/member anchors、空终稿和迁移；Flutter 只验稳定身份映射、唯一有界窗口、Current overlay、串行 apply 与资源资格。Current 与 History 的保存、失败、读取和关闭分别取证，不能用一方成功替代另一方。
 
 分页证据覆盖超过8页未满、折叠代表高度不变仍继续、短页/字节截页、空末页、错误与显式重试。布局变化触发补载，零尺寸/不可见暂停，自动补载/滚动/Append 共用 single-flight，首批不等末页。Main 段代表与 Run/Children 页独立 cursor；旧页固定 ceiling，实时尾卡增长不改旧 cursor，Run 已加载计数不覆盖 Main ordinal。完成顺序由原 seq 确定，不在客户端重排。
 
 成员窗口从原库/版本/item 绑定的类型化引用打开，后续页保持原 scope 和切面，拒绝跨 lease/epoch/版本或混用 Main cursor；只按成员关联索引选组内项，不扫描其他来源找组头，不预读隐藏全文或 flush。活动成员更新只改本窗口；折叠和引用退役同步撤销正文/媒体资格，晚返回不得应用到新 owner。折叠组的详情和隐藏媒体读取为零，巨大组的 Main 查询工作量不随成员数增长，须由真实读取入口计数而非 Widget 隐藏推断。
 
-完成级 Chat/Activity/Run/Children 的条数按实际 CompletedEntry 计，maxItems=1 必须有效；完成拆帧和过滤空 Append 推进正确 through，Activity 在同目标完成前缀接纳后交付，旧快照不复活活动。GUI Timeline 则按 DisplayBlock 与 P/live 合同验收，不能套用完成条数或 H：可靠正文开始可在 H 不变时冻结旧 Work 并推进 P。Main 工作头无论1项或10万项均不读/内联参数、结果、思考正文和图片；Single、显式详情与 Deferred 按各自预算取证。
+History 页面按 `HistoryTimelinePage`/`HistoryGroupPage` 的实际 entries 计，`maxRows=1`、1 字节预算边界、Next 游标和空末页分别有效；event/body 查询固定同一 `HistoryCut`，换 cut 不接旧 cursor。Current collection 按 `CurrentStateField::Collection.count` 与页条目数分别核对，`count` 不被页长度覆盖。Main Work 不读成员正文；Single、详情和 `CurrentPayloadData::Deferred` 按各自预算取证。Current 与 History 没有共同 through 或 Activity completed-through。
 
 十三个概念场景使用同故事本次原生页面对照。工具一个语义入口、思考组展开即读，真实多附件与三次单图调用区分；读图调用及图片/文字/错误结果证明留在原工作组成员内、不拆组。工具读取失败和媒体加载失败分别证明。性能分别报告首批有效内容可见（参考 p95≤500ms）与填满/EOF 总耗时、item 页数、成员页数、原子数/字节、正文加载量。长历史按展示 item 逐页经过；折叠组只占一条 item、成员页单独计成本，不将首批目标外推整体补满常数成本；不为填屏预读隐藏成员全文/媒体、COUNT 或 flush。
 
@@ -234,21 +233,21 @@ SQLite 查询工作量优先复用 SeaORM 的官方 metric callback，在实际�
 
 存储工作量样本使用固定规模和原事实/原投影/原读取路径，分别保留重建耗时、源与派生写入量及成员索引空间的口径；库文件总体大小不是成员索引大小。SQL 调用、返回行、正文返回字节和物理磁盘 IO 不是同一指标，未观察的项明确标为未测。测试构建中的单次存储耗时不能冒充生产原生首内容可见 p95，后者仍使用同代次真实布局与固定平台/构建的独立采样。
 
-时间线组件测试以不可变呈现数据驱动真实组件，覆盖静态尾卡、活动提示、折叠展开、遮蔽与同代次资源保留；分页与分组归约在视图模型或所属运行时验证。原生概念场景只保留实际桥接、执行释放、保存重开及媒体资源交接，不在 Flutter 层重新实现原件消费和成员分页协议。 `timeline-history` 的 2,000 项种子保留原生页面布局、分页和重开交接，原件逐字节完整性复用 Runtime 的积压测试；256,000 字节正文仍验证真实桥接连续读取及作用域关闭。回合终态与尾组封存分别判定，已完成回合可保留静态尾组；混合来源组的测试定位按实际成员分页查找，不能以首条成员代表全组来源。 后台结果与活动推理同时可见、摘要无正文时不产生展开控制，复用组件测试；原生实时场景只核对真实后台原件交付、界面工具输出及同一前台执行仍活动时的受限摘要读取，不重复实现双滚动视口的同帧捕获协议。
+时间线组件测试以不可变 History pages 与 Current projection 驱动真实组件，覆盖活动提示、折叠展开、遮蔽、Current overlay 和同代次资源保留。分组成员资格由 Rust History 页面决定，Flutter 不重算。`timeline-history` 的 2,000 个 canonical events 保留原生页面、固定 cut、older 与 reopen；256 KiB body 验证真实桥接连续读取和 scope close。Current final preview 与 History terminal event 分别核对，混合来源组通过 member page 定位。
 
-原生首内容采样复用 `manual-gui --preset conversation-read-work --profile-read-samples` 的隔离环境、原写入器种子和进程所有权；默认未传此标志的功能集成入口不变。采样使用独立的 provider 预置脚本生成两条各至少 20,000 个 Main item 的会话；每条会话固定以 200 个正常轮次、每轮 100 段独立完成的文本生成共 20,000 段模型正文，每段正文仍为 32 UTF-8 bytes，轮内事件间延迟仍为零。每轮按下文固定目标确认保存后才开始下一轮；不直接写 SQLite，不提高容量、不插入输出节流或故障恢复重试。原十轮 × 2,000 段的累计增长压力场景保持原批次和 pacing，不用读取性能预置替代其证据。两条会话保存、准备完成并关闭种子所有者后，分别采集 20 个新应用进程的普通冷读和 20 次同进程 A→B→A 切换。报告分别记录模型正文段数、正常输入轮次数和真实 Main 库存，不将事件、token 或用户输入补足模型正文分母；实际 item 数、Flutter Profile 与 Rust 桥构建配置及构件身份、操作系统缓存未受控等条件随报告记录；不将播种、审计扫描或重建纳入有效读模型的首内容时间。
+原生首内容采样复用 `manual-gui --preset conversation-read-work --profile-read-samples` 的隔离环境、原 History writer 种子和进程所有权。采样生成两条各至少 20,000 个 canonical text events 的会话；每条固定 200 个正常轮次、每轮 100 段独立完成文本，每段 32 UTF-8 bytes。每轮确认 History durable target 后才开始下一轮，不直接写 SQLite、不提高容量或插入故障重试。两条会话 flush 并关闭 writer 后，分别采集 20 个新应用进程的普通冷读与同进程 A→B→A 切换。报告分别记录 model text events、输入轮次、Work/Single/member rows、body bytes 与实际 History cut，不把 token 或输入数补足正文 event 分母。
 
-大历史种子及后续增长仍经过生产上下文准备。严格 fixture 在已有历史的批次间至多安排一次可选文本压缩响应，复用现有压缩请求的精确末条提示匹配，不接纳任意请求、不新增原生压缩兼容分支；首个种子及独立参考会话没有这一历史前置。压缩可发生也可不发生，但不能替代任何必需批次或计入已写入的 Main 库存；各场景按自身约定保持批次数、逐项正文、身份、请求容量和 pacing，不截取另一场景的步骤充当完整预置。不得通过提高模型上下文或预算、关闭自动压缩、改写数据库或放宽匹配来准备数据；准备失败仍保存完整未执行分母，只有完成原真实库存审计后才进入采样。
+大 History 种子及增长仍经过生产上下文准备。严格 fixture 在已有历史的批次间至多安排一次可选文本压缩响应，复用现有压缩请求的精确末条提示匹配；首个种子及参考会话没有该历史前置。压缩不能替代必需批次或计入 accepted History events。场景保持批次数、逐项正文、身份、请求容量与 pacing；不得通过提高模型预算、关闭压缩、改数据库或放宽匹配准备数据。
 
-Profile 播种的每批 `TurnCompleted` 只证明原轮次完成，不代替保存确认。收到同一输入的成功终态后，固定同一 Thread 快照的提交 revision，在原单批 900 秒操作期限内等待现有持久化协调器报告该 Thread 的历史与检查点耐久水位均覆盖这个固定目标，再提交下一必需批次；等待不进入性能时钟，不新增保存接口、恢复重试或第二写入器。每批保留原输入、轮次、目标及实际水位回执；未知水位不补零，真实故障立即失败并保留已取得的回执，不因队列随后排空而自动解除故障，也不提高容量、运行中自适应缩批或通过固定睡眠宣告保存成功。此预置证明累计历史的读取性能，不证明单次零延迟超容量输出可被无条件接纳；后者仍遵循生产在途增量计费、容量拒绝、材料保全及显式恢复合同。
+Profile 播种的每批 `TurnCompleted` 只证明原 Turn 完成，不代替 History flush。收到输入终态后固定同一切面的 canonical event IDs，在单批 900 秒期限内等待 History channel pending 对应该 owner 的 flush；等待不计入读取性能时钟，不新增 writer。每批保留输入、Turn、event IDs 与真实 flush 结果；unknown 不补零，失败立即停止，不因队列后来排空清除故障。该预置证明累计 History 读取性能，不证明超容量输出可无条件接纳。
 
-`run-gui --native-launch --profile --inspect --capture` 仅为显式非发布观察装配官方 Flutter Driver extension，普通发布入口不包含它；debug 的 MCP 组件树能力不外推到 profile。操作沿官方 Driver 的查找、点击与滚动，不恢复 `test_driver/`、`requestData`、自定义控制消息或第二套 UI。仅在非 release 且启用 `ANYWORK_CAPTURE` 时注册只读 `ext.anywork.timelineLayout`：同步借用当前可见、已挂载且未退役的原展示 lease，返回会话/选择/展示代次与已有首内容布局时间戳；未布局为 pending、无有效窗口为 unavailable，不触发读取、分页、执行或布局，也不以零值代替未测。
+`run-gui --native-launch --profile --inspect --capture` 仅为显式非发布观察装配官方 Flutter Driver extension。操作沿官方 Driver 查找、点击与滚动，不恢复 `test_driver/`、`requestData` 或第二套 UI。仅在非 release 且启用 `ANYWORK_CAPTURE` 时注册只读 `ext.anywork.timelineLayout`：借用当前实际挂载的 timeline view，返回 selection generation、Current owner/revision、History cut 与首内容 layout 时间戳；未布局保持 pending，无有效 view 保持 unavailable，不触发分页、执行或布局。
 
 每个样本保留原 `selectionStartedMicros`、`layoutCompletedMicros`、selectionId、generation 和 itemId，严格在同一 owner 时钟内计算 elapsed。采集端观察到结果的时间不是布局完成时间；旧选择或旧代次不得成为新样本。两类样本独立报告样本数、失败/未执行数、p50、nearest-rank p95 和最大值，完整有效样本的 p95 目标保持 500 ms；缺失、模式错误或超时使采样失败，不丢弃失败样本或补零。关闭请求受理、Driver 连接释放、原生进程真实退出和所属后代收束分别确认，原有 20k 库存人工入口的 notMeasured 结果不因此自动升级为性能通过。
 
 可见会话选择被接纳时即登记首内容计时起点，早于异步目录中的后端识别；后端查询的等待时间不能被排除。后端尚未识别时不创建 Native 会话或正文读取，确定为 ACP 后清除 Native 布局计时资格。单元测试等待实际可见会话发布后再借用既有资源，目录选择命令完成不等于后端查询和会话装配已经完成。
 
-主时间线游标沿官方原生集成直接观察同一个真实 FRB 读取器。持有首 Set 后，以相同 `after` 验证响应切面与 `next` 重放；保持该响应未确认，使用它的原正文能力读取首 Set 中没有的新完成文本。随后以实际返回的 `next` 领取后继，核对精确目标 ID／展示位置、顺序洞和分批尾部，再验证关闭、查询封闭与原生 join。观察器只保留有限验收记录，不拥有产品展示状态。完整逻辑响应相等、安装前后取消、确认后取消与伪造游标由受控 Rust 测试证明；不得将局部字段比较冒充完整原件字节校验。
+主时间线沿官方原生集成直接观察真实 FRB `HistoryReader`。先 capture opaque `HistoryCut`，持有首 history page 后用相同 cut 验证稳定页面与 Next 游标；从 `HistoryEventBodyRef` 读取窗口，再领取下一页并核对 anchor、row_key、event seq 与 body bytes。CurrentReader 另测 snapshot/watch；Current 变化不推进 History cut，History 页也不授权 Current。关闭测试分别覆盖父 reader 取消子 watch、调用方先取消、body watch join 与共享 Store 不被单个 reader 关闭。
 
 官方原生集成的 SDK 关闭和测试运行器退出不能替代 GUI 自然退出证明。独立原生生命周期专项沿现役
 native launcher 与退出报告关联运行器 PID、实际 GUI PID 和 `anywork-native-exit/1`，等待真实退出并
@@ -259,7 +258,7 @@ native launcher 与退出报告关联运行器 PID、实际 GUI PID 和 `anywork
 
 Linux 主进程的退出计时以实际停止运行为界，已进入 zombie 状态不能因父进程稍后 reap 而继续累计退出耗时；裁判仍须等待启动器并核对真实退出码。子进程树清理继续要求原 PID／启动身份消失，不能用“已退出但尚未回收”代替完整回收，也不改变原有关闭时限。
 
-资源回归覆盖晚终态首操作与持续交替完成段：活动只持真实未完成操作，已完成 pending 只到实际 durable 确认，不能为等组封口常驻。折叠 Run 撤资格并 cancel/join，再展开重新页读原记录。迁移以非空 schema17 证明原字节/引用/归档保全，在回填、DROP、版本与 Applied 阶段注入失败验证整事务回滚、fresh 重开可重试、第二次零回填；Applied 后缺列/索引/原件明确拒绝。普通积压、真实背压、lost-ACK、关闭及进程退出分别证明，不能以旧快照冒充完整证据。
+Current/History 资源回归覆盖：巨大 `plan` deferred Body 按 64 KiB 连续读取；`activeSkills` 等 Collection 超 2 KiB 时返回真实 `count`、分页完整且大条目走 Deferred body；两个 Current snapshot 父不因另一 reader close 被取消。History 覆盖 RAM pending 捕获后 DB 提交/reclaim、ticket 受理后 `release_history_through`、flush 失败保留 pending、非空 schema24 迁移与 fresh reopen。不得以同一测试替身同时证明四层。
 
 功能等待由真实状态、通道与明确闸门推进，不用 sleep 猜测准备就绪；测试规模从实际产品容量、窗口和语义边界推导，不复制容易漂移的限额。防卡死期限由统一测试配置及进程运行器管理，区分普通整合与压力负载，不承担产品性能 SLA；普通通知不能无限延期，也不按任意 poll 次数判死锁。时间行为单测可用执行器虚拟时间，真实数据库整合不以虚拟时钟替代完成、关闭或吞吐证据。性能另以固定负载、优化构建、环境身份和重复样本比较；操作计数、工作量、SQL 跟踪和 EXPLAIN 用于验证成本来源，不预设无实测依据的加速倍数。
 
@@ -380,7 +379,7 @@ Linux 自动桌面与原生作业除 Xvfb 外，还须显式提供可初始化�
 
 实时工具的最终回执从原工作组成员读取。Lua 选定输出与完整子调用原件按各自的同一 Turn、call、task 和来源身份读取，父程序完成不冒充子命令成功。正文读取绑定原 Main 工作组、成员引用、正文窗口及实际挂载行，同时保持原 Main 滚动实例与成员内部滚动实例的身份，继续验证实际退出码、完整正文和关闭后的资源撤销。回执诊断随 Linux 场景报告归档，不以诊断替代真实界面读取。
 
-完成答案的验证区分 Main 已接纳目标与目标已在当前视口布局：先按原 Turn、文本种类、最终答案渠道及完成终态资格确定唯一 Main item，再复用既有原 UI 揭示路径和 canonical 行身份检查，要求该行的真实答案正文可见；不能把屏幕当前未挂载当作历史中不存在，也不能以别的 Turn、缓存副本或后台工具正文代替。保留原生产“返回最新”交互，目标资格、揭示和正文检查共用原两分钟答案期限，揭示还受既有六十秒上限约束，不为每一步重置或叠加等待预算。只传播剩余期限，不增加 reader、读取旁路、直接滚动坐标或失败后的替代路径。
+完成答案验证区分“History 已接纳目标”与“目标已在当前视口布局”：先按 Turn、text role 与 message/event 身份从固定 History 页确认唯一 canonical original，再通过原 UI “返回最新”和稳定 row identity 核对正文可见。屏幕未挂载不等于历史不存在，也不能用其他 Turn、Current preview 或工具 bytes 替代。目标资格、揭示与正文检查共享原期限，不新增 reader、旁路或直接滚动坐标。
 
 Main 揭示区分外层 canonical `ChatMessage` 已挂载、原 controller metadata unit 已接纳、
 内部 `ChatItemView` renderer 已就绪及实际裁剪可见。外层行、connector、内层分别诊断，
@@ -461,7 +460,7 @@ Linux 基准同时读取本进程 `/proc/self/io` 的 `read_bytes`、`write_byte
 ## 24.7 流式输出的现实规模基准
 
 容量实验区分单次输出、累计历史和成员碎片化，按真实模型资料与[流契约](./07-streaming.md)
-选择输入；历史版本的 Activity Begin 帧大小、限额调整和单次失败记录不作为当前协议要求。
+选择输入；旧版本展示帧、限额调整和单次失败记录不作为当前协议要求。
 原始运行证据保留在对应报告，不在本设计维护机器与版本绑定的实验流水账。
 
 可复用的参考形态为单 item 的 128,000 参考 token 正文，以及 2,000 个各 64 参考 token 的
@@ -476,27 +475,27 @@ item；它们不是厂商 item 数上限。以公开 tokenizer 的具名 encodin
 
 ## 24.8 Linux 累计两万历史与持续增长观测
 
-累计历史容量与单次模型输出是两种工况。Linux 的 `timeline-history-20k` 复用既有原生验收、模拟供应商、正常 writer、Flutter 内容捕获和帧记录入口：先在同一会话用十轮、每轮 2,000 个独立完成文本 item 累积历史并确认保存，再退出所属进程并以同一隔离 home 冷重开。每个合成文本正文固定为 32 个 UTF-8 字节；报告同时列出 20,000 个文本展示 item 与包含用户输入等事实的精确历史总数、正文总字节及数据库规模，不把成员原子、事件、token 或正文块数当成展示 item 数。该形态侧重历史 item 与元数据容量，不替代大正文、Markdown 或图片工况。
+累计历史容量与单次模型输出是两种工况。Linux 的 `timeline-history-20k` 复用原生验收、模拟供应商、正常 History writer、Flutter 内容捕获和帧记录入口：同一会话累计 20,000 个 canonical text events 并确认 History flush，再退出并以同一隔离 home 冷重开。每个正文固定 32 个 UTF-8 字节；报告分别列出 canonical events、Work/Single/member rows、body bytes 与数据库规模，不把 event、member、token 或 chunk 数当成同一单位。该形态不替代大正文、Markdown 或图片工况。
 
 冷加载样本在同一已保存基线上运行独立 GUI 生命周期，构建时间不混入加载时间。分别记录进程启动、内容捕获可观察、选择原会话、同代次首个实际内容布局及视口填充边界；轮次间核对数据库/会话身份。明确报告进程冷启动、样本量和未清除 Linux 页缓存，不称物理磁盘冷缓存。首屏/静置的 controller 消息数、before 和页请求数证明未载入全历史。旧页用真实滚轮/滚动条触发，记录每页延迟、加载增长、cursor 和顺序；显式 load-older 不单独替代滚动证据。旧版三生命周期观测只代表其实际版本，不充作新协议 p95 样本。
 
-冷打开比较按稳定顺序读取的完成记录、history item/turn 的身份、顺序和完整 payload，不只比较行数。applied_write_seq 是 effect 保存水位，不是条目数。被动只读打开不新增执行生命周期 effect，打开/滚动区间的 history admitted 水位应不变；已有保存允许追平，真正执行/显式关停产生的变化按事实单列，不能为保留旧断言激活执行。
+冷打开按稳定顺序比较 event ID/event seq、typed head、row anchor 与完整 body，不只比较行数。History head 或 opaque cut 不是条目数。被动只读打开不新增执行 effect，打开/滚动期间不促发 Current/History 保存；已有 writer 允许完成在途提交，真正执行产生的变化单列，不能为旧断言激活执行。
 
-进程冷读的保存队列证据须来自已接纳且连接有效的原产品基线，未收到基线不能编码成空队列。当前格式、没有既有执行 source 的独立冷读生命周期要求采样时没有 Thread writer 行及待保存义务；它没有可报告的 live H/D，不补造零值。结合关闭前后的完整库存与 `applied_write_seq` 严格相等，证明读取未新增并保存 effect；仅最终队列排空不能替代该比较。真正执行的增长工况按原目标 Thread ID 读取其唯一 writer 行，不把其他会话的水位归给当前选择。
+冷读保存状态分别读取 Current writer 和 History channel 的 typed 状态。没有 writer/pending 时保持 unknown 或 absent，不造零水位；关闭前后完整 History cut/event/body 库存与 Current `snapshot_revision` 不变，证明读取未促写。最终队列为空不能替代该比较，也不能把其他会话的 History head 归给当前选择。
 
-增长首次提交的输入操作完成不等于后端受理或 writer 投影已可见。启动阶段在原提交计时与完成期限内持续观察有效队列基线，保留原始队列及提交状态；原目标 writer 尚未出现的观察不是 H/D 样本，不补零、不借用其他 writer。目标 writer 首次真实出现即开始严格采样，不等 Turn 完成，也不重置时钟或增加期限；一经观察到，该增长生命周期后续各批仍要求其持续存在，缺失、重复或水位无效立即失败。未观察到目标 writer 不能接受完成；失败报告保留未完成批次已获得的证据，不重放提交补造结果。
+增长首次提交的输入操作完成不等于 Core effect、History event 或 reader 可见。启动阶段按原提交身份观察 History pending/head 与 Current revision；目标 writer 尚未出现时保持 unknown，不补零或借用其他 writer。目标 owner 首次真实出现后才开始采样，后续只按该 owner 的 pending/head/cut 与事件身份判断进展；reader cut 未推进、event 重复或 body 长度无效立即失败。未观察到目标 owner 不能判完成，失败报告保留已取得的证据。
 
-增长工况在上述历史基数上另开运行窗口，经同一正常会话继续二十轮、每轮 100 个独立完成文本 item，不写 SQL 注入完成记录，不以未完成 token 增长替代已完成 item 增长。分别观察跟随最新与阅读旧历史/滚动分页期间的完成追加，保留阅读位置、既有 item 身份与保存义务。采样范围须标明原有/新增 item 数、窗口时长、完成与耐久吞吐、接纳至保存时延及积压水位。
+增长工况在上述历史基数上另开运行窗口，经同一正常会话继续追加 canonical text events，不写 SQL 注入对象，不以未完成 token 增长替代 accepted event 增长。分别观察跟随最新与阅读旧页期间的追加，保留阅读 cut、既有 row/entity 身份与保存义务。采样报告分开列原有/新增 event 数、Work/Single/member rows、window 时长、接纳与 flush 吞吐、接纳至 durable 时延及 pending bytes。
 
-History 阅读不冻结完成集合：遵循 [26](./26-timeline-content.md) 的同一 controller 批次接纳语义，旧事实身份/顺序/字节不变，新完成只能扩展尾部。不能用全 ID 列表相等阻止正常增长，也不能只检查 ID 存在而放过改写/重排；thread、原 lease/selection generation 和阅读位置独立保持，内部 seq/源代次由 Rust 诊断而非展示协议核对。
+History 阅读不冻结整个 Store：遵循 [26](./26-timeline-content.md) 的固定 cut。旧页继续读取其 cut 内身份与 bytes；新 reader/capture 取得新 cut，新 event 不插入旧页。不能用全 ID 列表相等阻止增长，也不能只检查 ID 存在而放过改写/重排；Flutter selection generation 与滚动位置独立，Rust 的 event seq/source cut 不作为页面像素位置。
 
-沿既有入口分窗口记录 build/raster/total 的分位数、最大值与慢帧数，不把初始化、静置、分页和增长混成稳态流畅度结论。存储报告区分队列 pending/in-flight 字节、DB/WAL 文件占用和实际 GUI/内嵌 Runtime 进程的 `/proc/<pid>/io` 区间差：三者分别是队列计量、逻辑文件规模与整个进程的存储 I/O，不能互相替代或把序号当作事务数。已有事务观测可单独报告；未采到的指标保持缺失。性能数值属于明确机器、构建模式和合成形态的观察，不新增机器敏感的日常 CI 时限或擅自放宽产品预算。失败保留原始工况、错误与已采样数据，不降为 2,000 item 冒充通过。
+沿既有入口分窗口记录 build/raster/total 分位数、最大值与慢帧数，不把初始化、静置、分页和增长混成稳态流畅度结论。存储报告区分 History pending 事件/字节、`current.json` 大小、DB/WAL 文件占用和实际进程 `/proc/<pid>/io` 区间差；这些是不同单位，不能互相替代。未采到的指标保持缺失，失败不降为 2,000 events 冒充通过。
 
-模拟供应商的请求读取容量不是产品时间线预算：普通 fixture 默认仍为 1 MiB，`timeline-history-20k` 通过既有 fixture options 显式使用 16 MiB 的有界请求容量，以容纳累计历史向供应商的正常上下文回放；不禁用读取上限、不删历史或压低 item 数来绕过 HTTP 413。该容量仅属于合成环境，须在验收报告中披露，不外推真实供应商的上下文或请求容量。
+模拟供应商的请求读取容量不是产品时间线预算：普通 fixture 默认仍为 1 MiB，`timeline-history-20k` 可通过既有 fixture options 显式使用 16 MiB 有界请求容量，以容纳累计上下文回放；不禁用读取上限、不删历史或压低 event 数绕过 HTTP 413。该容量只属于合成环境，须在报告披露。
 
 ## 24.9 按需打开、交付与保存的证据口径
 
-目标契约归 [26](./26-timeline-content.md)。分层证据覆盖 pending 足页零 page/existence SQL、按 scope 补缺、commit/清 pending 交错、固定 cut、冷源 ABA、完成前缀与 Activity 因果、单项不兼容、范围内容、暂停 credit 翻页、A→B→A、关闭及非空迁移。受控屏障构造并发，不能用 sleep、未失败压力循环或零用例冒充证明。原生 B→正文→A、后台结果、段展开/切换与 HTTP/bot 消费须穿真实生产入口，不只测 DTO。
+目标契约归 [26](./26-timeline-content.md)。分层证据覆盖 History pending 与 DB cut 合并、提交/reclaim 交错、固定 cut、冷源 ABA、Work/Single anchor、边界 bytes、body 范围、A→B→A、reader/store 关闭及非空迁移；Current 覆盖 deferred field、collection count、owner reset 与单 assembler。Native 场景穿过 Current/History、SDK、Flutter 唯一窗口与 HTTP/bot 读取，不只测 DTO。
 
 同一证据范围还覆盖排队 Accepted 即一次可见、消费/恢复不重封存、同 ID 重试/异内容冲突/新 ID 同文、inbox 接收与后续消费去重、Bot 不双发布、同 effect 单一顺序、外部文本不升权；订阅前/冷打开 Plan 与待决交互引用可用；Plan/集合独立 revision、token 零业务引用通知、翻页变化局部 stale、隐藏续接无重复；业务失败/重试与冷读事务切面、坏引用错误、慢 Chat 时独立查询、ABA、FRB/HTTP/内容工具及真实 Plan/问答 UI 端到端。已有测试复用，新增需命中真实生产入口，不能把该清单当已通过。
 

@@ -42,12 +42,13 @@ typed 输入 schema 在绑定时按反序列化语义生成一次，保留完整
 
 普通执行者交付或判断需要停工均使用同一 `finish_turn`，停工不另设工具或执行状态。子智能体结束本轮、宿主路由报告、接收方 `wait` 被消息唤醒是不同边界；可靠交付及异常通知复用现有消息、应用扩展和历史能力，不新增查询回送或确认完成工具，也不从工具返回成功推断业务验收通过。
 
-### 历史落盘栅栏（`history_fence`）
+### Current、effect window 与 History sink
 
-`CallContext.history_fence` 记录工具启动执行时刻该线程已提交的核心效果（effect）序号（至少覆盖该工具自身的“运行中任务”事实）：
-- **副作用前置持久化屏障**：对于挂载了持久化存储（`ColdStore`）的线程，`pl-core` 在调用任何工具执行器之前，必须等待历史写入任务将不低于 `history_fence` 的效果序号可靠落盘。因此，即便是动态注册或未知副作用类别的工具，也绝无可能在运行记录落盘前产生外部副作用。
-- **故障阻断与取消安全**：若效果受理或落盘失败，内核立即阻止工具启动、记录类型化存储故障并暂停后续准入；等待栅栏期间若收到取消信号，则直接中止且不启动工具执行器（未挂载 `ColdStore` 的纯内存线程无此落盘等待）。模型上下文的修订号（revision）不等同于核心效果序号，不能替代该栅栏；工具执行器仅接收序号值，不直接接触会话数据库或存储键。
-- **显式控制权限授权**：工具不得凭工具名、MCP 注解（annotations）或输出文本获取执行控制权。结束轮次（`finish_turn`）、扩展 CAS 更新、发起用户交互、工具发现、后台任务等待与取消均须通过注册期的显式授权标志及类型化控制返回值触发。取消或失败的调用保留已观察输出，但严禁提交迟到的控制指令或扩展状态更新。计划（Plan）与工作流（Workflow）工具及状态机归属 Studio 产品层，不下沉至 `pl-core`。
+Native 工具执行沿用现有 Thread effect window 和 Current owner。每个已提交 effect 在原产品观察者把不可变原件交给 `HistoryChannel` 前保留 `HistoryExport { effect, original ThreadSnapshot cut }`。观察者按 1–128 条的有界页读取，每个原件只接纳一次，接纳后才调用 `release_history_through`；该释放不保存 Current、不推进旧 checkpoint/fence，也不授予执行资格。
+
+工具执行不会在产生外部副作用前等待 History 落盘或 Current 保存。已准入操作继续受原取消与可靠输出预算约束，其状态、任务和结果事实按同一 original cut 交付。`HistoryChannel` 独占 schema 25 pending、压力、失败与 flush；Current writer 独立持有 dirty 和 `current.json`。任一环节失败都必须可见，不能由另一环节成功清除。
+
+显式控制授权边界不变：工具名、MCP 注解或输出文本不授予 `finish_turn`、扩展 CAS、交互、发现、等待/取消或其他控制。取消或失败调用可保留已观察输出，但不能提交迟到控制。Plan 与工作流状态留在 Studio，不进入 `pl-core`。
 
 ## 9.2 动态注册、撤销与热目录刷新
 

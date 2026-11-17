@@ -246,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema12_preserves_checkpoint_route_revision_owner_and_recovery_facts() -> Result<()> {
-        let (_dir, db) = source().await?;
+        let (dir, db) = source().await?;
         seed(&db).await?;
         let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
         let mut item = crate::ExecutionItem::completed_user_message(
@@ -520,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn route_head_ignores_recovery_bodies_but_rejects_bad_head_without_fallback() -> Result<()>
     {
-        let (dir, db) = source().await?;
+        let (_dir, db) = source().await?;
         seed(&db).await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
         let original = db

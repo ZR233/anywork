@@ -245,7 +245,6 @@ impl StudioThreadFactory {
         crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             thread.clone(),
-            None,
         )
         .await
         .map(|sink| sink.binding())

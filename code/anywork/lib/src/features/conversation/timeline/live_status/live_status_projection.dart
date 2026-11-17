@@ -200,6 +200,8 @@ abstract final class LiveStatusProjection {
     bool hasMoreCurrentAtoms = false,
     bool loadingCurrentAtoms = false,
     Object? currentAtomsError,
+    bool hasMoreActivityTools = false,
+    bool loadingActivityTools = false,
   }) {
     final interaction = activePendingInteraction(observation.interactions);
     final confirmingPlan = interaction?.planConfirmation != null;
@@ -226,16 +228,11 @@ abstract final class LiveStatusProjection {
         ? null
         : mapThreadActivity(rawActivity);
     final approvalView = interaction?.kind == InteractionKind.toolApproval
-        ? projectConversationActivity(
-            activity: null,
-            snapshot: null,
-            interaction: interaction,
-          )
+        ? projectConversationActivity(activity: null, interaction: interaction)
         : null;
     final storageView = observation.storage?.blocksContinuation == true
         ? projectConversationActivity(
             activity: null,
-            snapshot: null,
             storage: observation.storage,
           )
         : null;
@@ -293,6 +290,8 @@ abstract final class LiveStatusProjection {
         hasMoreCurrentAtoms: hasMoreCurrentAtoms,
         loadingCurrentAtoms: loadingCurrentAtoms,
         currentAtomsError: currentAtomsError,
+        hasMoreActivityTools: hasMoreActivityTools,
+        loadingActivityTools: loadingActivityTools,
       );
     }
 
@@ -319,6 +318,8 @@ abstract final class LiveStatusProjection {
         hasMoreCurrentAtoms: hasMoreCurrentAtoms,
         loadingCurrentAtoms: loadingCurrentAtoms,
         currentAtomsError: currentAtomsError,
+        hasMoreActivityTools: hasMoreActivityTools,
+        loadingActivityTools: loadingActivityTools,
       );
     }
 
@@ -341,6 +342,8 @@ abstract final class LiveStatusProjection {
         hasMoreCurrentAtoms: hasMoreCurrentAtoms,
         loadingCurrentAtoms: loadingCurrentAtoms,
         currentAtomsError: currentAtomsError,
+        hasMoreActivityTools: hasMoreActivityTools,
+        loadingActivityTools: loadingActivityTools,
       );
     }
 
@@ -360,6 +363,8 @@ abstract final class LiveStatusProjection {
       hasMoreCurrentAtoms: hasMoreCurrentAtoms,
       loadingCurrentAtoms: loadingCurrentAtoms,
       currentAtomsError: currentAtomsError,
+      hasMoreActivityTools: hasMoreActivityTools,
+      loadingActivityTools: loadingActivityTools,
     );
   }
 
@@ -374,6 +379,8 @@ abstract final class LiveStatusProjection {
     required bool hasMoreCurrentAtoms,
     required bool loadingCurrentAtoms,
     required Object? currentAtomsError,
+    required bool hasMoreActivityTools,
+    required bool loadingActivityTools,
   }) => LiveStatusView(
     threadId: threadId,
     cut: cut,
@@ -383,5 +390,7 @@ abstract final class LiveStatusProjection {
     hasMoreCurrentAtoms: hasMoreCurrentAtoms,
     loadingCurrentAtoms: loadingCurrentAtoms,
     currentAtomsError: currentAtomsError,
+    hasMoreActivityTools: hasMoreActivityTools,
+    loadingActivityTools: loadingActivityTools,
   );
 }

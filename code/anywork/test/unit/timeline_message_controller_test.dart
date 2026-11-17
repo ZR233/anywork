@@ -105,7 +105,7 @@ void main() {
         completionEntry('row', 1, isText: true, text: 'terminal'),
       );
 
-      final set = adapter.applyBlocks([first], ChatPlacement.set);
+      final set = adapter.applyBlocks([first], TimelineApplyPlacement.set);
       final replace = adapter.replaceBlocks([terminal]);
       await Future.wait([set, replace]);
 
@@ -128,7 +128,7 @@ void main() {
       final terminal = displaySingle(
         completionEntry('row', 1, isText: true, text: 'terminal'),
       );
-      await oldGeneration.applyBlocks([active], ChatPlacement.set);
+      await oldGeneration.applyBlocks([active], TimelineApplyPlacement.set);
       stock.failAfterUpdate = true;
       await expectLater(
         oldGeneration.replaceBlocks([terminal]),
@@ -137,7 +137,7 @@ void main() {
 
       oldGeneration.retireDisplays();
       final nextGeneration = TimelineMessageController(stock, generation: 13);
-      await nextGeneration.applyBlocks([terminal], ChatPlacement.set);
+      await nextGeneration.applyBlocks([terminal], TimelineApplyPlacement.set);
       final card = chatItemPresentationOf(stock.messages.single)!;
       expect(card.inlineText('body'), 'terminal');
 
@@ -154,11 +154,11 @@ void main() {
       await adapter.applyBlocks([
         displaySingle(completionEntry('a', 2, isText: true, text: 'a')),
         displaySingle(completionEntry('c', 3, isText: true, text: 'active c')),
-      ], ChatPlacement.set);
+      ], TimelineApplyPlacement.set);
 
       final older = adapter.applyBlocks([
         displaySingle(completionEntry('b', 1, isText: true, text: 'older b')),
-      ], ChatPlacement.prepend);
+      ], TimelineApplyPlacement.prepend);
       final terminal = adapter.replaceBlocks([
         displaySingle(
           completionEntry('c', 3, isText: true, text: 'terminal c'),
@@ -203,7 +203,7 @@ void main() {
         completionEntry('row', 1, isText: true, text: 'later original'),
       );
 
-      await adapter.applyBlocks([boundary], ChatPlacement.set);
+      await adapter.applyBlocks([boundary], TimelineApplyPlacement.set);
       await adapter.replaceBlocks([later]);
 
       final card = chatItemPresentationOf(stock.messages.single)!;

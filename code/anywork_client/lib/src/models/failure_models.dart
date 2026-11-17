@@ -55,7 +55,6 @@ enum StudioFailureReason {
   conversationResyncRequired,
   staleCurrentReference,
   staleReadScope,
-  staleViewCursor,
   concurrentNext,
   staleLspBinding,
 
@@ -82,7 +81,6 @@ enum StudioFailureReason {
       StudioFailureReason.conversationResyncRequired,
     'staleCurrentReference' => StudioFailureReason.staleCurrentReference,
     'staleReadScope' => StudioFailureReason.staleReadScope,
-    'staleViewCursor' => StudioFailureReason.staleViewCursor,
     'concurrentNext' => StudioFailureReason.concurrentNext,
     'staleLspBinding' => StudioFailureReason.staleLspBinding,
     'protocolVersionMismatch' => StudioFailureReason.protocolVersionMismatch,

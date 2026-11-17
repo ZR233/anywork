@@ -84,6 +84,7 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
         cancellation: CancellationToken,
+        saved_current: Option<Arc<pl_core::thread::current::ThreadCurrent>>,
     ) -> Result<ConversationStateFeed> {
         ensure!(!cancellation.is_cancelled(), core::ChatError::Cancelled);
         let subscription_id = crate::studio::ids::new_id("state");
@@ -114,7 +115,7 @@ impl StudioRuntime {
         let mut activity_floor = 0;
         let cold_terminal = None;
         let mut annotate_route = false;
-        let (effect_cut, active_turn, _interactions, business_refs) = if let Some((
+        let (effect_cut, active_turn, business_refs) = if let Some((
             state_rx,
             storage_rx,
             terminal_rx,
@@ -170,7 +171,6 @@ impl StudioRuntime {
             );
             let effect_cut = source.current.revision();
             let active_turn = source.current.active_turn().cloned();
-            let interactions = source.current.interactions().to_vec();
             let business_refs = source.current.business_refs();
             if let Some(cut) = feed.runtime() {
                 runtime_floor = (cut.observation_revision, cut.catalog_revision);
@@ -187,14 +187,13 @@ impl StudioRuntime {
             state = Some(state_rx);
             storage = Some(storage_rx);
             last_turn = Some(terminal_rx);
-            (effect_cut, active_turn, interactions, business_refs)
+            (effect_cut, active_turn, business_refs)
         } else {
             annotate_route = true;
-            let saved = self
-                .store
-                .state_for(&thread.workspace_id, thread_id)?
-                .load_current()
-                .await?;
+            let saved = match saved_current {
+                Some(saved) => Some(saved),
+                None => self.store.state_for(&thread.workspace_id, thread_id)?.load_current().await?.map(Arc::new),
+            };
             ensure!(slot.is_current(position.epoch), resync());
             match saved {
                 Some(saved) => {
@@ -216,11 +215,10 @@ impl StudioRuntime {
                     (
                         saved.snapshot_revision,
                         current.active_turn().cloned(),
-                        current.interactions().to_vec(),
                         current.business_refs(),
                     )
                 }
-                None => (0, None, Vec::new(), ThreadBusinessRefs::empty()),
+                None => (0, None, ThreadBusinessRefs::empty()),
             }
         };
         ensure!(

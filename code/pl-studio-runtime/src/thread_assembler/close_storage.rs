@@ -223,6 +223,7 @@ impl SessionRuntime {
         });
         let current = binding.as_ref().map(|binding| binding.conversation.clone());
         let completion = async move {
+            thread.attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(storage)).await.map_err(Arc::new)?;
             if let Some(current) = current {
                 current.attach_current(thread).await.map_err(|source| {
                     Arc::new(ThreadError::Storage(Arc::new(
@@ -413,9 +414,11 @@ impl SessionRuntime {
                         .storage_attachment_gate
                         .take_if(|gate| gate.thread_id == id);
                     let conversation = binding.conversation.clone();
+                    let sink = binding.storage.clone();
                     // No Registry/Entry owner is captured, so retaining this future cannot form
                     // a cycle. A completed result is retained even if no waiter remains.
                     let completion: AttachmentCompletion = async move {
+                        thread.attach_history(pl_core::thread::history_sink::HistorySinkHandle::new(sink)).await.map_err(Arc::new)?;
                         conversation
                             .attach_current(thread)
                             .await

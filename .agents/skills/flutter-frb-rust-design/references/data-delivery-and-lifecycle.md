@@ -16,14 +16,17 @@ Native 自有领域与 ACP 等外部协议的能力边界见[可观察查询](ob
 | 可变当前态与查询结果 | 按[可观察查询](observable-queries.md)选择完整可替换快照或确需连续的 delta；SDK 接纳一次，Flutter 只读投影 |
 | 一次性详情与检查 | 普通类型化查询，结果归原请求；无需建立永久观察 |
 | 不可变完成事实 | 原事实 owner 按稳定身份可靠发布，按完成序号读取；保留真实保存义务 |
-| Native 展示段卡片 | 原 Rust owner 增量维护唯一工作尾组，原件完成即保存，首次可见独立内容冻结旧组；Flutter 一冻结块一卡，闲置尾卡不冒充历史 |
+| Native 时间线 | HistoryClassifier 维护 Work／Single／member 小头及真实边界观察；Current 独立提供本 run 活动内容，Flutter 不重做领域分类 |
 | 历史页与不可变详情 | 按需查询，绑定请求身份、游标与预算，不借实时流的 credit 完成查询 |
 | 展示选择与资源 | 由实际呈现或资源 owner 管理，不冒充业务事实 |
 
-持续变化的正文按原内容 owner 提供有界范围观察，见[可观察查询](observable-queries.md#1-先分语义再选读法)；
-原完成级接口用完成前缀绑定活动快照；GUI 使用独立展示位置与同切面 live 窗口，
-按稳定块身份同次完成历史插入和实时退役，中间分帧保留未交付块。不建立可靠展示 cut 队列，也不因此删除
-原 Effect/HistoryChannel、唯一 writer 或 checkpoint 的可靠职责；具体算法只在 design/26 维护。展示位置只用首次可见时分配的 BlockOrder，历史前沿允许跨洞；展示页按同范围有界查询与 captured Arc 覆盖合并，不能套用完成原件 D/H 切半。冻结等待块耐久后可回收，零 SQL 必须有驻留范围完整证明。
+持续正文由原 Current owner 提供带 owner／generation 的有界窗口。小 State 只交付元数据；
+增长数组用 `CurrentCollectionRef` 分页，大字段或超大集合条目用 `CurrentContentRef` 读取。
+完整 `count` 与已加载数量分开，不拉全量构造第二份常驻 State，也不以截断数组冒充完整结果。
+HistoryReader 提供纯分页及不可变正文；不消费 Current、不隐藏 apply，也没有 next／ACK 或 tail。
+Flutter 保留 Flyer，由一个有界 History 窗口与当前 run overlay 按 row_key／entity_id 组成画面。
+它们的保存与通知独立，不承诺共同切面；缺少终态时保留最后已见小头，不伪造成功。
+具体分类与边界观察规则以 design/26 为准，不在客户端重做分组。
 迁移内容活动流时，逐一核对原领域阶段摘要的消费者；“没有未完成正文”不等于
 “没有执行活动”。已有类型化阶段仍须从原 owner 经首基线和后续通知交付，不能丢弃后
 再让界面凭执行句柄存在猜测思考、等待或停止。阶段摘要也不能越过内容屏障退休正文。
@@ -81,26 +84,21 @@ Main 工作头即使只有一项也不读取/内联成员正文或媒体；展�
 
 ## 接纳、确认与背压
 
-本节的连续 ACK、完成事实接纳和分块 staging 只适用于领域已有的可靠交付契约。
-可替换当前态使用[可观察查询中的最小观察方式](observable-queries.md#6-复用背压和生命周期不扩展协议保证)，
-无需为简单查询增加 ACK；若原 feed 同时交付当前态与完成事实，仍保持原交接与确认语义。
+Native Current 只订阅原 State assembler 与 CurrentProjection，缺口或 owner 更换返回小 Reset。
+History query 是普通有界查询，页面先纯读取，再由实际呈现 owner 显式 apply。
+不把 FRB `StreamSink.add`、controller apply 或绘制解释为可靠保存。
 
-- 唯一 feed owner 管理确认。明确每类帧的接纳提交点：当前态进入 Repository，
-  完成批次进入唯一呈现消费者。转发到无界队列不是接纳。
-- 只确认同一句柄已经 ready 的连续前缀。前批完成事实仍未接纳，不能因后帧状态已提交而越过它。
-  恢复 cursor 同样取实际连续接纳位置，不取收到的最大序号、目标水位或服务端 head。
-- 同一更新既交付完成事实又结束 live 时，先校验准备、接纳完成事实和提交当前态，再公开更新；
-  不先清 live 后异步等历史补上。协调者不保存第二份镜像，不为此建立通用跨域事务框架。
-- FRB `StreamSink.add` 没有等待 Dart 业务消费的提交语义。复用现有 credit、取消与 join，
-  同时限制帧数、单帧字节和暂存总量；不要把 transport ACK 扩展成业务修订握手。
-- 大快照分块进入受限 staging，中间块按实际接纳释放 credit，最终块原子替换快照。
-  若快照超过窗口却等全部收齐才确认，生产者与消费者会互相等待。
-- 同一可靠 feed 内只有不破坏完成交接的可替代状态可以合并；
-  必须累积的文本 delta 和可靠条目不能任意丢弃。
+History 接纳保留真实原件，原 writer COMMIT 后才回收 pending；失败保留原错误和字节。
+输出预算、压力与故障恢复沿原 Core 安全点和类型化报告，不向 Current 保存加入历史 fence。
+Current close 只取消并 join 自己的 metadata／body watch 与读取任务，不等待或关闭 History。
+ACP 等外部协议只有实际协商了 credit／ACK 时才使用其交付保证，不能扩展成 Native 的逐帧握手。
 
 ## 建立基线、恢复与迟到结果
 
-Native 内容的读句柄、执行绑定和未偿还保存义务共用稳定 ConversationStore。执行驱动退出或更换不更换数据所有者；冻结原批次和已接纳保存义务沿原可靠通道保留。内容资格只因真实数据库身份失效、显式撤销或关闭而结束，不能再以冷态转执行态或临时观察者更换作为内容接管条件。冷读与初始化的短 gate、SQLite 首次读取及 RAM 覆盖切面遵循 design/26；现役推送与传输确认协议仍保留。
+Current 的执行与读取资格绑定 runtimeEpoch／owner，冷 JSON 只提供暂停查看；真正激活才创建新 owner。
+History reader 绑定自己的读取范围和不可变 cut，不因 Current 变化取得或丢失资格。
+原件和边界正文由 History 持有，Current 不从 History 修补或 replay；旧 owner 回调不能写新 Current。
+重启交付只恢复 Current 中明确保留的完整 pending marker，不扫描全部过去报告推测待办。
 
 
 可变查询的登记、首帧切面与查询期间的 dirty 保留统一遵循
@@ -142,8 +140,9 @@ producer、sink、query、consumer 和底层句柄真实退出。迟到打开的
 [Tokio watch](https://docs.rs/tokio/latest/tokio/sync/watch/index.html) 的最新值与变化通知语义。
 按项目锁定版本核对 API；确认与关闭的具体协议仍由项目 owner 承担，不是第三方组件自动保证。
 
-## 唯一工作尾组与内容证据
+## 分组与内容证据
 
-Native 的真实 Started 不证明公开内容已可读。首次内容证据复用原可靠成员通道，不能依赖可合并 progress/watch 或最新正文倒推位置；具体类型、版本与边界只在 design/26 维护。来源结束、闲置、owner 关闭和冷重开不封组。前端直接消费 Rust 的当前尾组身份，不按来源、活动 Turn 或末项猜测。静态尾卡不是冻结历史，不进历史 controller，只挂一处；动静切换保留同 ID、展开和读取 owner。耐久开放尾组应释放已提交终态引用，不为幂等新增永久平行账本。
-
-可靠交接须区分发送前与发送后取消：未 send 可释放 permit/临时预算并保全原部分结果；已 send 必须等原接收者明确接纳/拒绝，不用总超时丢 Future 或重发。接纳与耐久是两个确认，执行 owner 不能因公开 flush 占住成员回复/控制处理；复用原固定目标票据、pressure 通知及安全等待入口。已保存历史读取不促写，取消释放原短读，不补平行缓存或后台查询。具体接口、阶段与故障窗口以 design/15、17 为准，不复制第二套 DTO/预算/时限。
+HistoryClassifier 是 Native 唯一可见性／分组 owner。真实开始、首次公开内容、边界观察和结束各自保真。
+旧组的 BoundaryObserved 保留当时实际已见 bytes；后来内容增长、replace 或终稿都不能覆盖它。
+Current 只说明本 run 当下的执行资格与内容，不携带完成序号或历史资格；主列表折叠头不读取成员正文。
+正文、媒体与展开任务分别按实际 Current scope 或 History reader 取消和回收，不保留 display lease。

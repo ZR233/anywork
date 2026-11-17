@@ -213,6 +213,8 @@ SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发
 
 History 不是 SDK 当前态缓存。`HistoryTimelinePage`、`HistoryGroupPage`、`HistoryEventDetail` 与 `HistoryBodyWindow` 经 FRB 和 SDK 机械映射后交唯一 Flutter 时间线 owner；页面、Work/Single 与成员合同见 [26](./26-timeline-content.md)。controller 按稳定 `row_key`／`entity_id` 保存已加载行和展开意图，不建立原子、展示块、消息三份全量镜像。older page 只返回结果，不自动修改组件。状态栏由 Current 单独投影，诊断借用已得到的结果。
 
+Current State 的 `CurrentStateField` 只有 `Body` 与 `Collection` 两个分支。Body 按 `CurrentContentRef`、byte length 与 64 KiB 窗口读取；Collection 按 `CurrentCollectionRef`、demand 和 continuation 分页，`count` 始终是完整集合量，条目 deferred 时再读取其 body。Provider/ViewModel 不把分页结果拼成第二份常驻 State，也不公开或推导 live/cold generation。
+
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
 ChatController、焦点、滚动、HistoryReader、CurrentReader、body watch、任务、permit、附件和操作票据由创建它们的资源 owner 持有，不进入 Freezed 状态；普通不可变文本可共享引用。纯 View 仅接 props、typed callback 与 UI-only controller，Flutter 官方组件及成熟三方优先，不为领域适配再加无职责 Manager/Facade。
@@ -262,7 +264,7 @@ ChatController、焦点、滚动、HistoryReader、CurrentReader、body watch、
 
 工作模式变更同样显式携带渲染时的目标会话，命令边界不回退读取全局选择。权限决定的本地原因文本绑定宿主、原交互身份与权限载荷语义；切换目标或载荷变化后不沿用旧原因，同一交互仅在途或错误状态变化时保留用户输入。交互停靠区替代普通输入区时，仍须从原会话命令事实呈现停止的在途、受理与失败，不因普通输入框卸载而丢失唯一错误出口。
 
-根可见子任务待决交互由 SDK 所属领域唯一归约，复用产品订阅的 `ChildInteractions { hostThreadId }` 作用域主题；首帧基线与 `ChildInteractionsChanged` 均携带同一宿主的完整待决集合和独立领域修订号，旧基线或事件不能覆盖新值。该修订号不是历史 `append_seq`、交互自身 revision 或展示 generation。只包含直接、可见 child 的待决问题与权限请求，child Plan 仍是诊断事实。挂载、决议后及换代不再查询刷新；显式 `readChildInteractions` 仍是普通只读查询，其返回值不得写入或覆盖事件所属的领域镜像。
+根可见子任务待决交互由 SDK 所属领域唯一归约，复用产品订阅的 `ChildInteractions { hostThreadId }` 作用域主题；首帧基线与 `ChildInteractionsChanged` 均携带同一宿主的完整待决集合和独立领域修订号，旧基线或事件不能覆盖新值。该修订号不是 History event seq、交互自身 revision 或展示 generation。只包含直接、可见 child 的待决问题与权限请求，child Plan 仍是诊断事实。挂载、决议后及换代不再查询刷新；显式 `readChildInteractions` 仍是普通只读查询，其返回值不得写入或覆盖事件所属的领域镜像。
 
 这里的领域载体复用 `ObservedResource<完整集合>`，FRB、HTTP 与 SDK 必须保留同一资源状态及领域 revision。合法 Uninitialized/Failed 首帧不是编码失败，更不是 Ready 空集合；无值首帧只建立资源观察，不能授予本代完整集合资格或确认交互消失。同一订阅保持接收后续权威资源变化，不以 Unavailable 终止并依赖有限重试等待领域就绪；目录成员已登记也不证明完整 pending 集合已准备。真正的基线或事件转换失败必须交付现成 Failure 并终结原 producer、收束其资源，不得 WARN 后静默跳过首帧或可靠更新。
 

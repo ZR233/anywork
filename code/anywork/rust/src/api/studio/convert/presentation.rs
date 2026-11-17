@@ -490,10 +490,25 @@ pub(crate) fn current_content_ref(value: protocol::CurrentContentRef) -> BridgeC
 }
 
 pub(crate) fn current_state_field(value: protocol::CurrentStateField) -> BridgeCurrentStateField {
-    BridgeCurrentStateField {
-        field: value.field,
-        reference: current_content_ref(value.reference),
-        byte_length: value.byte_length,
+    match value {
+        protocol::CurrentStateField::Body {
+            field,
+            reference,
+            byte_length,
+        } => BridgeCurrentStateField::Body {
+            field,
+            reference: current_content_ref(reference),
+            byte_length,
+        },
+        protocol::CurrentStateField::Collection {
+            field,
+            reference,
+            count,
+        } => BridgeCurrentStateField::Collection {
+            field,
+            reference: current_collection_ref(reference),
+            count,
+        },
     }
 }
 

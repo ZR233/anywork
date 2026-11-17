@@ -89,6 +89,19 @@ def _inspect_data_unchecked(data: Path) -> dict:
             ):
                 raise ValueError("种子会话归属无效")
             safe_file(session, "history.sqlite")
+            current = read_json(safe_file(session, "current.json"))
+            if (
+                current.get("schemaVersion") != 1
+                or current.get("threadId") != member["threadId"]
+                or not isinstance(current.get("savedRuntimeEpoch"), str)
+                or not current["savedRuntimeEpoch"]
+                or not isinstance(current.get("snapshotRevision"), int)
+                or current["snapshotRevision"] < 0
+                or not isinstance(current.get("savedAt"), int)
+                or not isinstance(current.get("state"), dict)
+                or "modelCall" not in current
+            ):
+                raise ValueError("种子 Current JSON 身份或格式无效")
     # 只读检查当前原生格式，不改写数据库或工作区路径。
     for path in sorted(data.rglob("*.sqlite")):
         wal = path.with_name(path.name + "-wal")
@@ -106,11 +119,27 @@ def _inspect_data_unchecked(data: Path) -> dict:
                 and db.execute("PRAGMA user_version").fetchone()[0] != 27
             ):
                 raise ValueError("种子产品数据库格式与当前构建不匹配")
-            # Studio 历史库由 history_meta 管理；不同于 pl-core 的可选 Session store。
-            if path.name == "history.sqlite" and db.execute(
-                "SELECT schema_version FROM history_meta WHERE id=1"
-            ).fetchone() != (24,):
-                raise ValueError("种子历史数据库格式与当前构建不匹配")
+            if path.name == "history.sqlite":
+                session_record = tomllib.loads(
+                    safe_file(path.parent, "session.toml").read_text()
+                )
+                meta = db.execute(
+                    "SELECT schema_version,database_id,thread_id "
+                    "FROM history_store_meta WHERE singleton=1"
+                ).fetchone()
+                tables = {
+                    row[0]
+                    for row in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+                }
+                if (
+                    meta is None
+                    or meta[0] != 25
+                    or not meta[1]
+                    or not meta[2]
+                    or meta[2] != session_record["threadId"]
+                    or "history_meta" in tables
+                ):
+                    raise ValueError("种子历史数据库不是当前 schema 25 格式")
             if path.name == "calls.sqlite":
                 row = db.execute(
                     "SELECT schema_version,pending_cleanup FROM calls_meta WHERE id=1"

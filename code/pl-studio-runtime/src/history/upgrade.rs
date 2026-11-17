@@ -4336,7 +4336,7 @@ mod migration_tests {
                 )
             })
             .ok_or_else(|| HistoryError::NotFound("frozen observation".into()))?;
-        let boundary_payload = reader.read_event(boundary.head_seq).await?
+        let boundary_payload = reader.read_event(display_member_event_id("work-1", "member-1"), HistoryDemand::default()).await?
             .payload_ref
             .clone()
             .ok_or_else(|| HistoryError::Integrity("frozen payload is missing".into()))?;

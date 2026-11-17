@@ -123,6 +123,9 @@ class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
     return state.when(
       data: (value) => StartedItemsPanel(
         state: value,
+        onLoadMoreSkills: () => unawaited(commands.loadNextSkills()),
+        onLoadMoreMcpState: () => unawaited(commands.loadNextMcpServers()),
+        onLoadMoreLspState: () => unawaited(commands.loadNextLspServers()),
         onReconnectMcp: (id) => unawaited(commands.reconnectMcp(id)),
         onReconnectLsp: (id) => unawaited(commands.reconnectLsp(id)),
       ),
@@ -143,12 +146,18 @@ class _StartedItemsConnectorState extends ConsumerState<StartedItemsConnector> {
 class StartedItemsPanel extends StatelessWidget {
   const StartedItemsPanel({
     required this.state,
+    required this.onLoadMoreSkills,
+    required this.onLoadMoreMcpState,
+    required this.onLoadMoreLspState,
     required this.onReconnectMcp,
     required this.onReconnectLsp,
     super.key,
   });
 
   final StartedItemsState state;
+  final VoidCallback onLoadMoreSkills;
+  final VoidCallback onLoadMoreMcpState;
+  final VoidCallback onLoadMoreLspState;
   final void Function(String? id) onReconnectMcp;
   final void Function(String id) onReconnectLsp;
 
@@ -165,7 +174,19 @@ class StartedItemsPanel extends StatelessWidget {
         ),
       ),
       if (state.skills.isNotEmpty) ...[
-        _GroupHeading(title: context.l10n.statusSkillsSection),
+        _GroupHeading(
+          title: context.l10n.statusSkillsSection,
+          action: state.skillsHasMore
+              ? TextButton(
+                  onPressed: state.skillsLoading ? null : onLoadMoreSkills,
+                  child: Text(
+                    state.skillsLoading
+                        ? context.l10n.settingsStateChecking
+                        : '${state.skills.length}/${state.skillsTotal}',
+                  ),
+                )
+              : Text('${state.skills.length}/${state.skillsTotal}'),
+        ),
         for (final skill in state.skills)
           _ServiceRow(
             key: StudioDriverKeys.statusActiveSkill(skill),
@@ -206,6 +227,15 @@ class StartedItemsPanel extends StatelessWidget {
                 : () => onReconnectMcp(server.id),
           ),
         ),
+      if (state.mcpStateHasMore)
+        TextButton(
+          onPressed: state.mcpStateLoading ? null : onLoadMoreMcpState,
+          child: Text(
+            state.mcpStateLoading
+                ? context.l10n.settingsStateChecking
+                : '${state.mcp.length}/${state.mcpStateTotal}',
+          ),
+        ),
       _GroupHeading(title: context.l10n.statusLspSection, sync: state.lspSync),
       if (state.lsp.isEmpty && state.lspSync.isReady)
         _EmptyRow(label: context.l10n.settingsLspEmptyTitle),
@@ -227,6 +257,15 @@ class StartedItemsPanel extends StatelessWidget {
                       : () => onReconnectLsp(server.id),
                 )
               : null,
+        ),
+      if (state.lspStateHasMore)
+        TextButton(
+          onPressed: state.lspStateLoading ? null : onLoadMoreLspState,
+          child: Text(
+            state.lspStateLoading
+                ? context.l10n.settingsStateChecking
+                : '${state.lsp.length}/${state.lspStateTotal}',
+          ),
         ),
     ],
   );

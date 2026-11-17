@@ -911,7 +911,7 @@ mod mixed_tests {
                 .state
                 .to_paused_snapshot()
                 .turns
-                .values()
+                .iter()
                 .any(|turn| turn.state.is_terminal()),
             "the child current retains its terminal Turn"
         );

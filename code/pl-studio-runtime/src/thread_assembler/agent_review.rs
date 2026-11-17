@@ -119,6 +119,20 @@ pub(crate) fn review_message_id(agent: &str, turn: &str, sequence: u64) -> Strin
     )
 }
 
+impl ReviewForward {
+    pub(crate) fn remains_pending_with_source_marker(&self) -> bool {
+        matches!(
+            self,
+            Self::Unconfirmed {
+                reason:
+                    ReviewForwardReason::SendUnconfirmed(_)
+                    | ReviewForwardReason::StorageUnavailable(_),
+                ..
+            }
+        )
+    }
+}
+
 impl SessionRuntime {
     async fn adjudicate_review_message(
         &self,
@@ -438,12 +452,66 @@ impl SessionRuntime {
         }) {
             return unknown(ReviewForwardReason::RecoveryRequiresScheduling);
         }
+        let digest = delivery.digest();
         match target.send_message_and_continue(delivery, options).await {
-            Ok(sequence) => ReviewForward::Accepted {
+            Ok(sequence) => {
+                let flushed = async {
+                    services
+                        .store
+                        .conversation_store(target_id)
+                        .await?
+                        .flush_current(target.runtime_epoch())
+                        .await
+                }
+                .await;
+                if let Err(error) = flushed {
+                    return ReviewForward::Unconfirmed {
+                        message_id: id,
+                        reason: ReviewForwardReason::StorageUnavailable(Arc::new(
+                            super::ThreadAssemblyError::Resource {
+                                operation: "flush accepted review feedback",
+                                source: error.into_boxed_dyn_error(),
+                            },
+                        )),
+                    };
+                }
+                match self.durable_message_identity(target_id, &id).await {
+                    Ok(Some(DurableMessageIdentity::Proven {
+                        sequence: saved,
+                        digest: saved_digest,
+                    })) if saved == sequence && saved_digest == digest => ReviewForward::Accepted {
+                        message_id: id,
+                        sequence,
+                    },
+                    Ok(Some(DurableMessageIdentity::Proven { .. })) => ReviewForward::Unconfirmed {
+                        message_id: id,
+                        reason: ReviewForwardReason::IdentityConflict,
+                    },
+                    Ok(Some(DurableMessageIdentity::Unverifiable)) => ReviewForward::Unconfirmed {
+                        message_id: id,
+                        reason: ReviewForwardReason::IdentityUnverifiable,
+                    },
+                    Ok(None) => ReviewForward::Unconfirmed {
+                        message_id: id,
+                        reason: ReviewForwardReason::StorageUnavailable(Arc::new(
+                            super::ThreadAssemblyError::Resource {
+                                operation: "verify accepted review feedback in Current",
+                                source: Box::new(std::io::Error::other(
+                                    "accepted review feedback is absent from saved Current",
+                                )),
+                            },
+                        )),
+                    },
+                    Err(error) => ReviewForward::Unconfirmed {
+                        message_id: id,
+                        reason: ReviewForwardReason::StorageUnavailable(Arc::new(error)),
+                    },
+                }
+            }
+            Err(error) => ReviewForward::Unconfirmed {
                 message_id: id,
-                sequence,
+                reason: ReviewForwardReason::SendUnconfirmed(Arc::new(error)),
             },
-            Err(error) => unknown(ReviewForwardReason::SendUnconfirmed(Arc::new(error))),
         }
     }
     /// Caller holds root then target operation gates through publication of the review child.

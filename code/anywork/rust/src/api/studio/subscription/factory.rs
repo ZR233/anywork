@@ -137,11 +137,9 @@ mod tests {
 
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
-        use pl_protocol::{ChatAtomKind, ChatScope, ReadDemand, ThreadNotification, TurnState};
+        use pl_protocol::{ReadDemand, ThreadNotification, TurnState};
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
-        use pl_studio_runtime::{
-            ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
-        };
+        use pl_studio_runtime::{StudioHostKind, StudioRuntime, StudioRuntimeOptions};
 
         let stage = ReplyStage::new();
         let frames = responses_text_chunks(
@@ -243,32 +241,35 @@ mod tests {
             })
             .await?;
             ensure!(env.runtime.read_thread(&env.thread_id).await?.title == title);
-            let mut feed = env
+            let history = env
                 .runtime
-                .open_conversation_feed(
+                .open_history_reader(
                     &env.thread_id,
-                    ChatScope::conversation(None),
-                    ReadDemand {
-                        max_items: 100,
-                        max_bytes: 64 * 1024,
+                    pl_protocol::history::HISTORY_PROTOCOL_VERSION,
+                )
+                .await?;
+            let page = history
+                .turns_page(
+                    None,
+                    None,
+                    pl_protocol::history::HistoryDemand {
+                        max_rows: 100,
+                        max_bytes: 256 * 1024,
                     },
                 )
                 .await?;
-            let batch = loop {
-                match feed.recv().await?.context("reopened conversation ended")? {
-                    ConversationEvent::Chat { batch } => break batch,
-                    ConversationEvent::Activity { .. } => {}
-                }
-            };
             ensure!(
-                batch.entries.iter().any(|entry| {
-                    entry.atom.turn_id.as_deref() == Some(completed_id.as_str())
-                        && entry.atom.kind == ChatAtomKind::Text
+                page.entries.iter().any(|entry| {
+                    matches!(
+                        &entry.head,
+                        pl_protocol::history::HistoryRowHead::Turn(turn)
+                            if turn.turn_id == completed_id
+                    )
                 }),
                 "completed turn was not recovered from durable history"
             );
-            feed.reader().close().await?;
-            feed.close().await?;
+            history.request_close();
+            history.close().await?;
             Ok(())
         })
         .await

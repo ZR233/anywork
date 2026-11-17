@@ -466,11 +466,77 @@ impl SessionRuntime {
             .clone()
             .context("review services unavailable")?;
         self.recover_pending_native_deliveries(reviewer).await?;
+        self.recover_review_decisions(reviewer, &services).await?;
         if let Some(parent) = reviewer.parent_thread_id.as_deref()
             && !self.parent_is_acp(parent)
         {
             let parent = services.record(parent).await?;
             self.recover_pending_native_deliveries(&parent).await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_review_decisions(
+        &self,
+        reviewer: &pl_protocol::Thread,
+        services: &super::agent_services::AgentServices,
+    ) -> Result<()> {
+        let decisions = self
+            .pending_native_deliveries(reviewer)
+            .await?
+            .into_iter()
+            .filter(PendingNativeDelivery::is_review_decision)
+            .collect::<Vec<_>>();
+        if decisions.is_empty() {
+            return Ok(());
+        }
+        let checkpoint =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(
+                &services.store,
+                reviewer,
+            )
+            .await?
+            .context("review decision source has no saved current")?;
+        let authority = Arc::new(TerminalAuthority::capture(
+            &checkpoint.state.to_paused_snapshot(),
+        )?);
+        drop(checkpoint);
+        let material_channel = services
+            .store
+            .thread_persistence()
+            .history_channel(&reviewer.id);
+        let material = services.store.thread_persistence().retain_terminal_material(
+            &reviewer.id,
+            &material_channel,
+            authority.retained_bytes().saturating_add(4096),
+            None,
+        )?;
+        for decision in decisions {
+            let super::pending_delivery::PendingNativeDeliverySource::Terminal {
+                child_id, ..
+            } = decision.source()
+            else {
+                anyhow::bail!("review decision has no terminal source");
+            };
+            ensure!(
+                child_id == &reviewer.id,
+                "review decision is stored under a different source Thread"
+            );
+            let sequence = decision
+                .terminal_sequence()
+                .context("review decision has no terminal sequence")?;
+            self.start_terminal_delivery(Arc::new(TerminalDelivery {
+                thread: reviewer.clone(),
+                sequence,
+                authority: authority.clone(),
+                original: Some(Arc::new(decision.message().clone())),
+                source: ReviewDeliverySource::Reconciliation,
+                revocation: Arc::new(AtomicU64::new(u64::MAX)),
+                channel: None,
+                wake: false,
+                _material: Some(material.clone()),
+            }))
+            .await?;
         }
         Ok(())
     }
@@ -586,6 +652,13 @@ impl SessionRuntime {
                 .clone()
                 .context("review services unavailable")?;
             let owner = self.clone();
+            let review_decision = if conclusion.disposition == ReviewDisposition::NeedsChanges {
+                Some(PendingNativeDelivery::review_decision(
+                    request.original.clone(),
+                )?)
+            } else {
+                None
+            };
             let reviewer = request.reviewer;
             let turn = request.turn;
             let sequence = request.terminal_sequence;
@@ -603,6 +676,13 @@ impl SessionRuntime {
                     crate::studio::history_delivery::parent_report(&history.reader(),&reviewer.id,sequence).await?.is_some(),
                     "review terminal has no durable original report"
                 );
+                // The source marker brackets the restricted inbox+continue operation. Recovery may
+                // observe that exact receipt, but a fresh source never sends feedback after restart.
+                if let Some(decision) = &review_decision {
+                    services
+                        .persist_pending_native_source(&owner, &reviewer.id, decision.clone())
+                        .await?;
+                }
                 let recovery = ReviewForward::Unconfirmed {
                     message_id: super::agent_review::review_message_id(
                         &reviewer.id,
@@ -696,6 +776,11 @@ impl SessionRuntime {
                             ReviewForward::NotRequired
                         }
                     };
+                    if review_decision.is_some()
+                        && forward.remains_pending_with_source_marker()
+                    {
+                        anyhow::bail!("review feedback remains pending: {forward:?}");
+                    }
                     match ReviewDeliveryException::from_forward(
                         &reviewer.id,
                         &turn.turn_id,
@@ -732,6 +817,11 @@ impl SessionRuntime {
                         )
                         .await?;
                 }
+                if let Some(decision) = review_decision {
+                    services
+                        .clear_pending_native_source(&owner, &reviewer.id, decision)
+                        .await?;
+                }
                 Ok(())
             })
             .await
@@ -757,8 +847,8 @@ impl SessionRuntime {
         Ok(())
     }
 
-    /// The existing public observation fence also settles child report producers. No additional
-    /// query endpoint is needed to prove that an empty exception page has no in-flight producer.
+    /// The existing public observation fence settles child producers before Current-backed pending
+    /// markers are reconciled and the retained delivery operation is joined.
     pub(crate) async fn settle_review_deliveries(&self, id: &str) -> Result<()> {
         let Some(services) = self.0.state().agent_services.clone() else {
             return Ok(());

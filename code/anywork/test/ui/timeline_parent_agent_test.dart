@@ -262,7 +262,7 @@ void main() {
         await controls.adapter.applyBlocks([
           _block(_atom('user', user: true, text: longText)),
           _block(_atom('initial', text: '初始任务'), order: 2),
-        ], ChatPlacement.set);
+        ], TimelineApplyPlacement.set);
         await tester.pumpWidget(_host(_timeline(controls)));
         await tester.pumpAndSettle();
         expect(_label('initial'), findsOneWidget);
@@ -272,7 +272,7 @@ void main() {
           _block(_atom('external', channel: null, text: '外部消息'), order: 4),
           _block(_atom('pending', payloadMissing: true), order: 5),
           _block(_atom('deferred', payloadDeferred: true), order: 6),
-        ], ChatPlacement.append);
+        ], TimelineApplyPlacement.append);
         await tester.pumpAndSettle();
 
         // The decorated prompt container is inside ChatMessage, around ChatItemView.

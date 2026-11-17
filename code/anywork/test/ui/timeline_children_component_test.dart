@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import '../support/test_app_lifecycle.dart';
 
 import 'dart:async';
@@ -51,7 +54,7 @@ void main() {
         transport.feed.reader.onOlder = (before, _) async {
           expect(before, 'before');
           return ChatBatch(
-            placement: ChatPlacement.prepend,
+            placement: TimelineApplyPlacement.prepend,
             entries: [memberEntry(memberMessage(id: 'older'))],
             throughSeq: 100,
           );
@@ -392,7 +395,7 @@ void main() {
       transport.feed.send(
         ConversationChatEvent(
           batch: ChatBatch(
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             fromSeq: 100,
             throughSeq: 101,
             entries: [memberEntry(memberMessage(id: 'append'), sequence: 101)],
@@ -404,7 +407,7 @@ void main() {
       expect(display.appliedAppends, 1);
       page.complete(
         ChatBatch(
-          placement: ChatPlacement.prepend,
+          placement: TimelineApplyPlacement.prepend,
           throughSeq: 100,
           entries: [memberEntry(memberMessage(id: 'older'))],
         ),
@@ -508,7 +511,7 @@ void main() {
       originalFeed.send(
         ConversationChatEvent(
           batch: ChatBatch(
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             fromSeq: 100,
             throughSeq: 101,
             entries: [
@@ -683,7 +686,7 @@ void main() {
       oldFeed.send(
         ConversationChatEvent(
           batch: ChatBatch(
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             fromSeq: 100,
             throughSeq: 101,
             entries: [
@@ -896,7 +899,7 @@ void main() {
         }
         newPage.complete(
           ChatBatch(
-            placement: ChatPlacement.prepend,
+            placement: TimelineApplyPlacement.prepend,
             throughSeq: 100,
             entries: [
               memberEntry(
@@ -1100,7 +1103,7 @@ ChatAtom memberMessage({String id = 'item', String body = 'body'}) => ChatAtom(
   payload: main_fixtures.chatMessage(id: id, body: body).atom.payload,
 );
 ChatBatch memberSet({List<ChatAtom>? messages, String? before}) => ChatBatch(
-  placement: ChatPlacement.set,
+  placement: TimelineApplyPlacement.set,
   entries: (messages ?? [memberMessage()]).indexed
       .map((pair) => memberEntry(pair.$2, sequence: 100 + pair.$1))
       .toList(),

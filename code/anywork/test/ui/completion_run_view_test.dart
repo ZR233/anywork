@@ -65,7 +65,7 @@ void main() {
         await adapter.applyFixtureUpdate(
           displayBatch(
             [displayWork('second', 2)],
-            placement: ChatPlacement.append,
+            placement: TimelineApplyPlacement.append,
             from: 1,
           ),
         );

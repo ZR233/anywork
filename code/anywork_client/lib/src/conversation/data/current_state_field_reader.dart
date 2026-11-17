@@ -11,9 +11,16 @@ import 'conversation_read_scope.dart';
 extension CurrentStateFieldReader on CurrentReadScope {
   static const _windowBytes = 64 * 1024;
 
-  Future<Object?> readStateField(CurrentStateField field) async {
+  Future<Object?> readStateField(CurrentStateField field) => switch (field) {
+    BodyCurrentStateField() => readStateBody(field),
+    CollectionCurrentStateField() => throw const FormatException(
+      'State collection requires explicit pageStateCollection',
+    ),
+  };
+
+  Future<Object?> readStateBody(BodyCurrentStateField field) async {
     if (field.byteLength < 0) {
-      throw const FormatException('Negative CurrentStateField byte length');
+      throw const FormatException('Negative CurrentStateBody byte length');
     }
     final bytes = <int>[];
     while (bytes.length < field.byteLength) {
@@ -38,6 +45,16 @@ extension CurrentStateFieldReader on CurrentReadScope {
     }
     return jsonDecode(utf8.decode(bytes));
   }
+
+  Future<CurrentCollectionPage> pageStateCollection(
+    CollectionCurrentStateField field, {
+    String? continuation,
+    required ReadDemand demand,
+  }) => pageCollection(
+    reference: field.reference,
+    continuation: continuation,
+    demand: demand,
+  );
 }
 
 final class ConversationStateFieldDiscontinuity implements Exception {

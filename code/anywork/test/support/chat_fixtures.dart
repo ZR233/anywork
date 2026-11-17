@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import 'dart:convert';
 
 import 'package:anywork_client/studio_client.dart';
@@ -109,7 +112,7 @@ Map<String, Object?> inlineBody(String key, String text) => {
 
 ChatBatch chatBatch(
   List<CompletedEntry> messages, {
-  ChatPlacement placement = ChatPlacement.set,
+  TimelineApplyPlacement placement = TimelineApplyPlacement.set,
   String? before,
   int? fromSeq,
   int? throughSeq,
@@ -119,7 +122,7 @@ ChatBatch chatBatch(
   before: before,
   fromSeq:
       fromSeq ??
-      (placement == ChatPlacement.append && messages.isNotEmpty
+      (placement == TimelineApplyPlacement.append && messages.isNotEmpty
           ? messages.first.completionSeq - 1
           : null),
   throughSeq: throughSeq ?? messages.lastOrNull?.completionSeq ?? 0,

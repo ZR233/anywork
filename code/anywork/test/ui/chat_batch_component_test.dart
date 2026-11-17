@@ -340,7 +340,7 @@ void main() {
       try {
         await controls.adapter.applyFixtureUpdate(
           _mainBatch(
-            placement: sdk.ChatPlacement.set,
+            placement: sdk.TimelineApplyPlacement.set,
             entries: ([
               _text(
                 'image-only',
@@ -412,7 +412,7 @@ void main() {
       try {
         await controls.adapter.applyFixtureUpdate(
           _mainBatch(
-            placement: sdk.ChatPlacement.set,
+            placement: sdk.TimelineApplyPlacement.set,
             entries: ([
               _text(
                 'text-and-image',
@@ -507,7 +507,7 @@ void main() {
       var clock = 500;
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([_unknown('placeholder')]).map(_mainEntry).toList(),
         ),
       );
@@ -528,7 +528,7 @@ void main() {
       expect(clock, 500, reason: 'No witness surrounds a placeholder/title');
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.append,
+          placement: sdk.TimelineApplyPlacement.append,
           startSeq: 10001,
           entries: ([
             _text('actual-body', '正文布局见证'),
@@ -654,7 +654,7 @@ void main() {
       final samples = <String>[];
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([message('old')]).map(_mainEntry).toList(),
         ),
       );
@@ -726,7 +726,7 @@ void main() {
       expect(reads.last, ('old', 2 + utf8.encode('第二段').length, 64 * 1024));
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([message('new')]).map(_mainEntry).toList(),
         ),
       );
@@ -873,7 +873,7 @@ void main() {
       try {
         await controls.adapter.applyFixtureUpdate(
           _mainBatch(
-            placement: sdk.ChatPlacement.set,
+            placement: sdk.TimelineApplyPlacement.set,
             entries: [_mainEntry(item)],
           ),
         );
@@ -1070,7 +1070,7 @@ void main() {
       );
       await adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([
             _text('text', '正文'),
             _unknown('unknown'),
@@ -1103,14 +1103,14 @@ void main() {
 
       await adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.prepend,
+          placement: sdk.TimelineApplyPlacement.prepend,
           entries: ([_text('older', '旧页')]).map(_mainEntry).toList(),
         ),
-        placement: sdk.ChatPlacement.prepend,
+        placement: sdk.TimelineApplyPlacement.prepend,
       );
       await adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.append,
+          placement: sdk.TimelineApplyPlacement.append,
           startSeq: 10002,
           entries: ([_text('new', '新内容')]).map(_mainEntry).toList(),
         ),
@@ -1158,7 +1158,7 @@ void main() {
       );
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([
             _unknown('unknown', marker: 'builtin.exec@1'),
             _fixtureAtom(
@@ -1232,7 +1232,7 @@ void main() {
       final controls = _Controls();
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
@@ -1294,7 +1294,7 @@ void main() {
       final controls = _Controls();
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.set,
+          placement: sdk.TimelineApplyPlacement.set,
           entries: ([_unknown('initial')]).map(_mainEntry).toList(),
         ),
       );
@@ -1321,7 +1321,7 @@ void main() {
       expect(loads, 1);
       await controls.adapter.applyFixtureUpdate(
         _mainBatch(
-          placement: sdk.ChatPlacement.append,
+          placement: sdk.TimelineApplyPlacement.append,
           startSeq: 10001,
           entries: ([for (var i = 0; i < 40; i++) _text('long:$i', '正文 $i')])
               .map(_mainEntry)
@@ -1464,7 +1464,7 @@ sdk.CompletedEntry _mainEntry(sdk.ChatAtom atom) => sdk.CompletedEntry(
 // Explicit synthetic completion positions for these rendering stories. They
 // never classify/group payloads or create a second product reducer.
 sdk.TimelineFixtureBatch _mainBatch({
-  required sdk.ChatPlacement placement,
+  required sdk.TimelineApplyPlacement placement,
   required List<sdk.CompletedEntry> entries,
   String? before,
   int? startSeq,
@@ -1472,9 +1472,9 @@ sdk.TimelineFixtureBatch _mainBatch({
   final start =
       startSeq ??
       switch (placement) {
-        sdk.ChatPlacement.set => 10000,
-        sdk.ChatPlacement.prepend => 100,
-        sdk.ChatPlacement.append => 20000,
+        sdk.TimelineApplyPlacement.set => 10000,
+        sdk.TimelineApplyPlacement.prepend => 100,
+        sdk.TimelineApplyPlacement.append => 20000,
       };
   return displayBatch(
     [
@@ -1495,8 +1495,8 @@ sdk.TimelineFixtureBatch _mainBatch({
     ],
     placement: placement,
     before: before,
-    from: placement == sdk.ChatPlacement.append ? start - 1 : null,
-    through: placement == sdk.ChatPlacement.prepend
+    from: placement == sdk.TimelineApplyPlacement.append ? start - 1 : null,
+    through: placement == sdk.TimelineApplyPlacement.prepend
         ? 10000
         : start + entries.length - 1,
   );

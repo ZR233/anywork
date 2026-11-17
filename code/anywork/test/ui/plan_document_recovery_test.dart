@@ -1,3 +1,6 @@
+import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
+    show TimelineApplyPlacement;
+
 import 'dart:async';
 import 'dart:convert';
 
@@ -74,7 +77,7 @@ void main() {
       feed.emitTimeline(
         displayBatch(
           const [],
-          placement: ChatPlacement.append,
+          placement: TimelineApplyPlacement.append,
           from: live.readyFrontier,
           through: live.readyFrontier,
           live: live,

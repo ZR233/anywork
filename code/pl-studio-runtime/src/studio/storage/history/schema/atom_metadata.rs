@@ -1432,6 +1432,7 @@ mod tests {
 mod background_tests {
     use super::*;
     use crate::studio::paths::SqliteFileMode;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::{HistoryStore, connect};
     use crate::studio::thread_projection::order;
     use anyhow::{Context, Result};

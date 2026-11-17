@@ -875,6 +875,26 @@ mod tests {
         record
     }
 
+    async fn persist_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
+        let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
+            crate::studio::store::directory::ProjectDirectoryRecord {
+                id: thread.workspace_id.clone(),
+                kind: pl_protocol::studio::WorkspaceKind::Project,
+                name: "Agent query fixture".into(),
+                path: thread.workspace_path.clone(),
+                ssh_alias: None,
+                created_at: 1,
+                updated_at: 1,
+                last_opened_at: None,
+                closed: false,
+            },
+        );
+        let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+        delta.session_upserts = session.into_iter().collect();
+        delta.agent_upserts = vec![agent];
+        store.persist_directory_summaries(&delta).await
+    }
+
     #[derive(Debug)]
     struct CountFlush {
         sink: ThreadStorageSink,
@@ -959,11 +979,11 @@ mod tests {
     {
         let dir = tempfile::tempdir()?;
         let store = StudioStore::open(dir.path().join("data/studio.sqlite")).await?;
+        let record = record("root", None, dir.path());
+        persist_test_thread(&store, &record).await?;
         let fixture = close_factory(&store)?;
         let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
         fixture.install(&owner)?;
-        let record = record("root", None, dir.path());
-        fixture.events.commit_test_thread(&record).await?;
         let sink = ThreadStorageSink::new(store.clone(), record, None).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), "root");
         let calls = Arc::new(AtomicUsize::new(0));
@@ -1114,19 +1134,16 @@ mod tests {
     -> Result<()> {
         let dir = tempfile::tempdir()?;
         let store = StudioStore::open(dir.path().join("data/studio.sqlite")).await?;
-        let fixture = close_factory(&store)?;
-        let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
-        fixture.install(&owner)?;
         for (id, parent) in [
             ("root", None),
             ("cold", Some("root")),
             ("sibling", Some("root")),
         ] {
-            fixture
-                .events
-                .commit_test_thread(&record(id, parent, dir.path()))
-                .await?;
+            persist_test_thread(&store, &record(id, parent, dir.path())).await?;
         }
+        let fixture = close_factory(&store)?;
+        let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
+        fixture.install(&owner)?;
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(
             crate::studio::delegation::EXTENSION.into(),

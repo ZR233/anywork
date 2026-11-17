@@ -6,6 +6,9 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/timeline_display_unit.dart';
 
+/// Flutter-local Flyer mutation placement. This is not a wire cursor or ACK.
+enum TimelineApplyPlacement { set, prepend, append }
+
 /// The component controller alone owns loaded immutable blocks. No tail folding.
 final class TimelineMessageController {
   TimelineMessageController(
@@ -46,9 +49,12 @@ final class TimelineMessageController {
     );
   }
 
-  Future<void> applyBlocks(List<DisplayBlock> blocks, ChatPlacement placement) {
+  Future<void> applyBlocks(
+    List<DisplayBlock> blocks,
+    TimelineApplyPlacement placement,
+  ) {
     if (_disposed || _retired) throw const StaleConversationScope();
-    if (placement == ChatPlacement.append && blocks.isEmpty) {
+    if (placement == TimelineApplyPlacement.append && blocks.isEmpty) {
       return Future.value();
     }
     return _serialize(() => _applyBlocks(blocks, placement));
@@ -56,23 +62,23 @@ final class TimelineMessageController {
 
   Future<void> _applyBlocks(
     List<DisplayBlock> blocks,
-    ChatPlacement placement,
+    TimelineApplyPlacement placement,
   ) {
     if (_disposed || _retired) throw const StaleConversationScope();
     final messages = [for (final block in blocks) _message(block)];
-    final previousUnits = placement == ChatPlacement.set
+    final previousUnits = placement == TimelineApplyPlacement.set
         ? [for (final message in controller.messages) _unitOf(message)]
         : const <TimelineDisplayUnit>[];
     final Future<void> applied;
     switch (placement) {
-      case ChatPlacement.set:
+      case TimelineApplyPlacement.set:
         applied = controller.setMessages(messages, animated: false);
-      case ChatPlacement.prepend:
-      case ChatPlacement.append:
+      case TimelineApplyPlacement.prepend:
+      case TimelineApplyPlacement.append:
         if (messages.isNotEmpty) {
           applied = controller.insertAllMessages(
             messages,
-            index: placement == ChatPlacement.prepend ? 0 : null,
+            index: placement == TimelineApplyPlacement.prepend ? 0 : null,
             animated: false,
           );
         } else {
@@ -142,7 +148,7 @@ final class TimelineMessageController {
     if (appended.isNotEmpty) {
       await _applyBlocks(
         blocks.where((block) => existingById[block.id] == null).toList(),
-        ChatPlacement.append,
+        TimelineApplyPlacement.append,
       );
     }
   }

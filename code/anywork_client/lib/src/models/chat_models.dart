@@ -5,7 +5,6 @@ import 'thread_models.dart' show ThreadTextChannel;
 import 'thread_wait_models.dart';
 
 part 'chat_atom_models.dart';
-part 'completed_models.dart';
 
 /// The caller's item and encoded-byte demand, mechanically mapped to the Rust protocol.
 final class ReadDemand {
@@ -53,25 +52,6 @@ final class DeferredPayload extends PayloadData {
 
   final ContentRef reference;
   final int byteLength;
-}
-
-enum ChatPlacement { set, prepend, append }
-
-/// Immutable completion envelopes in producer order; no presentation grouping.
-final class ChatBatch {
-  ChatBatch({
-    required this.placement,
-    required List<CompletedEntry> entries,
-    this.before,
-    this.fromSeq,
-    required this.throughSeq,
-  }) : entries = List.unmodifiable(entries);
-
-  final ChatPlacement placement;
-  final List<CompletedEntry> entries;
-  final String? before;
-  final int? fromSeq;
-  final int throughSeq;
 }
 
 final class ContentRef {

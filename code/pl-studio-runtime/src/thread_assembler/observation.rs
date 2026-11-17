@@ -29,66 +29,41 @@ pub(crate) enum DurableMessageIdentity {
 }
 
 #[cfg(test)]
-async fn history_message_identity(
-    history: &crate::history::HistoryStore,
+use crate::studio::StudioStore;
+
+#[cfg(test)]
+async fn current_message_identity(
+    store: &StudioStore,
+    thread_id: &str,
     message_id: &str,
 ) -> anyhow::Result<Option<DurableMessageIdentity>> {
-    let reader = history.reader();
-    let page = reader
-        .events_page(
-            crate::history::HistoryEventsQuery::Message {
-                message_id: message_id.to_owned(),
-            },
-            None,
-            None,
-            crate::history::HistoryDemand {
-                max_rows: 16,
-                max_bytes: 1024 * 1024,
-            },
-        )
+    let paths = store.registered_session_paths(thread_id)?;
+    let current = store
+        .state_for(paths.workspace_id(), thread_id)?
+        .load_current()
         .await?;
-    for entry in page.entries {
-        let Some(reference) = entry.payload_ref else {
-            continue;
-        };
-        let mut bytes = Vec::with_capacity(reference.byte_length as usize);
-        let mut offset = 0_u64;
-        while offset < reference.byte_length {
-            let window = reader
-                .read_body(
-                    reference.clone(),
-                    offset,
-                    (reference.byte_length - offset).min(64 * 1024) as u32,
-                )
-                .await?;
-            anyhow::ensure!(
-                !window.bytes.is_empty(),
-                "message identity body did not advance"
-            );
-            offset = offset
-                .checked_add(window.bytes.len() as u64)
-                .context("message identity body length overflow")?;
-            bytes.extend(window.bytes);
-        }
-        let fact = if let Ok(fact) =
-            serde_json::from_slice::<crate::history::HistoryBusinessFact>(&bytes)
-        {
-            fact
-        } else {
-            let opaque: pl_core::context::OpaquePayload =
-                serde_json::from_slice(&bytes).context("decode message identity wrapper")?;
-            serde_json::from_str(opaque.content()).context("decode message identity payload")?
-        };
-        if let crate::history::HistoryBusinessFact::MessageIdentity { message, sequence } = fact
-            && message.id == message_id
-        {
-            return Ok(Some(DurableMessageIdentity::Proven {
-                sequence,
-                digest: message.digest(),
-            }));
-        }
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    let snapshot = current.state.to_paused_snapshot();
+    if let Some(record) = snapshot
+        .inbox
+        .iter()
+        .find(|record| record.message.id == message_id)
+    {
+        return Ok(Some(DurableMessageIdentity::Proven {
+            sequence: record.sequence,
+            digest: record.message.digest(),
+        }));
     }
-    Ok(None)
+    Ok(snapshot
+        .consumed_message_identities
+        .iter()
+        .find(|identity| identity.id == message_id)
+        .map(|identity| DurableMessageIdentity::Proven {
+            sequence: identity.sequence,
+            digest: identity.digest.clone(),
+        }))
 }
 
 #[cfg(test)]
@@ -1312,9 +1287,8 @@ mod storage_fault_tests {
                         );
                         // Observe the negative live-send result before any explicit recovery.
                         // Full ACK recovery may take this same gate and belongs to phase B.
-                        let parent_history = source.history("parent").await?;
                         assert!(
-                            history_message_identity(&parent_history, &first_message.id)
+                            current_message_identity(&source, "parent", &first_message.id)
                                 .await?
                                 .is_none()
                         );
@@ -1349,9 +1323,8 @@ mod storage_fault_tests {
             .send(())
             .map_err(|_| anyhow::anyhow!("publication gate closed"))?;
         job.await??;
-        let parent_history = store.history("parent").await?;
         assert!(
-            history_message_identity(&parent_history, &message_id)
+            current_message_identity(&store, "parent", &message_id)
                 .await?
                 .is_none()
         );
@@ -1398,7 +1371,7 @@ mod storage_fault_tests {
         let DurableMessageIdentity::Proven {
             sequence: receipt_sequence,
             digest,
-        } = history_message_identity(&parent_history, &message_id)
+        } = current_message_identity(&store, "parent", &message_id)
             .await?
             .context("exact durable parent report")?
         else {
@@ -1421,8 +1394,9 @@ mod storage_fault_tests {
             1
         );
         assert!(
-            history_message_identity(
-                &parent_history,
+            current_message_identity(
+                &store,
+                "parent",
                 &crate::studio::agent_close::terminal_report_id("child", 2)
             )
             .await?
@@ -1733,9 +1707,8 @@ mod storage_fault_tests {
                     error.downcast_ref::<ThreadAssemblyError>(),
                     Some(ThreadAssemblyError::Unpublished(_))
                 ));
-                let parent_history = store.history("parent").await?;
                 assert!(
-                    history_message_identity(&parent_history, &saved.message.id)
+                    current_message_identity(&store, "parent", &saved.message.id)
                         .await?
                         .is_none()
                 );
@@ -1752,7 +1725,7 @@ mod storage_fault_tests {
                 let DurableMessageIdentity::Proven {
                     sequence: receipt_sequence,
                     digest: receipt_digest,
-                } = history_message_identity(&parent_history, &saved.message.id)
+                } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
                     .context("original report durable receipt")?
                 else {
@@ -1765,7 +1738,7 @@ mod storage_fault_tests {
                 let DurableMessageIdentity::Proven {
                     sequence: repeated_sequence,
                     digest: repeated_digest,
-                } = history_message_identity(&parent_history, &saved.message.id)
+                } = current_message_identity(&store, "parent", &saved.message.id)
                     .await?
                     .context("idempotent original report receipt")?
                 else {
@@ -1851,9 +1824,8 @@ mod storage_fault_tests {
                 let fixture = Fixture::new(store.clone())?;
                 resources.install(&fixture.owner)?;
                 assert!(fixture.owner.0.state().entries.is_empty());
-                let parent_history = store.history("parent").await?;
                 assert!(
-                    history_message_identity(&parent_history, &message.id)
+                    current_message_identity(&store, "parent", &message.id)
                         .await?
                         .is_none()
                 );
@@ -1867,7 +1839,7 @@ mod storage_fault_tests {
                 let DurableMessageIdentity::Proven {
                     sequence: first_sequence,
                     digest: first_digest,
-                } = history_message_identity(&parent_history, &message.id)
+                } = current_message_identity(&store, "parent", &message.id)
                     .await?
                     .context("original report was durably received even when cleanup failed")?
                 else {
@@ -1947,7 +1919,7 @@ mod storage_fault_tests {
                 let DurableMessageIdentity::Proven {
                     sequence: receipt_sequence,
                     digest: receipt_digest,
-                } = history_message_identity(&parent_history, &message.id)
+                } = current_message_identity(&store, "parent", &message.id)
                     .await?
                     .context("same durable parent ACK")?
                 else {
@@ -1980,7 +1952,7 @@ mod storage_fault_tests {
                 active.send_message(followup).await?;
                 fixture.owner.synchronize_observation("parent").await?;
                 assert!(
-                    history_message_identity(&parent_history, "after-recovery")
+                    current_message_identity(&store, "parent", "after-recovery")
                         .await?
                         .is_some()
                 );
@@ -2042,9 +2014,8 @@ mod storage_fault_tests {
                     .digest(),
                 saved.message.digest()
             );
-            let parent_history = store.history("parent").await?;
             let DurableMessageIdentity::Proven { digest, .. } =
-                history_message_identity(&parent_history, &saved.message.id)
+                current_message_identity(&store, "parent", &saved.message.id)
                     .await?
                     .context("durable original ID")?
             else {
@@ -2080,7 +2051,7 @@ mod storage_fault_tests {
             active.send_message(followup.clone()).await?;
             fixture.owner.synchronize_observation("parent").await?;
             let DurableMessageIdentity::Proven { digest, .. } =
-                history_message_identity(&parent_history, &followup.id)
+                current_message_identity(&store, "parent", &followup.id)
                     .await?
                     .context("real followup history write")?
             else {
@@ -2143,11 +2114,10 @@ mod storage_fault_tests {
                         .native()
                         .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
             );
-            let parent_history = store.history("parent").await?;
             let DurableMessageIdentity::Proven {
                 sequence: first_sequence,
                 digest: first_digest,
-            } = history_message_identity(&parent_history, &saved.message.id)
+            } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
                 .context("original durable receipt before cleanup retry")?
             else {
@@ -2164,7 +2134,7 @@ mod storage_fault_tests {
             let DurableMessageIdentity::Proven {
                 sequence: receipt_sequence,
                 digest: receipt_digest,
-            } = history_message_identity(&parent_history, &saved.message.id)
+            } = current_message_identity(&store, "parent", &saved.message.id)
                 .await?
                 .context("same receipt after exact-binding cleanup")?
             else {

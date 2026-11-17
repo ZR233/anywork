@@ -386,7 +386,6 @@ impl StudioChildResources for StudioThreadFactory {
         let persistence = crate::studio::storage::thread_writer::ThreadStorageSink::new(
             self.services.store.clone(),
             persisted_thread.clone(),
-            None,
         )
         .await
         .map_err(|error| resource_error("open child chat session", error))?;

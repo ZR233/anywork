@@ -1,35 +1,20 @@
-//! Per-Thread ordered persistence owner: each effect and its checkpoint commit in one transaction.
+//! Per-Thread reliable owner of independent immutable History exports.
 //!
-//! Admission never blocks the executor. Effects are history facts, so every admitted batch is
-//! written to `history.sqlite` in sequence order, each against the effect-matched
-//! transfer state it arrived with. The matching checkpoint is not scheduled on its own: the writer
-//! holds `write.checkpoint` as the candidate for exactly that effect and commits it together with
-//! the effect's history facts, the latest context increment and the history watermark in one
-//! `history.sqlite` transaction (`design/15` §15.5). A bounded coalescing window selects only the
-//! prepared prefix of the original queue. A failed transaction keeps that prefix frozen for retry;
-//! no second obligation queue or independently scheduled checkpoint exists.
-//!
-//! Publication order is fixed: every blob the checkpoint names must be durable first, and only then
-//! is the transaction that writes the pruned checkpoint and advances the watermark committed. The
-//! writer folds each effect's cumulative usage accounting exactly once, sets it on that effect's
-//! checkpoint as `state.usage_summary`, and only publishes the running summary once the transaction
-//! succeeded — so hot reads, reconnects and cold restores observe one cumulative value and a saved
-//! checkpoint never carries a summary its own commit did not include.
+//! The original projection freezes each product event once. This queue retains the exact export
+//! and candidate across admission, writing, cancellation and retry. The writer appends schema-25
+//! events and bodies; it neither captures, saves nor acknowledges Current.
 
 use crate::ExecutionItem;
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex, atomic::{AtomicU64, AtomicUsize, Ordering}},
     time::Duration,
 };
 
 use anyhow::{Context, Result, ensure};
 use pl_core::thread::{
-    HistoryExport, ThreadCheckpoint, ThreadSnapshot, UsageSummary,
-    cold::{ColdStore, ColdStoreError, StorageIdleStatus, StoragePressure, ThreadWrite},
+    HistoryExport, UsageSummary,
+    cold::{ColdStoreError, StorageIdleStatus, StoragePressure},
 };
 
 use tokio::time::Instant;
@@ -1949,15 +1934,14 @@ impl HistoryChannel {
     /// this same queue — so an unknown or already durable sequence is refused rather than stored in a
     /// second, unordered slot. Returns whether the batch was attached.
     pub(in crate::studio) fn prepare(&self, prepared: Arc<PreparedEffect>) -> bool {
-        self.prepare_with(None, prepared, || Ok(())).is_ok()
+        self.accept_prepared(None, prepared).is_ok()
     }
 
     /// 在唯一可靠记录上校验原批次及预算，再同步发布并接收同一原件。
-    pub(in crate::studio) fn prepare_with(
+    pub(in crate::studio) fn accept_prepared(
         &self,
         original: Option<&Arc<HistoryExport>>,
         prepared: Arc<PreparedEffect>,
-        publish: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
         // Measure before taking the lock: the batch is immutable, and the owner's one estimate
         // (see `PreparedEffect::retained_bytes`) walks text lengths instead of encoding a payload
@@ -1987,7 +1971,7 @@ impl HistoryChannel {
                 Arc::ptr_eq(existing, &prepared),
                 "prepared effect identity differs"
             );
-            return publish();
+            return Ok(());
         }
         if progress.next_unprojected_offset() != Some(index) {
             anyhow::bail!("reliable channel refused prepared effect");
@@ -2015,7 +1999,6 @@ impl HistoryChannel {
             }
             anyhow::bail!("reliable channel refused prepared effect");
         }
-        publish()?;
         if transferred > 0 || progress.projection_pending.is_some() {
             progress.projection_bytes -= transferred;
             progress.projection_pending = None;
@@ -2622,7 +2605,6 @@ impl ThreadStorageSink {
     pub(crate) async fn new(
         store: StudioStore,
         thread: pl_protocol::Thread,
-        restored_checkpoint: Option<&ThreadCheckpoint>,
     ) -> Result<Self> {
         let catalog = store.catalog();
         let registered = catalog
@@ -2659,7 +2641,7 @@ impl ThreadStorageSink {
         // watermark and seed this incarnation while holding the channel's single-writer lease.
         let writer_lease = channel.step_lock.lock().await;
         let history = store.history(&thread.id).await?;
-        let durable = restored_checkpoint.map_or(0, |checkpoint| checkpoint.state.commit_sequence);
+        let durable = 0;
         let (history_observer_stop, mut stop_observer) = tokio::sync::watch::channel(false);
         let inner = Arc::new(Inner {
             store,
@@ -2678,9 +2660,6 @@ impl ThreadStorageSink {
         {
             let mut progress = lock_progress(&inner);
             progress.durable = progress.durable.max(durable);
-            progress.published_revision = progress
-                .published_revision
-                .max(restored_checkpoint.map_or(0, |checkpoint| checkpoint.state_revision));
             report(&inner, &progress);
         }
         publish_accounting(&inner, &history).await;
@@ -3386,7 +3365,7 @@ impl ThreadStorageSink {
     pub(crate) fn admit_export(
         &self,
         thread_id: &str,
-        write: HistoryExport,
+        write: Arc<HistoryExport>,
     ) -> Result<(), ColdStoreError> {
         if self.0.channel.stopping.is_cancelled() {
             return Err(cold_error("history writer is stopped"));
@@ -3463,7 +3442,7 @@ impl ThreadStorageSink {
             // charged next to them; only bytes not already charged need new headroom.
             let (transfer, covered) = output_transfer_plan(
                 &progress,
-                None,
+                write.output_claim.as_deref(),
                 bytes.saturating_add(PENDING_AGE_METADATA_BYTES),
             );
             let added = bytes
@@ -3562,7 +3541,7 @@ impl ThreadStorageSink {
                 _conversation: Some(self.0.conversation.clone()),
                 sequence,
                 admitted_at,
-                write: Arc::new(write.clone()),
+                write: write.clone(),
                 bytes,
                 // The projection owner takes this entry over from the same queue, in this order.
                 prepared: None,
@@ -3711,73 +3690,34 @@ fn cold_error(message: &str) -> ColdStoreError {
     }
 }
 
-#[cfg(test)]
-impl ColdStore for ThreadStorageSink {
-    fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-        self.admit_export(
-            thread_id,
-            HistoryExport {
-                effect: write.effect,
-                state: write.checkpoint.state,
-            },
-        )
+impl pl_core::thread::history_sink::HistorySink for ThreadStorageSink {
+    fn fold_usage(&self, summary: &mut UsageSummary, effect: &pl_core::thread::ThreadEffectBatch) {
+        match crate::studio::thread_projection::PreparedAccounting::prepare(effect) {
+            Ok(accounting) => accounting.fold_into(summary),
+            Err(error) => record_error(&self.0, pl_protocol::studio::HistoryFault::WriteFailed,
+                FaultTarget::NextWrite, error.to_string(), &["accounting_contract"]),
+        }
     }
-    async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        ThreadStorageSink::flush(self, thread_id, sequence).await
-    }
-    fn pressure(&self, thread_id: &str) -> StoragePressure {
-        ThreadStorageSink::pressure(self, thread_id)
-    }
-    fn idle_status(&self, thread_id: &str) -> StorageIdleStatus {
-        ThreadStorageSink::idle_status(self, thread_id)
-    }
-    fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-        ThreadStorageSink::subscribe_pressure(self, thread_id)
-    }
-    fn reserve_observed_item(
-        &self,
-        thread_id: &str,
-        attempt: &str,
-        item: &str,
-    ) -> Result<(), ColdStoreError> {
-        ThreadStorageSink::reserve_observed_item(self, thread_id, attempt, item)
-    }
-    fn reserve_operation_output(
-        &self,
-        thread_id: &str,
-        operation: &str,
-        bytes: u64,
-    ) -> Result<u64, ColdStoreError> {
-        ThreadStorageSink::reserve_operation_output(self, thread_id, operation, bytes)
-    }
-    fn charge_operation_output(
-        &self,
-        thread_id: &str,
-        operation: &str,
-        bytes: u64,
-    ) -> Result<(), ColdStoreError> {
-        ThreadStorageSink::charge_operation_output(self, thread_id, operation, bytes)
-    }
-    fn release_operation_output(&self, thread_id: &str, operation: &str) {
-        ThreadStorageSink::release_operation_output(self, thread_id, operation)
-    }
-    fn read_tool_task(
-        &self,
-        thread_id: &str,
-        task: &str,
-    ) -> impl std::future::Future<
-        Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>,
-    > + Send {
-        ThreadStorageSink::read_tool_task(self, thread_id, task)
-    }
+    fn reserve_observed_item(&self, thread: &str, attempt: &str, item: &str) -> Result<(), ColdStoreError> { ThreadStorageSink::reserve_observed_item(self, thread, attempt, item) }
+    fn reserve_operation_output(&self, thread: &str, operation: &str, max: u64) -> Result<u64, ColdStoreError> { ThreadStorageSink::reserve_operation_output(self, thread, operation, max) }
+    fn charge_operation_output(&self, thread: &str, operation: &str, bytes: u64) -> Result<(), ColdStoreError> { ThreadStorageSink::charge_operation_output(self, thread, operation, bytes) }
+    fn release_operation_output(&self, thread: &str, operation: &str) { ThreadStorageSink::release_operation_output(self, thread, operation) }
+    fn pressure(&self, thread: &str) -> StoragePressure { ThreadStorageSink::pressure(self, thread) }
+    fn idle_status(&self, thread: &str) -> StorageIdleStatus { ThreadStorageSink::idle_status(self, thread) }
+    fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> { ThreadStorageSink::subscribe_pressure(self, thread) }
+    fn admit(&self, thread: &str, export: Arc<HistoryExport>) -> Result<(), ColdStoreError> { self.admit_export(thread, export) }
+    fn read_tool_task(&self, thread: &str, task: &str) -> impl std::future::Future<Output = Result<Option<pl_core::thread::cold::DurableToolTask>, ColdStoreError>> + Send { ThreadStorageSink::read_tool_task(self, thread, task) }
 }
+
+
 #[cfg(test)]
 pub(crate) mod storage_fault_tests {
     use super::*;
     use pl_core::{
         context::{ContextContent, OpaquePayload},
         thread::{
-            ThreadCheckpoint, ThreadSnapshot, TurnOutcome, TurnRecord, TurnState,
+            ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot, TurnOutcome, TurnRecord,
+            TurnState,
             current::RuntimeEpoch,
             input::{InputChange, InputRecord, InputState, ThreadInput},
         },
@@ -4205,7 +4145,7 @@ mod writer_tests {
             batch::select(&mut lock_progress(&self.sink.0), now, 0, false)
         }
 
-        async fn finish(self, sequence: u64) -> Result<()> {
+        async fn finish(&mut self, sequence: u64) -> Result<()> {
             self.sink
                 .flush(&self.sink.0.thread.id.as_str(), sequence)
                 .await?;
@@ -4231,7 +4171,7 @@ mod writer_tests {
         let process = fixture.sink.0.channel.process_bytes.clone();
         let baseline = process.load(Ordering::Acquire);
         let write = visible_input_ticket(&id, 1, "queue-input")?;
-        fixture.sink.admit(&id, write)?;
+        fixture.sink.admit(&id, write.clone())?;
         let admitted = process.load(Ordering::Acquire);
         let status = fixture.sink.0.channel.subscribe().borrow().clone();
         assert_eq!(status.queued_records, 1);
@@ -4256,6 +4196,92 @@ mod writer_tests {
         assert_eq!(
             fixture.sink.0.channel.subscribe().borrow().queued_records,
             0
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reprojecting_an_unchanged_effect_keeps_one_canonical_payload() -> Result<()> {
+        let mut fixture = Fixture::new("stable-payload").await?;
+        let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
+        let first = fixture
+            .projection
+            .prepare_committed(
+                &fixture.sink.0.thread,
+                &write.effect,
+                &write.checkpoint.state,
+            )
+            .await?;
+        let second = fixture
+            .projection
+            .prepare_committed(
+                &fixture.sink.0.thread,
+                &write.effect,
+                &write.checkpoint.state,
+            )
+            .await?;
+        assert_eq!(first.history_changes.len(), second.history_changes.len());
+        for (first, second) in first
+            .history_changes
+            .iter()
+            .zip(second.history_changes.iter())
+        {
+            assert_eq!(first.event.header.event_id, second.event.header.event_id);
+            assert_eq!(first.entity.entity_id, second.entity.entity_id);
+            assert_eq!(first.entity.state, second.entity.state);
+            assert_eq!(first.placement, second.placement);
+            assert_eq!(first.event.bodies.len(), second.event.bodies.len());
+            for (first, second) in first.event.bodies.iter().zip(second.event.bodies.iter()) {
+                assert_eq!(first.body_id, second.body_id);
+                assert_eq!(first.body_key, second.body_key);
+                assert_eq!(first.role, second.role);
+                assert_eq!(first.bytes, second.bytes);
+            }
+        }
+        fixture.sink.0.channel.stop_and_join_for_deletion().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopped_statistics_consumer_does_not_block_writer_shutdown() -> Result<()> {
+        let fixture = Fixture::new("statistics-gap").await?;
+        let calls_before = fixture.store.calls().metrics();
+        let materials_before = fixture.store.calls().subscribe_materials().borrow().clone();
+        fixture.store.calls().stop_best_effort();
+        submit_accounting(
+            &fixture.sink.0,
+            super::super::calls::SessionUsageProjection {
+                root_thread_id: "statistics-gap".into(),
+                thread_id: "statistics-gap".into(),
+                revision: 1,
+                has_unpriced_usage: false,
+                purpose_costs: Vec::new(),
+            },
+        );
+        assert!(lock_progress(&fixture.sink.0).pending_accounting.is_some());
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            fixture.sink.0.channel.stop_and_join(),
+        )
+        .await??;
+        assert!(lock_progress(&fixture.sink.0).pending_accounting.is_none());
+        assert!(fixture.store.calls().statistics_gap());
+        assert_eq!(fixture.sink.0.channel.subscribe().borrow().fault, None);
+        assert_eq!(fixture.store.calls().metrics(), calls_before);
+        assert_eq!(
+            *fixture.store.calls().subscribe_materials().borrow(),
+            materials_before
+        );
+        fixture
+            .store
+            .thread_persistence()
+            .report_calls(fixture.store.calls());
+        assert!(
+            fixture
+                .store
+                .thread_persistence()
+                .queue_snapshot()
+                .statistics_gap
         );
         Ok(())
     }
@@ -4909,7 +4935,73 @@ mod watchdog_tests {
 
 #[cfg(test)]
 mod execution_index_tests {
+    use super::storage_fault_tests::{
+        register_test_thread, test_thread, ticket, visible_input_ticket,
+    };
     use super::*;
+    use pl_core::{
+        context::{ContextRecord, ContextSource},
+        thread::{
+            journal::ContextChange,
+            task::{TaskAcknowledgement, TaskRecord, TaskStatus},
+        },
+    };
+
+    #[test]
+    fn fresh_background_ack_is_completion_checked_without_resolving_history() -> Result<()> {
+        let process = Arc::new(AtomicU64::new(0));
+        let index = RuntimeOrderIndex::new(process, 1024 * 1024);
+        let call_id = "background-call";
+        let task = TaskRecord {
+            id: format!("task:{call_id}"),
+            parent_call_id: None,
+            invocation: None,
+            call_id: call_id.into(),
+            tool_id: "exec".into(),
+            turn_id: "turn".into(),
+            revision: 2,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: Some(TaskAcknowledgement {
+                record_id: "receipt".into(),
+                context_revision: 4,
+            }),
+            started_sequence: Some(1),
+        };
+        let receipt = ContextRecord {
+            id: "receipt".into(),
+            turn_id: Some("turn".into()),
+            source: ContextSource::ToolResult {
+                call_id: call_id.into(),
+                tool_id: "exec".into(),
+            },
+            content: vec![pl_core::context::ContextContent::Text {
+                text: "accepted".into(),
+            }],
+            tool_calls: Vec::new(),
+        };
+        let effect = pl_core::thread::ThreadEffectBatch {
+            thread_id: "thread".into(),
+            sequence: 2,
+            committed_at: 2,
+            context: Some(ContextChange::Append {
+                revision: 4,
+                records: Arc::from([receipt]),
+            }),
+            tasks: Arc::from([task]),
+            ..Default::default()
+        };
+        index.reserve_boundaries(&effect, 0)?;
+        let background =
+            crate::studio::thread_projection::order::tool_background_started_id(call_id);
+        assert!(index.assigned(&background).is_some());
+        assert!(index.completion_checked(&background));
+        assert!(
+            !index.is_sealed(&background),
+            "an ACK receipt does not claim a terminal completion"
+        );
+        Ok(())
+    }
 
     #[test]
     fn execution_index_retires_sources_and_charges_pending_until_real_confirmation() -> Result<()> {

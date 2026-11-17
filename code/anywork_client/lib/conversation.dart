@@ -22,5 +22,5 @@ export 'conversation_ports.dart'
         HistoryReader,
         HistoryTransport;
 export 'src/conversation/data/conversation_read_scope.dart'
-    show ConversationReadScope, CurrentReadScope, HistoryReadScope;
+    show CurrentReadScope, HistoryReadScope;
 export 'src/conversation/data/current_state_field_reader.dart';

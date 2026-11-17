@@ -421,9 +421,6 @@ class DemoStudioTransport extends StudioTransport
   void _stopDemoBusiness() {
     if (_runtimeExiting) return;
     _runtimeExiting = true;
-    for (final feed in _ownedConversationFeeds.toList()) {
-      feed.requestClose();
-    }
     for (final reader in _ownedHistoryReaders.toList()) {
       reader.requestClose();
     }
@@ -1012,48 +1009,12 @@ class DemoStudioTransport extends StudioTransport
   int _productEventSequence = 0;
   int _threadDirectoryRevision = 0;
   int _agentProfilesRevision = 0;
-  final Map<String, Set<_DemoConversationFeed>> _conversationFeeds = {};
-  final Set<_DemoReader> _ownedHistoryReaders = {};
-  final Set<ConversationFeed> _ownedConversationFeeds =
-      Set<ConversationFeed>.identity();
-  final Set<Future<void>> _openingConversationFeeds = {};
-  final Map<ConversationFeed, Future<void>> _conversationCloses =
-      Map<ConversationFeed, Future<void>>.identity();
-
-  Future<void> _closeDemoConversation(ConversationFeed feed) {
-    final existing = _conversationCloses[feed];
-    if (existing != null) return existing;
-    final joined = Completer<void>();
-    _conversationCloses[feed] = joined.future;
-    Future<void> closeOwned() async {
-      try {
-        feed.requestClose();
-        await feed.close();
-        _ownedConversationFeeds.remove(feed);
-        joined.complete();
-      } catch (error, stack) {
-        // 失败 owner 仍留在 owned；只清本轮 in-flight，允许下次真实重试。
-        joined.completeError(error, stack);
-      } finally {
-        _conversationCloses.remove(feed);
-      }
-    }
-
-    unawaited(closeOwned());
-    return joined.future;
-  }
+  final Set<_DemoReadSource> _ownedHistoryReaders = {};
 
   Future<void> _joinDemoConversations() async {
     await Future.wait([
-      for (final feed in _ownedConversationFeeds.toList())
-        _closeDemoConversation(feed),
       for (final reader in _ownedHistoryReaders.toList()) reader.close(),
-      ..._openingConversationFeeds,
     ]);
-    // 迟到 factory 自己汇合其返回的 owner。失败 owner 留在集合供下次 cleanup。
-    if (_ownedConversationFeeds.isNotEmpty) {
-      throw StateError('Demo conversation close still has unresolved owners');
-    }
   }
 
   final _shutdownEvents = StreamController<StudioShutdownProgress>.broadcast();
@@ -4692,74 +4653,6 @@ class DemoStudioTransport extends StudioTransport
     return workspace.copyWith(latestTurn: null, businessRefs: references);
   }
 
-  /// 完成尾部与当前活动共享有界交付；历史查询独立持有读取 scope。
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) async {
-    _ensureDemoRunning();
-    if (!_workspaces.containsKey(threadId)) {
-      throw const StudioFailure(
-        code: StudioFailureCode.notFound,
-        message: 'Unknown Demo conversation',
-        retryable: false,
-        correlationId: 'demo-conversation-not-found',
-      );
-    }
-    final connection = _DemoConversationFeed(
-      this,
-      threadId,
-      _historyOf(threadId),
-      scope,
-      demand,
-    );
-    _ownedConversationFeeds.add(connection);
-    final factory = _conversationFeedFactory;
-    // 工厂拿到的是真实连接：注入者只包装故障点，不会再次回到 openConversationFeed。
-    if (factory == null) return connection;
-    final opening = Completer<void>();
-    _openingConversationFeeds.add(opening.future);
-    try {
-      final feed = await factory(threadId, connection);
-      _ownedConversationFeeds.add(feed);
-      if (_runtimeExiting) {
-        await _closeDemoConversation(feed);
-        await connection.close();
-        throw _conversationClosedFailure;
-      }
-      return feed;
-    } catch (_) {
-      await connection.close();
-      rethrow;
-    } finally {
-      opening.complete();
-      _openingConversationFeeds.remove(opening.future);
-    }
-  }
-
-  /// 测试专用：包装内容连接，用于故障注入（首帧失败、增量失败、EOF、慢打开）。
-  ///
-  /// 收到的是 demo 的真实连接，只替换故障点；状态流、目录与正文事实仍是 demo 的实现，
-  /// 因此注入的是生命周期交错而不是另一套业务状态。
-  Future<ConversationFeed> Function(
-    String threadId,
-    ConversationFeed connection,
-  )?
-  _conversationFeedFactory;
-
-  @visibleForTesting
-  set conversationFeedFactory(
-    Future<ConversationFeed> Function(
-      String threadId,
-      ConversationFeed connection,
-    )?
-    factory,
-  ) {
-    _conversationFeedFactory = factory;
-  }
-
   @override
   Future<HistoryReader> openHistoryReader(
     String threadId, {
@@ -4827,18 +4720,14 @@ class DemoStudioTransport extends StudioTransport
   @visibleForTesting
   String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
 
-  /// Explicit display fixtures and their already chosen member scopes. No atom
-  /// grouping or payload-based membership inference is performed by Demo.
+  /// Explicit display fixtures. No atom grouping or payload inference is done.
   @visibleForTesting
-  void seedTimelineItems(String threadId, Iterable<CompletedEntry> items) {
+  void seedTimelineItems(String threadId, Iterable<DisplayBlock> blocks) {
     _ensureDemoRunning();
     _demoWorkspace(threadId);
     final history = _historyOf(threadId);
-    var changed = false;
-    for (final item in items) {
-      changed = history.acceptDisplay(item) || changed;
-    }
-    if (changed) _publishContent(threadId);
+    history.acceptDisplayBlocks(blocks);
+    _publishContent(threadId);
   }
 
   /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
@@ -7067,16 +6956,11 @@ class DemoStudioTransport extends StudioTransport
 
   void _publishContent(String threadId) {
     _historyOf(threadId).changed(_demoWorkspace(threadId));
-    for (final feed in [...?_conversationFeeds[threadId]]) {
-      feed._contentChanged();
-    }
   }
 
   /// demo 模拟一次 Thread 状态更新。
   ///
-  /// 状态流只承载 Turn / 活动 / 交互 / 运行时——与生产投影同一契约；**条目与正文不在
-  /// 这里**，它们写进内存条目，并由 Timeline 内容连接（`openConversationFeed` →
-  /// `_DemoConversationFeed`）按同一有界尾部契约交付。
+  /// 状态流只承载 Current；完成条目和正文由独立 History/Current 端口读取。
   void _emitThreadUpdate(String threadId, ThreadWorkspaceUpdate update) {
     if (_runtimeExiting) return;
     final workspace = _workspaces[threadId];

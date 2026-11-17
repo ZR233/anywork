@@ -1,6 +1,6 @@
 # 本地 Harbor 评测
 
-本包使用生产 `anywk exec`，由 Harbor 安装式智能体适配器负责私有目录、取消、原生产物校验、ATIF 与统计转换。Harbor 固定在 `06d0e86a8cfbac213548e0caec533afc5d81ff31`（0.25.0），依赖由 `uv.lock` 冻结。只消费原生导出版本 2，不实现模型循环或第二套账本。
+本包使用生产 `anywk exec`，由 Harbor 安装式智能体适配器负责私有目录、取消、原生产物校验、ATIF 与统计转换。Harbor 固定在 `06d0e86a8cfbac213548e0caec533afc5d81ff31`（0.25.0），依赖由 `uv.lock` 冻结。只消费原生导出版本 3，不实现模型循环或第二套账本。
 
 **Harbor 安装在本地 Linux 宿主，不加入项目 Docker 构建镜像，也不在持续集成运行 Harbor。** 本地任务仍使用 Harbor 官方 Docker 环境。需要 Python 3.12 以上、uv、可运行 Linux amd64 容器的 Docker；下载正式 Debian 包还需 `dpkg-deb`。真实模型调用仅发生于明确执行 `run` 后。开发回归和完整基准需要运行者自己的原生账号配置及环境变量凭据；本仓库不提供或自动读取个人凭据。
 

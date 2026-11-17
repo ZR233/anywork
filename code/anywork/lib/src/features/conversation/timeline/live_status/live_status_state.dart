@@ -539,6 +539,8 @@ final class LiveStatusView {
     this.hasMoreCurrentAtoms = false,
     this.loadingCurrentAtoms = false,
     this.currentAtomsError,
+    this.hasMoreActivityTools = false,
+    this.loadingActivityTools = false,
   });
   final String threadId;
   final LiveWindowCut cut;
@@ -548,6 +550,8 @@ final class LiveStatusView {
   final bool hasMoreCurrentAtoms;
   final bool loadingCurrentAtoms;
   final Object? currentAtomsError;
+  final bool hasMoreActivityTools;
+  final bool loadingActivityTools;
   bool get hasAnyRealtimeRegion =>
       barState is! LiveStatusHidden || timelineWork.workBlocks.isNotEmpty;
 }

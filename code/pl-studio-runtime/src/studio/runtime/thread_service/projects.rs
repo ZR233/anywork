@@ -3056,9 +3056,14 @@ mod standalone_tests {
                         .execute_unprepared("DROP TRIGGER reject_original_stop")
                         .await?;
                 } else {
+                    let private = runtime
+                        .store
+                        .read_thread("required-private")
+                        .await?
+                        .context("restored private Thread")?;
                     let before = runtime
                         .store
-                        .state_for(&project.id, "required-private")?
+                        .state_for(&private.workspace_id, "required-private")?
                         .load_current()
                         .await?
                         .context("cold current")?;

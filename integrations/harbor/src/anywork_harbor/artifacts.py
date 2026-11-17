@@ -1,4 +1,4 @@
-"""原生版本 2 归档的只读验证边界。"""
+"""原生版本 3 归档的只读验证边界。"""
 
 import hashlib
 import json
@@ -57,11 +57,23 @@ def safe_file(root: Path, relative: str) -> Path:
 
 def _validators() -> dict:
     # 构建时直接打包 canonical schema，不维护另一份协议。
-    directory = files("_anywork_run_export_schema").joinpath("v2")
+    directory = files("_anywork_run_export_schema").joinpath("v3")
     schemas = {
         name: json.loads(directory.joinpath(f"{name}.schema.json").read_text())
         for name in ("run", "result", "events", "native")
     }
+
+
+def _manifest(root: Path, reference: dict) -> list[dict]:
+    raw = safe_file(root, reference["path"]).read_bytes()
+    digest = sha256(raw)
+    if (
+        len(raw) != reference["byteLength"]
+        or digest != reference["sha256"]
+        or reference["path"] != f"contents/{digest}.bin"
+    ):
+        raise ValueError("内容 manifest 长度或摘要不一致")
+    return [decode_json(line) for line in raw.splitlines()]
     registry = Registry().with_resources(
         (schema["$id"], Resource.from_contents(schema)) for schema in schemas.values()
     )
@@ -81,6 +93,16 @@ class RunArtifacts:
 
     def content(self, reference: dict) -> bytes:
         return safe_file(self.directory, reference["path"]).read_bytes()
+
+    def manifest_contents(self, reference: dict) -> list[dict]:
+        raw = self.content(reference)
+        entries = []
+        for line in raw.splitlines():
+            entry = decode_json(line)
+            if not isinstance(entry.get("nativeRef"), dict):
+                raise ValueError("内容 manifest 缺少 nativeRef")
+            entries.append(entry)
+        return entries
 
 
 def read_and_validate_run_artifacts(
@@ -165,30 +187,40 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
         else:
             if thread not in members or thread in seals:
                 raise ValueError("未登记成员或成员封口后仍写入")
-            initial = members[thread]["initialCompletionCursor"]
-            if source["epoch"] is not None and source["epoch"] != initial["epoch"]:
-                raise ValueError("原生完成代际不一致")
+            initial = members[thread]["initialHistoryCursor"]
             if kind == "inferenceFinished":
                 key = (thread, data["billing"]["inferenceId"])
                 if key in receipts or source["effectSeq"] is None:
                     raise ValueError("重复调用账单或缺少效果水位")
                 receipts[key] = event
             elif kind == "completion":
-                header, atom = data["header"], data["atom"]
-                seq = header["appendSeq"]
-                if seq in completions[thread] or seq <= initial["completionSeq"]:
-                    raise ValueError("完成原件重复或早于初始游标")
-                if (
-                    source["completionSeq"] != seq
-                    or atom["completionSeq"] != seq
-                    or source["completionItemId"] != header["itemId"]
-                    or atom["completionItemId"] != header["itemId"]
-                ):
+                header, atom = data["header"]["event"], data["atom"]
+                seq, event_id = header["seq"], header["eventId"]
+                if event_id in completions[thread] or seq <= initial["historySeq"]:
+                    raise ValueError("完成原件重复或早于初始 History 位置")
+                if source["historyEventSeq"] != seq or source["historyEventId"] != event_id:
                     raise ValueError("完成原件身份矛盾")
-                completions[thread][seq] = event
+                if (
+                    header["entityId"] != atom["entityId"]
+                    or header["source"] != atom["source"]
+                    or header.get("turnId") != atom.get("turnId")
+                ):
+                    raise ValueError("History event 与 typed head 身份矛盾")
+                completions[thread][event_id] = event
                 if atom.get("tool"):
                     calls[thread].add(atom["tool"]["callId"])
-                refs = [data["payload"], *data["contents"]]
+                manifest = data["contentsManifest"]
+                contents = _manifest(root, manifest)
+                if any(
+                    item["nativeRef"]["ownerEventId"] != event_id
+                    for item in contents
+                ) or not any(
+                    item["nativeRef"]["ownerEventId"] == event_id
+                    and item["historyRole"]["kind"] == "canonicalPayload"
+                    for item in contents
+                ):
+                    raise ValueError("内容 manifest 归属或 canonical payload 无效")
+                refs = [data["payload"], *contents]
                 for ref in refs:
                     if ref is None:
                         continue
@@ -203,7 +235,10 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
                     ):
                         raise ValueError("内容长度或摘要不一致")
             elif kind == "threadSealed":
-                if data["threadId"] != thread or data["completionCut"]["epoch"] != initial["epoch"]:
+                if (
+                    data["threadId"] != thread
+                    or data["historyCut"]["historySeq"] < initial["historySeq"]
+                ):
                     raise ValueError("成员封口身份无效")
                 seals[thread] = data
     complete = bool(result and result["traceComplete"])
@@ -237,17 +272,19 @@ def _validate(root: Path, success: bool, expected_exit: int | None) -> RunArtifa
             if seal["summary"]["appliedSequence"] != seal["throughEffectSeq"]:
                 raise ValueError("用量归并水位与线程最终水位不一致")
             if (
-                cut["completionCut"] != seal["completionCut"]
+                cut["historyCut"] != seal["historyCut"]
                 or cut["throughEffectSeq"] != seal["throughEffectSeq"]
                 or not cut["sealed"]
                 or cut["agentId"] != member["agentId"]
                 or cut["parentAgentId"] != member["parentAgentId"]
             ):
                 raise ValueError("最终成员水位不一致")
-            start = member["initialCompletionCursor"]["completionSeq"]
-            end = seal["completionCut"]["completionSeq"]
-            if sorted(completions[thread]) != list(range(start + 1, end + 1)):
-                raise ValueError("完成原件存在缺口")
+            end = seal["historyCut"]["historySeq"]
+            if any(
+                event["source"]["historyEventSeq"] > end
+                for event in completions[thread].values()
+            ):
+                raise ValueError("完成原件超出成员 History 封口")
             if (
                 sum(owner == thread for owner, _ in receipts)
                 != seal["summary"]["totals"]["inferenceCount"]
