@@ -36,11 +36,11 @@ bash docker/linux/scripts/run.sh "$LINUX_BUILD_IMAGE" \
 uv sync --project integrations/harbor --locked
 uv run --project integrations/harbor pytest integrations/harbor/tests
 uv run --project integrations/harbor ruff check integrations/harbor
-uv run --project integrations/harbor python -m anywork_harbor.smoke \
+uv run --project integrations/harbor python3 -m anywork_harbor.smoke \
   --binary target/harbor-linux/x86_64-unknown-linux-gnu/release/anywk \
   --fixture target/harbor-linux/x86_64-unknown-linux-gnu/release/pl-provider-fixture \
   --output target/harbor/manual-file
-uv run --project integrations/harbor python -m anywork_harbor.smoke --case cancel \
+uv run --project integrations/harbor python3 -m anywork_harbor.smoke --case cancel \
   --binary target/harbor-linux/x86_64-unknown-linux-gnu/release/anywk \
   --fixture target/harbor-linux/x86_64-unknown-linux-gnu/release/pl-provider-fixture \
   --output target/harbor/manual-cancel

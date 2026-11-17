@@ -39,7 +39,6 @@ const _prompt =
 const _styleAnswer = '轻量回执';
 const _notesAnswer = '第一行：发布说明保留两句结论与一条风险提示。\n第二行：这一段用来核对自由文本的换行与复制。';
 const _secretAnswer = 'sk-question-history-fixture';
-const _questionCallId = 'question-history-call';
 const _finalAnswer = '收到：按轻量回执整理发布说明，风险提示单独成句。';
 const _preservedDraft = '（回答完问题后继续沿用这段暂存草稿）\n保留换行与未发送状态。';
 
@@ -864,7 +863,8 @@ Future<ChatItemPresentation> _questionReceipt(
   expect(receipt.compatibility, ChatItemCompatibility.current, reason: reason);
   expect(receipt.type, 'tool');
   final invocation = receipt.data['invocation'] as Map<String, Object?>;
-  expect(invocation['toolCallId'], _questionCallId);
+  expect(atom.tool?.name, 'request_user_input');
+  expect(invocation['toolCallId'], atom.tool!.callId);
   expect(invocation['name'], 'request_user_input');
   final input = receipt.data['userInput'] as Map<String, Object?>;
   final questions = (input['questions'] as List).cast<Map<String, Object?>>();

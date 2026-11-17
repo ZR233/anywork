@@ -151,9 +151,52 @@ void main() {
       () => observed.main.any((unit) => unit.body is WorkDisplayBlock),
       'historical Work row',
     );
-    final work = observed.main.firstWhere(
-      (unit) => unit.body is WorkDisplayBlock,
+    TimelineDisplayUnit? matchingWork;
+    for (final candidate in observed.main) {
+      final body = candidate.body;
+      if (body is! WorkDisplayBlock) continue;
+      String? cursor;
+      do {
+        final page = await lease.history.groupPage(
+          groupId: body.members.blockId,
+          cut: body.members.cut,
+          cursor: cursor,
+          demand: const HistoryDemand(maxRows: 32, maxBytes: 64 * 1024),
+        );
+        if (page.members.any((member) {
+          final head = member.head;
+          if (head is! MemberHistoryRow ||
+              head.head.tool?.name != 'wait' ||
+              head.head.source !=
+                  ForegroundTurnChatSource(turnId: completed.turnId)) {
+            return false;
+          }
+          return switch (head.head.wait) {
+            InlineHistoryWait(:final presentation) => switch (presentation
+                .intent) {
+              ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
+              _ => false,
+            },
+            DeferredHistoryWait(
+              intent: EventsHistoryWaitIntent(:final targetCount),
+            ) =>
+              targetCount == 2,
+            _ => false,
+          };
+        })) {
+          matchingWork = candidate;
+          break;
+        }
+        cursor = page.next;
+      } while (cursor != null);
+      if (matchingWork != null) break;
+    }
+    expect(
+      matchingWork,
+      isNotNull,
+      reason: 'The completed wait belongs to its original Work',
     );
+    final work = matchingWork!;
     final header = find.byKey(ValueKey('completion-run-header:${work.id}'));
     await observed.until(
       () => header.hitTestable().evaluate().length == 1,

@@ -2813,6 +2813,84 @@ void main() {
   }
 
   test(
+    'interaction query loading and failure cannot confirm a decision',
+    () async {
+      final transport = _Transport();
+      final client = await _client(transport);
+      final session = client.conversations.session('thread');
+      final interaction = _interaction();
+      await session.deliverWorkspace(_workspace(interactions: [interaction]));
+      final entered = transport.interactions.stream.first;
+      final resolving = client.threadCommands.resolveActiveInteraction(
+        'thread',
+        interaction.id,
+        _resolution,
+      );
+      final operation = client.mutations.latest('interaction:thread')!;
+      final call = await entered;
+      call.reply.complete(
+        InteractionCommandReply(
+          interaction: interaction,
+          receipt: _identityReceipt(call.operationId, effective: true),
+        ),
+      );
+      await resolving;
+
+      final reader = await scriptedCurrentReader('thread');
+      final reference = CurrentCollectionRef(
+        ownerId: reader.metadata.currentOwnerId,
+        collection: 'interactions',
+        revision: 2,
+      );
+      final started = Completer<void>();
+      final page = Completer<CurrentCollectionPage>();
+      reader.onPage = (_, _, _) {
+        started.complete();
+        return page.future;
+      };
+      await _applyOwnerUpdate(
+        client,
+        ThreadBusinessRefsUpdate(
+          references: ThreadBusinessRefs(plan: null, interactions: reference),
+        ),
+      );
+      await started.future;
+      expect(session.state.hasInteractionBaseline, isFalse);
+      expect(
+        operation.state.value.observed,
+        isFalse,
+        reason: 'An empty display while querying is not a canonical removal',
+      );
+      final failure = StateError('controlled decision query failure');
+      page.completeError(failure);
+      await session.source.waitFor(
+        (value) => identical(value.interactionReadError, failure),
+      );
+      expect(operation.state.value.observed, isFalse);
+      expect(
+        client.threadCommands.state.commands['interaction:thread']?.phase,
+        CommandPhase.pending,
+      );
+
+      reader.onPage = (reference, _, _) async => CurrentCollectionPage(
+        revision: reference.revision,
+        entries: const [],
+      );
+      await session.deliverWorkspace(
+        _workspace(revision: session.state.revision + 1).copyWith(
+          businessRefs: ThreadBusinessRefs(plan: null, interactions: reference),
+        ),
+      );
+      await operation.state.waitFor((value) => value.observed);
+      expect(session.state.hasInteractionBaseline, isTrue);
+      expect(
+        client.threadCommands.state.commands,
+        isNot(contains('interaction:thread')),
+      );
+    },
+  );
+
+  test(
     'queued interaction rechecks Recovery before transport invocation',
     () async {
       final transport = _Transport();

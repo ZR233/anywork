@@ -279,7 +279,17 @@ final class TimelineObservation {
         await Scrollable.ensureVisible(matches.first, alignment: 0.5);
         await tester.pump();
         expect(tester.takeException(), isNull);
-        expect(fragment.hitTestable(), findsWidgets);
+        // Structural rows need not accept a pointer at their center. Callers
+        // assert the actual text or control after its body has finished loading.
+        final bounds = tester.getRect(fragment);
+        final viewport = matches.first
+            .findAncestorRenderObjectOfType<RenderAbstractViewport>()!;
+        final viewportBounds = MatrixUtils.transformRect(
+          viewport.getTransformTo(null),
+          viewport.paintBounds,
+        );
+        expect(bounds.isEmpty, isFalse);
+        expect(bounds.overlaps(viewportBounds), isTrue);
         return;
       }
       await tester.pump(const Duration(milliseconds: 16));

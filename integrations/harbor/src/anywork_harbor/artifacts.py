@@ -214,7 +214,7 @@ def _validate_manifest(
         if not isinstance(entry["mediaType"], (str, type(None))) or not isinstance(
             entry["encoding"], str
         ):
-            raise ValueError("内容 manifest 媒体类型或编码无效")
+            raise TypeError("内容 manifest 媒体类型或编码无效")
         verified_blob(root, entry)
         if history_role["kind"] == "canonicalPayload":
             canonical_payload += 1

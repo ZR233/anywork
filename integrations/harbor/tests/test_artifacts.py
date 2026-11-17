@@ -15,7 +15,16 @@ def test_complete_archive_and_exact_content(archive):
         for e in artifacts.events
         if e["type"] == "completion" and e["threadId"] == "thread-child-1"
     )
-    assert artifacts.content(tool["data"]["contents"][0]) == b"A" * 1024
+    assert (
+        artifacts.content(
+            next(
+                value
+                for value in artifacts.manifest_contents(tool["data"]["contentsManifest"])
+                if value["historyRole"]["kind"] == "toolOutput"
+            )
+        )
+        == b"A" * 1024
+    )
 
 
 @pytest.mark.parametrize(
