@@ -157,15 +157,16 @@ impl ThreadHandle {
         Self::resume(id, model, None)
     }
 
-    /// Starts one fresh Current owner under a new runtime epoch.
+    /// Starts one fresh Current owner under a new runtime epoch. A resource-only owner may
+    /// install its model later; absence of a model does not make a new object a paused restore.
     pub fn start_current(
         id: String,
-        model: DynModelSession,
+        model: Option<DynModelSession>,
     ) -> Result<Self, current::CurrentError> {
         let current = current::ThreadCurrent::new(id.clone(), current::RuntimeEpoch::new());
         Self::spawn_owner(
             id,
-            Some(model),
+            model,
             InitialState::FreshCurrent(Box::new(current)),
             None,
         )

@@ -1373,7 +1373,9 @@ mod storage_fault_tests {
                     },
                 ])
                 .await?;
-            current_store.close_current(epoch).await?;
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
             channel.stop_and_join().await?;
             projection.await?;
             Ok(())

@@ -565,7 +565,10 @@ mod migration_tests {
             },
         ])
         .await?;
-        current_store.close_current(epoch).await?;
+        core.flush().await?;
+        current_store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         store
             .thread_persistence()
             .history_channel(&old.id)
@@ -747,7 +750,9 @@ mod migration_tests {
                 .begin_child_close(&registered, Some(&core.snapshot()), false)
                 .await?;
             factory.begin_child_close(&registered, None, false).await?;
-            current_store.close_current(epoch).await?;
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
             store
                 .thread_persistence()
                 .history_channel(&registered.id)

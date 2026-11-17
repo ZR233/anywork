@@ -42,7 +42,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 冷加载只读取并验证完整 `current.json` 及其所需资源，恢复逻辑事实并进入 paused；不启动模型、工具、进程或对外投递，也不从历史猜测正文、终态或最近执行。旧模型流和工具观察只作为上次运行的暂停事实展示，不表示仍在执行，不拼接为新流。
 
-继续执行属于 Core 与 Continue 控制契约；嵌套执行循环、Continue 控制 DTO 及资源安装分别由其所属边界维护，本文不定义平行控制 DTO。恢复得到的新请求只能通过普通准备流程建立新 owner、execution、attempt 和累积器，完整历史不能修补 current，旧 partial stream 不进入新上下文。累计用量以最后一次有效 current 为基线，不从全部历史追补。
+继续执行属于 Core 与 Continue 控制契约；嵌套执行循环、Continue 控制 DTO 及资源安装分别由其所属边界维护，本文不定义平行控制 DTO。普通新会话即使暂未配置模型，也创建 fresh Current owner，不把空对象当作冷恢复。恢复后的明确输入、继续或队列恢复请求由现有 owner 输入驱动调用同一个 Current 本地对账与普通 Turn 准备流程；被动读取、消息通知或重复回执不获得新的执行授权。恢复得到的新请求只能通过普通准备流程建立新 owner、execution、attempt 和累积器，完整历史不能修补 current，旧 partial stream 不进入新上下文。累计用量以最后一次有效 current 为基线，不从全部历史追补。
 
 <a id="独立追加历史"></a>
 
@@ -107,6 +107,6 @@ Core 的通用 SQLite 后端仍可独立使用既有 effect、checkpoint 与 dur
 
 ## 15.6 关闭与冷失败
 
-应用关闭分别等待 Current writer、History writer、History readers、Current readers 和调用诊断 owner 的真实结束。Current 保存失败保留 dirty 与错误；History flush 失败保留 pending 与错误；History reader 关闭失败保留原读取 owner。任何一方成功都不能掩盖另一方未收束。
+应用关闭分别等待 Current writer、History writer、History readers、Current readers 和调用诊断 owner 的真实结束。Session 的关闭存储责任直接等待独立 Current writer，不依赖产品观察任务恰好先消费最终快照；其后再等待 History writer。显式永久删除也必须 join 原 Current writer、捕获和订阅，但不要求先修复或成功保存即将删除的数据；普通关闭与归档仍必须报告原保存失败。Current 保存失败保留 dirty 与错误；History flush 失败保留 pending 与错误；History reader 关闭失败保留原读取 owner。任何一方成功都不能掩盖另一方未收束。
 
 未知结构版本、身份冲突、损坏资源或缺失必要迁移路径一律 fail-closed 并保留原文件/数据库。历史正文局部损坏明确返回读取错误，不把缺块解释为空内容。只有明确隔离的 v2 前数据可以保持不导入、不激活；正常路径不打开迁移备份、旧 schema 24 表或旧 client fallback。

@@ -239,6 +239,9 @@ impl LiveProjection {
         let cuts = producer_cuts(state);
         self.atom_starts
             .values()
+            // Compaction is a Current-only activity. Its lifecycle facts may enter History,
+            // but it never supplies a conversation member or a frozen boundary body.
+            .filter(|atom| atom.kind != crate::ChatAtomKind::Compaction)
             .map(|atom| {
                 Ok((
                     atom.id.clone(),

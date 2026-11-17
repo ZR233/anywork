@@ -327,7 +327,8 @@ void main() {
                 .lease(_threadId)!
                 .renderedCurrentAtomIds
                 .contains(_atomId) &&
-            find.text(_bodyText).evaluate().isNotEmpty,
+            find.text(_bodyText).evaluate().isNotEmpty &&
+            find.byType(ConversationActivityStatus).evaluate().isEmpty,
         'laid-out Current body',
       );
       expect(find.byType(ContentLayoutWitness), findsOneWidget);
@@ -372,7 +373,8 @@ void main() {
                 .lease(_threadId)!
                 .renderedCurrentAtomIds
                 .contains(_atomId) &&
-            find.text(_bodyText).evaluate().isNotEmpty,
+            find.text(_bodyText).evaluate().isNotEmpty &&
+            find.byType(ConversationActivityStatus).evaluate().isNotEmpty,
         'other Turn body layout',
       );
       expect(

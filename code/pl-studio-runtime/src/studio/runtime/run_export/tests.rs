@@ -14,8 +14,8 @@ use sha2::{Digest, Sha256};
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
 use super::reader::export_history_originals_window;
 use super::types::{
-    EventBodyV3, EventV3, ExportedBlobV3, ExportedContentV3, MAX_QUEUED_BATCHES, RunExportOptions,
-    RunManifestV3, UsageCoverage, UsageMetricKey,
+    ChatItemHeaderExportV3, EventBodyV3, EventSourceV3, EventV3, ExportedBlobV3, ExportedContentV3,
+    MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV3, UsageCoverage, UsageMetricKey,
 };
 use super::usage::{UsageAccumulator, fold_next_accounting};
 use super::writer::{ExportCommand, FsContentBlobSink};
@@ -172,6 +172,58 @@ fn history_change(
         boundary_observations: Vec::new(),
         public_summary: None,
     })
+}
+
+#[test]
+fn event_v3_writer_reader_is_independent_of_object_field_order() -> Result<()> {
+    let history = text_original(1, crate::ThreadTextChannel::Final, "original")?;
+    let Some(HistoryRowHead::Single(head)) = history.head.clone() else {
+        anyhow::bail!("representative completion head");
+    };
+    let event = EventV3 {
+        schema_version: super::types::EVENTS_SCHEMA_VERSION,
+        run_id: "field-order-run".into(),
+        event_seq: 1,
+        body: EventBodyV3::Completion {
+            header: ChatItemHeaderExportV3::from_history(&history.header),
+            atom: Box::new(head),
+            payload: ExportedBlobV3 {
+                path: "contents/payload.bin".into(),
+                byte_length: 7,
+                sha256: "payload-sha".into(),
+                media_type: Some("application/json".into()),
+                encoding: "utf-8".into(),
+            },
+            contents_manifest: ExportedBlobV3 {
+                path: "contents/manifest.bin".into(),
+                byte_length: 8,
+                sha256: "manifest-sha".into(),
+                media_type: Some("application/x-ndjson".into()),
+                encoding: "utf-8".into(),
+            },
+        },
+        emitted_at: "2026-11-13T15:00:00.020Z".into(),
+        thread_id: Some("thread-root".into()),
+        source: EventSourceV3 {
+            history_event_id: Some("event-1".into()),
+            history_event_seq: Some(1),
+            effect_seq: None,
+            turn_id: Some("turn-1".into()),
+            attempt_id: None,
+            tool_call_id: None,
+            current_owner_id: None,
+            current_revision: None,
+        },
+    };
+    let encoded = serde_json::to_string(&event)?;
+    assert_eq!(serde_json::from_str::<EventV3>(&encoded)?, event);
+
+    let body_first = r#"{"schemaVersion":3,"runId":"order-run","eventSeq":1,"type":"runStarted","data":{"runId":"order-run","build":{"version":"1.0.0","gitCommit":null,"target":"test"},"manifestSha256":"manifest"},"emittedAt":"2026-11-13T15:00:00.010Z","threadId":null,"source":{"historyEventId":null,"historyEventSeq":null,"effectSeq":null,"turnId":null,"attemptId":null,"toolCallId":null,"currentOwnerId":null,"currentRevision":null}}"#;
+    let metadata_first = r#"{"emittedAt":"2026-11-13T15:00:00.010Z","source":{"historyEventId":null,"historyEventSeq":null,"effectSeq":null,"turnId":null,"attemptId":null,"toolCallId":null,"currentOwnerId":null,"currentRevision":null},"threadId":null,"data":{"manifestSha256":"manifest","build":{"target":"test","gitCommit":null,"version":"1.0.0"},"runId":"order-run"},"type":"runStarted","eventSeq":1,"runId":"order-run","schemaVersion":3}"#;
+    let decoded_body_first: EventV3 = serde_json::from_str(body_first)?;
+    let decoded_metadata_first: EventV3 = serde_json::from_str(metadata_first)?;
+    assert_eq!(decoded_body_first, decoded_metadata_first);
+    Ok(())
 }
 
 #[tokio::test]

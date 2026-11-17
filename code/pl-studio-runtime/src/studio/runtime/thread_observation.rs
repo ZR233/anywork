@@ -1355,7 +1355,10 @@ impl LiveOwner {
             }))
             .await;
         if let Err(error) = initialized {
-            return match conversation.close_current(handle).await {
+            return match conversation
+                .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+            {
                 Ok(()) => Err(error),
                 Err(close) => Err(error.context(format!(
                     "closing current after projection initialization failure: {close:#}"
@@ -1365,7 +1368,10 @@ impl LiveOwner {
         let retained = match ProjectionLease::claim(conversation.clone()) {
             Ok(retained) => retained,
             Err(error) => {
-                return match conversation.close_current(handle).await {
+                return match conversation
+                    .close_current(handle, crate::thread_assembler::ClosePurpose::Preserve)
+                    .await
+                {
                     Ok(()) => Err(error),
                     Err(close) => Err(error.context(format!(
                         "closing current after projection ownership failure: {close:#}"
@@ -2265,7 +2271,15 @@ async fn run(
         // archive reconciliation. A failed History write cannot postpone that final save/join.
         let mut current_close = if current.lifecycle == ThreadLifecycle::Closed {
             if let Some(live) = worker.live.as_ref() {
-                Some(live.retained.store.close_current(&worker.thread).await)
+                Some(
+                    live.retained
+                        .store
+                        .close_current(
+                            &worker.thread,
+                            crate::thread_assembler::ClosePurpose::Preserve,
+                        )
+                        .await,
+                )
             } else {
                 None
             }
@@ -2281,7 +2295,15 @@ async fn run(
             && current_close.is_none()
             && let Some(live) = worker.live.as_ref()
         {
-            current_close = Some(live.retained.store.close_current(&worker.thread).await);
+            current_close = Some(
+                live.retained
+                    .store
+                    .close_current(
+                        &worker.thread,
+                        crate::thread_assembler::ClosePurpose::Preserve,
+                    )
+                    .await,
+            );
         }
         if let Some(Err(close)) = current_close {
             result = Err(match result {
@@ -2353,8 +2375,14 @@ async fn run(
                                 );
                             }
                             if let Some(live) = &worker.live
-                                && let Err(error) =
-                                    live.retained.store.close_current(&worker.thread).await
+                                && let Err(error) = live
+                                    .retained
+                                    .store
+                                    .close_current(
+                                        &worker.thread,
+                                        crate::thread_assembler::ClosePurpose::Preserve,
+                                    )
+                                    .await
                             {
                                 worker.state.progress.send_modify(|progress| {
                                     progress.error = Some(Arc::new(error));

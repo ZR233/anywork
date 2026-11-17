@@ -860,7 +860,7 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         ModelFactory::new(pl_model::runtime::ThreadModel::new(source_runtime, None));
     let thread = ThreadHandle::start_current(
         "cross-provider-thread".into(),
-        source_factory.open_session().await.unwrap(),
+        Some(source_factory.open_session().await.unwrap()),
     )
     .unwrap();
     thread
@@ -960,7 +960,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     ));
     let thread = ThreadHandle::start_current(
         "new-configuration".into(),
-        source.open_session().await.unwrap(),
+        Some(source.open_session().await.unwrap()),
     )
     .unwrap();
     thread

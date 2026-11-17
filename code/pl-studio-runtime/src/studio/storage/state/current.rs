@@ -71,7 +71,11 @@ impl StateStore {
             .snapshot())
     }
 
-    pub(crate) async fn close_current(&self, epoch: RuntimeEpoch) -> Result<()> {
+    pub(crate) async fn close_current(
+        &self,
+        epoch: RuntimeEpoch,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<()> {
         let current = self
             .current
             .as_ref()
@@ -82,6 +86,11 @@ impl StateStore {
             current
                 .coordinator
                 .release_current_writer(&self.thread_id, &current.writer);
+        }
+        if purpose == crate::thread_assembler::ClosePurpose::Delete && current.writer.is_joined() {
+            // Explicit deletion needs the original worker and every capture/observer joined, but
+            // does not promise to repair or save data that the user has asked to remove.
+            return Ok(());
         }
         result
     }
@@ -141,7 +150,9 @@ mod tests {
         }
         // Clean up even on the old implementation, which accepts and acknowledges both writers.
         for (store, epoch, _) in &accepted {
-            store.close_current(*epoch).await?;
+            store
+                .close_current(*epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
         }
         assert_eq!(
             accepted.len(),
@@ -166,7 +177,8 @@ mod tests {
             .await?;
         next.flush_current(epoch).await?;
         assert_eq!(next.load_current().await?.unwrap().thread_id, next_id);
-        next.close_current(epoch).await?;
+        next.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
@@ -194,7 +206,10 @@ mod tests {
                 .is_err()
         );
         assert!(
-            store.close_current(epoch).await.is_err(),
+            store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err(),
             "an unbound writer joins but cannot invent final data"
         );
         store
@@ -239,7 +254,9 @@ mod tests {
             0,
             "current does not advance history pressure or watermarks"
         );
-        store.close_current(epoch).await?;
+        store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(first.is_joined());
         assert_eq!(store.load_current().await?.unwrap().snapshot_revision, 7);
         coordinator.forget_deleted("state-test")?;
@@ -247,8 +264,11 @@ mod tests {
         next.attach_current(coordinator.clone(), None, RuntimeEpoch::new(), source)
             .await?;
         assert!(!Arc::ptr_eq(&first, &next.current.as_ref().unwrap().writer));
-        next.close_current(next.current_save_state()?.runtime_epoch.unwrap())
-            .await?;
+        next.close_current(
+            next.current_save_state()?.runtime_epoch.unwrap(),
+            crate::thread_assembler::ClosePurpose::Preserve,
+        )
+        .await?;
         Ok(())
     }
 
@@ -262,7 +282,9 @@ mod tests {
             .attach_current(coordinator.clone(), None, r1, named_source("cold-r2"))
             .await?;
         first.flush_current(r1).await?;
-        first.close_current(r1).await?;
+        first
+            .close_current(r1, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
 
         // The saved file still names R1, but the coordinator slot was released after a real join.
         // A newly registered writer is Unbound, so R2 admission must use `previous = None`.
@@ -277,7 +299,9 @@ mod tests {
             second.load_current().await?.unwrap().saved_runtime_epoch,
             r2
         );
-        second.close_current(r2).await?;
+        second
+            .close_current(r2, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
@@ -307,7 +331,9 @@ mod tests {
         assert_eq!(store.current_save_state()?.runtime_epoch, Some(r2));
         assert!(store.flush_current(r1).await.is_err());
         assert_eq!(store.flush_current(r2).await?.runtime_epoch, r2);
-        store.close_current(r2).await?;
+        store
+            .close_current(r2, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 

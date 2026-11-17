@@ -122,10 +122,6 @@ class _TimelineCanonicalPayloadConnectorState
     value.item.atom?.source,
     value.item.historyEventId,
     value.item.historyDetailEventId,
-    [
-      for (final content in value.item.currentContents)
-        (content.role, content.reference),
-    ],
     switch (value.item.displayRecord?.contentSource) {
       CurrentAtomSource() => (CurrentAtomSource,),
       FrozenObservation(:final capturedAt, :final available) => (

@@ -829,7 +829,9 @@ mod tests {
         // The Session owner can finish physical shutdown before the independent JSON owner.
         core.close().await?;
         let final_current = core.capture_current(CancellationToken::new()).await?;
-        store.close_current(epoch).await?;
+        store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         let saved = store
             .load_current()
             .await?
@@ -978,12 +980,12 @@ mod tests {
         let closes = Arc::new(AtomicUsize::new(0));
         let handle = ThreadHandle::start_current(
             "current-test".into(),
-            DynModelSession::new(StreamingModel {
+            Some(DynModelSession::new(StreamingModel {
                 changes: Some(changes),
                 started: Some(started),
                 captures: captures.clone(),
                 closes: closes.clone(),
-            }),
+            })),
         )?;
         let epoch = handle.runtime_epoch();
         let coordinator = ThreadPersistenceCoordinator::default();
@@ -1064,7 +1066,9 @@ mod tests {
             })
         }));
         let captures_before_close = captures.load(Ordering::Relaxed);
-        store.close_current(epoch).await?;
+        store
+            .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(
             step.await?.is_err(),
             "Core joined the cancelled model execution"
@@ -1115,7 +1119,12 @@ mod tests {
             1,
             "paused restore opens no model session"
         );
-        store.close_current(restored_epoch).await?;
+        store
+            .close_current(
+                restored_epoch,
+                crate::thread_assembler::ClosePurpose::Preserve,
+            )
+            .await?;
         Ok(())
     }
 
@@ -1182,7 +1191,12 @@ mod tests {
         }])
         .await?;
         observed(&writer, |state| state.dirty).await;
-        store.close_current(new.runtime_epoch()).await?;
+        store
+            .close_current(
+                new.runtime_epoch(),
+                crate::thread_assembler::ClosePurpose::Preserve,
+            )
+            .await?;
         assert_eq!(writer.shared.observer_tasks.load(Ordering::Relaxed), 0);
         assert!(!store.current_save_state()?.observer_registered);
         assert!(

@@ -1437,6 +1437,8 @@ impl ContextCapacity {
 pub enum ThreadError {
     #[error("current owner is paused; user-authorized continuation is required")]
     CurrentPaused,
+    #[error("user-authorized Current resume failed: {0}")]
+    CurrentResume(#[source] Arc<current::CurrentError>),
     #[error("current owners do not attach the legacy checkpoint store")]
     CurrentCheckpointStore,
     #[error("tool registration was rejected and cleanup remains pending: {0}")]

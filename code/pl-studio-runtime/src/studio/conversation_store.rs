@@ -222,14 +222,15 @@ impl ConversationStore {
             .await
     }
 
-    pub(in crate::studio) async fn close_current(
+    pub(crate) async fn close_current(
         &self,
         handle: &pl_core::thread::ThreadHandle,
+        purpose: crate::thread_assembler::ClosePurpose,
     ) -> anyhow::Result<()> {
         self.state
             .lock()
             .await
-            .close_current(handle.runtime_epoch())
+            .close_current(handle.runtime_epoch(), purpose)
             .await
     }
 

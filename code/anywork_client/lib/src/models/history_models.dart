@@ -479,6 +479,26 @@ final class HistoryEventBodyRef {
   final String bodyId;
   final int byteStart;
   final int byteLength;
+
+  @override
+  bool operator ==(Object other) =>
+      other is HistoryEventBodyRef &&
+      databaseId == other.databaseId &&
+      ownerEventId == other.ownerEventId &&
+      bodyKey == other.bodyKey &&
+      bodyId == other.bodyId &&
+      byteStart == other.byteStart &&
+      byteLength == other.byteLength;
+
+  @override
+  int get hashCode => Object.hash(
+    databaseId,
+    ownerEventId,
+    bodyKey,
+    bodyId,
+    byteStart,
+    byteLength,
+  );
 }
 
 final class HistoryEventDetail {

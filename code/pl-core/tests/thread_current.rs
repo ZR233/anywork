@@ -590,7 +590,7 @@ async fn current_capture_accepts_inbox_changes_without_recapturing_stream() {
     let session = GatedCaptureSession::default();
     let thread = ThreadHandle::start_current(
         "capture-inbox".into(),
-        DynModelSession::new(session.clone()),
+        Some(DynModelSession::new(session.clone())),
     )
     .unwrap();
     let run = tokio::spawn({
@@ -691,12 +691,12 @@ async fn stale_capture_is_retried_for_the_new_attempt() {
     let finish = Arc::new(Notify::new());
     let thread = ThreadHandle::start_current(
         "switch-capture".into(),
-        DynModelSession::new(SwitchingCaptureSession {
+        Some(DynModelSession::new(SwitchingCaptureSession {
             first_capture: Some(first_capture),
             transition: transition.clone(),
             second_ready: second_ready.clone(),
             finish: finish.clone(),
-        }),
+        })),
     )
     .unwrap();
     let run = tokio::spawn({
@@ -993,7 +993,8 @@ async fn freshly_created_current_turn_uses_uuid_attempt_not_the_legacy_prefix_al
     let session = ProducerSession::new();
     session.prepare_release.notify_one();
     let thread =
-        ThreadHandle::start_current("fresh".into(), DynModelSession::new(session.clone())).unwrap();
+        ThreadHandle::start_current("fresh".into(), Some(DynModelSession::new(session.clone())))
+            .unwrap();
     let epoch = thread.runtime_epoch();
     let run = tokio::spawn({
         let thread = thread.clone();
@@ -1116,7 +1117,7 @@ async fn old_permission_answer_is_saved_but_never_recreates_a_task_execution_lea
 #[tokio::test]
 async fn current_task_start_ordinal_outlives_completed_tasks_and_is_not_an_effect_fence() {
     let thread =
-        ThreadHandle::start_current("task-order".into(), DynModelSession::new(CallSession))
+        ThreadHandle::start_current("task-order".into(), Some(DynModelSession::new(CallSession)))
             .unwrap();
     thread
         .register_tools(vec![
@@ -1483,7 +1484,7 @@ async fn invalid_current_step_identity_never_overwrites_the_capturable_current()
     let session = RecordingSession::new(FirstReply::Succeed);
     let thread = ThreadHandle::start_current(
         "valid-current".into(),
-        DynModelSession::new(session.clone()),
+        Some(DynModelSession::new(session.clone())),
     )
     .unwrap();
     let before = current_business_json(&thread).await;
@@ -1590,7 +1591,7 @@ async fn current_capacity_recovery_preserves_failed_and_preselected_next_attempt
         let session = RecordingSession::new(FirstReply::ContextLimit);
         let model = DynModelSession::new(session.clone());
         let thread = if current {
-            ThreadHandle::start_current("capacity".into(), model).unwrap()
+            ThreadHandle::start_current("capacity".into(), Some(model)).unwrap()
         } else {
             ThreadHandle::start("capacity".into(), model).unwrap()
         };
@@ -1667,7 +1668,7 @@ async fn current_correction_uses_the_rejected_uuid_and_runtime_feedback_source()
         let session = RecordingSession::new(FirstReply::UnknownTool);
         let model = DynModelSession::new(session.clone());
         let thread = if current {
-            ThreadHandle::start_current("correction".into(), model).unwrap()
+            ThreadHandle::start_current("correction".into(), Some(model)).unwrap()
         } else {
             ThreadHandle::start("correction".into(), model).unwrap()
         };
@@ -1829,5 +1830,76 @@ async fn recovery_contents_cover_all_locations_and_core_validates_only_direct_re
         ];
         expected.sort();
         assert_eq!(actual, expected);
+    }
+}
+
+#[tokio::test]
+async fn explicit_input_resumes_saved_current_through_the_existing_queue_driver() {
+    for continue_existing in [false, true] {
+        let epoch = RuntimeEpoch::new();
+        let mut saved = ThreadCurrent::new("queue-resume".into(), epoch);
+        saved.model_call = Some(saved_call(
+            epoch,
+            SavedModelPhase::Preparing {
+                pending_step_input: Some(PendingStepInput {
+                    content: vec![text("unsent direct input")],
+                }),
+            },
+        ));
+        let session = RecordingSession::new(FirstReply::Succeed);
+        let thread =
+            ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone())))
+                .unwrap();
+        // A normal read after restore does not authorize work or discard the saved direct input.
+        thread
+            .capture_current(CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(session.counts(), (0, 0));
+        let input = input::ThreadInput {
+            id: "new-user-input".into(),
+            purpose: input::InputPurpose::Message,
+            payload: OpaquePayload::text("new user input"),
+            context: vec![text("new user input")],
+        };
+        let options = input::InputDriverOptions {
+            max_model_steps: ModelStepLimit::Limited(1.try_into().unwrap()),
+        };
+        let mut updates = thread.subscribe();
+        if continue_existing {
+            thread
+                .submit_input_and_continue(input, options)
+                .await
+                .unwrap();
+        } else {
+            thread.submit_input_and_run(input, options).await.unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(snapshot) = updates.next().await {
+                if session.counts() == (1, 1)
+                    && snapshot.execution.is_none()
+                    && snapshot.inputs.is_empty()
+                {
+                    return;
+                }
+            }
+            panic!("Current owner closed before its authorized input completed");
+        })
+        .await
+        .expect("authorized input must use Current resume, not fail CurrentPaused");
+        let requests = session.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        let admitted = requests[0]
+            .context
+            .records
+            .iter()
+            .find(|record| matches!(record.source, ContextSource::User))
+            .unwrap();
+        assert_eq!(
+            admitted.content,
+            vec![text("unsent direct input"), text("new user input")]
+        );
+        assert_ne!(requests[0].attempt_id, "old-attempt");
+        thread.close().await.unwrap();
     }
 }

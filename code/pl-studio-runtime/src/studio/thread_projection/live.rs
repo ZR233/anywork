@@ -3801,9 +3801,18 @@ mod append_only_history_tests {
             committed_at: 10 + sequence as i64,
             ..Default::default()
         };
+        let opening_member = started("A");
+        let boundary_id = super::observation_start(
+            &opening_member.attempt_id,
+            opening_member.generation,
+            &opening_member.identity,
+            &ThreadContentLifecycle::streaming(),
+        )
+        .context("boundary member identity")?
+        .0;
         let mut opening = effect(1);
         opening.turn = Some(turn);
-        opening.model_member_starts = Arc::from([started("A")]);
+        opening.model_member_starts = Arc::from([opening_member]);
         projection.prepare(&thread, &opening, &state, false).await?;
 
         let observed = started("A").identity;
@@ -3825,6 +3834,14 @@ mod append_only_history_tests {
             ),
             part: ObservedPartKind::OutputText,
         });
+        let final_id = super::observation_start(
+            &final_text.attempt_id,
+            final_text.generation,
+            &final_text.identity,
+            &ThreadContentLifecycle::streaming(),
+        )
+        .context("final text identity")?
+        .0;
         terminal.model_member_content_available =
             vec![pl_core::model::ModelContentAvailableMember {
                 turn_id: final_text.turn_id.clone(),
@@ -3865,19 +3882,19 @@ mod append_only_history_tests {
         let (_, boundary_input) = prepared
             .boundary_inputs
             .iter()
-            .find(|(id, _)| id.as_str() == "A")
+            .find(|(id, _)| id.as_str() == boundary_id)
             .context("the retired producer must retain its pre-terminal cut")?;
         let boundary_event = prepared
             .history_changes
             .iter()
-            .find(|change| change.entity.entity_id == "T")
+            .find(|change| change.entity.entity_id == final_id)
             .context("the final text is the visible boundary")?;
         let boundary = boundary_input.freeze(&boundary_event.event, history.database_id())?;
         assert_eq!(
             boundary.event.header.kind,
             crate::history::HistoryEventKind::BoundaryObserved
         );
-        assert_eq!(boundary.entity.entity_id, "A");
+        assert_eq!(boundary.entity.entity_id, boundary_id);
         let frozen = boundary
             .event
             .bodies
@@ -3892,16 +3909,13 @@ mod append_only_history_tests {
         );
         state.model_progress = None;
         projection.stream(&thread, &state).await?;
-        assert!(
-            projection
-                .current_state()
-                .as_ref()
-                .is_some_and(|current| current
-                    .projection()
-                    .atoms
-                    .iter()
-                    .all(|atom| atom.id != "A"))
-        );
+        assert!(projection.current_state().as_ref().is_some_and(|current| {
+            current
+                .projection()
+                .atoms
+                .iter()
+                .all(|atom| atom.id != boundary_id)
+        }));
         channel.stop_and_join().await?;
         history.close().await?;
         Ok(())

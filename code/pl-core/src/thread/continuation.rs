@@ -492,7 +492,7 @@ impl Owner {
         // earlier cancellation armed is spent; an already enabled queue keeps its guard, because
         // this submission joins the authorization that previous cancellation still owes.
         if self.input_driver.options().is_none() {
-            self.authorized_stops = None;
+            self.authorized_stops = self.current_saved_lifecycle.map(|_| self.interrupt.stops());
         }
         self.input_driver.enable(options);
         if let Some(turn) = self

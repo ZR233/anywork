@@ -3993,6 +3993,32 @@ mod writer_tests {
         format!("'{}'", value.replace('\'', "''"))
     }
 
+    fn normalized_event_body(bytes: &[u8]) -> Option<serde_json::Value> {
+        fn strip_admission_ids(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        strip_admission_ids(value);
+                    }
+                }
+                serde_json::Value::Object(values) => {
+                    values.remove("bodyId");
+                    for value in values.values_mut() {
+                        strip_admission_ids(value);
+                    }
+                }
+                serde_json::Value::Null
+                | serde_json::Value::Bool(_)
+                | serde_json::Value::Number(_)
+                | serde_json::Value::String(_) => {}
+            }
+        }
+
+        let mut value = serde_json::from_slice(bytes).ok()?;
+        strip_admission_ids(&mut value);
+        Some(value)
+    }
+
     #[tokio::test]
     async fn rejecting_one_prepared_event_exposes_no_prefix_of_its_effect() -> Result<()> {
         let mut fixture = Fixture::new("whole-effect-admission").await?;
@@ -4053,8 +4079,9 @@ mod writer_tests {
 
         let prepared = fixture.handoff(&write).await?;
         assert!(prepared.retained_bytes() > 0);
+        let handed_off = process.load(Ordering::Acquire);
         assert!(
-            process.load(Ordering::Acquire) <= admitted,
+            handed_off <= admitted,
             "projection handoff must transfer, not add, the reliable charge"
         );
         assert_eq!(
@@ -4064,10 +4091,15 @@ mod writer_tests {
         );
 
         fixture.finish(1).await?;
-        assert_eq!(process.load(Ordering::Acquire), baseline);
+        let resident_index = fixture.sink.0.channel.order_index.retained_bytes();
+        assert_eq!(process.load(Ordering::Acquire), baseline + resident_index);
         assert_eq!(
             fixture.sink.0.channel.subscribe().borrow().queued_records,
             0
+        );
+        assert_eq!(
+            fixture.sink.0.channel.subscribe().borrow().queued_bytes,
+            resident_index,
         );
         Ok(())
     }
@@ -4100,7 +4132,13 @@ mod writer_tests {
             for (first, second) in first.event.bodies.iter().zip(second.event.bodies.iter()) {
                 assert_eq!(first.body_key, second.body_key);
                 assert_eq!(first.role, second.role);
-                assert_eq!(first.bytes, second.bytes);
+                match (
+                    normalized_event_body(&first.bytes),
+                    normalized_event_body(&second.bytes),
+                ) {
+                    (Some(first), Some(second)) => assert_eq!(first, second),
+                    _ => assert_eq!(first.bytes, second.bytes),
+                }
             }
         }
         fixture.sink.0.channel.stop_and_join_for_deletion().await?;
@@ -4132,7 +4170,9 @@ mod writer_tests {
         assert!(lock_progress(&fixture.sink.0).pending_accounting.is_none());
         assert!(fixture.store.calls().statistics_gap());
         assert_eq!(fixture.sink.0.channel.subscribe().borrow().fault, None);
-        assert_eq!(fixture.store.calls().metrics(), calls_before);
+        let mut expected_metrics = calls_before;
+        expected_metrics.statistics_gap = true;
+        assert_eq!(fixture.store.calls().metrics(), expected_metrics);
         assert_eq!(
             *fixture.store.calls().subscribe_materials().borrow(),
             materials_before

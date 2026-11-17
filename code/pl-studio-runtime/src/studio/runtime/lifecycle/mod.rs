@@ -1121,8 +1121,9 @@ mod startup_fault_tests {
         );
         item.ordinal = 1;
         item.revision = 1;
+        history.commit_legacy_fixture(1, &[], &[]).await?;
         history
-            .commit_legacy_fixture(1, std::slice::from_ref(&item), &[])
+            .seed_legacy_items(1, std::slice::from_ref(&item))
             .await?;
         drop(history);
         let runtime = StudioRuntime::initialize(options(temp.path())).await?;

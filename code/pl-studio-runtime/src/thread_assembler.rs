@@ -73,7 +73,7 @@ use pl_core::{
     model::ModelFactory,
     thread::{
         ContextCapacity, ThreadError, ThreadHandle, ThreadLifecycle,
-        current::{CurrentError, RuntimeEpoch, ThreadCurrent},
+        current::{CurrentError, ThreadCurrent},
     },
     tool::opaque::Registration,
 };
@@ -856,17 +856,14 @@ impl SessionRuntime {
                 Ok(model) => {
                     let thread = match spec.current {
                         Some(current) => ThreadHandle::restore_current(current, Some(model))?,
-                        None => ThreadHandle::start_current(spec.id.clone(), model)?,
+                        None => ThreadHandle::start_current(spec.id.clone(), Some(model))?,
                     };
                     (thread, None)
                 }
                 Err(error) => {
                     let thread = match spec.current {
                         Some(current) => ThreadHandle::restore_current(current, None)?,
-                        None => ThreadHandle::restore_current(
-                            ThreadCurrent::new(spec.id.clone(), RuntimeEpoch::new()),
-                            None,
-                        )?,
+                        None => ThreadHandle::start_current(spec.id.clone(), None)?,
                     };
                     (thread, Some(ThreadAssemblyError::from(error)))
                 }
@@ -874,10 +871,7 @@ impl SessionRuntime {
         } else {
             let thread = match spec.current {
                 Some(current) => ThreadHandle::restore_current(current, None)?,
-                None => ThreadHandle::restore_current(
-                    ThreadCurrent::new(spec.id.clone(), RuntimeEpoch::new()),
-                    None,
-                )?,
+                None => ThreadHandle::start_current(spec.id.clone(), None)?,
             };
             (thread, None)
         };

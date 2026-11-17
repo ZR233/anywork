@@ -587,6 +587,14 @@ impl SessionRuntime {
                 }
             };
             if let Some(binding) = binding {
+                let thread = self
+                    .observed_thread(id)
+                    .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+                binding
+                    .conversation
+                    .close_current(&thread, ClosePurpose::Delete)
+                    .await
+                    .map_err(preparation_storage_error)?;
                 binding
                     .channel
                     .stop_and_join_for_deletion()
@@ -653,6 +661,14 @@ impl SessionRuntime {
                 .map_err(preparation_storage_error)?;
         }
         if let Some(binding) = self.close_storage_binding(id)? {
+            let thread = self
+                .observed_thread(id)
+                .ok_or_else(|| ThreadAssemblyError::Identity(id.to_owned()))?;
+            binding
+                .conversation
+                .close_current(&thread, ClosePurpose::Preserve)
+                .await
+                .map_err(preparation_storage_error)?;
             if original.is_some() {
                 self.observed_thread(id)
                     .ok_or(ThreadAssemblyError::Closed)?

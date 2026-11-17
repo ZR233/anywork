@@ -41,6 +41,7 @@ HistoryEventDetail _detail(String id, int seq) => HistoryEventDetail(
 
 Widget _host(ConversationFixture fixture, {required String parentId}) =>
     MaterialApp(
+      key: ValueKey('children-host:$parentId'),
       theme: pureStudioTheme(),
       locale: const Locale('zh'),
       localizationsDelegates: [
@@ -62,6 +63,9 @@ List<String> _rowIds(WidgetTester tester) => tester
     .widgetList<Widget>(
       find.byWidgetPredicate(
         (widget) => widget is ChatItemView || widget is TimelineMemberAtom,
+        // These deliberately empty text heads have zero paint extent. This case checks
+        // admitted row identity; real content layout is covered by its own widget tests.
+        skipOffstage: false,
       ),
     )
     .map(

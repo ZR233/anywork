@@ -160,7 +160,7 @@ impl StudioRuntime {
                 durable,
             ));
         }
-        self.ensure_thread_owner(&thread_id).await?;
+        Box::pin(self.ensure_thread_owner(&thread_id)).await?;
         // 到达这里的决议一定来自 Pending 交互，真实受理路径只有 UserInput 决议：
         // 权限决议（ToolApproval）不是用户消息，重复决议在上方已终结短路或持久回执
         // 路径返回，不产生新的受理事实（design/17 §17.1）。
