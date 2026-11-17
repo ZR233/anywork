@@ -192,17 +192,11 @@ void main() {
         final changes = <bool>[];
         Widget tool(String id, {required bool initiallyExpanded}) {
           final item = _tool(id, webSearch: webSearch);
-          final Widget child = webSearch
-              ? TimelineWebSearchToolCard(
-                  item: item,
-                  initiallyExpanded: initiallyExpanded,
-                  onExpansionChanged: changes.add,
-                )
-              : TimelineToolDetails(
-                  item: item,
-                  initiallyExpanded: initiallyExpanded,
-                  onExpansionChanged: changes.add,
-                );
+          final Widget child = TimelineToolDetails(
+            item: item,
+            initiallyExpanded: initiallyExpanded,
+            onExpansionChanged: changes.add,
+          );
           return _host(
             KeyedSubtree(key: const ValueKey('reuse'), child: child),
           );

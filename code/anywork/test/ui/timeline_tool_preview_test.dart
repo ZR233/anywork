@@ -26,7 +26,7 @@ const _expectedReadableText = <String, String>{
   'builtin.move_path@1': 'drafts/report.md',
   'builtin.spawn_agent@1': '核对离线搜索结果的标题',
   'builtin.send_message@1': '已确认失败状态与错误正文均可见。',
-  'builtin.wait@1': 'succeeded',
+  'builtin.wait@1': '已成功',
   'builtin.sleep@1': '1.2 秒',
   'builtin.view_image@1': '/workspace/sample-project/assets/chart.png',
   'builtin.show_files@1': '搜索结果摘要附件',
@@ -36,7 +36,7 @@ const _expectedReadableText = <String, String>{
   'builtin.plan_current@1': '# 检查搜索详情',
   'builtin.plan_next@1':
       'The user approves the exact pending plan Interaction.',
-  'builtin.plan_history@1': 'submit',
+  'builtin.plan_history@1': '提交计划',
   'builtin.plan_submit@1': '# 检查搜索详情',
   'builtin.plan_restart@1': '补充窄屏错误状态验证',
   'builtin.workflow_current@1': '校验结构化工具输出',
