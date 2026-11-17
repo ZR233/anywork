@@ -72,6 +72,16 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
     ) -> Result<ConversationStateFeed> {
+        self.open_current_state_feed(thread_id, CancellationToken::new())
+            .await
+    }
+
+    pub(super) async fn open_current_state_feed(
+        &self,
+        thread_id: &str,
+        cancellation: CancellationToken,
+    ) -> Result<ConversationStateFeed> {
+        ensure!(!cancellation.is_cancelled(), core::ChatError::Cancelled);
         let subscription_id = crate::studio::ids::new_id("state");
         let slot = self.thread_observations.observation_slot(thread_id);
         let (position, mut slot_changed) = slot.capture();
@@ -94,9 +104,9 @@ impl StudioRuntime {
         let mut runtime_floor = (0, 0);
         let mut activity = None;
         let mut activity_floor = 0;
-        let mut cold_terminal = None;
+        let cold_terminal = None;
         let mut annotate_route = false;
-        let (effect_cut, active_turn, interactions, business_refs) = if let Some((
+        let (effect_cut, active_turn, _interactions, business_refs) = if let Some((
             state_rx,
             storage_rx,
             terminal_rx,
@@ -135,6 +145,7 @@ impl StudioRuntime {
                 #[cfg(test)]
                 feed.notify_first_open_wait();
                 tokio::select! { biased;
+                    _ = cancellation.cancelled() => return Err(core::ChatError::Cancelled.into()),
                     _ = self.shutdown_latch.committed() => return Err(resync()),
                     _ = slot_changed.changed() => return Err(resync()),
                     _ = feed.delivery_closed() => return Err(resync()),
@@ -149,7 +160,7 @@ impl StudioRuntime {
                     && !feed.is_delivery_closed(),
                 resync()
             );
-            let effect_cut = source.current.projection().source_effect_seq;
+            let effect_cut = source.current.revision();
             let active_turn = source.current.active_turn().cloned();
             let interactions = source.current.interactions().to_vec();
             let business_refs = source.current.business_refs();
@@ -171,32 +182,31 @@ impl StudioRuntime {
             (effect_cut, active_turn, interactions, business_refs)
         } else {
             annotate_route = true;
-            let history = self.store.history(thread_id).await?;
-            history.prepare_conversation_read().await?;
-            let facet = history.cold_state_facet().await?;
+            let saved = self
+                .store
+                .state_for(&thread.workspace_id, thread_id)?
+                .load_current()
+                .await?;
             ensure!(slot.is_current(position.epoch), resync());
-            match facet {
-                Some(facet) => {
-                    let effect_cut = facet.current.projection().source_effect_seq;
-                    let active_turn = facet.current.active_turn().cloned();
-                    let interactions = facet.current.interactions().to_vec();
-                    let business_refs = facet.current.business_refs();
-                    model_route = facet.model_route.map(|route| route.snapshot(false));
-                    if let Some(saved) = facet.saved_state.as_ref() {
-                        // Core resource shutdown is not permanent product Thread closure.
-                        // Keep the directory status captured above, alongside this cold slice.
-                        runtime = Some(
-                            crate::studio::thread_projection::project_cold_runtime(
-                                thread_id,
-                                saved,
-                                thread.updated_at,
-                                &saved.usage_summary,
-                            )
-                            .map_err(anyhow::Error::from)?,
-                        );
-                    }
-                    cold_terminal = facet.terminal_turn;
-                    (effect_cut, active_turn, interactions, business_refs)
+            match saved {
+                Some(saved) => {
+                    let snapshot = saved.state.to_paused_snapshot();
+                    let current =
+                        crate::studio::thread_projection::CurrentState::from_saved(&saved)?;
+                    model_route = crate::studio::model_route::saved(&snapshot)?
+                        .map(|route| route.snapshot(false));
+                    runtime = Some(crate::studio::thread_projection::project_cold_runtime(
+                        thread_id,
+                        &snapshot,
+                        thread.updated_at,
+                        &snapshot.usage_summary,
+                    )?);
+                    (
+                        saved.snapshot_revision,
+                        current.active_turn().cloned(),
+                        current.interactions().to_vec(),
+                        current.business_refs(),
+                    )
                 }
                 None => (0, None, Vec::new(), ThreadBusinessRefs::empty()),
             }
@@ -226,7 +236,7 @@ impl StudioRuntime {
             runtime: runtime.clone(),
             model_route: model_route.clone(),
             active_turn: active_turn.clone(),
-            interactions,
+            interactions: Vec::new(),
             business_refs: business_refs.clone(),
             activity: activity.clone(),
             storage: storage_state.clone(),
@@ -255,7 +265,7 @@ impl StudioRuntime {
             storage_state,
             active_turn: active_turn.as_ref().map(|turn| turn.id.clone()),
             delivered_terminal: None,
-            cancel: CancellationToken::new(),
+            cancel: cancellation,
             runtime_owner: self.clone(),
             ended: false,
         };

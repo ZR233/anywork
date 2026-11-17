@@ -35,6 +35,8 @@ mod command_receipts;
 mod conversation_feed;
 pub(in crate::studio) mod conversation_reader;
 mod conversation_state_feed;
+mod current_reader;
+pub use current_reader::{CurrentBodyWatch, CurrentReader, CurrentWatch};
 mod delegation_models;
 mod directory_observation;
 mod history;

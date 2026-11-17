@@ -90,6 +90,8 @@ pub enum StudioErrorReason {
     ConversationResyncRequired,
     /// 当前内容或集合的原版本已被替换。
     StaleContent,
+    /// The current owner, body generation or collection revision has retired.
+    StaleCurrentReference,
     /// 原读取作用域已关闭或其来源资格失效。
     StaleReadScope,
     /// The cursor belongs to another reader or a response already confirmed.
@@ -119,6 +121,7 @@ impl StudioErrorReason {
             Self::InvalidDemand => "invalidDemand",
             Self::ConversationResyncRequired => "conversationResyncRequired",
             Self::StaleContent => "staleContent",
+            Self::StaleCurrentReference => "staleCurrentReference",
             Self::StaleReadScope => "staleReadScope",
             Self::StaleViewCursor => "staleViewCursor",
             Self::ConcurrentNext => "concurrentNext",

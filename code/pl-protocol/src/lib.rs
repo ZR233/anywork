@@ -6,6 +6,7 @@ mod agent_profile;
 pub mod agent_session;
 mod billing;
 pub mod conversation;
+pub mod current;
 mod delegation;
 mod error;
 mod event;
@@ -71,6 +72,7 @@ pub use billing::{
     ModelPricingSnapshot,
 };
 pub use conversation::*;
+pub use current::*;
 pub mod presentation;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,

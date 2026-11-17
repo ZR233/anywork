@@ -283,7 +283,7 @@ pub enum CurrentError {
 impl ThreadCurrentState {
     /// Moves no live capability across owners. Source execution and lifecycle are retained by the
     /// caller as observations; the new physical owner starts open, without an active execution.
-    pub(crate) fn to_paused_snapshot(&self) -> ThreadSnapshot {
+    pub fn to_paused_snapshot(&self) -> ThreadSnapshot {
         ThreadSnapshot {
             lifecycle: ThreadLifecycle::Open,
             continuation: self.continuation.clone(),

@@ -263,7 +263,7 @@ impl ThreadLiveFeed {
         current: Arc<crate::studio::thread_projection::CurrentState>,
     ) -> Result<()> {
         let references = current.business_refs();
-        let sequence = current.projection().source_effect_seq;
+        let sequence = current.revision();
         // Install the resource owner before its reference can enter State.
         self.publication().publish(session, current)?;
         self.publish_business_refs(sequence, references);
@@ -309,6 +309,9 @@ impl ThreadLiveFeed {
 
     pub(super) fn conversation(&self) -> ConversationRegistration {
         self.publication().capture(self.owner_progress.clone())
+    }
+    pub(super) fn current_revision(&self) -> u64 {
+        self.publication().metadata_revision()
     }
     pub(super) fn current_conversation(&self) -> Option<Arc<ConversationSource>> {
         self.publication().current()
@@ -378,6 +381,7 @@ impl ThreadLiveFeed {
 
     /// Publishes the owner's newly derived typed storage state.
     fn publish_storage(&self, storage: Option<pl_protocol::ThreadStorageState>) {
+        self.publication().metadata_changed();
         self.storage.send_replace(storage);
     }
 
@@ -389,6 +393,7 @@ impl ThreadLiveFeed {
         // Demand is advisory, not the registration barrier. Facts and retained watches are updated
         // independently; no outward envelope (or its dedicated clone) is built without a receiver.
         let event = event();
+        self.publication().metadata_changed();
         if let ThreadLiveEvent::Activity {
             observation_revision,
             activity,

@@ -5,13 +5,10 @@ use super::super::conversation;
 use super::legacy_current::{
     CurrentContentWrite, CurrentEntryChange, CurrentEntryWrite, LegacyCurrent as PreparedCurrent,
 };
-use super::legacy_timeline_types::CurrentProjection;
+use super::legacy_timeline_types::{CurrentCollectionRef, CurrentPlanHead, CurrentProjection};
 use super::*;
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-use pl_protocol::{
-    ContentOwner, ContentRef, ContentTarget, CurrentCollectionRef, CurrentPlanHead,
-    CurrentTurnHead, ThreadStatus,
-};
+use pl_protocol::{ContentOwner, ContentRef, ContentTarget, CurrentTurnHead, ThreadStatus};
 use std::sync::Arc;
 
 pub(super) struct DemandConversation {

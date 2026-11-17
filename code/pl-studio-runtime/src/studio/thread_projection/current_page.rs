@@ -49,7 +49,7 @@ pub(in crate::studio) fn current_page(
         let mut candidate = CurrentCollectionEntry {
             id: entry.entry_id.clone(),
             position: entry.position,
-            payload: PayloadData::Inline { bytes: Vec::new() },
+            payload: CurrentPayloadData::Inline { bytes: Vec::new() },
         };
         let overhead = serde_json::to_vec(&candidate)?
             .len()
@@ -57,21 +57,17 @@ pub(in crate::studio) fn current_page(
         let inline = overhead.saturating_add(entry.payload.len().saturating_mul(4));
         if fixed.saturating_add(selected_bytes).saturating_add(inline) <= demand.max_bytes as usize
         {
-            candidate.payload = PayloadData::Inline {
+            candidate.payload = CurrentPayloadData::Inline {
                 bytes: entry.payload.to_vec(),
             };
         } else {
-            candidate.payload = PayloadData::Deferred {
-                reference: ContentRef {
-                    database_id: reference.database_id.clone(),
-                    target: ContentTarget::Body {
-                        owner: ContentOwner::Current {
-                            domain: format!("collection:{}", reference.collection),
-                            id: entry.entry_id.clone(),
-                            revision: reference.revision,
-                        },
-                        key: "entry".into(),
-                    },
+            candidate.payload = CurrentPayloadData::Deferred {
+                reference: CurrentContentRef {
+                    owner_id: reference.owner_id.clone(),
+                    domain: format!("collection:{}", reference.collection),
+                    entity_id: entry.entry_id.clone(),
+                    content_key: "entry".into(),
+                    generation: reference.revision.to_string(),
                 },
                 byte_length: entry.payload.len() as u64,
             };

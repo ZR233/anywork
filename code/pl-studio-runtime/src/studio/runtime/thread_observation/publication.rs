@@ -27,8 +27,20 @@ pub(in crate::studio) struct ConversationPublication {
     latest: Mutex<Option<Arc<ConversationSource>>>,
     progress: watch::Sender<Option<Arc<ConversationSource>>>,
     content_changed: watch::Sender<u64>,
+    metadata_revision: std::sync::atomic::AtomicU64,
 }
 impl ConversationPublication {
+    pub(in crate::studio) fn metadata_revision(&self) -> u64 {
+        self.metadata_revision
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(in crate::studio) fn metadata_changed(&self) {
+        let _ = self.metadata_revision.try_update(
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+            |revision| revision.checked_add(1),
+        );
+    }
     pub(in crate::studio) fn subscribe_progress(
         &self,
     ) -> watch::Receiver<Option<Arc<ConversationSource>>> {
@@ -40,6 +52,7 @@ impl ConversationPublication {
             latest: Mutex::new(None),
             progress: watch::channel(None).0,
             content_changed: watch::channel(0).0,
+            metadata_revision: Default::default(),
         }
     }
     pub(in crate::studio) fn bind_presentation(
@@ -180,10 +193,19 @@ impl ConversationPublication {
             .observe_execution(source.current.projection().execution_present)
             .expect("pre-admission display plan reserved publication and retirement revisions");
         let serial = source.serial;
-        *self
-            .latest
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source.clone());
+        {
+            let mut latest = self
+                .latest
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if latest.as_ref().is_none_or(|old| {
+                old.current.owner_id() != source.current.owner_id()
+                    || old.current.projection() != source.current.projection()
+            }) {
+                self.metadata_changed();
+            }
+            *latest = Some(source.clone());
+        }
         self.progress.send_replace(Some(source));
         self.content_changed.send_replace(serial);
     }

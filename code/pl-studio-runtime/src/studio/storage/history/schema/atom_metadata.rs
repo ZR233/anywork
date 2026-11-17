@@ -3,6 +3,8 @@
 use super::super::conversation;
 use super::super::execution_sources as sources;
 use super::legacy_timeline_types::CurrentProjection;
+#[cfg(test)]
+use super::legacy_timeline_types::{CurrentCollectionRef, CurrentContentPreview};
 use super::*;
 #[cfg(test)]
 use crate::{ExecutionItem, ExecutionShape};

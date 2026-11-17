@@ -147,11 +147,36 @@ impl TimelineItem {
     }
 }
 
-use pl_protocol::{
-    ChatAtom, ChatSourceState, CurrentActivityHead, CurrentCollectionRef, CurrentContentPreview,
-    CurrentPlanHead, CurrentTurnHead, ThreadStatus,
-};
+use pl_protocol::{ChatAtom, ChatSourceState, CurrentActivityHead, CurrentTurnHead, ThreadStatus};
 /// 小 current 与完成切点一起发布，不包含完整 ThreadSnapshot/上下文或增长集合。
+// These nested codecs must remain frozen too: the live current ports use owner references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentCollectionRef {
+    pub database_id: String,
+    pub collection: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentPlanHead {
+    pub revision: u64,
+    pub phase: pl_protocol::AgentSessionPlanPhase,
+    pub document: Option<pl_protocol::ContentRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CurrentContentPreview {
+    pub id: String,
+    pub role: pl_protocol::CurrentContentRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
+    pub text: String,
+    pub reference: pl_protocol::ContentRef,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CurrentProjection {

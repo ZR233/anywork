@@ -9,10 +9,7 @@ mod completed;
 pub use atom::*;
 pub use completed::*;
 
-use crate::{
-    AgentSessionPlanPhase, ThreadActivityKind, ThreadActivityToolState, ThreadStatus, TurnPhase,
-    studio::{StudioError, StudioErrorCode, StudioErrorReason},
-};
+use crate::studio::{StudioError, StudioErrorCode, StudioErrorReason};
 
 /// 资源准入上限，不是 UI 默认页大小。
 pub const CHAT_READ_MAX_ITEMS: u32 = 4096;
@@ -148,129 +145,6 @@ pub enum PayloadData {
     },
 }
 
-/// 小 current 与完成切点一起发布，不包含完整 ThreadSnapshot/上下文或增长集合。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentProjection {
-    pub source_effect_seq: u64,
-    pub logical_status: ThreadStatus,
-    /// 是否存在当前执行来源；持久化 running 不能单独证明这一事实。
-    pub execution_present: bool,
-    pub active: Option<CurrentActivityHead>,
-    pub active_turn: Option<CurrentTurnHead>,
-    /// Actual execution source states. These are not presentation boundaries.
-    pub sources: Vec<ChatSourceState>,
-    /// Actual activity atoms; not completed history or a work-group index.
-    pub atoms: Vec<ChatAtom>,
-    pub plan: Option<CurrentPlanHead>,
-    pub interactions: Option<CurrentCollectionRef>,
-    pub previews: Vec<CurrentContentPreview>,
-    pub collections: Vec<CurrentCollectionRef>,
-}
-
-/// 与 ThreadActivity 的完整活动工具集合分离；增长成员只由 collections 按需交付。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentActivityHead {
-    pub id: String,
-    pub kind: ThreadActivityKind,
-    pub summary: String,
-    pub thinking_summary: Option<String>,
-    pub thinking_seconds: Option<u64>,
-    pub tool_count: u32,
-    pub background_tool_count: u32,
-    pub latest_tool: Option<CurrentToolHead>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentToolHead {
-    pub call_id: String,
-    pub name: String,
-    pub state: ThreadActivityToolState,
-}
-
-impl CurrentProjection {
-    pub fn empty(source_effect_seq: u64, logical_status: ThreadStatus) -> Self {
-        Self {
-            source_effect_seq,
-            logical_status,
-            execution_present: false,
-            active: None,
-            active_turn: None,
-            sources: Vec::new(),
-            atoms: Vec::new(),
-            plan: None,
-            interactions: None,
-            previews: Vec::new(),
-            collections: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentTurnHead {
-    pub id: String,
-    pub phase: TurnPhase,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentPlanHead {
-    pub revision: u64,
-    pub phase: AgentSessionPlanPhase,
-    pub document: Option<ContentRef>,
-}
-
-/// Read-only resource heads from the same accepted Plan/interaction state.
-/// These are not a second mutable business model or a persistent history row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThreadBusinessRefs {
-    pub plan: Option<CurrentPlanHead>,
-    pub interactions: Option<CurrentCollectionRef>,
-}
-
-impl ThreadBusinessRefs {
-    /// Only for a genuinely new state with no established business resources.
-    pub fn empty() -> Self {
-        Self {
-            plan: None,
-            interactions: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentCollectionRef {
-    pub database_id: String,
-    pub collection: String,
-    pub revision: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum CurrentContentRole {
-    Reasoning,
-    Response,
-    ToolArguments,
-    ToolOutput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentContentPreview {
-    pub id: String,
-    pub role: CurrentContentRole,
-    /// Original canonical text channel; display role alone never grants outbound eligibility.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_channel: Option<crate::ThreadTextChannel>,
-    pub text: String,
-    pub reference: ContentRef,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContentRange {
@@ -301,21 +175,5 @@ pub struct ContentManifestEntry {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContentManifestPage {
     pub entries: Vec<ContentManifestEntry>,
-    pub continuation: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentCollectionEntry {
-    pub id: String,
-    pub position: i64,
-    pub payload: PayloadData,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CurrentCollectionPage {
-    pub revision: u64,
-    pub entries: Vec<CurrentCollectionEntry>,
     pub continuation: Option<String>,
 }

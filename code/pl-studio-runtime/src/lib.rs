@@ -96,10 +96,11 @@ pub use protocol::{
 };
 pub use studio::{
     AccountUsageStateData, AccountUsageStateSnapshot, AttachmentRecord, ContentWatch,
-    ConversationEvent, ConversationFeed, ConversationReader, ConversationStateFeed, DisplayMembers,
-    PersistenceState, PersistenceStateSnapshot, ProductEventBus, ProductTopicReceiver,
-    ProductTopicRecvError, ProductTopicTryRecvError, SkillSearchResult, SkillsStateSnapshot,
-    SshPasswordUpdate, SshServerRuntimeEntry, StudioDatabaseError, StudioHostKind, StudioInstance,
+    ConversationEvent, ConversationFeed, ConversationReader, ConversationStateFeed,
+    CurrentBodyWatch, CurrentReader, CurrentWatch, DisplayMembers, PersistenceState,
+    PersistenceStateSnapshot, ProductEventBus, ProductTopicReceiver, ProductTopicRecvError,
+    ProductTopicTryRecvError, SkillSearchResult, SkillsStateSnapshot, SshPasswordUpdate,
+    SshServerRuntimeEntry, StudioDatabaseError, StudioHostKind, StudioInstance,
     StudioInstanceLease, StudioProductTopicSubscription, StudioReadyUpdate, StudioRecoveryImpact,
     StudioRecoveryIssue, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
     StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioRuntime,
