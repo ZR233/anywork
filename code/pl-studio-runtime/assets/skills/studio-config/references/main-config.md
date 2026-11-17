@@ -107,7 +107,12 @@ LSP uses the actual execution workspace and shared language-service lease. The
 external agent's own local tools are not a sandboxed replacement for host tools.
 ACP `anywork_skill_manage` takes the complete original operation under `input`,
 for example `{"input":{"action":"delete","name":"example"}}`. Its schema is
-generated from the original argument type; Native `skill_manage` remains unchanged.
+projected from the complete author schema by the common JSON-value adapter;
+Native `skill_manage` remains unchanged. Text/Grammar tools use the same strict
+`input` carrier with a string, including `anywork_apply_patch`; inspect the current
+catalog rather than sending the old `patch` field. Object-shaped JSON tools keep
+their declared arguments. The common adapter preserves schema reference scope;
+generated `anywork.invalid` schema IDs are local identifiers, not network services.
 
 ## Accounts and model routes
 

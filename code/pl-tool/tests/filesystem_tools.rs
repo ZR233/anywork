@@ -18,7 +18,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-fn context() -> CallContext {
+fn context() -> pl_tool::invocation::WorkspaceInvocation {
     CallContext {
         thread_id: "files".into(),
         turn_id: "turn".into(),
@@ -33,10 +33,15 @@ fn context() -> CallContext {
         model_projection: None,
         tasks: None,
     }
+    .into()
 }
 async fn call<T>(tool: T, input: Value) -> Result<ToolOutput, ToolError>
 where
-    T: TypedTool<Context = CallContext, Output = ToolOutput, Error = ToolError>,
+    T: TypedTool<
+            Context = pl_tool::invocation::WorkspaceInvocation,
+            Output = ToolOutput,
+            Error = ToolError,
+        >,
 {
     prepare_native_tool::<T>()
         .unwrap()

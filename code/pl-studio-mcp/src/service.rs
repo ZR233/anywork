@@ -62,6 +62,7 @@ impl<B: HostTools> ServerHandler for HostMcpService<B> {
                 tool.name = entry.tool_id.into();
                 tool.description = Some(entry.description.into());
                 tool.input_schema = Arc::new(entry.input_schema);
+                tool.output_schema = entry.output_schema.map(Arc::new);
                 tool
             })
             .collect();

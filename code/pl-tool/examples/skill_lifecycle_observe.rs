@@ -16,8 +16,9 @@ use pl_core::{
         PreparedModelCall,
     },
     thread::{ModelStepLimit, ThreadError, ThreadHandle, ToolOutcome, TurnInput, TurnOutcome},
-    tool::opaque::{CallContext, Registration},
+    tool::opaque::Registration,
 };
+use pl_tool::invocation::WorkspaceInvocation;
 use pl_tool::skill::{
     FileSystemSkillProvider, FrozenSkillCatalog, SkillCandidate, SkillDefinition,
     SkillDirectorySource, SkillProvider, SkillProviderId, SkillProviderObservation,
@@ -138,7 +139,15 @@ fn registration(catalog: &FrozenSkillCatalog) -> anyhow::Result<Registration> {
         &definition,
         pl_tool::binding::ToolCallPolicy::DirectOnly,
     )?;
-    Ok(ThreadSkillTool::new(catalog.discovery_sources(), kind, definition).registration(prepared))
+    let sources = catalog.discovery_sources();
+    let authorization = sources.authorization();
+    let tool =
+        pl_tool::binding::NativeWorkspaceTool::new(ThreadSkillTool::new(sources, kind, definition))
+            .with_skill_view_effect();
+    Ok(prepared
+        .attach(pl_agent_tool::ToolHandle::new(tool))
+        .with_authorization(authorization)
+        .with_extension_updates())
 }
 
 async fn observe_authorization(root: &Path) -> anyhow::Result<()> {
@@ -516,20 +525,13 @@ async fn observe_cancellation(root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn call_context(cancellation: CancellationToken) -> CallContext {
-    CallContext {
+fn call_context(cancellation: CancellationToken) -> WorkspaceInvocation {
+    WorkspaceInvocation {
         grant: Default::default(),
-        context: Default::default(),
-        history_fence: 0,
-        model_projection: None,
         tasks: None,
-        thread_id: "skill-lifecycle".into(),
-        turn_id: "same-turn".into(),
+        owner_id: "skill-lifecycle".into(),
         call_id: "cancel-in-flight".into(),
         cancellation,
-        extensions: Default::default(),
-        catalog: Arc::from(Vec::new()),
-        extension_sequence: 0,
     }
 }
 

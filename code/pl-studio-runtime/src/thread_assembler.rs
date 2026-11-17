@@ -9,6 +9,9 @@ pub(crate) mod agent_review;
 mod agent_services;
 pub(crate) mod agent_wait;
 mod agents;
+pub(crate) mod host_agent_tools;
+pub(crate) mod host_task_tools;
+pub(crate) mod host_workspace_tools;
 pub(crate) use agents::AgentHost;
 
 #[cfg(test)]

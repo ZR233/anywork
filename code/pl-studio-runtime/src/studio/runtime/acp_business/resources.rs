@@ -188,18 +188,18 @@ impl AcpResources {
             !self.cancellation.is_cancelled() && current.is_none(),
             "ACP Host MCP preparation was closed"
         );
-        // No await occurs between server creation and transfer to its registered owner.
-        let (service, definition) = HostMcp::start_bound(
-            host,
-            caller,
-            self.cancellation.clone(),
-            is_root,
-            frontend.as_ref().map(AsRef::as_ref),
-            self.workspace_tools.get().cloned(),
-        )
-        .await?;
+        // Keep partial registrations and transport handles in the original owner even
+        // if preparation fails or the waiting future is cancelled.
+        *current = Some(HostMcp::pending(host, caller, self.cancellation.clone()));
+        let service = current.as_mut().expect("attached Host MCP owner");
+        let definition = service
+            .launch(
+                is_root,
+                frontend.as_ref().map(AsRef::as_ref),
+                self.workspace_tools.get().cloned(),
+            )
+            .await?;
         let calls = service.observed_counter();
-        *current = Some(service);
         *self
             .mcp_frontend
             .lock()
@@ -532,7 +532,6 @@ impl AcpResources {
         if let Some(service) = host_mcp.as_mut() {
             match tokio::time::timeout_at(self.cleanup.deadline(), service.close()).await {
                 Ok(Ok(())) => {
-                    *host_mcp = None;
                     self.mcp_injected.store(false, Ordering::Release);
                 }
                 Ok(Err(error)) => {
@@ -618,6 +617,16 @@ impl AcpResources {
                     workspace_complete = false;
                     owned.driver_error = Some("ACP workspace task cleanup is pending".into());
                 }
+            }
+        }
+        if workspace_complete
+            && let Some(service) = host_mcp.as_ref()
+            && service.protocol_closed()
+        {
+            match tokio::time::timeout_at(self.cleanup.deadline(), service.close_tools()).await {
+                Ok(Ok(())) => *host_mcp = None,
+                Ok(Err(error)) => owned.driver_error = Some(error.to_string()),
+                Err(_) => owned.driver_error = Some("ACP Host tool close remains pending".into()),
             }
         }
         let local_complete = owned.join.is_none()

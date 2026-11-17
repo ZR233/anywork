@@ -4,13 +4,9 @@ use super::{
     independent::{FileCapability, granted_backend},
 };
 use crate::{file::WriteFileInput, workspace::ToolWorkspace};
-use pl_agent_tool::typed::TypedTool;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 use std::sync::Arc;
 
@@ -35,23 +31,13 @@ impl<B: WorkspaceFileBackend + 'static> pl_agent_tool::typed::TypedTool for Thre
         FileCapability<B>,
     > as pl_agent_tool::typed::TypedTool>::DESCRIPTION;
     type Args = WriteFileInput;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = pl_core::tool::ToolOutput;
     type Error = pl_core::tool::opaque::ToolError;
 
     async fn execute(
         &self,
         input: Self::Args,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl<B: WorkspaceFileBackend + 'static> ThreadWriteFileTool<B> {
-    pub async fn execute_workspace(
-        &self,
-        input: WriteFileInput,
         context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
         self.workspace

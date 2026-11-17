@@ -66,7 +66,7 @@ pub struct NativeTool<T: TypedTool> {
 
 pub fn prepare_native_tool<T>() -> Result<PreparedNativeTool<T>, DefinitionError>
 where
-    T: TypedTool<Context = CallContext, Output = ToolOutput, Error = ToolError>,
+    T: TypedTool<Output = ToolOutput, Error = ToolError>,
 {
     Ok(PreparedNativeTool {
         inner: typed::prepare_json()?,
@@ -75,7 +75,7 @@ where
 
 impl<T> PreparedNativeTool<T>
 where
-    T: TypedTool<Context = CallContext, Output = ToolOutput, Error = ToolError>,
+    T: TypedTool<Output = ToolOutput, Error = ToolError>,
 {
     pub fn definition(&self) -> &ToolDefinition {
         self.inner.definition()
@@ -90,7 +90,62 @@ where
 
 impl<T> Tool for NativeTool<T>
 where
-    T: TypedTool<Context = CallContext, Output = ToolOutput, Error = ToolError>,
+    T: TypedTool<Output = ToolOutput, Error = ToolError>,
+{
+    type Input = OpaquePayload;
+    type Context = T::Context;
+    type Output = ToolOutput;
+    type Error = ToolError;
+
+    fn definition(&self) -> &ToolDefinition {
+        self.inner.definition()
+    }
+
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        context: T::Context,
+    ) -> Result<ToolOutput, ToolError> {
+        self.inner
+            .execute(input, context)
+            .await
+            .map_err(native_error)
+    }
+
+    async fn close(&self) -> Result<(), ToolError> {
+        self.inner.close().await.map_err(native_error)
+    }
+}
+
+/// Static Native boundary for a real workspace author, before handle erasure.
+/// Native extension mutations remain owned by this boundary, never by ACP.
+pub struct NativeWorkspaceTool<T> {
+    inner: T,
+    skill_view_effect: bool,
+}
+
+impl<T> NativeWorkspaceTool<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            inner,
+            skill_view_effect: false,
+        }
+    }
+
+    pub fn with_skill_view_effect(mut self) -> Self {
+        self.skill_view_effect = true;
+        self
+    }
+}
+
+impl<T> Tool for NativeWorkspaceTool<T>
+where
+    T: Tool<
+            Input = OpaquePayload,
+            Context = crate::invocation::WorkspaceInvocation,
+            Output = ToolOutput,
+            Error = ToolError,
+        >,
 {
     type Input = OpaquePayload;
     type Context = CallContext;
@@ -106,14 +161,16 @@ where
         input: OpaquePayload,
         context: CallContext,
     ) -> Result<ToolOutput, ToolError> {
-        self.inner
-            .execute(input, context)
-            .await
-            .map_err(native_error)
+        let extensions = self.skill_view_effect.then(|| context.extensions.clone());
+        let output = self.inner.execute(input, context.into()).await?;
+        match extensions {
+            Some(extensions) => crate::skill::native_skill_view_effect(output, &extensions),
+            None => Ok(output),
+        }
     }
 
     async fn close(&self) -> Result<(), ToolError> {
-        self.inner.close().await.map_err(native_error)
+        self.inner.close().await
     }
 }
 

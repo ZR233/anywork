@@ -144,7 +144,9 @@ where
         authorization: pl_core::tool::opaque::ToolAuthorization,
     ) -> pl_core::tool::opaque::Registration {
         prepared
-            .attach(pl_agent_tool::ToolHandle::new(self))
+            .attach(pl_agent_tool::ToolHandle::new(
+                crate::binding::NativeWorkspaceTool::new(self),
+            ))
             .with_authorization(authorization)
     }
 }
@@ -156,7 +158,7 @@ where
     P: GitCredentialProvider + 'static,
 {
     type Input = pl_core::context::OpaquePayload;
-    type Context = pl_core::tool::opaque::CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = ToolOutput;
     type Error = ToolError;
 
@@ -174,21 +176,6 @@ where
     }
 
     async fn execute(
-        &self,
-        input: pl_core::context::OpaquePayload,
-        context: pl_core::tool::opaque::CallContext,
-    ) -> Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl<B, P> GitTool<B, P>
-where
-    B: ExecutionBackend + 'static,
-    B::Error: Into<pl_tool_git::BoxError>,
-    P: GitCredentialProvider + 'static,
-{
-    pub async fn execute_workspace(
         &self,
         input: pl_core::context::OpaquePayload,
         context: crate::invocation::WorkspaceInvocation,

@@ -10,6 +10,9 @@ pub struct HostTool {
     pub tool_id: String,
     pub description: String,
     pub input_schema: Map<String, Value>,
+    /// Published only when the backend actually returns the author's final result contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Map<String, Value>>,
 }
 
 pub type HostCatalog = Vec<HostTool>;

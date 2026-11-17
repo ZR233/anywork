@@ -4,10 +4,7 @@ use crate::{tool_error, workspace::ToolWorkspace};
 use pl_agent_tool::typed::{TypedTool, decode_json};
 use pl_core::{
     context::{ContextContent, OpaquePayload},
-    tool::{
-        ToolOutput,
-        opaque::{CallContext, ToolError},
-    },
+    tool::{ToolOutput, opaque::ToolError},
 };
 use pl_protocol::{PureError, Result};
 use pl_tool_filesystem::{MutationBackend, MutationError, PathCollision};
@@ -73,7 +70,7 @@ impl WorkspaceMutationTool {
 
 impl pl_agent_tool::Tool for WorkspaceMutationTool {
     type Input = OpaquePayload;
-    type Context = CallContext;
+    type Context = crate::invocation::WorkspaceInvocation;
     type Output = ToolOutput;
     type Error = ToolError;
     fn definition(&self) -> &pl_agent_tool::ToolDefinition {
@@ -81,16 +78,6 @@ impl pl_agent_tool::Tool for WorkspaceMutationTool {
     }
 
     async fn execute(
-        &self,
-        input: OpaquePayload,
-        context: CallContext,
-    ) -> std::result::Result<ToolOutput, ToolError> {
-        self.execute_workspace(input, context.into()).await
-    }
-}
-
-impl WorkspaceMutationTool {
-    pub async fn execute_workspace(
         &self,
         input: OpaquePayload,
         context: crate::invocation::WorkspaceInvocation,
@@ -282,8 +269,8 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
     };
 
-    fn context() -> CallContext {
-        CallContext {
+    fn context() -> crate::invocation::WorkspaceInvocation {
+        pl_core::tool::opaque::CallContext {
             thread_id: "remote-files".into(),
             turn_id: "turn".into(),
             call_id: "call".into(),
@@ -297,6 +284,7 @@ mod tests {
             model_projection: None,
             tasks: None,
         }
+        .into()
     }
     fn input(value: serde_json::Value) -> OpaquePayload {
         OpaquePayload::new("application/json", 1, value.to_string()).unwrap()

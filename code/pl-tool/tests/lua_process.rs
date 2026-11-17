@@ -330,22 +330,28 @@ async fn slow_command_status_queries_and_top_level_wait_share_the_real_task_life
     .unwrap();
     let definition = pl_tool::exec::exec_definition();
     let backend = pl_tool::command::ExecutorCommandBackend::local(root.path()).unwrap();
-    let command = ThreadExecTool::new(
-        Arc::new(backend),
+    let processes = Arc::new(pl_tool::command::CommandProcessManager::new(Arc::new(
+        backend,
+    )));
+    let command = ThreadExecTool::from_process_manager(
+        processes.clone(),
         Arc::new(Archive(root.path().join("archive"))),
         CommandAccess::WorkspaceOnly,
         definition.clone(),
     )
-    .registrations(
+    .registration(
         prepare_registration("exec_command", &definition, ToolCallPolicy::DirectOnly).unwrap(),
-        prepare_registration(
-            "write_stdin",
-            &pl_tool::exec::write_stdin_definition(),
-            ToolCallPolicy::DirectOnly,
-        )
-        .unwrap(),
-        pl_tool::exec::write_stdin_definition(),
     );
+    let stdin_definition = pl_tool::exec::write_stdin_definition();
+    let stdin = prepare_registration("write_stdin", &stdin_definition, ToolCallPolicy::DirectOnly)
+        .unwrap()
+        .attach(ToolHandle::new(pl_tool::binding::NativeWorkspaceTool::new(
+            pl_tool::exec::ThreadWriteStdinTool::new(processes, stdin_definition),
+        )))
+        .with_presentation_contract(pl_core::model::ToolPresentationContract::new(
+            "builtin.write_stdin@1",
+        ));
+    let command = vec![command, stdin];
     let lua = pl_tool::lua::LuaTool::new("");
     let lua = prepare_registration("exec", lua.definition(), ToolCallPolicy::DirectOnly)
         .unwrap()
