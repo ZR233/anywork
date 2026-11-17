@@ -323,12 +323,48 @@ async fn run<H: ToolHost>(
             .text
             .clone(),
         model_output_bytes: 8192,
-        error: result.err().map(|error| {
-            if matches!(&error, mlua::Error::SyntaxError { .. }) {
-                format!("{error}\nLua parsing failed before any tool started. Complete exec input (JSON; keep shell text in args.command):\n{COMMAND_EXAMPLE}")
-            } else { error.to_string() }
-        }),
+        error: result.err().map(|error| diagnostic(&code, error)),
     })
+}
+
+fn diagnostic(code: &str, error: mlua::Error) -> String {
+    let mlua::Error::SyntaxError { message, .. } = &error else {
+        return error.to_string();
+    };
+    let mut text = format!(
+        "{error}\nLua parsing failed before any tool started. No child calls or side effects ran.\nRepair the Lua syntax locally, preserving the original args and intended tool sequence, then resubmit explicitly."
+    );
+    // Read only the location emitted by our named Lua chunk, not Lua source tokens.
+    // MLua exposes the native parser message, without a separate line/column field.
+    if let Some((line, detail)) = message
+        .strip_prefix("[string \"exec\"]:")
+        .and_then(|message| message.split_once(':'))
+        .and_then(|(line, detail)| line.parse::<usize>().ok().map(|line| (line, detail)))
+        .filter(|(line, _)| *line > 0)
+    {
+        if detail.trim() == "function arguments expected near '.'"
+            || detail.trim() == "'}' expected near ':'"
+        {
+            // This is conditional guidance, not a claim that every colon is a bad field.
+            text.push_str(
+                "\nIf this is a result table, Lua fields use key=value: write stderr=r.stderr.content, not stderr:r.stderr.content. Keep valid obj:method(...) calls and colons inside strings unchanged."
+            );
+        }
+        text.push_str("\nSource excerpt (quoted data, numbered; long lines keep head/tail):");
+        let start = line.saturating_sub(1).max(1);
+        for (index, source) in code.split('\n').enumerate().skip(start - 1).take(3) {
+            let excerpt =
+                pl_output::OutputExcerpt::from_parts(source.as_bytes().to_vec(), Vec::new(), 0)
+                    .project(256);
+            let quoted =
+                serde_json::to_string(&excerpt.content).expect("source text encodes as JSON");
+            text.push_str(&format!("\n{} | {quoted}", index + 1));
+        }
+    }
+    text.push_str(&format!(
+        "\nFor a single shell command, prefer code + args without a hand-built receipt table:\n{COMMAND_EXAMPLE}"
+    ));
+    text
 }
 
 #[derive(Default)]

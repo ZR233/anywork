@@ -251,3 +251,134 @@ async fn json_arguments_reach_tools_without_lua_string_interpolation() {
     assert_eq!(next.error, None);
     assert_eq!(next.output, "fresh");
 }
+
+#[tokio::test]
+async fn receipt_syntax_error_locates_the_source_and_correction_runs_original_calls_once() {
+    // Reduced from the end-of-program result tables in issue #487's real trace.
+    let cases = [
+        "local r = tools.read(args).value; print({exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content})",
+        "local r = tools.read(args).value\nreturn {payload={exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content}}",
+        "tools.write(args)\nlocal r = tools.read(args).value\nprint({exitCode=r.exitCode, stdout=r.stdout.content, stderr:r.stderr.content})",
+    ];
+    for code in cases {
+        let host = Host::default();
+        let request: ExecInput = serde_json::from_value(json!({
+            "code": code, "args": {"exitCode":0,"stdout":{"content":"unchanged:雪"},"stderr":{"content":""}},
+        })).unwrap();
+        let result = execute(request.clone(), host.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        let error = result
+            .error
+            .expect("the malformed table must fail at parsing");
+        assert!(
+            error.contains("function arguments expected near '.'"),
+            "{error}"
+        );
+        assert!(error.contains("before any tool started"), "{error}");
+        assert!(
+            error.contains("stderr:r.stderr.content"),
+            "the reported source is missing: {error}"
+        );
+        assert!(
+            error.contains("key=value") && error.contains("stderr=r.stderr.content"),
+            "{error}"
+        );
+        assert!(result.output.is_empty());
+        assert_eq!(host.calls.load(Ordering::SeqCst), 0);
+
+        let fixed = ExecInput {
+            code: code.replace("stderr:r.stderr.content", "stderr=r.stderr.content"),
+            ..request
+        };
+        let result = execute(fixed, host.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.error, None);
+        let expected = json!({"exitCode":0,"stdout":"unchanged:雪","stderr":""});
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.output).unwrap(),
+            if code.contains("payload=") {
+                json!({"payload":expected})
+            } else {
+                expected
+            }
+        );
+        assert_eq!(
+            host.calls.load(Ordering::SeqCst),
+            if code.starts_with("tools.write") {
+                2
+            } else {
+                1
+            }
+        );
+    }
+}
+
+#[tokio::test]
+async fn source_context_is_bounded_and_does_not_relabel_methods_strings_or_runtime_failure() {
+    let host = Host::default();
+    let args = json!({"command":"printf 'https://example.invalid/a:b'", "patch":"+stderr:r.stderr.content"});
+    let request: ExecInput = serde_json::from_value(json!({
+        "code": "local obj={value=args, method=function(self) return self.value end}; return tools.write(obj:method()).value",
+        "args":args,
+    })).unwrap();
+    let result = execute(request, host.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(result.error, None);
+    assert_eq!(serde_json::from_str::<Value>(&result.output).unwrap(), args);
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+
+    let partial = execute(
+        input("tools.write('once'); print('retained'); tools.read('fail')"),
+        host.clone(),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial.output, "retained\n");
+    let error = partial.error.unwrap();
+    assert!(error.contains("deliberate tool failure"), "{error}");
+    assert!(
+        !error.contains("before any tool started") && !error.contains("Source excerpt"),
+        "{error}"
+    );
+    assert_eq!(host.calls.load(Ordering::SeqCst), 3);
+
+    // A real method call followed by another syntax error is not a field-colon diagnosis.
+    let valid_method = "local obj={method=function() return 1 end}; obj:method(); return {";
+    let error = execute(input(valid_method), host.clone(), CancellationToken::new())
+        .await
+        .unwrap()
+        .error
+        .unwrap();
+    assert!(error.contains("before any tool started"), "{error}");
+    assert!(!error.contains("If this is a result table"), "{error}");
+    assert_eq!(host.calls.load(Ordering::SeqCst), 3);
+
+    let code = format!(
+        "-- UNRELATED_SOURCE\n-- {}\nlocal r = tools.read(1)\nprint({{padding='{}',stderr:r.name}})\n-- AFTER_ERROR",
+        "x".repeat(10000),
+        "雪".repeat(10000)
+    );
+    let result = execute(input(&code), host.clone(), CancellationToken::new())
+        .await
+        .unwrap();
+    let error = result.error.unwrap();
+    assert!(error.contains("[string \"exec\"]:4:"), "{error}");
+    assert!(
+        error.contains("4 |") && error.contains("stderr:r.name"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("UNRELATED_SOURCE"),
+        "must not dump unrelated code"
+    );
+    assert!(
+        error.len() < 6000,
+        "source excerpt must be bounded: {} bytes",
+        error.len()
+    );
+    assert_eq!(host.calls.load(Ordering::SeqCst), 3);
+}

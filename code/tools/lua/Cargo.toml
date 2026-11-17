@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 pl-agent-tool = { workspace = true, features = ["typed", "macros"] }
+pl-output = { workspace = true }
 mlua = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
