@@ -90,26 +90,28 @@ class AcpConfigurationBar extends StatelessWidget {
                           message: interactive
                               ? _controlTooltip(context, control)
                               : lockedMessage,
-                          child: Row(
-                            key: _controlKey(control),
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  control.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: context.text.labelMedium,
+                          child: MergeSemantics(
+                            child: Row(
+                              key: _controlKey(control),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(
+                                  child: Text(
+                                    control.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: context.text.labelMedium,
+                                  ),
                                 ),
-                              ),
-                              Switch(
-                                value: control.currentValue,
-                                onChanged: interactive
-                                    ? (value) =>
-                                          onBooleanChanged(control.id, value)
-                                    : null,
-                              ),
-                            ],
+                                Switch(
+                                  value: control.currentValue,
+                                  onChanged: interactive
+                                      ? (value) =>
+                                            onBooleanChanged(control.id, value)
+                                      : null,
+                                ),
+                              ],
+                            ),
                           ),
                         )
                       : _SelectConfigAnchor(
@@ -169,8 +171,7 @@ class _SelectConfigAnchor extends StatelessWidget {
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
         child: StudioMenuLabel(
-          label:
-              '${_controlName(context, control)} · ${_currentLabel(control)}',
+          label: _currentLabel(control),
           enabled: interactive,
           maxWidth: 160,
         ),
@@ -237,6 +238,16 @@ class _ChoiceMenuState extends State<_ChoiceMenu> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+              child: Semantics(
+                header: true,
+                child: Text(
+                  _controlName(context, control),
+                  style: context.text.titleSmall,
+                ),
+              ),
+            ),
             if (count > 8)
               Padding(
                 padding: const EdgeInsets.all(8),

@@ -973,7 +973,7 @@
       if (state.stage === 'start') {
         if (locks.acpIssue) wsStatus = ['SSH 阻断 ACP 启动', 'warn'];
         else if (locks.prepRunning) wsStatus = ['准备期已锁', 'locked'];
-        else if (state.backendKind === 'acp') wsStatus = ['ACP · 无内部子分发', 'open'];
+        else if (state.backendKind === 'acp') wsStatus = ['外层环境栏可配', 'open'];
         else if (state.targetType === 'standalone') wsStatus = ['无项目 · 可切换项目', 'open'];
         else wsStatus = ['外层环境栏可配', 'open'];
       } else {
@@ -1033,10 +1033,20 @@
       const matrixRows = [
         ['后端引擎', locks.isAcp ? `ACP · ${schema.account?.name || 'Agent'}` : '糊来帮内置', locks.isAcp ? 'open' : 'frozen'],
         ['项目 / 工作区 / 分发', ...wsStatus],
-        ['工作模式', ...modeStatus],
-        ['主智能体模型', ...modelStatus],
-        ['思考强度', ...effortStatus],
-        ...(extraStatus ? [['服务端配置', ...extraStatus]] : []),
+        ...(locks.isAcp ? [
+          ['ACP 服务', locks.isStart ? '统一选择器可换' : '创建时冻结', locks.isStart ? 'open' : 'frozen'],
+          ...(schema.deferred ? [['配置', '正在准备 ACP 草稿', 'locked']] : (schema.dynamicOptions || []).map(option => [
+            option.name,
+            locks.configPending ? '等待 ACP 确认中…' : locks.extraEditable ? '可调整' : '已锁定',
+            locks.configPending ? 'warn' : locks.extraEditable ? 'open' : 'locked'
+          ])),
+          ...(schema.modeSlot ? [[schema.modeSlot.label || 'Mode', ...modeStatus]] : [])
+        ] : [
+          ['工作模式', ...modeStatus],
+          ['主智能体模型', ...modelStatus],
+          ['思考强度', ...effortStatus],
+          ...(extraStatus ? [['服务端配置', ...extraStatus]] : [])
+        ]),
         ['输入与主操作', ...composerStatus]
       ];
 

@@ -1062,9 +1062,9 @@
               anchor.innerHTML = `<button type="button" class="cv-quiet-trigger"
                 data-dynamic-trigger aria-haspopup="menu" aria-expanded="false"
                 ${!locks.extraEditable ? 'disabled' : ''} title="${escape(option.description || option.name)}">
-                <span>${escape(option.name)} · ${escape(selected?.name || option.currentValue)}</span>
+                <span>${escape(selected?.name || option.currentValue)}</span>
                 <span class="cv-caret">${icon('chevron-down')}</span></button>
-                <div class="cv-menu align-right" role="menu" hidden>${choices.map(value =>
+                <div class="cv-menu align-right" role="menu" hidden><div class="cv-group-title">${escape(option.name)}</div>${choices.map(value =>
                   `<button type="button" class="cv-menu-item" data-dynamic-value="${escape(value.value)}">
                     <span>${escape(value.name)}</span></button>`).join('')}</div>`;
               const trigger = anchor.querySelector('[data-dynamic-trigger]');

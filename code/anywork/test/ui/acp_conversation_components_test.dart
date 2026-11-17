@@ -562,7 +562,7 @@ void main() {
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 
-  testWidgets('ACP 输入不因相同草稿刷新而重置选择和输入法组合', (tester) async {
+  testWidgets('ACP 输入保留编辑值并遵循平台提交与焦点行为', (tester) async {
     var submissions = 0;
     Widget input() => acpTestApp(
       AcpConversationComposerView(
@@ -592,16 +592,17 @@ void main() {
     await tester.pumpWidget(input());
     expect(controller.selection.baseOffset, 3);
     expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    await tester.testTextInput.receiveAction(TextInputAction.send);
-    expect(submissions, 0);
-    expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    controller.value = controller.value.copyWith(composing: TextRange.empty);
+    // The platform confirms composition before reporting a send action.
+    tester.testTextInput.updateEditingValue(
+      controller.value.copyWith(composing: TextRange.empty),
+    );
     await tester.testTextInput.receiveAction(TextInputAction.send);
     expect(submissions, 1);
     expect(
       tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
-      isTrue,
+      isFalse,
     );
+    await tester.showKeyboard(find.byType(TextField));
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);

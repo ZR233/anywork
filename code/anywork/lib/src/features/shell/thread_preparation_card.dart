@@ -104,18 +104,18 @@ class ThreadPreparationCard extends StatelessWidget {
                               ),
                             ),
                           ),
-                          const SizedBox(height: 5),
-                          Text(
-                            running
-                                ? l10n.preparationSubtitle
-                                : unknown
-                                ? l10n.preparationUnknownBody
-                                : l10n.preparationRetainedBody,
-                            style: context.text.bodySmall?.copyWith(
-                              color: context.colors.onSurfaceVariant,
-                              height: 1.5,
+                          if (!running) ...[
+                            const SizedBox(height: 5),
+                            Text(
+                              unknown
+                                  ? l10n.preparationUnknownBody
+                                  : l10n.preparationRetainedBody,
+                              style: context.text.bodySmall?.copyWith(
+                                color: context.colors.onSurfaceVariant,
+                                height: 1.5,
+                              ),
                             ),
-                          ),
+                          ],
                         ],
                       ),
                     ),

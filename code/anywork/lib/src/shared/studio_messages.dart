@@ -7,7 +7,7 @@ class StudioEmptyState extends StatelessWidget {
   const StudioEmptyState({
     required this.icon,
     required this.title,
-    required this.message,
+    this.message,
     this.maxWidth = 380,
     this.iconSize = 44,
     super.key,
@@ -15,7 +15,7 @@ class StudioEmptyState extends StatelessWidget {
 
   final IconData icon;
   final String title;
-  final String message;
+  final String? message;
   final double maxWidth;
   final double iconSize;
 
@@ -37,13 +37,15 @@ class StudioEmptyState extends StatelessWidget {
             ),
             textAlign: TextAlign.center,
           ),
-          const SizedBox(height: 6),
-          Text(
-            message,
-            style: Theme.of(context).textTheme.bodySmall
-                ?.copyWith(color: colors.onSurfaceVariant),
-            textAlign: TextAlign.center,
-          ),
+          if (message case final text?) ...[
+            const SizedBox(height: 6),
+            Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall
+                  ?.copyWith(color: colors.onSurfaceVariant),
+              textAlign: TextAlign.center,
+            ),
+          ],
         ],
       ),
     );

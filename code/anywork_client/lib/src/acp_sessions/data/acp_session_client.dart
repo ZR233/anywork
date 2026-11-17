@@ -162,10 +162,13 @@ final class AcpSessionClient {
 
   /// Ends an unused draft's business membership and then its borrowed display.
   /// Failed cleanup keeps the original owner registered for explicit retry.
+  /// Cleanup remains available after new calls and observations are sealed.
   Future<AcpBusinessCloseView> discardDraft(
     AcpConversationSession owner,
   ) async {
-    _requireOpen();
+    if (!identical(owner._client, this)) {
+      throw ArgumentError('ACP draft belongs to another Client');
+    }
     final target = owner.state.target!;
     final result = await _port.closeMember(target);
     if (result.localComplete) {

@@ -152,7 +152,7 @@ void main() {
   });
 
   for (final width in [320.0, 800.0]) {
-    testWidgets('宽度 $width 的输入区仅整体外框反馈焦点', (tester) async {
+    testWidgets('宽度 $width 的输入区使用官方焦点并保持单层整体外框', (tester) async {
       tester.view.physicalSize = Size(width, 600);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.resetPhysicalSize);
@@ -175,6 +175,7 @@ void main() {
         of: input,
         matching: find.byType(InputDecorator),
       );
+      final editor = tester.widget<EditableText>(find.byType(EditableText));
       void expectSingleFrame({required bool focused}) {
         expect(
           tester
@@ -182,7 +183,7 @@ void main() {
               .where((view) => view.decoration.border is OutlineInputBorder),
           hasLength(1),
         );
-        expect(tester.widget<InputDecorator>(frameFinder).isFocused, focused);
+        expect(editor.focusNode.hasFocus, focused);
         final decoration = tester.widget<InputDecorator>(inner).decoration;
         expect(
           decoration.contentPadding,
@@ -211,7 +212,7 @@ void main() {
       await tester.showKeyboard(input);
       await tester.pumpAndSettle();
       expectSingleFrame(focused: true);
-      tester.widget<TextField>(input).focusNode!.unfocus();
+      editor.focusNode.unfocus();
       await tester.pumpAndSettle();
       expectSingleFrame(focused: false);
       await tester.pumpWidget(const SizedBox.shrink());

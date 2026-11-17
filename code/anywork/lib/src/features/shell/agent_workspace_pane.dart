@@ -493,7 +493,6 @@ class _StudioStartPage extends ConsumerWidget {
         ),
       );
     }
-    final standalone = project.isStandalone;
     return Scaffold(
       key: StudioDriverKeys.startPage,
       backgroundColor: context.colors.surface,
@@ -515,28 +514,15 @@ class _StudioStartPage extends ConsumerWidget {
                       children: [
                         if (preparationState.error case final error?)
                           failureView(error),
-                        ...[
-                          Text(
-                            context.l10n.startPageWelcome,
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.headlineSmall
-                                ?.copyWith(
-                                  color: context.colors.onSurface,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            standalone
-                                ? context.l10n.startPageStandaloneBody
-                                : context.l10n.startPageProject(project.name),
-                            textAlign: TextAlign.center,
-                            style: Theme.of(context).textTheme.bodyMedium
-                                ?.copyWith(
-                                  color: context.colors.onSurfaceVariant,
-                                ),
-                          ),
-                        ],
+                        Text(
+                          context.l10n.startPageWelcome,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(
+                                color: context.colors.onSurface,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
                         const SizedBox(height: 28),
                         Composer(
                           target: ComposerTarget.start(workspaceId: project.id),

@@ -8,6 +8,7 @@ import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -267,8 +268,9 @@ void main() {
         () {
           final phase =
               graph.client.drafts.startDraft.state.acpPreparations[project.id];
-          if (phase is AcpDraftFailed)
+          if (phase is AcpDraftFailed) {
             throw StateError('ACP draft failed: ${phase.error}');
+          }
           return phase is AcpDraftReady;
         },
         'real ACP draft is configurable before first input',
@@ -303,10 +305,38 @@ void main() {
               _values(kind).any((value) => value.value != kind.currentValue);
         }).toList();
         expect(selects, isNotEmpty, reason: 'No real alternate select config');
-        final option = selects.first;
+        final option = selects.reduce(
+          (a, b) =>
+              _values(a.kind as AcpSelectConfigView).length <=
+                  _values(b.kind as AcpSelectConfigView).length
+              ? a
+              : b,
+        );
         final kind = option.kind as AcpSelectConfigView;
         final alternate = _values(kind)
             .firstWhere((value) => value.value != kind.currentValue);
+        final largest = selects.reduce(
+          (a, b) =>
+              _values(a.kind as AcpSelectConfigView).length >=
+                  _values(b.kind as AcpSelectConfigView).length
+              ? a
+              : b,
+        );
+        if (largest.id != option.id) {
+          await tester.tap(
+            find.descendant(
+              of: find.byKey(
+                ValueKey(AcpViewKeyValues.configControl(largest.id.value)),
+              ),
+              matching: find.byType(TextButton),
+            ),
+          );
+          await tester.pumpAndSettle();
+          expect(find.text(largest.name), findsOneWidget);
+          await scene.capture('agy-draft-searchable-options');
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+        }
         await tester.tap(
           find.descendant(
             of: find.byKey(
@@ -497,10 +527,10 @@ void main() {
       );
       final metadata = graph.client.threadDirectory.observeThread(threadId);
       await scene.until(
-        () => metadata.state.frame?.row != null,
+        () => metadata.state.value.frame?.row != null,
         'committed ACP directory is observable',
       );
-      final row = metadata.state.frame!.row!;
+      final row = metadata.state.value.frame!.row!;
       final reference = (row.backend as AcpAgentBackendView).reference;
       expect(reference.acpSessionId, preparedRemoteSessionId!.value);
       if (remote == null) {
@@ -518,6 +548,7 @@ void main() {
       }
       await metadata.release();
       void checkOwner() {
+        expect(graph.client.drafts.composer(threadId).state.error, isNull);
         expect(owner.state.error, isNull);
         expect(owner.state.observationGap, isNull);
         expect(owner.state.disconnected, isFalse);
@@ -525,14 +556,42 @@ void main() {
       }
 
       checkOwner();
-      await scene.until(
-        () =>
-            owner.state.lastCompleted != null &&
-            owner.state.activeRun == null &&
-            !owner.state.sendPending,
-        'startup prompt completes before configuring the next request',
-        timeout: const Duration(seconds: 120),
-      );
+      await record('first-send-reused-prepared-session');
+      try {
+        await scene.until(
+          () {
+            checkOwner();
+            if (owner.state.pendingPermissions.isNotEmpty) {
+              throw StateError(
+                'Text-only startup unexpectedly requested permission',
+              );
+            }
+            return owner.state.lastCompleted != null &&
+                owner.state.activeRun == null &&
+                !owner.state.sendPending;
+          },
+          'startup prompt completes before configuring the next request',
+          timeout: const Duration(seconds: 120),
+        );
+      } finally {
+        evidence['startupState'] = {
+          'error': owner.state.error?.toString(),
+          'activeRun': owner.state.activeRun?.sequence.toString(),
+          'completed': owner.state.lastCompleted != null,
+          'sendPending': owner.state.sendPending,
+          'permissions': owner.state.pendingPermissions.length,
+          'content': owner.state.content
+              .map((item) => item.runtimeType.toString())
+              .toList(),
+          'toolCalls': [
+            for (final item
+                in owner.state.content.whereType<AcpConversationToolItem>())
+              {'title': item.fields.title, 'status': item.fields.status?.name},
+          ],
+        };
+        await scene.capture('agy-live-startup-observed');
+        await record('startup-prompt-observed');
+      }
       checkOwner();
       expect(
         owner.state.content.whereType<AcpConversationMessageItem>(),

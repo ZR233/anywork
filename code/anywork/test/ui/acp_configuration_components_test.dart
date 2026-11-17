@@ -59,9 +59,13 @@ void main() {
       tester.getTopLeft(controls[1]).dx,
       lessThan(tester.getTopLeft(controls[2]).dx),
     );
-    expect(find.text('输出格式 · JSON'), findsOneWidget);
-    expect(find.text('审阅方式 · 仔细'), findsOneWidget);
+    expect(find.text('JSON'), findsOneWidget);
+    expect(find.text('输出格式'), findsNothing);
+    expect(find.text('仔细'), findsOneWidget);
     expect(find.byType(Switch), findsOneWidget);
+    await tester.tap(controls.first);
+    await tester.pumpAndSettle();
+    expect(find.text('输出格式'), findsOneWidget);
   });
 
   testWidgets('动态控件禁用时尺寸不变，窄窗大字按原顺序换行', (tester) async {
@@ -207,7 +211,7 @@ void main() {
     );
     await tester.pumpAndSettle();
     expect(selected.single, ('vendor/model', 'raw/value:10'));
-    expect(find.text('模型 · 选择 0'), findsOneWidget);
+    expect(find.text('选择 0'), findsOneWidget);
   });
 
   testWidgets('窄窗动态配置保留分组、Tooltip 和原始 id/value', (tester) async {

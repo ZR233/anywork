@@ -507,6 +507,21 @@ void main() {
   );
 
   test(
+    'unused draft cleanup remains available while Client observations dispose',
+    () async {
+      final h = _Harness();
+      final start = h.repository.startDraft;
+      start.setAcpService('workspace', 'account');
+      await start.prepareAcp('workspace');
+      await Future.wait([h.sessions.dispose(), h.repository.close()]);
+      expect(h.calls('closeMember'), hasLength(1));
+      expect(h.source.closes, 1);
+      expect(h.calls('commitDraft'), isEmpty);
+      expect(h.calls('prompt'), isEmpty);
+    },
+  );
+
+  test(
     'explicit creation failure preserves the start input and attachments',
     () async {
       final h = _Harness(ready: false);
@@ -698,6 +713,23 @@ void main() {
       },
     );
   }
+
+  test('first submission refreshes the unpublished draft metadata snapshot after commit', () async {
+    final h = _Harness();
+    h.transport.directoryThreads['thread'] = null;
+    final start = h.repository.startDraft;
+    start.setAcpService('workspace', 'account');
+    await start.prepareAcp('workspace');
+    final composer = await h.composer();
+    expect(h.directory.observedThread('thread'), isNull);
+    h.transport.seedThread(_row());
+    start.updateDraft('workspace', 'first input after draft preparation');
+    expect(await start.submit('workspace'), isTrue);
+    expect(h.transport.openedMetadataThreadIds, ['thread', 'thread']);
+    expect(h.calls('commitDraft'), hasLength(1));
+    expect(h.calls('prompt'), hasLength(1));
+    expect(composer.state.draft, isEmpty);
+  });
 
   test('directory wait cannot replace the frozen first input or admit a second submit', () async {
     final h = _Harness();

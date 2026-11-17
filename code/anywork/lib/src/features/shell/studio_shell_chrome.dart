@@ -43,12 +43,11 @@ class SessionHeader extends ConsumerWidget {
                     style: Theme.of(context).textTheme.labelSmall,
                   ),
                 ),
-              if (projectLabel.isNotEmpty) ...[
+              if (thread != null && projectLabel.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Tooltip(
                   richMessage: TextSpan(
-                    text:
-                        thread?.workspacePath ?? project?.path ?? projectLabel,
+                    text: thread.workspacePath,
                     style: const TextStyle(fontFamily: studioCodeFontFamily),
                   ),
                   child: Text(

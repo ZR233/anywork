@@ -9,7 +9,6 @@ class ComposerInputFrame extends StatelessWidget {
     required this.primaryAction,
     this.configuration,
     this.attachmentAction,
-    this.focusNode,
     this.creationCard = false,
     this.compact = false,
     this.dragging = false,
@@ -19,7 +18,6 @@ class ComposerInputFrame extends StatelessWidget {
   final Widget primaryAction;
   final Widget? configuration;
   final Widget? attachmentAction;
-  final FocusNode? focusNode;
   final bool creationCard;
   final bool compact;
   final bool dragging;
@@ -66,30 +64,20 @@ class ComposerInputFrame extends StatelessWidget {
         ),
       ],
     );
-    Widget decorate(bool focused) => InputDecorator(
-      isFocused: focused,
-      decoration: InputDecoration(
-        filled: true,
-        fillColor: colors.surfaceContainerLowest,
-        contentPadding: compact
-            ? const EdgeInsets.fromLTRB(12, 6, 10, 6)
-            : const EdgeInsets.fromLTRB(12, 8, 10, 10),
-        border: border,
-        enabledBorder: border,
-        focusedBorder: border.copyWith(
-          borderSide: BorderSide(color: colors.primary, width: 2),
-        ),
-      ),
-      child: SingleChildScrollView(child: content),
-    );
     return Material(
       type: MaterialType.transparency,
-      child: focusNode == null
-          ? decorate(false)
-          : ListenableBuilder(
-              listenable: focusNode!,
-              builder: (context, _) => decorate(focusNode!.hasFocus),
-            ),
+      child: InputDecorator(
+        decoration: InputDecoration(
+          filled: true,
+          fillColor: colors.surfaceContainerLowest,
+          contentPadding: compact
+              ? const EdgeInsets.fromLTRB(12, 6, 10, 6)
+              : const EdgeInsets.fromLTRB(12, 8, 10, 10),
+          border: border,
+          enabledBorder: border,
+        ),
+        child: SingleChildScrollView(child: content),
+      ),
     );
   }
 }

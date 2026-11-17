@@ -85,7 +85,6 @@ class PromptComposerView extends StatefulWidget {
 
 class PromptComposerViewState extends State<PromptComposerView> {
   late final TextEditingController _controller;
-  final FocusNode _inputFocus = FocusNode();
   bool _dragging = false;
   int _targetGeneration = 0;
 
@@ -103,7 +102,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
   void dispose() {
     _targetGeneration++;
     _controller.dispose();
-    _inputFocus.dispose();
     super.dispose();
   }
 
@@ -197,7 +195,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
         .toList();
     final attachmentEnabled = widget.state.enabled;
     final panel = ComposerInputFrame(
-      focusNode: _inputFocus,
       creationCard: widget.creationCard,
       compact: widget.compact,
       dragging: _dragging,
@@ -231,14 +228,14 @@ class PromptComposerViewState extends State<PromptComposerView> {
             child: TextField(
               key: StudioDriverKeys.composerInput,
               controller: _controller,
-              focusNode: _inputFocus,
+
               autofocus: widget.creationCard,
               enabled: widget.state.enabled,
               minLines: widget.compact ? 2 : 3,
               maxLines: 8,
               textInputAction: TextInputAction.send,
               // 提交后保留焦点：排队中的下一次输入不必重新点击输入区。
-              onEditingComplete: () {},
+
               onSubmitted: (_) => _submit(),
               decoration: InputDecoration(
                 hintText: context.l10n.composerHint,

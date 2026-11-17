@@ -55,7 +55,6 @@ class AcpConversationComposerView extends StatefulWidget {
 
 class _AcpConversationComposerViewState
     extends State<AcpConversationComposerView> {
-  final _focus = FocusNode();
   late TextEditingController _controller = TextEditingController(
     text: widget.state.draftText,
   );
@@ -105,7 +104,6 @@ class _AcpConversationComposerViewState
   @override
   void dispose() {
     _controller.dispose();
-    _focus.dispose();
     super.dispose();
   }
 
@@ -184,12 +182,12 @@ class _AcpConversationComposerViewState
       child: TextField(
         key: ValueKey(AcpViewKeyValues.composerInput(state.threadId)),
         controller: _controller,
-        focusNode: _focus,
+
         minLines: widget.compact ? 1 : 2,
         maxLines: widget.compact ? 4 : 8,
         textInputAction: TextInputAction.send,
         onChanged: widget.onDraftChanged,
-        onEditingComplete: () {},
+
         onSubmitted: (_) => _submit(),
         style: context.text.bodyMedium?.copyWith(height: 1.5),
         decoration: InputDecoration(
@@ -228,7 +226,6 @@ class _AcpConversationComposerViewState
     }
 
     return ComposerInputFrame(
-      focusNode: _focus,
       compact: widget.compact,
       dragging: widget.dragging,
       configuration: widget.configurationBar,

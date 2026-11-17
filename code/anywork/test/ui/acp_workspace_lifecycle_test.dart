@@ -233,13 +233,13 @@ void main() {
       canonical: options(),
       retainedDraft: 'ACP 消息',
     );
-    expect(find.textContaining('回答质量 · 标准质量'), findsOneWidget);
+    expect(find.text('标准质量'), findsOneWidget);
     await configure(
       grouped: true,
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',
     );
-    expect(find.textContaining('分析深度 · 深入分析'), findsOneWidget);
+    expect(find.text('深入分析'), findsOneWidget);
     await configure(
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',

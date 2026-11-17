@@ -38,7 +38,6 @@ class AcpStartComposerView extends StatefulWidget {
 }
 
 class _AcpStartComposerViewState extends State<AcpStartComposerView> {
-  final _focus = FocusNode();
   late TextEditingController _controller = TextEditingController(
     text: widget.state.text,
   );
@@ -73,14 +72,12 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
   @override
   void dispose() {
     _controller.dispose();
-    _focus.dispose();
     super.dispose();
   }
 
   void _submit() {
     if (!widget.state.canCreate || _controller.value.composing.isValid) return;
     widget.onSubmit();
-    _focus.requestFocus();
   }
 
   @override
@@ -91,7 +88,7 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
 
     return ComposerInputFrame(
       creationCard: true,
-      focusNode: _focus,
+
       configuration: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -102,7 +99,9 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
       ),
       primaryAction: IconButton.filled(
         key: ValueKey(AcpViewKeyValues.startSubmit(state.workspaceId)),
-        tooltip: state.submitting
+        tooltip: state.preparing
+            ? l10n.acpComposerBlockerInitializing
+            : state.submitting
             ? l10n.acpStartCreatingAction
             : l10n.composerSend,
         onPressed: state.canCreate ? _submit : null,
@@ -131,13 +130,13 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
           child: TextField(
             key: ValueKey(AcpViewKeyValues.startInput(state.workspaceId)),
             controller: _controller,
-            focusNode: _focus,
+
             autofocus: true,
             enabled: state.canEditDraft,
             minLines: 3,
             maxLines: 8,
             textInputAction: TextInputAction.send,
-            onEditingComplete: () {},
+
             onChanged: widget.onDraftChanged,
             onSubmitted: (_) => _submit(),
             style: context.text.bodyMedium?.copyWith(height: 1.5),
@@ -153,14 +152,6 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
             ),
           ),
         ),
-        if (state.preparing)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Text(
-              l10n.acpComposerBlockerInitializing,
-              style: context.text.bodySmall,
-            ),
-          ),
         if (state.failureMessage case final failure?)
           Row(
             children: [
