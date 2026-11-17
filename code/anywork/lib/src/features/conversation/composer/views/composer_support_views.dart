@@ -5,6 +5,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_child_readonly_panel.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../../../shared/composer_action_button.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
 import '../state/composer_view_state.dart';
 
@@ -44,25 +45,18 @@ class InteractionStopView extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              IconButton.filledTonal(
-                key: state.stopping
+              ComposerActionButton(
+                buttonKey: state.stopping
                     ? StudioDriverKeys.composerStopping
                     : StudioDriverKeys.composerStop,
-                style: IconButton.styleFrom(
-                  fixedSize: const Size.square(40),
-                  shape: const CircleBorder(),
-                ),
+                progressKey: StudioDriverKeys.composerPending,
+                state: state.pending || state.stopping
+                    ? ComposerActionButtonState.busy
+                    : ComposerActionButtonState.stop,
                 tooltip: state.stopping
                     ? context.l10n.composerStopping
                     : context.l10n.composerStop,
                 onPressed: state.canStop ? onStop : null,
-                icon: state.pending || state.stopping
-                    ? const SizedBox.square(
-                        key: StudioDriverKeys.composerPending,
-                        dimension: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.stop),
               ),
             ],
           ),

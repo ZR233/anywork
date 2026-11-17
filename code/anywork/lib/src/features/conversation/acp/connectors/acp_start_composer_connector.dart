@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
+import '../../../../l10n/studio_l10n.dart';
+import '../../../../shared/composer_configuration_bar.dart';
 import '../view_models/acp_start_composer_view_model.dart';
 import '../views/acp_start_composer_view.dart';
 import '../../composer/widgets/start_model_selector.dart';
@@ -64,12 +66,23 @@ class _AcpStartComposerConnectorState
             value.acpPreparations[workspaceId] is AcpDraftNeedsConfiguration,
       ),
     );
+    final serviceEntry = startModelConfigurationEntry(
+      id: 'start-service',
+      context: context,
+      ref: ref,
+      workspaceId: workspaceId,
+    );
     return AcpStartComposerView(
       state: state,
-      modelSelector: StartModelSelector(workspaceId: workspaceId),
       configurationBar: state.preparedThreadId == null
-          ? null
-          : AcpConfigurationConnector(threadId: state.preparedThreadId!),
+          ? ComposerConfigurationBar(
+              entries: [serviceEntry],
+              moreTooltip: context.l10n.acpConfigMoreLabel,
+            )
+          : AcpConfigurationConnector(
+              threadId: state.preparedThreadId!,
+              leadingEntries: [serviceEntry],
+            ),
       onRetryPreparation: needsConfiguration
           ? null
           : () => unawaited(ref.read(provider.notifier).retryPreparation()),

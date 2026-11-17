@@ -5,26 +5,41 @@ import 'package:anywork/src/features/conversation/composer/view_models/composer_
 import 'package:anywork/src/features/conversation/composer/views/composer_content_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/interactions/view_models/interaction_command_view_model.dart';
-import 'package:anywork/src/features/status/session_selectors.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/shared/composer_configuration_bar.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/model_directory.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
-  testWidgets('完整根会话 Composer 在宽窄窗和聚焦时保留有序选择器、单层外框及发送状态', (tester) async {
+  testWidgets('完整根会话 Composer 在宽窄窗和聚焦时保留配置可达性、单层外框及发送状态', (tester) async {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetDevicePixelRatio);
     addTearDown(tester.view.resetPhysicalSize);
 
-    for (final width in [800.0, 360.0]) {
+    for (final width in [800.0, 360.0, 260.0]) {
       tester.view.physicalSize = Size(width, 360);
       await tester.pumpWidget(completeComposerFixture());
       await tester.pumpAndSettle();
       _expectCompleteLayout(tester, wide: width >= 540);
+      if (width < 540) {
+        final moreVisible = find
+            .byKey(ComposerConfigurationBar.moreKey)
+            .hitTestable()
+            .evaluate()
+            .isNotEmpty;
+        if (width == 260) expect(moreVisible, isTrue);
+        if (moreVisible) {
+          await _expectNarrowConfigurationMenu(tester);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+          await tester.pumpAndSettle();
+        }
+      }
 
       await tester.tap(find.byKey(StudioDriverKeys.composerInput));
       await tester.pumpAndSettle();
@@ -36,11 +51,18 @@ void main() {
         isTrue,
       );
       _expectCompleteLayout(tester, wide: width >= 540);
+      expect(
+        tester
+            .widget<IconButton>(find.byKey(StudioDriverKeys.composerSubmit))
+            .onPressed,
+        isNotNull,
+      );
       await tester.pumpWidget(const SizedBox.shrink());
     }
 
-    // One immutable empty draft proves the disabled presentation; selector
-    // switching itself is already covered by session_selector_sync_test.dart.
+    // One immutable empty draft proves the disabled presentation at narrow
+    // width without assuming that every selector remains inline.
+    tester.view.physicalSize = const Size(260, 360);
     await tester.pumpWidget(completeComposerFixture(draft: ''));
     await tester.pumpAndSettle();
     expect(find.byKey(StudioDriverKeys.composerSubmit), findsNothing);
@@ -52,22 +74,39 @@ void main() {
           .onPressed,
       isNull,
     );
-    expect(find.byType(SessionModeSelector), findsOneWidget);
-    expect(find.byType(ModelRoleSelector), findsOneWidget);
-    expect(find.byType(ReasoningEffortSelector), findsOneWidget);
+    _expectCompleteLayout(tester, wide: false, enabled: false);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
   }, variant: TargetPlatformVariant.only(TargetPlatform.windows));
 }
 
-void _expectCompleteLayout(WidgetTester tester, {required bool wide}) {
+final _selectorExpectations = <({Key key, String menuLabel, Key optionKey})>[
+  (
+    key: StudioDriverKeys.sessionMode,
+    menuLabel: '会话模式 · 任务',
+    optionKey: StudioDriverKeys.sessionModeOption(ThreadModeId.task.name),
+  ),
+  (
+    key: StudioDriverKeys.model,
+    menuLabel: '主智能体模型 · GPT-6.1 Sol',
+    optionKey: StudioDriverKeys.modelOption(
+      'synthetic-account',
+      'synthetic-gpt-6.1-sol',
+    ),
+  ),
+  (
+    key: StudioDriverKeys.reasoningEffort,
+    menuLabel: '思考强度 · high',
+    optionKey: StudioDriverKeys.reasoningEffortOption('high'),
+  ),
+];
+
+void _expectCompleteLayout(
+  WidgetTester tester, {
+  required bool wide,
+  bool enabled = true,
+}) {
   expect(find.byType(ComposerContentView), findsOneWidget);
-  expect(find.byType(SessionModeSelector), findsOneWidget);
-  expect(find.byType(ModelRoleSelector), findsOneWidget);
-  expect(find.byType(ReasoningEffortSelector), findsOneWidget);
-  expect(find.text('任务'), findsOneWidget);
-  expect(find.text('GPT-6.1 Sol'), findsOneWidget);
-  expect(find.text('high'), findsOneWidget);
 
   final prompt = find.byType(PromptComposerView);
   final outlined = find.descendant(
@@ -93,49 +132,119 @@ void _expectCompleteLayout(WidgetTester tester, {required bool wide}) {
 
   final panel = tester.getRect(outlined);
   final input = tester.getRect(find.byKey(StudioDriverKeys.composerInput));
-  final selectors =
-      [
-        StudioDriverKeys.sessionMode,
-        StudioDriverKeys.model,
-        StudioDriverKeys.reasoningEffort,
-      ].map((key) {
-        final finder = find.byKey(key);
-        expect(finder, findsOneWidget);
-        expect(finder.hitTestable(), findsOneWidget, reason: '选择器不能被裁剪或遮挡');
-        final rect = tester.getRect(finder);
-        expect(rect.left, greaterThanOrEqualTo(panel.left));
-        expect(rect.right, lessThanOrEqualTo(panel.right));
-        expect(rect.top, greaterThanOrEqualTo(input.bottom));
-        expect(rect.bottom, lessThanOrEqualTo(panel.bottom));
-        return rect;
-      }).toList();
-  final sendFinder = find.byKey(StudioDriverKeys.composerSubmit);
+  final inlineSelectors = <Rect>[];
+  final hiddenSelectors = <({Key key, String menuLabel, Key optionKey})>[];
+  for (final selector in _selectorExpectations) {
+    final finder = find.byKey(selector.key);
+    final isInline = finder.hitTestable().evaluate().isNotEmpty;
+    if (wide) {
+      expect(isInline, isTrue, reason: '${selector.menuLabel} 在宽窗应保持行内可达');
+    }
+    if (!isInline) {
+      hiddenSelectors.add(selector);
+      continue;
+    }
+    final rect = tester.getRect(finder.hitTestable());
+    expect(rect.left, greaterThanOrEqualTo(panel.left));
+    expect(rect.right, lessThanOrEqualTo(panel.right));
+    expect(rect.top, greaterThanOrEqualTo(input.bottom));
+    expect(rect.bottom, lessThanOrEqualTo(panel.bottom));
+    inlineSelectors.add(rect);
+    if (wide) {
+      expect(find.text(selector.menuLabel.split(' · ').last), findsOneWidget);
+    }
+  }
+
+  final moreFinder = find.byKey(ComposerConfigurationBar.moreKey);
+  final moreVisible = moreFinder.hitTestable().evaluate().isNotEmpty;
+  if (wide) {
+    expect(moreVisible, isFalse, reason: '宽窗的三个常用配置应直接显示');
+    expect(find.text('任务'), findsOneWidget);
+    expect(find.text('GPT-6.1 Sol'), findsOneWidget);
+    expect(find.text('high'), findsOneWidget);
+  } else {
+    expect(
+      moreVisible,
+      hiddenSelectors.isNotEmpty,
+      reason: '只有实际未能行内显示的配置才需要更多入口',
+    );
+  }
+
+  final sendFinder = find.byKey(
+    enabled
+        ? StudioDriverKeys.composerSubmit
+        : const ValueKey('composer-submit-disabled'),
+  );
   expect(sendFinder.hitTestable(), findsOneWidget);
-  expect(tester.widget<IconButton>(sendFinder).onPressed, isNotNull);
+  expect(
+    tester.widget<IconButton>(sendFinder).onPressed,
+    enabled ? isNotNull : isNull,
+  );
   final send = tester.getRect(sendFinder);
+  expect(send.left, greaterThanOrEqualTo(panel.left));
   expect(send.right, lessThanOrEqualTo(panel.right));
+  expect(send.top, greaterThanOrEqualTo(input.bottom));
   expect(send.bottom, lessThanOrEqualTo(panel.bottom));
 
-  for (var i = 1; i < selectors.length; i++) {
-    final previous = selectors[i - 1];
-    final next = selectors[i];
-    if ((next.center.dy - previous.center.dy).abs() < 1) {
-      expect(previous.right, lessThanOrEqualTo(next.left));
-    } else {
-      expect(previous.bottom, lessThanOrEqualTo(next.top));
-    }
-  }
   if (wide) {
-    for (final selector in selectors) {
-      expect(selector.center.dy, closeTo(send.center.dy, 1));
-      expect(selector.right, lessThanOrEqualTo(send.left));
-    }
+    _expectOneRow([...inlineSelectors, send], send);
   } else {
-    for (final selector in selectors) {
-      expect(selector.bottom, lessThanOrEqualTo(send.top));
-    }
+    final row = <Rect>[
+      ...inlineSelectors,
+      if (moreVisible) tester.getRect(moreFinder.hitTestable()),
+      send,
+    ];
+    _expectOneRow(row, send);
   }
   expect(tester.takeException(), isNull, reason: '包含 RenderFlex overflow 检查');
+}
+
+void _expectOneRow(List<Rect> controls, Rect send) {
+  for (final control in controls) {
+    expect(control.center.dy, closeTo(send.center.dy, 1));
+  }
+  for (var index = 1; index < controls.length; index++) {
+    expect(controls[index - 1].right, lessThanOrEqualTo(controls[index].left));
+  }
+}
+
+Future<void> _expectNarrowConfigurationMenu(WidgetTester tester) async {
+  await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+  await tester.pumpAndSettle();
+
+  final hidden = <({Key key, String menuLabel, Key optionKey})>[];
+  var previousTop = double.negativeInfinity;
+  for (final selector in _selectorExpectations) {
+    final label = find.text(selector.menuLabel);
+    if (label.evaluate().isEmpty) continue;
+    expect(
+      find.ancestor(of: label, matching: find.byType(SubmenuButton)),
+      findsOneWidget,
+      reason: '${selector.menuLabel} 必须作为可展开的真实配置项收纳',
+    );
+    final top = tester.getTopLeft(label).dy;
+    expect(top, greaterThan(previousTop), reason: '收纳项保持模式、模型、强度的顺序');
+    previousTop = top;
+    hidden.add(selector);
+  }
+  expect(hidden, isNotEmpty, reason: '窄窗必须将至少一个配置项收纳进更多菜单');
+
+  for (final selector in hidden) {
+    if (find.text(selector.menuLabel).evaluate().isEmpty) {
+      await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+      await tester.pumpAndSettle();
+    }
+    await tester.tap(find.byKey(selector.key));
+    await tester.pumpAndSettle();
+    final option = find.byKey(selector.optionKey);
+    expect(
+      option.hitTestable(),
+      findsOneWidget,
+      reason: '${selector.menuLabel} 能展开当前选项',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
+  }
 }
 
 // Shared by the one-off screenshot probe. This is a synthetic typed snapshot,

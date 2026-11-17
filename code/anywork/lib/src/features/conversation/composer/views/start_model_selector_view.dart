@@ -5,6 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/account_brand.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../../../shared/studio_menu_label.dart';
+import '../../../../shared/model_route_selector.dart' show ModelSelectionOption;
 import '../../../status/session_selectors.dart' show modelOptions;
 import '../state/start_backend_view_state.dart';
 
@@ -14,6 +15,7 @@ class StartModelSelectorView extends StatefulWidget {
     required this.onSelectModel,
     required this.onSelectService,
     required this.onManageServices,
+    this.inMenu = false,
     super.key,
   });
 
@@ -21,6 +23,69 @@ class StartModelSelectorView extends StatefulWidget {
   final void Function(String accountId, String modelId) onSelectModel;
   final ValueChanged<String?> onSelectService;
   final VoidCallback onManageServices;
+  final bool inMenu;
+
+  double measureInlineWidth(BuildContext context) {
+    final presentation = _presentation(context);
+    return presentation.label.measureWidth(
+      context,
+      leadingWidth: presentation.leadingWidth,
+    );
+  }
+
+  ({
+    List<ModelSelectionOption> options,
+    ModelSelectionOption? current,
+    bool isAcp,
+    bool available,
+    StudioMenuLabel label,
+    double leadingWidth,
+  })
+  _presentation(BuildContext context) {
+    final options = modelOptions(state.modelAccounts);
+    final current = options
+        .where(
+          (option) =>
+              option.accountId == state.modelAccountId &&
+              option.modelId == state.modelId,
+        )
+        .firstOrNull;
+    final service = state.selectedService;
+    final isAcp = state.accountId != null;
+    final available = isAcp ? service?.enabled == true : current != null;
+    final label = isAcp
+        ? service?.name ?? state.accountId!
+        : current?.displayName ??
+              state.modelId ??
+              context.l10n.statusPlannerModel;
+    final leadingWidth = isAcp ? 18.0 : (available ? 0.0 : 16.0);
+    return (
+      options: options,
+      current: current,
+      isAcp: isAcp,
+      available: available,
+      leadingWidth: leadingWidth,
+      label: StudioMenuLabel(
+        leading: isAcp
+            ? AccountBrandMark(
+                fallbackName: label,
+                iconKey: service?.brandKey,
+                size: leadingWidth,
+                active: available,
+              )
+            : !available
+            ? Icon(
+                Icons.warning_amber_rounded,
+                size: leadingWidth,
+                color: context.colors.error,
+              )
+            : null,
+        label: label,
+        maxWidth: 160,
+        enabled: state.enabled,
+      ),
+    );
+  }
 
   @override
   State<StartModelSelectorView> createState() => _StartModelSelectorViewState();
@@ -45,20 +110,12 @@ class _StartModelSelectorViewState extends State<StartModelSelectorView> {
   Widget build(BuildContext context) {
     final state = widget.state;
     final l10n = context.l10n;
-    final options = modelOptions(state.modelAccounts);
-    final current = options
-        .where(
-          (option) =>
-              option.accountId == state.modelAccountId &&
-              option.modelId == state.modelId,
-        )
-        .firstOrNull;
-    final service = state.selectedService;
-    final isAcp = state.accountId != null;
-    final available = isAcp ? service?.enabled == true : current != null;
-    final label = isAcp
-        ? service?.name ?? state.accountId!
-        : current?.displayName ?? state.modelId ?? l10n.statusPlannerModel;
+    final presentation = widget._presentation(context);
+    final options = presentation.options;
+    final current = presentation.current;
+    final isAcp = presentation.isAcp;
+    final available = presentation.available;
+    final label = presentation.label.label;
     final width = (MediaQuery.sizeOf(context).width - 32).clamp(200.0, 380.0);
     final filtered = options
         .where(
@@ -72,6 +129,117 @@ class _StartModelSelectorViewState extends State<StartModelSelectorView> {
     final services = state.services
         .where((item) => _matches([item.name, item.id]))
         .toList();
+
+    final menuChildren = <Widget>[
+      SizedBox(
+        width: width,
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: TextField(
+            key: const ValueKey('start-model-search'),
+            controller: _search,
+            autofocus: true,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              hintText: l10n.composerModelSearch,
+              prefixIcon: const Icon(Icons.search_rounded),
+              isDense: true,
+            ),
+          ),
+        ),
+      ),
+      if (state.loading) const LinearProgressIndicator(),
+      for (final account in state.modelAccounts)
+        if (filtered.any((option) => option.accountId == account.id)) ...[
+          _heading(context, account.name),
+          for (final option in filtered.where(
+            (option) => option.accountId == account.id,
+          ))
+            MenuItemButton(
+              key: StudioDriverKeys.modelOption(
+                option.accountId,
+                option.modelId,
+              ),
+              onPressed: state.enabled && state.nativeEnabled
+                  ? () => widget.onSelectModel(option.accountId, option.modelId)
+                  : null,
+              leadingIcon: AccountBrandMark(
+                fallbackName: option.accountName,
+                iconKey: option.accountIconKey,
+                size: 18,
+              ),
+              trailingIcon: _selected(!isAcp && option == current),
+              child: _label(option.displayName, width),
+            ),
+        ],
+      if (services.isNotEmpty) ...[
+        const Divider(height: 8),
+        _heading(context, l10n.acpBackendServicesHeader),
+        for (final item in services)
+          MenuItemButton(
+            key: ValueKey(('start-acp-service', item.id)),
+            onPressed: state.enabled && item.enabled
+                ? () => widget.onSelectService(item.id)
+                : null,
+            leadingIcon: AccountBrandMark(
+              fallbackName: item.name,
+              iconKey: item.brandKey,
+              size: 18,
+              active: item.enabled,
+            ),
+            trailingIcon: item.enabled
+                ? _selected(state.accountId == item.id)
+                : Tooltip(
+                    message: l10n.acpConversationServiceDisabled,
+                    child: const Icon(Icons.block_rounded, size: 16),
+                  ),
+            child: _label(item.name, width),
+          ),
+      ],
+      if (filtered.isEmpty && services.isEmpty && !state.loading)
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(l10n.composerModelSearchEmpty),
+        ),
+      if (state.failure case final failure?)
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: SizedBox(
+            width: width - 24,
+            child: Text(
+              failure,
+              style: context.text.bodySmall?.copyWith(
+                color: context.colors.error,
+              ),
+            ),
+          ),
+        ),
+      for (final diagnostic in state.diagnostics)
+        Tooltip(
+          message: diagnostic.message,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Text(diagnostic.fileName),
+          ),
+        ),
+      const Divider(height: 8),
+      MenuItemButton(
+        leadingIcon: const Icon(Icons.settings_outlined, size: 18),
+        onPressed: widget.onManageServices,
+        child: Text(l10n.composerManageModels),
+      ),
+    ];
+    if (widget.inMenu) {
+      return SubmenuButton(
+        key: StudioDriverKeys.model,
+        onOpen: () {
+          _search.clear();
+          setState(() {});
+        },
+        menuChildren: state.enabled ? menuChildren : const [],
+        child: Text('${l10n.statusPlannerModel} · $label'),
+      );
+    }
 
     return MenuAnchor(
       key: StudioDriverKeys.model,
@@ -103,127 +271,10 @@ class _StartModelSelectorViewState extends State<StartModelSelectorView> {
             minimumSize: Size.zero,
             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
-          child: StudioMenuLabel(
-            leading: isAcp
-                ? AccountBrandMark(
-                    fallbackName: label,
-                    iconKey: service?.brandKey,
-                    size: 18,
-                    active: available,
-                  )
-                : !available
-                ? Icon(
-                    Icons.warning_amber_rounded,
-                    size: 16,
-                    color: context.colors.error,
-                  )
-                : null,
-            label: label,
-            maxWidth: 160,
-            enabled: state.enabled,
-          ),
+          child: presentation.label,
         ),
       ),
-      menuChildren: [
-        SizedBox(
-          width: width,
-          child: Padding(
-            padding: const EdgeInsets.all(8),
-            child: TextField(
-              key: const ValueKey('start-model-search'),
-              controller: _search,
-              autofocus: true,
-              onChanged: (_) => setState(() {}),
-              decoration: InputDecoration(
-                hintText: l10n.composerModelSearch,
-                prefixIcon: const Icon(Icons.search_rounded),
-                isDense: true,
-              ),
-            ),
-          ),
-        ),
-        if (state.loading) const LinearProgressIndicator(),
-        for (final account in state.modelAccounts)
-          if (filtered.any((option) => option.accountId == account.id)) ...[
-            _heading(context, account.name),
-            for (final option in filtered.where(
-              (option) => option.accountId == account.id,
-            ))
-              MenuItemButton(
-                key: StudioDriverKeys.modelOption(
-                  option.accountId,
-                  option.modelId,
-                ),
-                onPressed: state.enabled && state.nativeEnabled
-                    ? () =>
-                          widget.onSelectModel(option.accountId, option.modelId)
-                    : null,
-                leadingIcon: AccountBrandMark(
-                  fallbackName: option.accountName,
-                  iconKey: option.accountIconKey,
-                  size: 18,
-                ),
-                trailingIcon: _selected(!isAcp && option == current),
-                child: _label(option.displayName, width),
-              ),
-          ],
-        if (services.isNotEmpty) ...[
-          const Divider(height: 8),
-          _heading(context, l10n.acpBackendServicesHeader),
-          for (final item in services)
-            MenuItemButton(
-              key: ValueKey(('start-acp-service', item.id)),
-              onPressed: state.enabled && item.enabled
-                  ? () => widget.onSelectService(item.id)
-                  : null,
-              leadingIcon: AccountBrandMark(
-                fallbackName: item.name,
-                iconKey: item.brandKey,
-                size: 18,
-                active: item.enabled,
-              ),
-              trailingIcon: item.enabled
-                  ? _selected(state.accountId == item.id)
-                  : Tooltip(
-                      message: l10n.acpConversationServiceDisabled,
-                      child: const Icon(Icons.block_rounded, size: 16),
-                    ),
-              child: _label(item.name, width),
-            ),
-        ],
-        if (filtered.isEmpty && services.isEmpty && !state.loading)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Text(l10n.composerModelSearchEmpty),
-          ),
-        if (state.failure case final failure?)
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: SizedBox(
-              width: width - 24,
-              child: Text(
-                failure,
-                style: context.text.bodySmall?.copyWith(
-                  color: context.colors.error,
-                ),
-              ),
-            ),
-          ),
-        for (final diagnostic in state.diagnostics)
-          Tooltip(
-            message: diagnostic.message,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(diagnostic.fileName),
-            ),
-          ),
-        const Divider(height: 8),
-        MenuItemButton(
-          leadingIcon: const Icon(Icons.settings_outlined, size: 18),
-          onPressed: widget.onManageServices,
-          child: Text(l10n.composerManageModels),
-        ),
-      ],
+      menuChildren: menuChildren,
     );
   }
 

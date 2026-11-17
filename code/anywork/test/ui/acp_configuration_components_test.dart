@@ -1,5 +1,8 @@
 import 'dart:async';
 
+import 'package:anywork/src/shared/composer_configuration_bar.dart';
+import 'package:anywork/src/shared/studio_menu_label.dart';
+
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_configuration_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
@@ -10,32 +13,82 @@ import 'package:material_ui/material_ui.dart';
 import 'acp_components_support.dart';
 
 void main() {
-  testWidgets('配置按服务端顺序完整呈现，不按名称或类别分配槽位', (tester) async {
+  const common = [
+    AcpConfigControlPresentation.select(
+      id: 'mode',
+      name: '模式',
+      category: AcpConfigCategoryKind.mode,
+      currentValue: 'agent',
+      currentLabel: '执行',
+      flatOptions: [AcpSelectChoicePresentation(value: 'agent', name: '执行')],
+    ),
+    AcpConfigControlPresentation.select(
+      id: 'model',
+      name: '模型',
+      category: AcpConfigCategoryKind.model,
+      currentValue: 'pro',
+      currentLabel: '专业模型',
+      flatOptions: [AcpSelectChoicePresentation(value: 'pro', name: '专业模型')],
+    ),
+    AcpConfigControlPresentation.select(
+      id: 'thought',
+      name: '思考',
+      category: AcpConfigCategoryKind.thoughtLevel,
+      currentValue: 'high',
+      currentLabel: 'high',
+      flatOptions: [AcpSelectChoicePresentation(value: 'high', name: 'high')],
+    ),
+  ];
+  Finder control(String id) =>
+      find.byKey(ValueKey(AcpViewKeyValues.configControl(id)));
+  Future<void> more(WidgetTester tester) async {
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('仅明确常用类别内联，未知与布尔在更多中保留服务端顺序', (tester) async {
     await tester.pumpWidget(
       acpTestApp(
         AcpConfigurationBar(
-          state: const AcpConfigurationViewState(
+          state: AcpConfigurationViewState(
             enabled: true,
             controls: [
-              AcpConfigControlPresentation.select(
-                id: 'z',
+              const AcpConfigControlPresentation.select(
+                id: 'vendor/mode',
                 name: '输出格式',
-                category: AcpConfigCategoryKind.other,
+                category: AcpConfigCategoryKind.unspecified,
                 currentValue: 'json',
                 currentLabel: 'JSON',
+                flatOptions: [
+                  AcpSelectChoicePresentation(value: 'json', name: 'JSON'),
+                ],
               ),
-              AcpConfigControlPresentation.boolean(
+              common[1],
+              const AcpConfigControlPresentation.boolean(
                 id: 'b',
                 name: '保留引用',
                 category: AcpConfigCategoryKind.model,
                 currentValue: true,
               ),
-              AcpConfigControlPresentation.select(
+              const AcpConfigControlPresentation.select(
                 id: 'a',
                 name: '审阅方式',
-                category: AcpConfigCategoryKind.other,
+                category: AcpConfigCategoryKind.modelConfig,
                 currentValue: 'careful',
                 currentLabel: '仔细',
+                flatOptions: [
+                  AcpSelectChoicePresentation(value: 'careful', name: '仔细'),
+                ],
+              ),
+              const AcpConfigControlPresentation.select(
+                id: 'second-model',
+                name: '额外模型',
+                category: AcpConfigCategoryKind.model,
+                currentValue: 'extra',
+                currentLabel: '额外值',
+                flatOptions: [
+                  AcpSelectChoicePresentation(value: 'extra', name: '额外值'),
+                ],
               ),
             ],
           ),
@@ -45,253 +98,319 @@ void main() {
         ),
       ),
     );
-    final controls = ['z', 'b', 'a']
-        .map((id) => find.byKey(ValueKey(AcpViewKeyValues.configControl(id))))
-        .toList();
-    for (final control in controls) {
-      expect(control, findsOneWidget);
-    }
+    expect(find.text('专业模型'), findsOneWidget);
+    expect(find.text('模型'), findsNothing);
+    expect(control('vendor/mode'), findsNothing);
+    expect(control('second-model'), findsNothing);
+    expect(find.byType(Switch), findsNothing);
+    await more(tester);
     expect(
-      tester.getTopLeft(controls[0]).dx,
-      lessThan(tester.getTopLeft(controls[1]).dx),
+      tester.getTopLeft(control('vendor/mode')).dy,
+      lessThan(tester.getTopLeft(control('b')).dy),
     );
     expect(
-      tester.getTopLeft(controls[1]).dx,
-      lessThan(tester.getTopLeft(controls[2]).dx),
+      tester.getTopLeft(control('b')).dy,
+      lessThan(tester.getTopLeft(control('a')).dy),
     );
-    expect(find.text('JSON'), findsOneWidget);
-    expect(find.text('输出格式'), findsNothing);
-    expect(find.text('仔细'), findsOneWidget);
-    expect(find.byType(Switch), findsOneWidget);
-    await tester.tap(controls.first);
+    expect(
+      tester.getTopLeft(control('a')).dy,
+      lessThan(tester.getTopLeft(control('second-model')).dy),
+    );
+    expect(
+      tester
+          .widget<CheckboxMenuButton>(
+            find.descendant(
+              of: control('b'),
+              matching: find.byType(CheckboxMenuButton),
+            ),
+          )
+          .value,
+      isTrue,
+    );
+    await tester.tap(control('vendor/mode'));
     await tester.pumpAndSettle();
-    expect(find.text('输出格式'), findsOneWidget);
+    expect(
+      find.byKey(
+        ValueKey(AcpViewKeyValues.configChoice('vendor/mode', 'json')),
+      ),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('动态控件禁用时尺寸不变，窄窗大字按原顺序换行', (tester) async {
-    const controls = [
-      AcpConfigControlPresentation.select(
-        id: 'one',
-        name: '自定义输出',
-        category: AcpConfigCategoryKind.other,
-        currentValue: 'one',
-        currentLabel: '一',
-      ),
-      AcpConfigControlPresentation.select(
-        id: 'two',
-        name: '审阅方式',
-        category: AcpConfigCategoryKind.other,
-        currentValue: 'two',
-        currentLabel: '二',
-      ),
-      AcpConfigControlPresentation.boolean(
-        id: 'three',
-        name: '引用',
-        category: AcpConfigCategoryKind.unspecified,
-        currentValue: true,
-      ),
-    ];
-    Widget bar(bool enabled) => acpTestApp(
-      AcpConfigurationBar(
-        state: AcpConfigurationViewState(controls: controls, enabled: enabled),
-        onSelectValue: (_, _) {},
-        onBooleanChanged: (_, _) {},
-        onSelectLegacyMode: (_) {},
-      ),
-    );
-    await tester.pumpWidget(bar(true));
-    final key = find.byKey(ValueKey(AcpViewKeyValues.configControl('one')));
-    final size = tester.getSize(key);
-    await tester.pumpWidget(bar(false));
-    expect(tester.getSize(key), size);
-    for (final button in tester.widgetList<TextButton>(
-      find.byType(TextButton),
-    )) {
-      expect(button.onPressed, isNull);
-    }
-    expect(tester.widget<Switch>(find.byType(Switch)).onChanged, isNull);
-    await tester.binding.setSurfaceSize(const Size(260, 680));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(
-      acpTestApp(
-        MediaQuery(
-          data: const MediaQueryData(
-            size: Size(260, 680),
-            textScaler: TextScaler.linear(2),
-          ),
-          child: SizedBox(
-            width: 120,
-            child: AcpConfigurationBar(
-              state: const AcpConfigurationViewState(
-                controls: controls,
-                enabled: true,
+  for (final (width, scale) in [(700.0, 1.0), (330.0, 1.0), (260.0, 2.0)]) {
+    testWidgets('单排宽度 $width 字号 $scale 按真实宽度收纳且不丢选项', (tester) async {
+      await tester.pumpWidget(
+        acpTestApp(
+          MediaQuery(
+            data: MediaQueryData(
+              size: const Size(800, 600),
+              textScaler: TextScaler.linear(scale),
+            ),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: width,
+                child: AcpConfigurationBar(
+                  state: const AcpConfigurationViewState(
+                    enabled: true,
+                    controls: common,
+                  ),
+                  onSelectValue: (_, _) {},
+                  onBooleanChanged: (_, _) {},
+                  onSelectLegacyMode: (_) {},
+                ),
               ),
-              onSelectValue: (_, _) {},
-              onBooleanChanged: (_, _) {},
-              onSelectLegacyMode: (_) {},
             ),
           ),
         ),
-      ),
-    );
-    for (final control in controls) {
-      expect(
-        find.byKey(ValueKey(AcpViewKeyValues.configControl(control.id))),
-        findsOneWidget,
       );
-    }
-    expect(tester.takeException(), isNull);
-  });
+      final visible = <AcpConfigControlPresentation>[];
+      final hidden = <AcpConfigControlPresentation>[];
+      for (final item in common) {
+        if (control(item.id).hitTestable().evaluate().isNotEmpty) {
+          visible.add(item);
+        } else {
+          hidden.add(item);
+        }
+      }
+      expect(
+        find
+            .byKey(ComposerConfigurationBar.moreKey)
+            .hitTestable()
+            .evaluate()
+            .isNotEmpty,
+        hidden.isNotEmpty,
+      );
+      if (width == 700) {
+        expect(visible, hasLength(common.length));
+      }
+      for (var index = 1; index < visible.length; index++) {
+        expect(
+          tester.getCenter(control(visible[index].id)).dy,
+          closeTo(tester.getCenter(control(visible.first.id)).dy, 1),
+        );
+        expect(
+          tester.getRect(control(visible[index - 1].id)).right,
+          lessThanOrEqualTo(tester.getRect(control(visible[index].id)).left),
+        );
+      }
+      if (hidden.isNotEmpty) {
+        expect(
+          tester.getSize(
+            find.byKey(ComposerConfigurationBar.moreKey).hitTestable(),
+          ),
+          const Size.square(32),
+        );
+        if (visible.isNotEmpty) {
+          expect(
+            tester.getCenter(find.byKey(ComposerConfigurationBar.moreKey)).dy,
+            closeTo(tester.getCenter(control(visible.first.id)).dy, 1),
+          );
+        }
+        await more(tester);
+        for (final item in hidden) {
+          expect(
+            tester
+                .widget<SubmenuButton>(
+                  find.descendant(
+                    of: control(item.id),
+                    matching: find.byType(SubmenuButton),
+                  ),
+                )
+                .menuChildren,
+            isNotEmpty,
+          );
+        }
+      } else {
+        expect(find.byKey(ComposerConfigurationBar.moreKey), findsNothing);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
 
-  testWidgets('长配置列表搜索名称和原始 ID，保留服务端分组及顺序', (tester) async {
-    final selected = <(String, String)>[];
-    final groups = [
-      for (var group = 0; group < 2; group++)
-        AcpSelectGroupPresentation(
-          id: 'group/$group',
-          name: group == 0 ? 'Z 组' : 'A 组',
-          options: [
-            for (var index = group * 6; index < (group + 1) * 6; index++)
-              AcpSelectChoicePresentation(
-                value: 'raw/value:$index',
-                name: '选择 $index',
-              ),
-          ],
-        ),
-    ];
+  testWidgets('分组逐级打开保持顺序、当前值和原始 ID，布尔走官方菜单', (tester) async {
+    final selected = <(String, Object)>[];
     await tester.pumpWidget(
       acpTestApp(
         AcpConfigurationBar(
-          state: AcpConfigurationViewState(
+          state: const AcpConfigurationViewState(
             enabled: true,
             controls: [
               AcpConfigControlPresentation.select(
                 id: 'vendor/model',
                 name: '模型',
                 category: AcpConfigCategoryKind.model,
-                currentValue: 'raw/value:0',
-                currentLabel: '选择 0',
-                groups: groups,
+                description: '服务端说明',
+                currentValue: 'raw/1',
+                currentLabel: '模型一',
+                groups: [
+                  AcpSelectGroupPresentation(
+                    id: 'z',
+                    name: 'Z 系列',
+                    options: [
+                      AcpSelectChoicePresentation(value: 'raw/1', name: '模型一'),
+                    ],
+                  ),
+                  AcpSelectGroupPresentation(
+                    id: 'a',
+                    name: 'A 系列',
+                    options: [
+                      AcpSelectChoicePresentation(
+                        value: 'raw:2',
+                        name: '模型二',
+                        description: '选项说明',
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              AcpConfigControlPresentation.boolean(
+                id: 'bool/id',
+                name: '保留引用',
+                category: AcpConfigCategoryKind.other,
+                currentValue: false,
               ),
             ],
           ),
           onSelectValue: (id, value) => selected.add((id, value)),
+          onBooleanChanged: (id, value) => selected.add((id, value)),
+          onSelectLegacyMode: (_) {},
+        ),
+      ),
+    );
+    expect(find.byTooltip('模型\n服务端说明'), findsOneWidget);
+    await tester.tap(control('vendor/model'));
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(find.text('Z 系列')).dy,
+      lessThan(tester.getTopLeft(find.text('A 系列')).dy),
+    );
+    expect(find.text('模型二'), findsNothing);
+    await tester.tap(find.text('Z 系列'));
+    await tester.pumpAndSettle();
+    final current = find.byKey(
+      ValueKey(AcpViewKeyValues.configChoice('vendor/model', 'raw/1')),
+    );
+    expect(
+      find.descendant(of: current, matching: find.byIcon(Icons.check_rounded)),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('A 系列'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('选项说明'), findsOneWidget);
+    await tester.tap(
+      find.byKey(
+        ValueKey(AcpViewKeyValues.configChoice('vendor/model', 'raw:2')),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(selected.single, ('vendor/model', 'raw:2'));
+    expect(find.text('模型一'), findsOneWidget);
+    await more(tester);
+    await tester.tap(control('bool/id'));
+    await tester.pumpAndSettle();
+    expect(selected.last, ('bool/id', true));
+  });
+
+  for (final pending in [false, true]) {
+    testWidgets('${pending ? '在途' : '禁用'}配置保持当前值、更多可访问及失败原因', (tester) async {
+      await tester.pumpWidget(
+        acpTestApp(
+          AcpConfigurationBar(
+            state: AcpConfigurationViewState(
+              enabled: pending,
+              pending: pending,
+              errorMessage: 'server rejected',
+              controls: [
+                common.first,
+                const AcpConfigControlPresentation.boolean(
+                  id: 'b',
+                  name: '引用',
+                  category: AcpConfigCategoryKind.other,
+                  currentValue: true,
+                ),
+                const AcpConfigControlPresentation.select(
+                  id: 'extra',
+                  name: '策略',
+                  category: AcpConfigCategoryKind.other,
+                  currentValue: 'safe',
+                  currentLabel: '安全',
+                  flatOptions: [
+                    AcpSelectChoicePresentation(value: 'safe', name: '安全'),
+                  ],
+                ),
+              ],
+            ),
+            onSelectValue: (_, _) => fail('locked'),
+            onBooleanChanged: (_, _) => fail('locked'),
+            onSelectLegacyMode: (_) => fail('locked'),
+          ),
+        ),
+      );
+      expect(find.textContaining('server rejected'), findsOneWidget);
+      expect(find.text('执行'), findsOneWidget);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.descendant(
+                of: control('mode'),
+                matching: find.byType(TextButton),
+              ),
+            )
+            .onPressed,
+        isNull,
+      );
+      await more(tester);
+      expect(
+        tester
+            .widget<CheckboxMenuButton>(
+              find.descendant(
+                of: control('b'),
+                matching: find.byType(CheckboxMenuButton),
+              ),
+            )
+            .onChanged,
+        isNull,
+      );
+      expect(
+        tester
+            .widget<SubmenuButton>(
+              find.descendant(
+                of: control('extra'),
+                matching: find.byType(SubmenuButton),
+              ),
+            )
+            .menuChildren,
+        isEmpty,
+      );
+    });
+  }
+
+  testWidgets('空动态配置仍保留新会话服务入口', (tester) async {
+    final serviceLabel = StudioMenuLabel(label: '服务选择');
+    await tester.pumpWidget(
+      acpTestApp(
+        AcpConfigurationBar(
+          leadingEntries: [
+            ComposerConfigurationEntry(
+              id: 'service',
+              inline: serviceLabel,
+              measureInlineWidth: (context) =>
+                  serviceLabel.measureWidth(context),
+              menuItem: MenuItemButton(
+                onPressed: () {},
+                child: const Text('服务选择'),
+              ),
+            ),
+          ],
+          state: const AcpConfigurationViewState(),
+          onSelectValue: (_, _) {},
           onBooleanChanged: (_, _) {},
           onSelectLegacyMode: (_) {},
         ),
       ),
     );
-    await tester.tap(
-      find.descendant(
-        of: find.byKey(
-          ValueKey(AcpViewKeyValues.configControl('vendor/model')),
-        ),
-        matching: find.byType(TextButton),
-      ),
-    );
-    await tester.pumpAndSettle();
-    final search = find.byKey(const ValueKey('acp-config-search-vendor/model'));
-    expect(search, findsOneWidget);
-    expect(
-      tester.getTopLeft(find.text('Z 组')).dy,
-      lessThan(tester.getTopLeft(find.text('A 组')).dy),
-    );
-    await tester.enterText(search, 'Z 组');
-    await tester.pumpAndSettle();
-    expect(find.text('A 组'), findsNothing);
-    expect(find.byType(MenuItemButton), findsNWidgets(6));
-    await tester.enterText(search, 'raw/value:10');
-    await tester.pumpAndSettle();
-    expect(find.text('Z 组'), findsNothing);
-    expect(find.byType(MenuItemButton), findsOneWidget);
-    await tester.tap(
-      find.byKey(
-        ValueKey(AcpViewKeyValues.configChoice('vendor/model', 'raw/value:10')),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(selected.single, ('vendor/model', 'raw/value:10'));
-    expect(find.text('选择 0'), findsOneWidget);
-  });
-
-  testWidgets('窄窗动态配置保留分组、Tooltip 和原始 id/value', (tester) async {
-    await tester.binding.setSurfaceSize(const Size(320, 640));
-    addTearDown(() => tester.binding.setSurfaceSize(null));
-    final selected = <(String, Object)>[];
-    final select = AcpSessionConfigOptionView(
-      id: const AcpConfigId('vendor/quality'),
-      name: '质量',
-      category: const AcpConfigCategoryView.known(
-        AcpConfigCategoryKindView.thoughtLevel,
-      ),
-      description: '服务端优先级说明',
-      kind: AcpSelectConfigView(
-        currentValue: const AcpConfigValueId('raw:value/1'),
-        options: AcpGroupedOptionsView([
-          AcpSelectGroupView(
-            group: const AcpConfigGroupId('group'),
-            name: '服务分组',
-            options: const [
-              AcpSelectOptionView(
-                value: AcpConfigValueId('raw:value/1'),
-                name: '标准',
-              ),
-              AcpSelectOptionView(
-                value: AcpConfigValueId('raw:value/2'),
-                name: '深入',
-                description: '更深入地回答',
-              ),
-            ],
-          ),
-        ]),
-      ),
-    );
-    final controls = mapAcpConfigControls(
-      options: [select, acpBooleanFixture],
-      modes: null,
-    );
-    await tester.pumpWidget(
-      acpTestApp(
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: AcpConfigurationBar(
-            state: AcpConfigurationViewState(controls: controls, enabled: true),
-            onSelectValue: (id, value) => selected.add((id, value)),
-            onBooleanChanged: (id, value) => selected.add((id, value)),
-            onSelectLegacyMode: (_) =>
-                fail('configOptions present must not setMode'),
-          ),
-        ),
-      ),
-    );
-
-    final selectTrigger = find.descendant(
-      of: find.byKey(
-        ValueKey(AcpViewKeyValues.configControl('vendor/quality')),
-      ),
-      matching: find.byType(TextButton),
-    );
-    await tester.tap(selectTrigger);
-    await tester.pumpAndSettle();
-    expect(find.byTooltip('质量\n服务端优先级说明'), findsOneWidget);
-    expect(find.text('服务分组'), findsWidgets);
-    expect(find.text('更深入地回答'), findsNothing);
-    expect(find.byTooltip('更深入地回答'), findsOneWidget);
-    await tester.tap(
-      find.byKey(
-        ValueKey(
-          AcpViewKeyValues.configChoice('vendor/quality', 'raw:value/2'),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    expect(selected.single, ('vendor/quality', 'raw:value/2'));
-
-    expect(find.byTooltip('保留引用\n保留服务器提供的来源'), findsOneWidget);
-    await tester.tap(find.byType(Switch));
-    await tester.pumpAndSettle();
-    expect(selected.last, (acpBooleanFixture.id.value, true));
-    expect(tester.takeException(), isNull);
+    expect(find.text('服务选择'), findsOneWidget);
   });
 
   testWidgets('空 configOptions 不回落 modes，缺失才显示正式 modes', (tester) async {
