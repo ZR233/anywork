@@ -6377,6 +6377,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpContentThoughtLabel => '思考过程';
 
   @override
+  String acpProcessGroupSummary(int count, int toolCount) {
+    return '过程 · $count 项活动 · $toolCount 个工具';
+  }
+
+  @override
+  String get acpProcessGroupRunning => '执行中';
+
+  @override
   String get acpContentAudioLabel => '音频内容';
 
   @override

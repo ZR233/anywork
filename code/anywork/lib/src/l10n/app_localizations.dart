@@ -12003,6 +12003,18 @@ abstract class AppLocalizations {
   /// **'Thinking'**
   String get acpContentThoughtLabel;
 
+  /// No description provided for @acpProcessGroupSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Process · {count, plural, =1{1 activity} other{{count} activities}} · {toolCount, plural, =1{1 tool} other{{toolCount} tools}}'**
+  String acpProcessGroupSummary(int count, int toolCount);
+
+  /// No description provided for @acpProcessGroupRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Running'**
+  String get acpProcessGroupRunning;
+
   /// No description provided for @acpContentAudioLabel.
   ///
   /// In en, this message translates to:

@@ -2306,16 +2306,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_archive_captures_unpublished_acp_preparation_and_real_worker_tree()
-    -> Result<()> {
-        let fixture = Fixture::new("hang").await?;
+    async fn project_archive_cancels_unpublished_acp_preparation() -> Result<()> {
+        // Block initialization, before either a business open or background probe can run.
+        // This isolates archive cancellation from remote-session close and auth cleanup.
+        let fixture = Fixture::new("initialize-hold").await?;
         let open = fixture.open().await?;
         timeout(Duration::from_secs(15), async {
-            while !fixture.home.path().join("opening").exists() {
+            while !fixture.home.path().join("initializing").exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await?;
+        let pid = fixture.pid("pid")?;
         assert!(
             fixture
                 .runtime
@@ -2324,67 +2326,42 @@ mod tests {
                 .agent_by_thread(&open.target.thread_id)
                 .is_none()
         );
-        let pid = fixture.pid("pid")?;
-        let child = fixture.pid("child")?;
-        let processes = [pid, child].map(|pid| {
-            (
-                pid,
-                pl_provider_fixture::proc_start_ticks(pid).expect("original ACP process"),
-            )
-        });
-        let first = timeout(
+
+        let archived = timeout(
             Duration::from_secs(15),
             fixture.runtime.archive_project(&fixture.workspace.id),
         )
-        .await?;
-        if first.is_err() {
-            // Release the original delayed response, never restart the shared process.
-            std::fs::write(fixture.home.path().join("release"), "continue")?;
-            assert!(
-                fixture
-                    .runtime
-                    .archive_project(&fixture.workspace.id)
-                    .await?
-                    .is_some()
-            );
-        } else {
-            assert!(first?.is_some());
-        }
-        assert!(open.completion.wait().await.is_err());
-        assert!(PathBuf::from(format!("/proc/{pid}")).exists());
-        assert!(PathBuf::from(format!("/proc/{child}")).exists());
-        assert!(
-            fixture
-                .runtime
-                .store
-                .catalog()
-                .agent_by_thread(&open.target.thread_id)
-                .is_none()
-        );
-        assert!(
-            fixture
-                .runtime
-                .open_acp_session(OpenAcpSessionRequest {
-                    account_id: "business-peer".into(),
-                    expected_connection_revision: fixture.revision,
-                    workspace_id: fixture.workspace.id.clone(),
-                    thread_id: None,
-                    intent: AcpOpenIntent::New,
-                })
-                .await
-                .is_err()
-        );
-        let calls = std::fs::read_to_string(fixture.home.path().join("business-calls"))?;
+        .await;
+        let completion = timeout(Duration::from_secs(15), open.completion.wait()).await;
+        let unpublished = fixture
+            .runtime
+            .store
+            .catalog()
+            .agent_by_thread(&open.target.thread_id)
+            .is_none();
+        let account_alive = PathBuf::from(format!("/proc/{pid}")).exists();
+        // Release the fixture even if archiving failed; cleanup must not introduce
+        // a second blocked-protocol fault that obscures the archive result.
+        std::fs::write(fixture.home.path().join("release-init"), "continue")?;
+        let shutdown = fixture.runtime.shutdown_runtime().await;
         assert_eq!(
-            calls
-                .lines()
-                .filter(|method| *method == "session/new")
-                .count(),
-            1
+            archived??.context("archived project")?.id,
+            fixture.workspace.id
         );
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-        timeout_at(deadline, fixture.runtime.shutdown_runtime()).await??;
-        wait_original_processes_reaped(&processes, deadline).await?;
+        assert!(
+            completion?.is_err(),
+            "archiving must cancel the original open"
+        );
+        assert!(
+            unpublished,
+            "cancelled preparation must not publish a member"
+        );
+        assert!(
+            account_alive,
+            "archiving must retain the shared account connection"
+        );
+        shutdown?;
+        assert!(!PathBuf::from(format!("/proc/{pid}")).exists());
         Ok(())
     }
 }
