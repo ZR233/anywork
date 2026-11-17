@@ -318,7 +318,9 @@ impl AgentServices {
             .context("cold child has no saved current proving its shutdown state")?;
             let state = current.state.to_paused_snapshot();
             self.factory.validate_child_close(record, &state)?;
-            if state.lifecycle == ThreadLifecycle::Closed
+            // The paused Core view deliberately reopens lifecycle; the saved Current itself
+            // carries the original producer's completed resource-close observation.
+            if current.state.lifecycle == ThreadLifecycle::Closed
                 && crate::studio::agent_close::is_explicitly_closed(&state)?
                 && owner.observed_thread(&record.id).is_none()
             {

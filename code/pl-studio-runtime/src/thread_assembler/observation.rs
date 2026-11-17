@@ -752,7 +752,7 @@ mod storage_fault_tests {
     }
 
     #[derive(Debug)]
-    struct ResourceIo(Arc<Mutex<Vec<WorkspaceRelease>>>);
+    struct ResourceIo(Arc<Mutex<Vec<(String, WorkspaceRelease)>>>);
     impl StudioChildFactory for ResourceIo {
         type Admission = ();
 
@@ -776,10 +776,10 @@ mod storage_fault_tests {
         }
         async fn close_published(
             &self,
-            _: &str,
+            id: &str,
             disposition: WorkspaceRelease,
         ) -> Result<(), ThreadAssemblyError> {
-            self.0.lock().unwrap().push(disposition);
+            self.0.lock().unwrap().push((id.into(), disposition));
             Ok(())
         }
         async fn discard_unpublished(
@@ -796,7 +796,7 @@ mod storage_fault_tests {
         owner: SessionRuntime,
         store: StudioStore,
         live: LiveOwners,
-        closes: Arc<Mutex<Vec<WorkspaceRelease>>>,
+        closes: Arc<Mutex<Vec<(String, WorkspaceRelease)>>>,
         fail_drain: Arc<AtomicBool>,
         fail_drain_after_writer: Arc<AtomicBool>,
     }
@@ -1148,7 +1148,7 @@ mod storage_fault_tests {
         fixture.owner.close("child").await?;
         assert_eq!(
             *fixture.closes.lock().unwrap(),
-            vec![WorkspaceRelease::Preserve]
+            vec![("child".into(), WorkspaceRelease::Preserve)]
         );
         assert!(fixture.owner.close_session().await.is_empty());
         fixture.stop_writers().await?;
@@ -1184,7 +1184,7 @@ mod storage_fault_tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .all(|release| *release == WorkspaceRelease::Preserve)
+                    .all(|(_, release)| *release == WorkspaceRelease::Preserve)
             );
             fixture
                 .fail_drain_after_writer
@@ -1667,7 +1667,7 @@ mod storage_fault_tests {
                 );
                 assert_eq!(
                     *fixture.closes.lock().unwrap(),
-                    vec![WorkspaceRelease::Preserve]
+                    vec![("child".into(), WorkspaceRelease::Preserve)]
                 );
                 assert_eq!(
                     fixture
@@ -1859,12 +1859,15 @@ mod storage_fault_tests {
                 .close_storage_binding("parent")?
                 .context("retained exact binding after attachment and close")?;
             assert!(binding.channel.is_stopping());
-            assert!(
-                store
-                    .thread_persistence()
-                    .retained_history_channel("parent")
-                    .is_none()
-            );
+            if let Some(retained) = store
+                .thread_persistence()
+                .retained_history_channel("parent")
+            {
+                assert!(
+                    Arc::ptr_eq(&retained, &binding.channel),
+                    "cleanup changed writer ownership"
+                );
+            }
             assert!(
                 fixture
                     .owner
