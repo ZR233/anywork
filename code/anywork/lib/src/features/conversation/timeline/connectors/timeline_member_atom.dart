@@ -41,6 +41,8 @@ class TimelineMemberAtom extends StatefulWidget {
     required this.readAttachment,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.registerDisplay,
     this.executionPresent = true,
     this.disclosure,
@@ -56,6 +58,8 @@ class TimelineMemberAtom extends StatefulWidget {
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
+  final void Function(String, int)? onCurrentContentLayout;
+  final void Function(String)? onCurrentContentUnmounted;
   final VoidCallback Function(TimelineMemberDisplay)? registerDisplay;
   final bool executionPresent;
   final TimelineMemberDisclosure? disclosure;
@@ -418,6 +422,8 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
           initiallyExpanded: _expanded,
           monotonicMicros: widget.monotonicMicros,
           onContentLayout: widget.onContentLayout,
+          onCurrentContentLayout: widget.onCurrentContentLayout,
+          onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
           onExpansionChanged: _expand,
           isDisplayActive: () => _active,
           attachmentBuilder: (item) => TimelineAttachmentsConnector(
@@ -514,15 +520,24 @@ class _TimelineMemberAtomState extends State<TimelineMemberAtom>
   Widget _witness(TimelineCurrentWindowDisplay observation, Widget child) {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
+    final onCurrentLayout = widget.onCurrentContentLayout;
     if (clock == null ||
-        onLayout == null ||
+        (onLayout == null && onCurrentLayout == null) ||
         observation.window?.bytes.isEmpty != false) {
       return child;
     }
     return ContentLayoutWitness(
       itemId: widget.displayId,
       monotonicMicros: clock,
-      onContentLayout: onLayout,
+      onContentLayout: (itemId, micros) {
+        onLayout?.call(itemId, micros);
+        if (widget.record.contentSource is CurrentAtomSource) {
+          onCurrentLayout?.call(itemId, micros);
+        }
+      },
+      onContentUnmounted: widget.record.contentSource is CurrentAtomSource
+          ? widget.onCurrentContentUnmounted
+          : null,
       isDisplayActive: () => _active,
       child: child,
     );

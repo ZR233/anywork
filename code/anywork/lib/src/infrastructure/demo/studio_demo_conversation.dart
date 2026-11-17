@@ -538,14 +538,8 @@ final class _DemoHistory {
   final Map<String, String> displayMembership = {};
   final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
   final Map<String, int> displayMemberRevisions = {};
-  CurrentRunSnapshot? displayLiveSeed;
-  String? displayCurrentWorkId;
-  int displayRevision = 0;
-  int displayLayoutRevision = 0;
-  bool displayExecutionPresent = false;
-  int displayLastOrder = 0;
-  int displayReadyFrontier = 0;
-  int get displayHead => displayReadyFrontier;
+  int historyLastOrder = 0;
+  int get displayHead => displayBlocks.lastOrNull?.blockOrder ?? 0;
   final String epoch = newStudioCorrelationId();
   final Map<String, ChatAtom> activeAtoms = {};
   final Map<ChatSourceId, ChatSourceState> sourceStates = {};
@@ -599,12 +593,6 @@ final class _DemoHistory {
 
   void changed(ThreadWorkspace workspace) {
     revision++;
-    final executionPresent = workspace.runtime.execution != null;
-    if (displayExecutionPresent != executionPresent) {
-      displayExecutionPresent = executionPresent;
-      displayRevision++;
-      displayLayoutRevision++;
-    }
     prepareCurrent(workspace);
     for (final wake in changes.toList()) {
       wake();
@@ -655,20 +643,6 @@ final class _DemoHistory {
     items.add(record);
     byId[message.id] = record;
     return true;
-  }
-
-  void acceptDisplayBlocks(Iterable<DisplayBlock> blocks) {
-    for (final block in blocks) {
-      final index = displayBlocks.indexWhere((value) => value.id == block.id);
-      if (index < 0) {
-        displayBlocks.add(block);
-      } else {
-        displayBlocks[index] = block;
-      }
-      if (block.body case WorkDisplayBlock(:final members)) {
-        displayMembership[block.id] = members.blockId;
-      }
-    }
   }
 
   void sync(_DemoItem item) {

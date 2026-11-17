@@ -411,10 +411,7 @@ async fn count(
     )
     .await?;
     let result = cancellable(interrupt, async {
-        let mut total = 0usize;
-        let mut model_text_items = 0usize;
-        let mut inputs = BTreeSet::new();
-        let mut seen = BTreeSet::new();
+        let mut inventory = InventoryScan::default();
         let mut cut = None;
         let mut cursor = None;
         loop {
@@ -423,18 +420,7 @@ async fn count(
                 .timeline_page(cut.clone(), cursor.clone(), demand)
                 .await?;
             for entry in &page.entries {
-                count_head(
-                    &reader,
-                    &page.cut,
-                    entry,
-                    demand,
-                    &mut total,
-                    &mut seen,
-                    &mut inputs,
-                    &mut model_text_items,
-                    interrupt,
-                )
-                .await?;
+                count_head(&reader, &page.cut, entry, demand, &mut inventory, interrupt).await?;
             }
             let Some(next) = page.next else {
                 break;
@@ -447,9 +433,9 @@ async fn count(
             cursor = Some(next);
         }
         Ok(MainInventory {
-            main_items: total,
-            model_text_items,
-            normal_input_turns: inputs.len(),
+            main_items: inventory.main_items,
+            model_text_items: inventory.model_text_items,
+            normal_input_turns: inventory.inputs.len(),
         })
     })
     .await;
@@ -460,29 +446,40 @@ async fn count(
     total.context("missing Main inventory")
 }
 
+#[derive(Default)]
+struct InventoryScan {
+    main_items: usize,
+    model_text_items: usize,
+    inputs: BTreeSet<String>,
+    groups: BTreeSet<String>,
+}
+
 async fn count_head(
     reader: &pl_studio_runtime::history::HistoryReader,
     cut: &pl_studio_runtime::history::HistoryCut,
     entry: &pl_studio_runtime::history::HistoryTimelineEntry,
     demand: HistoryDemand,
-    total: &mut usize,
-    seen: &mut BTreeSet<String>,
-    inputs: &mut BTreeSet<String>,
-    model_text_items: &mut usize,
+    inventory: &mut InventoryScan,
     interrupt: &mpsc::Receiver<()>,
 ) -> Result<()> {
     match &entry.head {
         HistoryRowHead::Single(head) => {
-            *total = (*total).checked_add(1).context("Main count overflow")?;
-            count_entity(head, inputs, model_text_items);
+            inventory.main_items = inventory
+                .main_items
+                .checked_add(1)
+                .context("Main count overflow")?;
+            count_entity(head, inventory);
         }
         HistoryRowHead::Work(head) => {
             ensure!(
-                seen.insert(head.group_id.clone()),
+                inventory.groups.insert(head.group_id.clone()),
                 "Main inventory repeated Work {}",
                 head.group_id
             );
-            *total = (*total).checked_add(1).context("Main count overflow")?;
+            inventory.main_items = inventory
+                .main_items
+                .checked_add(1)
+                .context("Main count overflow")?;
             let mut group_cut = Some(cut.clone());
             let mut cursor = None;
             loop {
@@ -499,7 +496,7 @@ async fn count_head(
                     let HistoryRowHead::Member(head) = &member.head else {
                         bail!("group page contained a non-member head");
                     };
-                    count_entity(head, inputs, model_text_items);
+                    count_entity(head, inventory);
                 }
                 let Some(next) = page.next else {
                     break;
@@ -521,15 +518,14 @@ async fn count_head(
 
 fn count_entity(
     head: &pl_studio_runtime::history::HistoryEntityHead,
-    inputs: &mut BTreeSet<String>,
-    model_text_items: &mut usize,
+    inventory: &mut InventoryScan,
 ) {
     match (&head.kind, &head.source) {
         (ChatAtomKind::Text, ChatSourceId::ForegroundTurn { .. }) => {
-            *model_text_items += 1;
+            inventory.model_text_items += 1;
         }
         (ChatAtomKind::Input, ChatSourceId::Input { input_id }) => {
-            inputs.insert(input_id.clone());
+            inventory.inputs.insert(input_id.clone());
         }
         _ => {}
     }

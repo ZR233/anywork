@@ -30,6 +30,18 @@ final class _DemoHistoryReader implements HistoryReader {
 
   HistoryCut _cut() => HistoryCut('demo-cut:${_history.displayHead}');
 
+  int _cutFrontier(HistoryCut cut) {
+    const prefix = 'demo-cut:';
+    final raw = cut.token.startsWith(prefix)
+        ? cut.token.substring(prefix.length)
+        : null;
+    final frontier = raw == null ? null : int.tryParse(raw);
+    if (frontier == null || frontier < 0 || frontier > _history.displayHead) {
+      throw _demoStale();
+    }
+    return frontier;
+  }
+
   @override
   Future<HistoryCut> capture() async {
     _checkOpen();
@@ -46,6 +58,7 @@ final class _DemoHistoryReader implements HistoryReader {
     final page = reader.historyPage(
       ReadDemand(maxItems: demand.maxRows, maxBytes: demand.maxBytes),
       before: cursor,
+      ceiling: cut == null ? null : _cutFrontier(cut),
     );
     return HistoryTimelinePage(
       cut: cut ?? _cut(),
@@ -320,12 +333,16 @@ final class _DemoHistoryReader implements HistoryReader {
   @override
   Future<HistoryCut> waitChanged(HistoryCut after) async {
     _checkOpen();
+    final afterFrontier = _cutFrontier(after);
     final completer = Completer<void>();
     void wake() {
-      if (!completer.isCompleted) completer.complete();
+      if (_history.displayHead > afterFrontier && !completer.isCompleted) {
+        completer.complete();
+      }
     }
 
     _history.changes.add(wake);
+    wake();
     try {
       await completer.future;
       _checkOpen();
@@ -464,10 +481,8 @@ final class _DemoCurrentReader implements CurrentReader {
     currentOwnerId: _history.epoch,
   );
 
-  CurrentRevision get _revision => CurrentRevision(
-    ownerId: _history.epoch,
-    revision: _history.displayRevision,
-  );
+  CurrentRevision get _revision =>
+      CurrentRevision(ownerId: _history.epoch, revision: _history.revision);
 
   void _checkOpen() {
     if (_closed || _api._runtimeExiting) throw _conversationClosedFailure;
@@ -527,15 +542,8 @@ final class _DemoCurrentReader implements CurrentReader {
         deferred: deferred,
       ),
     );
-    final tail = reader.livePage(
-      const ReadDemand(maxItems: 128, maxBytes: 256 * 1024),
-    );
-    final atoms = <CurrentAtom>[];
-    for (final block in tail.blocks) {
-      final body = block.body;
-      if (body is! SingleDisplayBlock) continue;
-      final atom = body.record.atom;
-      atoms.add(
+    final atoms = [
+      for (final atom in _history.activeAtoms.values)
         CurrentAtom(
           id: atom.id,
           source: atom.source,
@@ -560,8 +568,7 @@ final class _DemoCurrentReader implements CurrentReader {
               ),
           ],
         ),
-      );
-    }
+    ];
     final plan = workspace.runtime.plan;
     final interactions = workspace.interactions.isEmpty
         ? null
@@ -579,7 +586,7 @@ final class _DemoCurrentReader implements CurrentReader {
       ),
       projection: CurrentProjection(
         logicalStatus: workspace.thread.status,
-        executionPresent: _history.displayExecutionPresent,
+        executionPresent: workspace.runtime.execution != null,
         active: activity == null
             ? null
             : CurrentActivityHead(

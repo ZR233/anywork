@@ -41,7 +41,8 @@ final class _TimelineApplyFailure implements Exception {
 
 /// One presentation generation. Only its component controller owns loaded messages.
 final class TimelineDisplayLease implements TimelineUiControllers {
-  TimelineDisplayLease({
+  TimelineDisplayLease._({
+    required this._read,
     required this.threadId,
     required this.generation,
     required this.demand,
@@ -63,6 +64,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   }
 
   final ClientResourceId resourceId = _newTimelineResourceId();
+  final _TimelineRead _read;
 
   final String threadId;
   final int generation;
@@ -83,9 +85,10 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   final Completer<void> _released = Completer<void>();
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   final ValueNotifier<Object?> currentCollectionError = ValueNotifier(null);
+  final ValueNotifier<int> renderedCurrentAtoms = ValueNotifier(0);
 
   /// Published only by this display's serial admission, never directly by the transport.
-  final ValueNotifier<CurrentRunSnapshot?> live = ValueNotifier(null);
+  final ValueNotifier<CurrentAtomSnapshot?> live = ValueNotifier(null);
   final Map<String, TimelineExpansionIntent> _expansions = {};
   final Set<Object> _ownedQueries = {};
   final Map<Object, Future<void>> _closingQueries = {};
@@ -95,15 +98,12 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   CurrentProjection? _latestCurrentProjection;
   CurrentRevision? _latestCurrentRevision;
   CurrentCollectionRef? _atomCollection;
-  CurrentCollectionRef? _sourceCollection;
+  // One bounded collection page. Continuations are intentionally not
+  // concatenated into a second full Current state.
   List<CurrentAtom> _loadedCurrentAtoms = const [];
-  List<ChatSourceState> _loadedCurrentSources = const [];
-  String? _currentAtomsContinuation;
-  String? _currentSourcesContinuation;
   Future<void>? _currentAtomsLoading;
-  Future<void>? _currentSourcesLoading;
   CurrentCollectionRef? _currentAtomsLoadingRef;
-  CurrentCollectionRef? _currentSourcesLoadingRef;
+  final Set<String> _renderedCurrentAtomIds = {};
   HistoryCut? _historyCut;
   String? _before;
   int? _firstOrder;
@@ -152,7 +152,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     ],
   );
   final Set<TimelineChildrenDisplay> _childrenDisplays = {};
-  final Set<TimelineCurrentDisplay> _currentDisplays = {};
   TimelineContentLayout? _firstContentLayout;
   int _appliedSets = 0;
   int _appliedPrepends = 0;
@@ -162,6 +161,8 @@ final class TimelineDisplayLease implements TimelineUiControllers {
   int get appliedSets => _appliedSets;
   int get appliedPrepends => _appliedPrepends;
   int get appliedAppends => _appliedAppends;
+  Set<String> get renderedCurrentAtomIds =>
+      Set.unmodifiable(_renderedCurrentAtomIds);
   TimelineExpansionIntent expansionForBlock(String blockId) {
     final existing = _expansions[blockId];
     if (existing != null && !existing.isRetired) return existing;
@@ -181,12 +182,16 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     if (_retired) throw StateError('Timeline display is retired');
     _mode = TimelineDisplayMode.history;
     _liveReturnPending = false;
+    _renderedCurrentAtomIds.clear();
+    renderedCurrentAtoms.value++;
     return ++_modeIntent;
   }
 
   int requestLiveWindow() {
     if (_retired) throw StateError('Timeline display is retired');
     _liveReturnPending = true;
+    _renderedCurrentAtomIds.clear();
+    renderedCurrentAtoms.value++;
     return ++_modeIntent;
   }
 
@@ -209,11 +214,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
         WorkDisplayBlock() => body,
       };
       blocks.add(
-        DisplayBlock(
-          id: unit.id,
-          blockOrder: unit.blockOrder ?? 0,
-          body: frozen,
-        ),
+        DisplayBlock(id: unit.id, blockOrder: unit.blockOrder, body: frozen),
       );
     }
     if (blocks.isNotEmpty) {
@@ -231,17 +232,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
         );
       }
     }
-  }
-
-  TimelineDisplayUnit liveUnit(LiveDisplayBlock block, bool executionPresent) {
-    final unit = TimelineDisplayUnit.live(
-      block: block,
-      executionPresent: executionPresent,
-      expansion: expansionForBlock(block.id),
-    );
-    unit.expansion.current = unit;
-    _bindUnit(unit);
-    return unit;
   }
 
   Future<DisplayMembers> openDisplayMembers({
@@ -382,20 +372,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     return () => _childrenDisplays.remove(display);
   }
 
-  Iterable<TimelineCurrentDisplay> get currentDisplays sync* {
-    if (_retired) return;
-    for (final display in _currentDisplays) {
-      if (display.isCurrent) yield display;
-    }
-  }
-
-  /// Borrows one mounted resource. Enumeration never opens its read scope.
-  void Function() registerCurrentDisplay(TimelineCurrentDisplay display) {
-    if (_retired) return () {};
-    _currentDisplays.add(display);
-    return () => _currentDisplays.remove(display);
-  }
-
   void _recordBatch(TimelineApplyPlacement placement) {
     switch (placement) {
       case TimelineApplyPlacement.set:
@@ -483,7 +459,6 @@ final class TimelineDisplayLease implements TimelineUiControllers {
       }
       _childrenDisplays.clear();
       _groupDisplays.clear();
-      _currentDisplays.clear();
       imageResources.retire();
       retirement.value = true;
     }
@@ -555,6 +530,7 @@ final class TimelineDisplayLease implements TimelineUiControllers {
     imageResources.release();
     live.dispose();
     currentCollectionError.dispose();
+    renderedCurrentAtoms.dispose();
     _expansions.clear();
     retirement.dispose();
     controller.dispose();
@@ -631,6 +607,40 @@ final class TimelineSessionOwner {
       selectionStartedMicros: started,
       layoutCompletedMicros: layoutCompletedMicros,
     );
+  }
+
+  /// Reached only after an actually mounted CurrentAtom body subtree completed
+  /// layout. This is display evidence, not an execution or atom-existence guess.
+  void recordCurrentContentLayout(
+    TimelineDisplayLease lease,
+    String itemId,
+    int _,
+  ) {
+    if (_closed ||
+        !identical(_current, lease) ||
+        lease.isRetired ||
+        lease._mode != TimelineDisplayMode.live ||
+        lease.live.value?.currentAtoms.any((atom) => atom.id == itemId) !=
+            true) {
+      return;
+    }
+    if (lease._renderedCurrentAtomIds.add(itemId)) {
+      lease.renderedCurrentAtoms.value++;
+    }
+  }
+
+  void recordCurrentContentUnmounted(
+    TimelineDisplayLease lease,
+    String itemId,
+  ) {
+    if (!identical(_current, lease) ||
+        lease.isRetired ||
+        lease._mode != TimelineDisplayMode.live) {
+      return;
+    }
+    if (lease._renderedCurrentAtomIds.remove(itemId)) {
+      lease.renderedCurrentAtoms.value++;
+    }
   }
 
   /// Updated from the actual viewport before the first consumer is attached.
@@ -976,22 +986,16 @@ final class TimelineSessionOwner {
 }
 
 extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
-  CurrentRunSnapshot _snapshotCurrent(
+  CurrentAtomSnapshot _snapshotCurrent(
     CurrentRevision revision,
     CurrentProjection projection,
   ) {
     final atoms = projection.atoms.isNotEmpty
         ? projection.atoms
         : _loadedCurrentAtoms;
-    final snapshot = CurrentRunSnapshot(
+    final snapshot = CurrentAtomSnapshot(
       revision: revision.revision,
-      layoutRevision: revision.revision,
-      readyFrontier: 0,
-      executionPresent: projection.executionPresent,
-      currentWorkId: null,
-      blocks: const [],
       currentAtoms: atoms,
-      older: null,
     );
     return snapshot;
   }
@@ -1041,75 +1045,80 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
     final atomRef = projection.collections
         .where((reference) => reference.collection == 'atoms')
         .firstOrNull;
-    final sourceRef = projection.collections
-        .where((reference) => reference.collection == 'sources')
-        .firstOrNull;
     if (atomRef != _atomCollection) {
       _atomCollection = atomRef;
       _loadedCurrentAtoms = const [];
-      _currentAtomsContinuation = null;
-    }
-    if (sourceRef != _sourceCollection) {
-      _sourceCollection = sourceRef;
-      _loadedCurrentSources = const [];
-      _currentSourcesContinuation = null;
-    }
-    try {
-      await Future.wait([
-        if (atomRef != null && _loadedCurrentAtoms.isEmpty)
-          _loadCurrentAtoms(scope, atomRef, reset: true),
-        if (sourceRef != null && _loadedCurrentSources.isEmpty)
-          _loadCurrentSources(scope, sourceRef, reset: true),
-      ]);
-      if (_retired) return;
       currentCollectionError.value = null;
-    } catch (error) {
-      if (!_retired) currentCollectionError.value = error;
     }
     if (!_retired) await _applyCurrentRows(revision, projection);
-  }
-
-  Future<void> loadNextCurrentAtoms() async {
-    final scope = _currentQueries;
-    if (scope == null) {
-      return;
-    }
-    final atomRef = _atomCollection;
-    final sourceRef = _sourceCollection;
-    await Future.wait([
-      if (atomRef != null && _currentAtomsContinuation != null)
-        _loadCurrentAtoms(scope, atomRef, reset: false),
-      if (sourceRef != null && _currentSourcesContinuation != null)
-        _loadCurrentSources(scope, sourceRef, reset: false),
-    ]);
-    final projection = _latestCurrentProjection;
-    final revision = _latestCurrentRevision;
-    if (!_retired && projection != null && revision != null) {
-      await _applyCurrentRows(revision, projection);
+    if (atomRef != null && _loadedCurrentAtoms.isEmpty && !_retired) {
+      unawaited(_loadCurrentAtomsPage(scope, atomRef, projection));
     }
   }
 
-  bool get hasMoreCurrentAtoms =>
-      _currentAtomsContinuation != null || _currentSourcesContinuation != null;
-
-  List<ChatSourceState> get currentSources {
-    final direct =
-        _latestCurrentProjection?.sources ?? const <ChatSourceState>[];
-    return direct.isEmpty ? _loadedCurrentSources : direct;
+  Future<void> _loadCurrentAtomsPage(
+    CurrentReadScope scope,
+    CurrentCollectionRef reference,
+    CurrentProjection projection,
+  ) async {
+    try {
+      await _loadCurrentAtoms(scope, reference);
+      final owner = _read.owner;
+      await owner._serialize(() async {
+        if (_retired ||
+            !owner._ownsRead(_read) ||
+            !identical(owner._current, this) ||
+            reference != _atomCollection) {
+          return;
+        }
+        final latestRevision = _latestCurrentRevision;
+        if (latestRevision == null) return;
+        currentCollectionError.value = null;
+        try {
+          await _applyCurrentRows(
+            latestRevision,
+            _latestCurrentProjection ?? projection,
+          );
+        } catch (error) {
+          throw _TimelineApplyFailure(error);
+        }
+      });
+    } catch (error) {
+      final owner = _read.owner;
+      if (!_retired &&
+          owner._ownsRead(_read) &&
+          identical(owner._current, this) &&
+          reference == _atomCollection) {
+        if (error is _TimelineApplyFailure) {
+          owner._publishState(
+            connection: TimelineConnectionPhase.failed,
+            connectionError: error.cause,
+          );
+          owner._restart(_read);
+        } else {
+          currentCollectionError.value = error;
+        }
+      }
+    }
   }
 
   Future<void> _loadCurrentAtoms(
     CurrentReadScope scope,
-    CurrentCollectionRef reference, {
-    required bool reset,
-  }) async {
-    if (_retired || !scope.isActive) throw const StaleConversationScope();
+    CurrentCollectionRef reference,
+  ) async {
+    if (_retired || !scope.isActive || reference != _atomCollection) {
+      throw const StaleConversationScope();
+    }
     final existing = _currentAtomsLoading;
     if (existing != null) {
       if (_currentAtomsLoadingRef == reference) return existing;
-      return existing.then(
-        (_) => _loadCurrentAtoms(scope, reference, reset: reset),
-      );
+      try {
+        await existing;
+      } catch (_) {
+        // This failure belongs to a superseded collection reference. The new
+        // reference still needs its own read and must expose its own result.
+      }
+      return _loadCurrentAtoms(scope, reference);
     }
     final completion = Completer<void>();
     _currentAtomsLoading = completion.future;
@@ -1118,7 +1127,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
       try {
         final page = await scope.pageCollection(
           reference: reference,
-          continuation: reset ? null : _currentAtomsContinuation,
+          continuation: null,
           demand: demand,
         );
         if (_retired || reference != _atomCollection) return;
@@ -1130,19 +1139,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
           atoms.add(await _decodeCurrentAtom(scope, entry));
         }
         if (_retired || reference != _atomCollection) return;
-        final combined = reset
-            ? atoms
-            : <CurrentAtom>[..._loadedCurrentAtoms, ...atoms];
-        final limit = max(demand.maxItems * 4, 256);
-        _loadedCurrentAtoms = List.unmodifiable(
-          combined.length > limit
-              ? combined.sublist(combined.length - limit)
-              : combined,
-        );
-        _currentAtomsContinuation = page.continuation;
-        final projection = _latestCurrentProjection;
-        final revision = _latestCurrentRevision;
-        if (projection != null && revision != null) {}
+        _loadedCurrentAtoms = List.unmodifiable(atoms);
       } finally {
         _currentAtomsLoading = null;
         _currentAtomsLoadingRef = null;
@@ -1163,63 +1160,6 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
         ),
     };
     return decodeCurrentAtomPayload(payload);
-  }
-
-  Future<void> _loadCurrentSources(
-    CurrentReadScope scope,
-    CurrentCollectionRef reference, {
-    required bool reset,
-  }) async {
-    if (_retired || !scope.isActive) throw const StaleConversationScope();
-    final existing = _currentSourcesLoading;
-    if (existing != null) {
-      if (_currentSourcesLoadingRef == reference) return existing;
-      return existing.then(
-        (_) => _loadCurrentSources(scope, reference, reset: reset),
-      );
-    }
-    final completion = Completer<void>();
-    _currentSourcesLoading = completion.future;
-    _currentSourcesLoadingRef = reference;
-    completion.complete(() async {
-      try {
-        final page = await scope.pageCollection(
-          reference: reference,
-          continuation: reset ? null : _currentSourcesContinuation,
-          demand: demand,
-        );
-        if (_retired || reference != _sourceCollection) return;
-        if (page.revision != reference.revision) {
-          throw const StaleConversationScope();
-        }
-        final sources = <ChatSourceState>[];
-        for (final entry in page.entries) {
-          final payload = switch (entry.payload) {
-            InlineCurrentPayload() => entry.payload,
-            DeferredCurrentPayload(:final reference, :final byteLength) =>
-              InlineCurrentPayload(
-                bytes: await _readCurrentPayload(scope, reference, byteLength),
-              ),
-          };
-          sources.add(decodeCurrentSourcePayload(payload));
-        }
-        if (_retired || reference != _sourceCollection) return;
-        final combined = reset
-            ? sources
-            : <ChatSourceState>[..._loadedCurrentSources, ...sources];
-        final limit = max(demand.maxItems * 4, 256);
-        _loadedCurrentSources = List.unmodifiable(
-          combined.length > limit
-              ? combined.sublist(combined.length - limit)
-              : combined,
-        );
-        _currentSourcesContinuation = page.continuation;
-      } finally {
-        _currentSourcesLoading = null;
-        _currentSourcesLoadingRef = null;
-      }
-    }());
-    return completion.future;
   }
 
   Future<List<int>> _readCurrentPayload(
@@ -1243,6 +1183,7 @@ extension TimelineDisplayCurrentAccess on TimelineDisplayLease {
         ),
       );
       if (window.offset != bytes.length ||
+          window.generation != reference.generation ||
           window.availableThrough != byteLength ||
           window.bytes.isEmpty) {
         throw const ConversationContinuityError(
@@ -1376,7 +1317,11 @@ extension TimelineSessionAccess on TimelineSessionOwner {
         current._mode != TimelineDisplayMode.live) {
       return;
     }
-    _markPresentedInputs(read.session.threadId, blocks, const []);
+    _markPresentedInputs(
+      read.session.threadId,
+      blocks,
+      current.live.value?.currentAtoms ?? const [],
+    );
     _publishState(
       connection: TimelineConnectionPhase.ready,
       connectionError: null,
@@ -1394,7 +1339,8 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     required String? olderCursor,
   }) async {
     final session = read.session;
-    final next = TimelineDisplayLease(
+    final next = TimelineDisplayLease._(
+      read: read,
       threadId: session.threadId,
       generation: ++_generation,
       demand: _readDemand!,
@@ -1446,7 +1392,7 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     final previous = _current;
     next._mode = previous?.mode ?? TimelineDisplayMode.live;
     _current = next;
-    _markPresentedInputs(session.threadId, blocks, live.blocks);
+    _markPresentedInputs(session.threadId, blocks, live.currentAtoms);
     _olderInFlight = null;
     await next._admitCurrentProject(currentView);
     if (previous != null) _retire(previous);
@@ -1456,15 +1402,14 @@ extension TimelineSessionAccess on TimelineSessionOwner {
   void _markPresentedInputs(
     String threadId,
     List<DisplayBlock> history,
-    List<LiveDisplayBlock> tail,
+    List<CurrentAtom> currentAtoms,
   ) {
     final inputIds = <String>[
       for (final block in history)
         if (block.body case SingleDisplayBlock(:final record))
           if (record.atom.source case InputChatSource(:final inputId)) inputId,
-      for (final block in tail)
-        if (block.body case SingleDisplayBlock(:final record))
-          if (record.atom.source case InputChatSource(:final inputId)) inputId,
+      for (final atom in currentAtoms)
+        if (atom.source case InputChatSource(:final inputId)) inputId,
     ];
     if (inputIds.isEmpty) return;
     client.drafts.existingComposer(threadId)?.markInputsPresented(inputIds);

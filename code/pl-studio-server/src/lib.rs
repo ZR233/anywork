@@ -88,11 +88,7 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .context("Studio HTTP server failed");
     shutdown.cancel();
     let readers_result = state.timelines.shutdown().await;
-    let shutdown_result = runtime
-        .shutdown_runtime()
-        .await
-        .map(|_| ())
-        .map_err(anyhow::Error::from);
+    let shutdown_result = runtime.shutdown_runtime().await.map(|_| ());
     let mut result = result;
     for (owner, outcome) in [
         ("timeline readers", readers_result),

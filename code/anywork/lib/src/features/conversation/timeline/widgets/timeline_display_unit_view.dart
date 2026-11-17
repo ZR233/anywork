@@ -80,9 +80,7 @@ class _TimelineDisplayUnitViewState extends State<TimelineDisplayUnitView> {
       executionPresent: unit.executionPresent,
       state: unit.state,
       initiallyExpanded: unit.expansion.expanded!,
-      location: unit.blockOrder == null
-          ? WorkDisplayLocation.live
-          : WorkDisplayLocation.history,
+      location: WorkDisplayLocation.history,
       activity: widget.activity,
       now: widget.now,
       onExpandedChanged: (expanded) {

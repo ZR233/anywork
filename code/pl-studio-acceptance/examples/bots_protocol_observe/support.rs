@@ -708,10 +708,10 @@ pub(crate) fn current_demand() -> ReadDemand {
     CURRENT_DEMAND
 }
 
-fn unique_body<'a>(
-    bodies: &'a [HistoryBodyEntry],
+fn unique_body(
+    bodies: &[HistoryBodyEntry],
     predicate: impl Fn(&HistoryBodyEntry) -> bool,
-) -> Result<Option<&'a HistoryBodyEntry>> {
+) -> Result<Option<&HistoryBodyEntry>> {
     let mut matching = bodies.iter().filter(|body| predicate(body));
     let first = matching.next();
     ensure!(

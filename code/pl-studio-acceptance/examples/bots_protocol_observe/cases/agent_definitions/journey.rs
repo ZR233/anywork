@@ -610,39 +610,33 @@ impl Observation<'_> {
                         .context("Current watch ended before the submitted Turn completed")?;
                     if let pl_studio_runtime::CurrentFrame::Notification { notification, .. } =
                         frame
-                    {
-                        if let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
+                        && let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
                             notification.notification
-                            && turn.input_id.as_deref() == Some(input_id.as_str())
-                        {
-                            ensure!(
-                                turn.id == head.turn_id,
-                                "Current completion named a different Turn"
-                            );
-                            loop {
-                                head = turn_head_for_input(
-                                    &history,
-                                    &input_id,
-                                    &mut remaining,
-                                    deadline,
-                                )
-                                .await?
-                                .context("History discarded the completed input Turn")?;
-                                if !matches!(
-                                    head.state,
-                                    pl_studio_runtime::history::HistoryTurnState::Unknown
-                                        | pl_studio_runtime::history::HistoryTurnState::Queued
-                                        | pl_studio_runtime::history::HistoryTurnState::Running
-                                ) {
-                                    break;
-                                }
-                                ensure!(
-                                    Instant::now() < deadline,
-                                    "notified Turn {} did not durably settle",
-                                    head.turn_id
-                                );
-                                tokio::time::sleep(http::POLL).await;
+                        && turn.input_id.as_deref() == Some(input_id.as_str())
+                    {
+                        ensure!(
+                            turn.id == head.turn_id,
+                            "Current completion named a different Turn"
+                        );
+                        loop {
+                            head =
+                                turn_head_for_input(&history, &input_id, &mut remaining, deadline)
+                                    .await?
+                                    .context("History discarded the completed input Turn")?;
+                            if !matches!(
+                                head.state,
+                                pl_studio_runtime::history::HistoryTurnState::Unknown
+                                    | pl_studio_runtime::history::HistoryTurnState::Queued
+                                    | pl_studio_runtime::history::HistoryTurnState::Running
+                            ) {
+                                break;
                             }
+                            ensure!(
+                                Instant::now() < deadline,
+                                "notified Turn {} did not durably settle",
+                                head.turn_id
+                            );
+                            tokio::time::sleep(http::POLL).await;
                         }
                     }
                 }

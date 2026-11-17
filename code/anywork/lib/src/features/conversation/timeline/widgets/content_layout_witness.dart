@@ -15,6 +15,7 @@ class ContentLayoutWitness extends SingleChildRenderObjectWidget {
     required this.monotonicMicros,
     required this.onContentLayout,
     required this.isDisplayActive,
+    this.onContentUnmounted,
     required super.child,
   });
 
@@ -22,6 +23,7 @@ class ContentLayoutWitness extends SingleChildRenderObjectWidget {
   final int Function() monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros) onContentLayout;
   final bool Function()? isDisplayActive;
+  final void Function(String itemId)? onContentUnmounted;
 
   @override
   RenderObject createRenderObject(BuildContext context) => _ContentLayoutRender(
@@ -29,6 +31,7 @@ class ContentLayoutWitness extends SingleChildRenderObjectWidget {
     monotonicMicros,
     onContentLayout,
     isDisplayActive,
+    onContentUnmounted,
   );
 
   @override
@@ -41,6 +44,7 @@ class ContentLayoutWitness extends SingleChildRenderObjectWidget {
       monotonicMicros,
       onContentLayout,
       isDisplayActive,
+      onContentUnmounted,
     );
   }
 }
@@ -55,32 +59,43 @@ class _ContentLayoutRender extends RenderProxyBox {
     this._clock,
     this._onLayout,
     this._isActive,
+    this._onUnmounted,
   );
   String _itemId;
   int Function() _clock;
   void Function(String, int) _onLayout;
   bool Function()? _isActive;
+  void Function(String)? _onUnmounted;
   VoidCallback? _removeCompositionCallback;
   _LayoutCandidate? _candidate;
   Object? _revealRequest;
   bool _reported = false;
+  int _lifecycleGeneration = 0;
 
   void update(
     String itemId,
     int Function() clock,
     void Function(String, int) onLayout,
     bool Function()? isActive,
+    void Function(String)? onUnmounted,
   ) {
+    if (_reported &&
+        (_itemId != itemId || (_onUnmounted != null && onUnmounted == null))) {
+      _scheduleUnmountNotification();
+      _reported = false;
+    }
     if (_itemId == itemId &&
         _clock == clock &&
         _onLayout == onLayout &&
-        _isActive == isActive) {
+        _isActive == isActive &&
+        _onUnmounted == onUnmounted) {
       return;
     }
     _itemId = itemId;
     _clock = clock;
     _onLayout = onLayout;
     _isActive = isActive;
+    _onUnmounted = onUnmounted;
     _candidate = null;
     _revealRequest = null;
     _reported = false;
@@ -234,9 +249,27 @@ class _ContentLayoutRender extends RenderProxyBox {
   void detach() {
     _removeCompositionCallback?.call();
     _removeCompositionCallback = null;
+    if (_reported) _scheduleUnmountNotification();
+    _reported = false;
     _candidate = null;
     _revealRequest = null;
     super.detach();
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _lifecycleGeneration++;
+  }
+
+  void _scheduleUnmountNotification() {
+    final callback = _onUnmounted;
+    if (callback == null) return;
+    final generation = ++_lifecycleGeneration;
+    final itemId = _itemId;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (generation == _lifecycleGeneration) callback(itemId);
+    });
   }
 }
 

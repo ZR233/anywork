@@ -248,25 +248,6 @@ bool _sameCurrentContents(
   return true;
 }
 
-final class LiveDisplayBlock {
-  const LiveDisplayBlock({
-    required this.id,
-    required this.blockOrder,
-    required this.body,
-    required this.state,
-    this.source,
-    this.hasUnfinishedMembers = false,
-    this.thinkingSummary,
-  });
-  final String id;
-  final int blockOrder;
-  final DisplayBlockBody body;
-  final DisplayBlockState state;
-  final ChatSourceId? source;
-  final bool hasUnfinishedMembers;
-  final String? thinkingSummary;
-}
-
 sealed class DisplayMemberWindow {
   const DisplayMemberWindow();
 }
@@ -315,27 +296,14 @@ abstract interface class DisplayMembers {
   Future<void> close();
 }
 
-final class CurrentRunSnapshot {
-  CurrentRunSnapshot({
+final class CurrentAtomSnapshot {
+  CurrentAtomSnapshot({
     required this.revision,
-    required this.layoutRevision,
-    required this.readyFrontier,
-    required this.executionPresent,
-    required this.currentWorkId,
-    required List<LiveDisplayBlock> blocks,
     List<CurrentAtom> currentAtoms = const [],
-    this.older,
-  }) : blocks = List.unmodifiable(blocks),
-       currentAtoms = List.unmodifiable(currentAtoms);
+  }) : currentAtoms = List.unmodifiable(currentAtoms);
   final int revision;
-  final int layoutRevision;
-  final int readyFrontier;
-  final bool executionPresent;
-  final String? currentWorkId;
-  final List<LiveDisplayBlock> blocks;
 
   /// The bounded Current run facts used to enrich matching History rows.
   /// They are not a second timeline row collection.
   final List<CurrentAtom> currentAtoms;
-  final String? older;
 }

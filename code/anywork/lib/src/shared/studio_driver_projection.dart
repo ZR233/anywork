@@ -166,6 +166,24 @@ StudioDriverFacts queryStudioDriverFacts(
         .lease(presentationThreadId ?? '')
         ?.liveStatus
         ?.primaryActivity,
+    liveActivityTools: switch (timeline
+        .lease(presentationThreadId ?? '')
+        ?.liveStatus
+        ?.activityTools) {
+      final tools? => LiveActivityToolsFacts(
+        ownerId: tools.reference.ownerId,
+        collection: tools.reference.collection,
+        revision: tools.reference.revision,
+        totalCount: tools.totalCount,
+        loadedCount: tools.loadedCount,
+        expanded: tools.expanded,
+        loading: tools.loading,
+        hasPrevious: tools.hasPrevious,
+        hasNext: tools.hasNext,
+        error: tools.error,
+      ),
+      null => null,
+    },
     timelineScroll: _timelineScrollFacts(timeline, presentationThreadId),
     workspacesByThread: {
       for (final state in client.conversations.sessionStates)
@@ -298,11 +316,10 @@ TimelineDisplayFacts? _timelineFacts(
     appliedSets: lease?.appliedSets,
     appliedPrepends: lease?.appliedPrepends,
     appliedAppends: lease?.appliedAppends,
-    currentDisplays: [
-      for (final display
-          in lease?.currentDisplays ?? const <TimelineCurrentDisplay>[])
-        _currentDisplayJson(display),
-    ],
+    renderedCurrentAtomIds:
+        (lease?.renderedCurrentAtomIds.toList() ?? <String>[])..sort(),
+    currentAtomsLoadedCount: lease?.live.value?.currentAtoms.length,
+    currentAtomsError: lease?.currentCollectionError.value?.toString(),
     groups: [
       for (final display
           in lease?.groupDisplays ?? const <TimelineGroupDisplay>[])
@@ -361,131 +378,6 @@ TimelineDisplayFacts? _timelineFacts(
     ],
   );
 }
-
-/// Serializes only already mounted, admitted resources. No getter opens a scope or performs IO.
-Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
-  return {
-    'turnId': display.turnId,
-    'activityId': display.activityId,
-    'expanded': display.expanded,
-    'collections': [
-      for (final collection in display.collections)
-        if (collection.isCurrent)
-          {
-            'ownerId': collection.reference.ownerId,
-            'collection': collection.reference.collection,
-            'revision': collection.reference.revision,
-            'generation': collection.generation,
-            'expanded': collection.expanded,
-            'loading': collection.loading,
-            'error': collection.error?.toString(),
-            'ready': collection.page != null,
-            'continuation': collection.page?.continuation,
-            'entries': [
-              for (final entry
-                  in collection.page?.entries ??
-                      const <CurrentCollectionEntry>[])
-                {
-                  'id': entry.id,
-                  'position': entry.position,
-                  'payload': switch (entry.payload) {
-                    InlineCurrentPayload(:final bytes) => {
-                      'kind': 'inline',
-                      'byteLength': bytes.length,
-                      'base64': base64Encode(bytes),
-                    },
-                    DeferredCurrentPayload(
-                      :final reference,
-                      :final byteLength,
-                    ) =>
-                      {
-                        'kind': 'deferred',
-                        'byteLength': byteLength,
-                        'reference': _currentContentRefJson(reference),
-                      },
-                  },
-                },
-            ],
-          },
-    ],
-    'windows': [
-      for (final observation in display.windows)
-        {
-          'id': observation.id,
-          'reference': _timelineWindowReferenceJson(observation.reference),
-          'offset': observation.offset,
-          'error': observation.error?.toString(),
-          'window': switch (observation.window) {
-            final window? => {
-              'offset': window.offset,
-              'byteLength': window.bytes.length,
-              'base64': base64Encode(window.bytes),
-              'generation': window.generation,
-              'availableThrough': window.availableThrough,
-              'sealed': window.sealed,
-            },
-            null => null,
-          },
-        },
-    ],
-  };
-}
-
-Map<String, Object?> _timelineWindowReferenceJson(Object reference) =>
-    switch (reference) {
-      final CurrentContentRef value => _currentContentRefJson(value),
-      final HistoryEventBodyRef value => {
-        'kind': 'historyBody',
-        'databaseId': value.databaseId,
-        'ownerEventId': value.ownerEventId,
-        'bodyKey': value.bodyKey,
-        'bodyId': value.bodyId,
-        'byteStart': value.byteStart,
-        'byteLength': value.byteLength,
-      },
-      final ContentRef value => _currentReferenceJson(value),
-      _ => throw ArgumentError.value(
-        reference,
-        'reference',
-        'Unsupported timeline window reference',
-      ),
-    };
-
-Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
-  'databaseId': reference.databaseId,
-  'target': switch (reference.target) {
-    ItemPayloadTarget(:final itemId) => {
-      'kind': 'itemPayload',
-      'itemId': itemId,
-    },
-    BodyContentTarget(:final owner, :final key) => {
-      'kind': 'body',
-      'key': key,
-      'owner': switch (owner) {
-        DisplayObservationContentOwner(:final blockId, :final memberKey) => {
-          'kind': 'displayObservation',
-          'blockId': blockId,
-          'memberKey': memberKey,
-        },
-        ItemContentOwner(:final itemId) => {'kind': 'item', 'itemId': itemId},
-        CurrentContentOwner(:final domain, :final id, :final revision) => {
-          'kind': 'current',
-          'domain': domain,
-          'id': id,
-          'revision': revision,
-        },
-      },
-    },
-  },
-};
-
-Map<String, Object?> _currentContentRefJson(CurrentContentRef reference) => {
-  'ownerId': reference.ownerId,
-  'domain': reference.domain,
-  'entityId': reference.entityId,
-  'contentKey': reference.contentKey,
-  'generation': reference.generation,
-};
 
 TimelineItemFacts _timelineMessageFacts(Message message) {
   final unit =

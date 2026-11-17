@@ -41,28 +41,6 @@ abstract interface class TimelineMemberDisplay {
   Iterable<TimelineCurrentWindowDisplay> get windows;
 }
 
-/// A borrow of the mounted current display and its already admitted bounded resources.
-///
-/// These getters never expand, page or watch. A retired source must expose no old page/window.
-abstract interface class TimelineCurrentDisplay {
-  bool get isCurrent;
-  String? get turnId;
-  String? get activityId;
-  bool get expanded;
-  Iterable<TimelineCurrentCollectionDisplay> get collections;
-  Iterable<TimelineCurrentWindowDisplay> get windows;
-}
-
-abstract interface class TimelineCurrentCollectionDisplay {
-  bool get isCurrent;
-  CurrentCollectionRef get reference;
-  int get generation;
-  bool get expanded;
-  bool get loading;
-  Object? get error;
-  CurrentCollectionPage? get page;
-}
-
 abstract interface class TimelineCurrentWindowDisplay {
   String get id;
   Object get reference;

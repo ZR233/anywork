@@ -20,8 +20,6 @@ import '../widgets/plan_summary_card.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
-import 'conversation_current_connector.dart';
-import '../live_status/live_status_view_model.dart';
 
 /// The canonical feature entry. It only borrows the selected display: navigation
 /// owns visible demand; providers and widget disposal do not close sessions.
@@ -287,29 +285,6 @@ class _TimelineConnectorBodyState
         submission: submission,
       ),
       controls: lease,
-      currentWork: Consumer(
-        builder: (_, ref, _) {
-          final workSlice = ref.watch(
-            liveStatusViewModelProvider(threadId)
-                .select((aggregate) => aggregate?.timelineWork),
-          );
-          if (workSlice == null || !workSlice.hasVisibleContent) {
-            return const SizedBox.shrink();
-          }
-          return ConversationCurrentConnector(
-            key: ValueKey(('work', lease.generation)),
-            section: ConversationLiveSection.work,
-            workSlice: workSlice,
-            threadId: threadId,
-            content: lease,
-            liveUnit: lease.liveUnit,
-            registerDisplay: lease.registerCurrentDisplay,
-            images: lease.imageResources,
-            readAttachment: readAttachment,
-            isDisplayActive: active,
-          );
-        },
-      ),
       canonicalPresentationBuilder: (item, render) =>
           TimelineCanonicalPayloadConnector(
             key: ValueKey((lease.generation, item.id)),
@@ -330,11 +305,29 @@ class _TimelineConnectorBodyState
         onContentLayout: (itemId, micros) {
           if (active()) owner.recordContentLayout(lease, itemId, micros);
         },
+        onCurrentContentLayout: (itemId, micros) {
+          if (active()) {
+            owner.recordCurrentContentLayout(lease, itemId, micros);
+          }
+        },
+        onCurrentContentUnmounted: (itemId) {
+          if (active()) {
+            owner.recordCurrentContentUnmounted(lease, itemId);
+          }
+        },
       ),
       monotonicMicros: () => owner.monotonicMicros,
       isDisplayActive: active,
       onContentLayout: (itemId, completedMicros) {
         if (active()) owner.recordContentLayout(lease, itemId, completedMicros);
+      },
+      onCurrentContentLayout: (itemId, completedMicros) {
+        if (active()) {
+          owner.recordCurrentContentLayout(lease, itemId, completedMicros);
+        }
+      },
+      onCurrentContentUnmounted: (itemId) {
+        if (active()) owner.recordCurrentContentUnmounted(lease, itemId);
       },
       onLoadOlder: () => active()
           ? owner.loadOlder(threadId, generation: lease.generation)

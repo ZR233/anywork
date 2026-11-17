@@ -47,10 +47,11 @@ class TimelineView extends StatefulWidget {
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.isDisplayActive,
     this.groupMembersBuilder,
     this.canonicalPresentationBuilder,
-    this.currentWork,
   });
   final String threadId;
   final TimelineSessionViewState view;
@@ -71,10 +72,12 @@ class TimelineView extends StatefulWidget {
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
+  final void Function(String itemId, int layoutCompletedMicros)?
+  onCurrentContentLayout;
+  final void Function(String itemId)? onCurrentContentUnmounted;
   final bool Function()? isDisplayActive;
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
   final CanonicalPresentationBuilder? canonicalPresentationBuilder;
-  final Widget? currentWork;
 
   @override
   State<TimelineView> createState() => _TimelineViewState();
@@ -439,15 +442,11 @@ class _TimelineViewState extends State<TimelineView> {
                                         paginationThreshold: 0,
                                         bottomSliver:
                                             widget.planSummary == null &&
-                                                widget.submissions.isEmpty &&
-                                                widget.currentWork == null
+                                                widget.submissions.isEmpty
                                             ? null
                                             : SliverToBoxAdapter(
                                                 child: Column(
                                                   children: [
-                                                    if (widget.currentWork !=
-                                                        null)
-                                                      widget.currentWork!,
                                                     if (widget.planSummary !=
                                                         null)
                                                       widget.planSummary!,
@@ -570,6 +569,10 @@ class _TimelineViewState extends State<TimelineView> {
                                               widget.monotonicMicros,
                                           onContentLayout:
                                               widget.onContentLayout,
+                                          onCurrentContentLayout:
+                                              widget.onCurrentContentLayout,
+                                          onCurrentContentUnmounted:
+                                              widget.onCurrentContentUnmounted,
                                           isDisplayActive:
                                               widget.isDisplayActive,
                                           groupMembersBuilder:

@@ -1,120 +1,37 @@
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 
-import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
+import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
-import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/conversation_activity_bar.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 
-/// Typed execution/foreground-source facts pass through the production state
-/// machine. In particular, the activity is never injected into a Work header:
-/// a failed merge must remain visible as an extra standalone notice here.
-class ModelRequestWaitPreview extends StatefulWidget {
+class ModelRequestWaitPreview extends StatelessWidget {
   const ModelRequestWaitPreview({super.key});
 
   @override
-  State<ModelRequestWaitPreview> createState() =>
-      _ModelRequestWaitPreviewState();
-}
-
-class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
-  final _expansion = TimelineExpansionIntent();
-  static final _now = DateTime.fromMillisecondsSinceEpoch(1428000);
-  static final _window = CurrentRunSnapshot(
-    currentWorkId: 'model-request-wait',
-    revision: 7,
-    layoutRevision: 7,
-    readyFrontier: 0,
-    executionPresent: true,
-    blocks: const [
-      LiveDisplayBlock(
-        id: 'model-request-wait',
-        blockOrder: 1,
-        state: DisplayBlockState.open,
-        source: ForegroundTurnChatSource(turnId: 'preview-turn'),
-        body: WorkDisplayBlock(
-          timing: WorkTiming(startedAt: 1000),
-          members: DisplayBlockRef(
-            blockId: 'model-request-wait',
-            cut: HistoryCut('preview-cut'),
-            anchorSeq: 1,
-            headSeq: 1,
-          ),
-          executionPresent: true,
-          memberCount: 1,
-          unfinishedCount: 1,
-          groupClosed: false,
-        ),
-      ),
-    ],
-  );
-  late final _aggregate = LiveStatusProjection.project(
-    threadId: 'preview-thread',
-    observation: LiveStatusInputs(
-      cut: LiveWindowCut(
-        revision: _window.revision,
-        readyFrontier: _window.readyFrontier,
-        executionPresent: _window.executionPresent,
-        attemptId: 1,
-        isDisplayActive: true,
-      ),
-      activeTurnId: 'preview-turn',
-      activity: const ThreadActivityView(
-        threadId: 'preview-thread',
-        identity: 'preview-model-request',
-        revision: 7,
-        turnId: 'preview-turn',
-        kind: ThreadActivityKind.waitingApi,
-        summary: '',
-        thinkingSeconds: 17,
-      ),
-      latestLive: _window,
-      hasContentOwner: true,
-    ),
-    outputPaging: const LatestLiveWindow(),
-    timelineWorkPaging: const LatestLiveWindow(),
-  );
-
-  @override
-  void dispose() {
-    _expansion.retire();
-    _expansion.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final presenting = _aggregate.barState as LiveStatusPresenting;
-    final surface = presenting.surface;
+    final projected = LiveStatusProjection.project(
+      threadId: 'preview-thread',
+      observation: LiveStatusInputs(
+        activeTurnId: 'preview-turn',
+        activity: const ThreadActivityView(
+          threadId: 'preview-thread',
+          identity: 'preview-model-request',
+          revision: 7,
+          turnId: 'preview-turn',
+          kind: ThreadActivityKind.waitingApi,
+          summary: '',
+          thinkingSeconds: 17,
+        ),
+        current: CurrentAtomSnapshot(revision: 7),
+        hasContentOwner: true,
+      ),
+    );
+    final presenting = projected.barState as LiveStatusPresenting;
     return ConversationActivityBar(
       children: [
-        if (surface.standaloneNotices.isNotEmpty)
-          ConversationRealtimeNotices(notices: surface.standaloneNotices),
-        for (final block in surface.blocks)
-          TimelineDisplayUnitView(
-            key: ValueKey(block.id),
-            unit: TimelineDisplayUnit.live(
-              block: block,
-              executionPresent: _window.executionPresent,
-              expansion: _expansion,
-            ),
-            activity: surface.mergedActivityFor(block.id),
-            now: () => _now,
-            childBuilder: (_) => const TimelineToolDetails(
-              item: TimelineToolPresentation(
-                id: 'preview-transferred-command',
-                toolCallId: 'preview-transferred-command',
-                name: 'exec',
-                presentationContract: 'builtin.exec@2',
-                statusString: 'transferred',
-                arguments: '{"command":"cargo flutter analyze"}',
-                output: '',
-              ),
-            ),
-          ),
+        ConversationRealtimeNotices(notices: presenting.surface.notices),
       ],
     );
   }

@@ -238,10 +238,24 @@ impl HistoryStore {
     /// Atomic, bounded acceptance. Capacity is explicit so the producer can keep processing
     /// cancellation/current saves while its existing pressure mechanism pauses new archive work.
     pub async fn accept_batch(&self, events: &[HistoryEvent]) -> Result<Vec<u64>> {
-        let _admission = self.inner.admission.lock().await;
-        self.accept_locked(events).await
+        let admission = self.admission_guard().await;
+        self.accept_locked(&admission, events).await
     }
-    pub(super) async fn accept_locked(&self, events: &[HistoryEvent]) -> Result<Vec<u64>> {
+
+    /// Takes the same admission boundary used by [`Self::accept_batch`].
+    ///
+    /// Producer-specific preparation (classifier and usage folding) needs to inspect the pending
+    /// root while no other admission can interleave. Those callers may then call the non-locking
+    /// [`Self::accept_locked`] with the complete candidate effect, avoiding recursive acquisition.
+    pub(crate) async fn admission_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.admission.lock().await
+    }
+
+    pub(crate) async fn accept_locked(
+        &self,
+        _admission: &tokio::sync::MutexGuard<'_, ()>,
+        events: &[HistoryEvent],
+    ) -> Result<Vec<u64>> {
         let pending = {
             let state = self
                 .inner

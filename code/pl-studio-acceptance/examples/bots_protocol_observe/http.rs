@@ -370,59 +370,55 @@ pub(crate) struct CurrentWatchStream {
 
 impl CurrentWatchStream {
     pub async fn next(&mut self, deadline: Instant) -> Result<Option<CurrentFrame>> {
-        loop {
-            let event = tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline),
-                self.stream.next(),
-            )
-            .await
-            .context("current watch exceeded observation deadline")?;
-            let Some(event) = event else {
-                return Ok(None);
-            };
-            let event = event?;
-            ensure!(
-                event.data.len() <= usize::try_from(self.demand.max_bytes)?,
-                "current watch frame exceeded its byte demand"
-            );
-            match event.event.as_str() {
-                "current" => {
-                    let frame: CurrentFrame = serde_json::from_str(&event.data)?;
-                    let (owner_id, revision) = match &frame {
-                        CurrentFrame::Reset { view } => {
-                            ensure!(
-                                !view.revision.owner_id.is_empty(),
-                                "current Reset has no owner"
-                            );
-                            self.saw_reset = true;
-                            self.owner_id = view.revision.owner_id.clone();
-                            self.revision = None;
-                            (&view.revision.owner_id, view.revision.revision)
-                        }
-                        CurrentFrame::Notification { revision, .. }
-                        | CurrentFrame::Projection { revision, .. } => {
-                            ensure!(self.saw_reset, "current watch sent a frame before Reset");
-                            (&revision.owner_id, revision.revision)
-                        }
-                    };
-                    ensure!(
-                        owner_id == &self.owner_id,
-                        "current watch changed owner identity"
-                    );
-                    ensure!(
-                        self.revision.is_none_or(|previous| revision >= previous),
-                        "current watch revision moved backwards"
-                    );
-                    self.revision = Some(revision);
-                    return Ok(Some(frame));
-                }
-                "error" => {
-                    let error: StudioError = serde_json::from_str(&event.data)?;
-                    bail!("current watch: {} ({:?})", error.message, error.code);
-                }
-                "closed" => return Ok(None),
-                other => bail!("unexpected current watch event {other}"),
+        let event =
+            tokio::time::timeout_at(tokio::time::Instant::from_std(deadline), self.stream.next())
+                .await
+                .context("current watch exceeded observation deadline")?;
+        let Some(event) = event else {
+            return Ok(None);
+        };
+        let event = event?;
+        ensure!(
+            event.data.len() <= usize::try_from(self.demand.max_bytes)?,
+            "current watch frame exceeded its byte demand"
+        );
+        match event.event.as_str() {
+            "current" => {
+                let frame: CurrentFrame = serde_json::from_str(&event.data)?;
+                let (owner_id, revision) = match &frame {
+                    CurrentFrame::Reset { view } => {
+                        ensure!(
+                            !view.revision.owner_id.is_empty(),
+                            "current Reset has no owner"
+                        );
+                        self.saw_reset = true;
+                        self.owner_id = view.revision.owner_id.clone();
+                        self.revision = None;
+                        (&view.revision.owner_id, view.revision.revision)
+                    }
+                    CurrentFrame::Notification { revision, .. }
+                    | CurrentFrame::Projection { revision, .. } => {
+                        ensure!(self.saw_reset, "current watch sent a frame before Reset");
+                        (&revision.owner_id, revision.revision)
+                    }
+                };
+                ensure!(
+                    owner_id == &self.owner_id,
+                    "current watch changed owner identity"
+                );
+                ensure!(
+                    self.revision.is_none_or(|previous| revision >= previous),
+                    "current watch revision moved backwards"
+                );
+                self.revision = Some(revision);
+                Ok(Some(frame))
             }
+            "error" => {
+                let error: StudioError = serde_json::from_str(&event.data)?;
+                bail!("current watch: {} ({:?})", error.message, error.code);
+            }
+            "closed" => Ok(None),
+            other => bail!("unexpected current watch event {other}"),
         }
     }
 }

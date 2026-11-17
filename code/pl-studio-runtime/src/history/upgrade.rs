@@ -145,7 +145,7 @@ pub async fn upgrade_history(
             "Thread identity is empty".into(),
         ));
     }
-    if !history_path.is_file() {
+    if !preserved_file_exists(&history_path)? {
         return Err(HistoryError::NotFound(history_path.display().to_string()));
     }
     let pending_report = session_dir.join(BACKUP_ROOT).join(PENDING_REPORT_FILE);

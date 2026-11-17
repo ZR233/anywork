@@ -24,6 +24,8 @@ class CompletionRunConnector extends StatefulWidget {
     this.readAttachment,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.registerMemberDisplay,
     super.key,
   });
@@ -34,6 +36,8 @@ class CompletionRunConnector extends StatefulWidget {
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;
   final void Function(String, int)? onContentLayout;
+  final void Function(String, int)? onCurrentContentLayout;
+  final void Function(String)? onCurrentContentUnmounted;
   final VoidCallback Function(TimelineMemberDisplay)? registerMemberDisplay;
   @override
   State<CompletionRunConnector> createState() => _MembersState();
@@ -384,6 +388,8 @@ class _MembersState extends State<CompletionRunConnector>
       readAttachment: widget.readAttachment,
       monotonicMicros: widget.monotonicMicros,
       onContentLayout: widget.onContentLayout,
+      onCurrentContentLayout: widget.onCurrentContentLayout,
+      onCurrentContentUnmounted: widget.onCurrentContentUnmounted,
       registerDisplay: (member) {
         _members.add(member);
         return () => _members.remove(member);

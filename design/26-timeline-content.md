@@ -65,6 +65,8 @@ Current 由原 State assembler 生成，`CurrentReader` 是 snapshot/watch、col
 
 state 元数据、usage、live usage、耗时和 controls 不等正文或 collection。Current 正文观察只随该 owner/generation 增长或替换；token 变化可以只发 body 更新，不推动历史事件或全 State 重建。当前正文终态也不必然已有 canonical 历史。
 
+Flutter 不创建 Current Work 或历史 tail。状态栏直接投影 Current 活动、交互及保存状态；只有对应 Current 正文已有真实挂载与内容布局证据时，才由正文渲染器承接响应／压缩提示，折叠或卸载时撤销该资格。Current Atoms 保留一个有界集合页，只报告已加载数；活动工具在用户展开后读取单页，完整 `count` 与该页条目数分别表示，opaque 游标导航最多保留 16 个返回位置。集合读取不阻塞 State；后台结果在原 owner/ref 仍有效时，经时间线唯一串行更新入口应用，不能把旧行头覆盖到新的 History cut。控制器应用结果不明时退役该代次并重新 Set。
+
 Current watch 发生 lag、resync 或 owner 更换时返回小型 Reset，并重新捕获完整小 State；不 replay 历史。collection cursor 固定 owner 和 revision，版本变化返回 stale；body reference 固定 owner 与 generation，replace 后旧引用失效。旧 owner 的迟到 body、collection 和 watch 结果不能写入新 owner。
 
 关闭 CurrentReader 时先同步撤销本 reader 的 metadata/body watch 与 page 读取准入，再唤醒并 join 所有已准入操作及子 watch。调用方取消与父 reader 关闭并发时也必须共同收束，不等待或关闭 HistoryStore。

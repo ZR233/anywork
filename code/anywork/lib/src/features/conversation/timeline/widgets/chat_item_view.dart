@@ -34,6 +34,8 @@ class ChatItemView extends StatefulWidget {
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
+    this.onCurrentContentLayout,
+    this.onCurrentContentUnmounted,
     this.isDisplayActive,
     this.groupMembersBuilder,
     this.onExpansionChanged,
@@ -45,6 +47,9 @@ class ChatItemView extends StatefulWidget {
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
   onContentLayout;
+  final void Function(String itemId, int layoutCompletedMicros)?
+  onCurrentContentLayout;
+  final void Function(String itemId)? onCurrentContentUnmounted;
   final bool Function()? isDisplayActive;
   final Widget Function(TimelineDisplayUnit unit)? groupMembersBuilder;
   final ValueChanged<bool>? onExpansionChanged;
@@ -811,11 +816,25 @@ class _ChatItemViewState extends State<ChatItemView> {
   Widget _contentWitness(String text, Widget child) {
     final clock = widget.monotonicMicros;
     final onLayout = widget.onContentLayout;
-    if (text.trim().isEmpty || clock == null || onLayout == null) return child;
+    final onCurrentLayout = widget.onCurrentContentLayout;
+    final onCurrentUnmounted = widget.onCurrentContentUnmounted;
+    if (text.trim().isEmpty ||
+        clock == null ||
+        (onLayout == null && onCurrentLayout == null)) {
+      return child;
+    }
     return ContentLayoutWitness(
       itemId: item.id,
       monotonicMicros: clock,
-      onContentLayout: onLayout,
+      onContentLayout: (itemId, micros) {
+        onLayout?.call(itemId, micros);
+        if (item.displayRecord?.contentSource is CurrentAtomSource) {
+          onCurrentLayout?.call(itemId, micros);
+        }
+      },
+      onContentUnmounted: item.displayRecord?.contentSource is CurrentAtomSource
+          ? onCurrentUnmounted
+          : null,
       isDisplayActive: widget.isDisplayActive,
       child: child,
     );

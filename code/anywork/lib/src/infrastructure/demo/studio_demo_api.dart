@@ -4669,20 +4669,6 @@ class DemoStudioTransport extends StudioTransport
     return _DemoCurrentReader(this, threadId, _historyOf(threadId));
   }
 
-  @visibleForTesting
-  void seedDisplayBlocks({
-    required String threadId,
-    required List<DisplayBlock> blocks,
-    CurrentRunSnapshot? live,
-    Map<DisplayBlockRef, List<DisplayMemberHead>>? members,
-  }) {
-    _ensureDemoRunning();
-    _demoWorkspace(threadId);
-    final history = _historyOf(threadId);
-    history.installDisplay(blocks: blocks, live: live, members: members);
-    _publishContent(threadId);
-  }
-
   /// 明确的 Demo producer 边界。scope 决定成员资格，不解析未知 payload。
   /// 正文身份和 bodies 必须由调用方在提交消息时明确给出，不猜 renderer。
   @visibleForTesting
@@ -4707,16 +4693,6 @@ class DemoStudioTransport extends StudioTransport
 
   @visibleForTesting
   String conversationDatabaseId(String threadId) => _historyOf(threadId).epoch;
-
-  /// Explicit display fixtures. No atom grouping or payload inference is done.
-  @visibleForTesting
-  void seedTimelineItems(String threadId, Iterable<DisplayBlock> blocks) {
-    _ensureDemoRunning();
-    _demoWorkspace(threadId);
-    final history = _historyOf(threadId);
-    history.acceptDisplayBlocks(blocks);
-    _publishContent(threadId);
-  }
 
   /// 通过 Demo 自身权威发布点准备状态事实；没有 GUI demand 时也继续更新业务。
   @visibleForTesting

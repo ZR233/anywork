@@ -20,6 +20,7 @@ mod upgrade;
 mod validate;
 
 pub use accounting::HistoryUsageFact;
+pub(crate) use accounting::PreparedHistoryUsage;
 pub use classifier::*;
 pub use import::*;
 pub use reader::HistoryReader;

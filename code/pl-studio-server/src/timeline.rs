@@ -48,7 +48,7 @@ use crate::{
 
 pub(crate) const CONVERSATION_HEADER: &str = "x-anywork-conversation";
 const IDLE_READER_TIMEOUT: Duration = Duration::from_secs(120);
-const MAX_READS: usize = (crate::MAX_REQUESTS + crate::MAX_STREAMS) as usize;
+const MAX_READS: usize = crate::MAX_REQUESTS + crate::MAX_STREAMS;
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]

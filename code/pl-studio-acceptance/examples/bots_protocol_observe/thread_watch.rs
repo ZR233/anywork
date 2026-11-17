@@ -43,16 +43,14 @@ impl ThreadWatch {
         let observed = async {
             let mut watch = current.watch(None, current_demand()).await?;
             let mut events = 0usize;
-            loop {
-                let frame = next_frame(&mut watch, &mut events, deadline).await?;
-                match frame {
-                    CurrentFrame::Reset { view } => {
-                        validate_view(&view, &self.thread_id)?;
-                        return Ok(*view.state);
-                    }
-                    CurrentFrame::Notification { .. } | CurrentFrame::Projection { .. } => {
-                        anyhow::bail!("Current watch delivered a frame before Reset")
-                    }
+            let frame = next_frame(&mut watch, &mut events, deadline).await?;
+            match frame {
+                CurrentFrame::Reset { view } => {
+                    validate_view(&view, &self.thread_id)?;
+                    Ok(*view.state)
+                }
+                CurrentFrame::Notification { .. } | CurrentFrame::Projection { .. } => {
+                    anyhow::bail!("Current watch delivered a frame before Reset")
                 }
             }
         }

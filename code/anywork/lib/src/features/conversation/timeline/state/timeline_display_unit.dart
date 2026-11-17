@@ -140,19 +140,8 @@ final class TimelineDisplayUnit {
        },
        expansion = expansion ?? TimelineExpansionIntent();
 
-  TimelineDisplayUnit.live({
-    required LiveDisplayBlock block,
-    required this.executionPresent,
-    required this.expansion,
-  }) : id = block.id,
-       blockOrder = null,
-       body = block.body,
-       state = block.state,
-       hasUnfinishedMembers = block.hasUnfinishedMembers,
-       thinkingSummary = block.thinkingSummary;
-
   final String id;
-  final int? blockOrder;
+  final int blockOrder;
   final DisplayBlockBody body;
   final DisplayBlockState state;
   final bool executionPresent;
@@ -160,7 +149,7 @@ final class TimelineDisplayUnit {
   final String? thinkingSummary;
   final TimelineExpansionIntent expansion;
   DisplayBlock get block =>
-      DisplayBlock(id: id, blockOrder: blockOrder ?? 0, body: body);
+      DisplayBlock(id: id, blockOrder: blockOrder, body: body);
   DisplayBlockRef? get memberReference => switch (body) {
     WorkDisplayBlock(:final members) => members,
     SingleDisplayBlock() => null,
