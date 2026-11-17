@@ -7038,4 +7038,623 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get acpDraftUseCurrentConfiguration => 'Use current configuration';
+
+  @override
+  String get timelineToolDetailProgram => 'Program';
+
+  @override
+  String get timelineToolDetailStdin => 'Standard input';
+
+  @override
+  String get timelineToolDetailQuery => 'Query';
+
+  @override
+  String get timelineToolDetailFile => 'File';
+
+  @override
+  String get timelineToolDetailContent => 'Content';
+
+  @override
+  String get timelineToolDetailPatch => 'Patch';
+
+  @override
+  String get timelineToolDetailWriteMode => 'Write mode';
+
+  @override
+  String get timelineToolWriteCreate => 'Create file';
+
+  @override
+  String get timelineToolWriteOverwrite => 'Overwrite file';
+
+  @override
+  String get timelineToolWriteAppend => 'Append content';
+
+  @override
+  String get timelineToolDetailCollision => 'If the destination exists';
+
+  @override
+  String get timelineToolCollisionReject => 'Do not overwrite';
+
+  @override
+  String get timelineToolCollisionOverwrite => 'Overwrite';
+
+  @override
+  String get timelineToolDetailTask => 'Task';
+
+  @override
+  String get timelineToolDetailProfile => 'Collaboration profile';
+
+  @override
+  String get timelineToolDetailTaskDescription => 'Task description';
+
+  @override
+  String get timelineToolDetailDeleteObject => 'Delete target';
+
+  @override
+  String get timelineToolDeleteEmptyDirectory => 'Empty directory';
+
+  @override
+  String get timelineToolDeleteRecursiveDirectory =>
+      'Directory and its contents';
+
+  @override
+  String get timelineToolDetailMessage => 'Message';
+
+  @override
+  String get timelineToolDetailDescription => 'Description';
+
+  @override
+  String get timelineToolDetailReason => 'Reason';
+
+  @override
+  String get timelineToolDetailStageResult => 'Stage result';
+
+  @override
+  String get timelineToolDetailEvidence => 'Evidence';
+
+  @override
+  String get timelineToolDetailPlanContent => 'Plan content';
+
+  @override
+  String get timelineToolDetailWait => 'Wait';
+
+  @override
+  String get timelineToolDetailWebpage => 'Web page';
+
+  @override
+  String get timelineToolDetailFind => 'Find';
+
+  @override
+  String get timelineToolDetailWeather => 'Weather';
+
+  @override
+  String get timelineToolDetailOpenPageLink => 'Open page link';
+
+  @override
+  String get timelineToolDetailFinance => 'Market data';
+
+  @override
+  String get timelineToolDetailSports => 'Sports';
+
+  @override
+  String get timelineToolDetailTimezone => 'Time zone';
+
+  @override
+  String get timelineToolDetailScreenshot => 'Page screenshot';
+
+  @override
+  String get timelineToolDetailSource => 'Source';
+
+  @override
+  String get timelineToolDetailStdout => 'Standard output';
+
+  @override
+  String get timelineToolDetailStderr => 'Standard error';
+
+  @override
+  String get timelineToolDetailAcceptedBytes => 'Accepted input bytes';
+
+  @override
+  String get timelineToolDetailInputCloseState => 'Input close state';
+
+  @override
+  String get timelineToolDetailInputOutcome => 'Input outcome';
+
+  @override
+  String get timelineToolDetailInputDiagnostic => 'Input diagnostic';
+
+  @override
+  String get timelineToolDetailExitCode => 'Exit code';
+
+  @override
+  String get timelineToolDetailSignal => 'Signal';
+
+  @override
+  String get timelineToolDetailStatus => 'Status';
+
+  @override
+  String get timelineToolStatusTimedOut => 'Timed out';
+
+  @override
+  String get timelineToolDetailStartLine => 'Start line';
+
+  @override
+  String get timelineToolDetailEndLine => 'End line';
+
+  @override
+  String get timelineToolDetailNote => 'Note';
+
+  @override
+  String get timelineToolDetailLine => 'Line';
+
+  @override
+  String get timelineToolDetailSearchResults => 'Search results';
+
+  @override
+  String get timelineToolDetailMatches => 'Matches';
+
+  @override
+  String get timelineToolDetailResult => 'Result';
+
+  @override
+  String get timelineToolDetailTitle => 'Title';
+
+  @override
+  String get timelineToolDetailLink => 'Link';
+
+  @override
+  String get timelineToolDetailSummary => 'Summary';
+
+  @override
+  String get timelineToolDetailColumn => 'Column';
+
+  @override
+  String get timelineToolDetailBefore => 'Before';
+
+  @override
+  String get timelineToolDetailAfter => 'After';
+
+  @override
+  String get timelineToolDetailExists => 'Exists';
+
+  @override
+  String get timelineToolDetailYes => 'Yes';
+
+  @override
+  String get timelineToolDetailNo => 'No';
+
+  @override
+  String get timelineToolDetailType => 'Type';
+
+  @override
+  String get timelineToolDetailBytes => 'Bytes';
+
+  @override
+  String get timelineToolDetailReadOnly => 'Read-only';
+
+  @override
+  String get timelineToolDetailModifiedAt => 'Modified at';
+
+  @override
+  String get timelineToolDetailInputAccepted => 'Task input accepted';
+
+  @override
+  String get timelineToolDetailReport => 'Report';
+
+  @override
+  String get timelineToolDetailTaskStatus => 'Task status';
+
+  @override
+  String get timelineToolDetailWaitTimedOut => 'Wait timed out';
+
+  @override
+  String get timelineToolDetailMessagesReady => 'Messages ready';
+
+  @override
+  String get timelineToolDetailPlanPhase => 'Plan phase';
+
+  @override
+  String get timelineToolDetailPlan => 'Plan';
+
+  @override
+  String get timelineToolDetailRevisionFeedback => 'Revision feedback';
+
+  @override
+  String get timelineToolDetailAvailableOperations => 'Available operations';
+
+  @override
+  String get timelineToolDetailOperation => 'Operation';
+
+  @override
+  String get timelineToolDetailTargetPhase => 'Target phase';
+
+  @override
+  String get timelineToolDetailCondition => 'Condition';
+
+  @override
+  String get timelineToolDetailAction => 'Action';
+
+  @override
+  String get timelineToolDetailHistory => 'History';
+
+  @override
+  String get timelineToolDetailCurrentPlan => 'Current plan';
+
+  @override
+  String get timelineToolDetailWorkflow => 'Workflow';
+
+  @override
+  String get timelineToolWorkflowNotStarted => 'Not started';
+
+  @override
+  String get timelineToolDetailGoal => 'Goal';
+
+  @override
+  String get timelineToolDetailCurrentPhase => 'Current phase';
+
+  @override
+  String get timelineToolDetailStageInstructions => 'Stage instructions';
+
+  @override
+  String get timelineToolDetailCompletionCriteria => 'Completion criteria';
+
+  @override
+  String get timelineToolDetailAvailableTransitions => 'Available transitions';
+
+  @override
+  String get timelineToolDetailTransitionGuard => 'Transition guard';
+
+  @override
+  String get timelineToolDetailStages => 'Stages';
+
+  @override
+  String get timelineToolDetailError => 'Error';
+
+  @override
+  String get timelineToolDetailDiagnostic => 'Diagnostic';
+
+  @override
+  String get timelineToolDetailDiagnosticDetail => 'Diagnostic detail';
+
+  @override
+  String get timelineToolDetailDiagnosticCode => 'Diagnostic code';
+
+  @override
+  String get timelineToolDetailNone => 'None';
+
+  @override
+  String get timelineToolInvalidWriteMode => 'Missing or invalid write mode';
+
+  @override
+  String get timelineToolInvalidCollision =>
+      'Invalid destination collision policy';
+
+  @override
+  String get timelineToolMissingTransferPaths =>
+      'Missing source or destination file';
+
+  @override
+  String get timelineToolInvalidDeleteMode =>
+      'Missing or invalid delete target type';
+
+  @override
+  String get timelineToolInvalidEvidence => 'Invalid stage completion evidence';
+
+  @override
+  String get timelineToolMissingCompletion =>
+      'Missing stage completion description';
+
+  @override
+  String get timelineToolMissingDuration => 'Missing wait duration';
+
+  @override
+  String get timelineToolInvalidSearchQuery => 'Invalid search query';
+
+  @override
+  String get timelineToolMissingSearchQuery => 'Missing search query';
+
+  @override
+  String get timelineToolMissingWebUrl => 'Missing web page URL';
+
+  @override
+  String get timelineToolUnknownWebQuery => 'Unrecognized web query';
+
+  @override
+  String get timelineToolNoWebQuery => 'No displayable web query provided';
+
+  @override
+  String get timelineToolStreamMalformed => 'Malformed program output stream';
+
+  @override
+  String get timelineToolExecutionMalformed => 'Malformed program result';
+
+  @override
+  String get timelineToolStatMalformed => 'Malformed file metadata';
+
+  @override
+  String get timelineToolOperationRejected => 'Operation not accepted';
+
+  @override
+  String get timelineToolResultPending => 'Result pending confirmation';
+
+  @override
+  String get timelineToolAcceptanceUnavailable =>
+      'Acceptance receipt unavailable: incomplete window or invalid format';
+
+  @override
+  String get timelineToolNumberOutOfRange =>
+      'Malformed tool content: number out of range';
+
+  @override
+  String get timelineToolStructuredUnavailable =>
+      'Structured result unavailable: incomplete window or invalid format';
+
+  @override
+  String get timelineToolExpectedStructured =>
+      'Structured result unavailable: expected a result object or list';
+
+  @override
+  String get timelineToolExpectedObject => 'Expected a tool input object';
+
+  @override
+  String get timelineToolExpectedText => 'Expected a text result';
+
+  @override
+  String get timelineToolResultMalformed => 'Malformed result content';
+
+  @override
+  String get timelineToolNoSemanticContent =>
+      'This result has no displayable semantic content';
+
+  @override
+  String get timelineToolUnknownFormat => 'Unknown tool display format';
+
+  @override
+  String get timelineToolArchivedUnfinished => 'Unfinished when archived';
+
+  @override
+  String get timelineToolNotResumed => 'Tool has not resumed';
+
+  @override
+  String get timelineToolSpawnRejected => 'Initial task input not accepted';
+
+  @override
+  String get timelineToolWorkflowRejected => 'Workflow change not accepted';
+
+  @override
+  String timelineToolContentMalformed(String reason) {
+    return 'Malformed tool content: $reason';
+  }
+
+  @override
+  String timelineToolInvalidField(String field) {
+    return 'Missing or invalid $field';
+  }
+
+  @override
+  String timelineToolFieldMalformed(String field) {
+    return 'Malformed content for $field';
+  }
+
+  @override
+  String timelineToolSeconds(num seconds) {
+    return '$seconds seconds';
+  }
+
+  @override
+  String timelineToolWebLinkReference(String reference, int link) {
+    return '$reference · link $link';
+  }
+
+  @override
+  String timelineToolWebPageReference(String reference, int page) {
+    return '$reference · page $page';
+  }
+
+  @override
+  String get timelineToolStateQueued => 'Queued';
+
+  @override
+  String get timelineToolStateRunning => 'Running';
+
+  @override
+  String get timelineToolStateSucceeded => 'Succeeded';
+
+  @override
+  String get timelineToolStateCompleted => 'Completed';
+
+  @override
+  String get timelineToolStateFailed => 'Failed';
+
+  @override
+  String get timelineToolStateCancelled => 'Cancelled';
+
+  @override
+  String get timelineToolStateInterrupted => 'Interrupted';
+
+  @override
+  String get timelineToolStateIdle => 'Idle';
+
+  @override
+  String get timelineToolStateWaitingTool => 'Waiting for a tool';
+
+  @override
+  String get timelineToolStateWaitingInteraction => 'Waiting for interaction';
+
+  @override
+  String get timelineToolStateCancelling => 'Cancelling';
+
+  @override
+  String get timelineToolStateClosing => 'Closing';
+
+  @override
+  String get timelineToolStateClosed => 'Closed';
+
+  @override
+  String get timelineToolStateFaulted => 'Faulted';
+
+  @override
+  String get timelineToolStateBudgetLimited => 'Budget limit reached';
+
+  @override
+  String get timelineToolStateReady => 'Ready';
+
+  @override
+  String get timelineToolInputOpen => 'Open';
+
+  @override
+  String get timelineToolInputClosing => 'Closing';
+
+  @override
+  String get timelineToolInputClosed => 'Closed';
+
+  @override
+  String get timelineToolInputComplete => 'Fully accepted';
+
+  @override
+  String get timelineToolInputCancelled => 'Cancelled';
+
+  @override
+  String get timelineToolInputPartial => 'Partially accepted';
+
+  @override
+  String get timelineToolInputFailed => 'Acceptance failed';
+
+  @override
+  String get timelineToolPlanDrafting => 'Drafting';
+
+  @override
+  String get timelineToolPlanAwaitingConfirmation => 'Awaiting confirmation';
+
+  @override
+  String get timelineToolPlanRevisionRequested => 'Revision requested';
+
+  @override
+  String get timelineToolPlanApproved => 'Approved';
+
+  @override
+  String get timelineToolPlanSubmit => 'Submit plan';
+
+  @override
+  String get timelineToolPlanApprove => 'Approve plan';
+
+  @override
+  String get timelineToolPlanRequestRevision => 'Request revision';
+
+  @override
+  String get timelineToolPlanRestart => 'Restart planning';
+
+  @override
+  String get timelineToolWorkflowActive => 'Active';
+
+  @override
+  String get timelineToolWorkflowTerminal => 'Finished';
+
+  @override
+  String get timelineToolFileTypeFile => 'File';
+
+  @override
+  String get timelineToolFileTypeDirectory => 'Directory';
+
+  @override
+  String get timelineToolFileTypeOther => 'Other';
+
+  @override
+  String get timelineToolNameExec => 'Execute command';
+
+  @override
+  String get timelineToolNameWriteStdin => 'Write standard input';
+
+  @override
+  String get timelineToolNameReadSessionNote => 'Read session note';
+
+  @override
+  String get timelineToolNameSearchSessionNote => 'Search session note';
+
+  @override
+  String get timelineToolNameWriteSessionNote => 'Write session note';
+
+  @override
+  String get timelineToolNameApplySessionNotePatch => 'Patch session note';
+
+  @override
+  String get timelineToolNameStatPath => 'Inspect file metadata';
+
+  @override
+  String get timelineToolNameWriteFile => 'Write file';
+
+  @override
+  String get timelineToolNameApplyPatch => 'Apply patch';
+
+  @override
+  String get timelineToolNameCreateDirectory => 'Create directory';
+
+  @override
+  String get timelineToolNameDeletePath => 'Delete path';
+
+  @override
+  String get timelineToolNameCopyPath => 'Copy path';
+
+  @override
+  String get timelineToolNameMovePath => 'Move path';
+
+  @override
+  String get timelineToolNameSpawnAgent => 'Delegate task';
+
+  @override
+  String get timelineToolNameSendMessage => 'Send message';
+
+  @override
+  String get timelineToolNameWait => 'Wait for tasks';
+
+  @override
+  String get timelineToolNameSleep => 'Wait for timer';
+
+  @override
+  String get timelineToolNameViewImage => 'View image';
+
+  @override
+  String get timelineToolNameShowFiles => 'Show files';
+
+  @override
+  String get timelineToolNamePlanCurrent => 'Read current plan';
+
+  @override
+  String get timelineToolNamePlanNext => 'Read available plan operations';
+
+  @override
+  String get timelineToolNamePlanHistory => 'Read plan history';
+
+  @override
+  String get timelineToolNamePlanSubmit => 'Submit plan';
+
+  @override
+  String get timelineToolNamePlanRestart => 'Restart planning';
+
+  @override
+  String get timelineToolNameWorkflowCurrent => 'Read current workflow';
+
+  @override
+  String get timelineToolNameWorkflowNext => 'Read next workflow stages';
+
+  @override
+  String get timelineToolNameWorkflowGraph => 'Read workflow graph';
+
+  @override
+  String get timelineToolNameWorkflowHistory => 'Read workflow history';
+
+  @override
+  String get timelineToolNameWorkflowTransition => 'Advance workflow';
+
+  @override
+  String get timelineToolNameWorkflowRestart => 'Restart workflow';
+
+  @override
+  String get timelineToolNameWebSearch => 'Web query';
+
+  @override
+  String get timelineToolNameDeepseekWebSearch => 'DeepSeek web search';
+
+  @override
+  String get timelineToolNameDeepseekWebFetch => 'DeepSeek web fetch';
 }

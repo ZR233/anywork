@@ -62,19 +62,22 @@ Widget scene(
           TimelineBodyReadIntent(
             scrollable: true,
             onRead: onRead,
-            bodyBuilder: (text) => timelineToolWindowBody(
-              TimelineToolPresentation(
-                id: 'item',
-                toolCallId: call,
-                name: 'tool',
-                presentationContract: contract,
-                statusString: 'succeeded',
-                arguments: '{}',
-                output: '',
+            bodyBuilder: (text) => Builder(
+              builder: (context) => timelineToolWindowBody(
+                context,
+                TimelineToolPresentation(
+                  id: 'item',
+                  toolCallId: call,
+                  name: 'tool',
+                  presentationContract: contract,
+                  statusString: 'succeeded',
+                  arguments: '{}',
+                  output: '',
+                ),
+                text,
+                input: false,
+                acceptance: acceptance,
               ),
-              text,
-              input: false,
-              acceptance: acceptance,
             ),
             child: TimelineContentRangeConnector(
               itemId: 'item',

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
+import 'tool_display.dart';
 import 'tool_display_registry.dart';
 import 'tool_presentation.dart';
 

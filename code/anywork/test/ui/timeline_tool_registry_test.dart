@@ -5,6 +5,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
+import 'package:anywork/src/features/conversation/timeline/state/tool_display.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_display_registry.dart';
 import 'package:anywork/src/features/conversation/timeline/state/tool_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -12,13 +13,15 @@ import 'package:anywork/src/features/conversation/timeline/widgets/timeline_acti
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_detail_panel.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/l10n/app_localizations_en.dart';
+import 'package:anywork/src/l10n/app_localizations_zh.dart';
 import 'package:anywork_client/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
-Widget _host(Widget child) => MaterialApp(
+Widget _host(Widget child, {Locale locale = const Locale('zh')}) => MaterialApp(
   theme: pureStudioTheme(),
-  locale: const Locale('zh'),
+  locale: locale,
   localizationsDelegates: [
     AppLocalizations.delegate,
     ...GlobalMaterialLocalizations.delegates,
@@ -26,6 +29,9 @@ Widget _host(Widget child) => MaterialApp(
   supportedLocales: AppLocalizations.supportedLocales,
   home: Scaffold(body: SingleChildScrollView(child: child)),
 );
+
+final _zh = AppLocalizationsZh();
+final _en = AppLocalizationsEn();
 
 TimelineToolPresentation _tool(
   String contract,
@@ -48,6 +54,12 @@ String _visible(WidgetTester tester) => tester
     .widgetList<RichText>(find.byType(RichText))
     .map((widget) => widget.text.toPlainText())
     .join('\n');
+
+Widget _titleView(TimelineToolPresentation item, {required Locale locale}) =>
+    _host(
+      Builder(builder: (context) => Text(timelineToolTitle(context, item))),
+      locale: locale,
+    );
 
 TimelineActivityRow _row(WidgetTester tester) =>
     tester.widget<TimelineActivityRow>(find.byType(TimelineActivityRow));
@@ -486,7 +498,7 @@ void main() {
       ];
       for (final cut in cuts) {
         final partial = complete.substring(0, cut);
-        final values = spec.decodeOutput(partial);
+        final values = spec.decodeOutput(_zh, partial);
         expect(
           values.whereType<ToolDetailText>(),
           isEmpty,
@@ -497,6 +509,7 @@ void main() {
       }
     }
     final text = toolDisplayRegistry['generic@1']!.decodeOutput(
+      _zh,
       '{"text":"intentionally plain',
     );
     expect(
@@ -509,7 +522,7 @@ void main() {
     );
     expect(
       toolDisplayRegistry['builtin.sleep@1']!
-          .decodeOutput('Timer elapsed.')
+          .decodeOutput(_zh, 'Timer elapsed.')
           .single,
       isA<ToolDetailText>(),
     );
@@ -621,6 +634,7 @@ void main() {
   test('canonical collaboration, workflow and plan inputs use their real schema fields', () {
     final spawn = toolDisplayRegistry['builtin.spawn_agent@1']!;
     final values = spawn.decodeInput(
+      _zh,
       '{"profileId":"directory-executor","taskSummary":"Fix tool details","message":"Inspect the current schema and preserve failures"}',
     );
     expect(values.whereType<ToolDetailText>().map((value) => value.text), [
@@ -631,6 +645,7 @@ void main() {
     expect(
       spawn
           .decodeInput(
+            _zh,
             '{"name":"wrong old fixture","message":"missing task summary"}',
           )
           .single,
@@ -638,6 +653,7 @@ void main() {
     );
     final transition = toolDisplayRegistry['builtin.workflow_transition@1']!
         .decodeInput(
+          _zh,
           '{"expectedRunId":"private","expectedRevision":1,"expectedStateId":"implement","targetStateId":"verify","completion":{"reason":"Implementation complete","summary":"One registry now owns matching","evidence":["Focused tests pass"]}}',
         );
     expect(
@@ -649,6 +665,7 @@ void main() {
       ]),
     );
     final submit = toolDisplayRegistry['builtin.plan_submit@1']!.decodeInput(
+      _zh,
       '{"expectedRevision":1,"plan":"# Actual plan\\nInspect and implement"}',
     );
     expect(
@@ -681,7 +698,7 @@ void main() {
       ),
     ]) {
       expect(
-        toolDisplayRegistry[contract]!.decodeOutput(output).single,
+        toolDisplayRegistry[contract]!.decodeOutput(_zh, output).single,
         isA<ToolDetailText>().having(
           (value) => value.text,
           'delivered text',
@@ -694,6 +711,7 @@ void main() {
 
   test('canonical media and wait receipts retain structured results and partial failures', () {
     final media = toolDisplayRegistry['builtin.show_files@1']!.decodeOutput(
+      _zh,
       '{"caption":"Read this","files":[{"status":"ready","filename":"visible.pdf","resource":{"id":"private"}},{"status":"failed","filename":"missing.pdf","message":"Original missing file error"}]}',
     );
     expect(
@@ -702,47 +720,47 @@ void main() {
         'visible.pdf',
         'missing.pdf',
         'Original missing file error',
+        '已失败',
       ]),
     );
     final wait = toolDisplayRegistry['builtin.wait@1']!.decodeOutput(
+      _zh,
       '{"tasks":[{"taskId":"private","status":"failed"}],"messagesReady":true,"timedOut":false}',
     );
     expect(
       wait.whereType<ToolDetailText>().map((value) => value.text),
-      contains('failed'),
+      contains('已失败'),
     );
     final emptySearch = toolDisplayRegistry['builtin.search_session_note@1']!
-        .decodeOutput('{"matches":[],"count":0,"nextCursor":null}');
+        .decodeOutput(_zh, '{"matches":[],"count":0,"nextCursor":null}');
     expect(emptySearch.whereType<ToolDetailUnavailable>(), isEmpty);
   });
 
   test('canonical filesystem and plan results preserve semantic fields instead of internal revisions', () {
     final stat = toolDisplayRegistry['builtin.stat_path@1']!.decodeOutput(
+      _zh,
       '{"path":"a.txt","exists":true,"type":"file","len":23,"readonly":true}',
     );
     expect(
       stat.whereType<ToolDetailText>().map((value) => value.text),
-      containsAll(['file', '23', '是']),
+      containsAll(['文件', '23', '是']),
     );
     final plan = toolDisplayRegistry['builtin.plan_current@1']!.decodeOutput(
+      _zh,
       '{"revision":32,"state":"approved","document":{"version":4,"markdown":"approved implementation","contentHash":"private-hash"},"allowedTransitions":[]}',
     );
     expect(
       plan.whereType<ToolDetailText>().map((value) => value.text),
-      containsAll(['approved', 'approved implementation']),
+      containsAll(['已批准', 'approved implementation']),
     );
     final workflow = toolDisplayRegistry['builtin.workflow_current@1']!
         .decodeOutput(
+          _zh,
           '{"runId":"private","currentState":{"id":"state-id","title":"Implementation","instructions":"Change one owner","completionCriteria":["Tests pass"],"kind":"atomic"},"lifecycle":"active"}',
         );
     expect(
       workflow.whereType<ToolDetailText>().map((value) => value.text),
-      containsAll([
-        'Implementation',
-        'Change one owner',
-        'Tests pass',
-        'active',
-      ]),
+      containsAll(['Implementation', 'Change one owner', 'Tests pass', '进行中']),
     );
   });
 
@@ -792,11 +810,313 @@ void main() {
     },
   );
 
+  test('every exact tool contract is registered, parseable and immutable', () {
+    const expectedContracts = {
+      'generic@1',
+      'builtin.exec@2',
+      'builtin.write_stdin@1',
+      'builtin.read_session_note@1',
+      'builtin.search_session_note@1',
+      'builtin.write_session_note@1',
+      'builtin.apply_session_note_patch@1',
+      'builtin.stat_path@1',
+      'builtin.write_file@1',
+      'builtin.apply_patch@1',
+      'builtin.create_directory@1',
+      'builtin.delete_path@1',
+      'builtin.copy_path@1',
+      'builtin.move_path@1',
+      'builtin.spawn_agent@1',
+      'builtin.send_message@1',
+      'builtin.wait@1',
+      'builtin.sleep@1',
+      'builtin.view_image@1',
+      'builtin.show_files@1',
+      'builtin.lsp_query@1',
+      'builtin.lsp_capabilities@1',
+      'builtin.lsp_status@1',
+      'builtin.plan_current@1',
+      'builtin.plan_next@1',
+      'builtin.plan_history@1',
+      'builtin.plan_submit@1',
+      'builtin.plan_restart@1',
+      'builtin.workflow_current@1',
+      'builtin.workflow_next@1',
+      'builtin.workflow_graph@1',
+      'builtin.workflow_history@1',
+      'builtin.workflow_transition@1',
+      'builtin.workflow_restart@1',
+      'builtin.web_search@1',
+      'builtin.deepseek_web_search@1',
+      'builtin.deepseek_web_fetch@1',
+    };
+    expect(toolDisplayRegistry.keys.toSet(), expectedContracts);
+    final rebuilt = buildToolDisplayRegistry(toolDisplayRegistry.values);
+    expect(rebuilt.keys.toSet(), expectedContracts);
+    for (final contract in expectedContracts) {
+      final spec = rebuilt[contract]!;
+      expect(spec.contract, contract);
+      expect(
+        () => spec.decodeInput(_zh, '{}'),
+        returnsNormally,
+        reason: contract,
+      );
+      expect(
+        () => spec.decodeOutput(_en, '{}'),
+        returnsNormally,
+        reason: contract,
+      );
+      expect(() => spec.artifacts(_zh, ''), returnsNormally, reason: contract);
+    }
+    expect(
+      () => buildToolDisplayRegistry([
+        toolDisplayRegistry['builtin.exec@2']!,
+        toolDisplayRegistry['builtin.exec@2']!,
+      ]),
+      throwsArgumentError,
+    );
+    expect(
+      () => rebuilt['extra@1'] = toolDisplayRegistry['generic@1']!,
+      throwsUnsupportedError,
+    );
+  });
+
+  test(
+    'all known tool names have explicit Chinese and English expectations',
+    () {
+      for (final (contract, chinese, english) in [
+        ('builtin.apply_patch@1', '应用补丁', 'Apply patch'),
+        ('builtin.apply_session_note_patch@1', '修改会话笔记', 'Patch session note'),
+        ('builtin.copy_path@1', '复制路径', 'Copy path'),
+        ('builtin.create_directory@1', '创建目录', 'Create directory'),
+        ('builtin.deepseek_web_fetch@1', 'DeepSeek 网页抓取', 'DeepSeek web fetch'),
+        (
+          'builtin.deepseek_web_search@1',
+          'DeepSeek 网页搜索',
+          'DeepSeek web search',
+        ),
+        ('builtin.delete_path@1', '删除路径', 'Delete path'),
+        ('builtin.exec@2', '执行命令', 'Execute command'),
+        ('builtin.move_path@1', '移动路径', 'Move path'),
+        ('builtin.plan_current@1', '查询当前计划', 'Read current plan'),
+        ('builtin.plan_history@1', '查询计划历史', 'Read plan history'),
+        ('builtin.plan_next@1', '查询计划可用操作', 'Read available plan operations'),
+        ('builtin.plan_restart@1', '重新规划', 'Restart planning'),
+        ('builtin.plan_submit@1', '提交计划', 'Submit plan'),
+        ('builtin.read_session_note@1', '读取会话笔记', 'Read session note'),
+        ('builtin.search_session_note@1', '搜索会话笔记', 'Search session note'),
+        ('builtin.send_message@1', '发送消息', 'Send message'),
+        ('builtin.show_files@1', '展示文件', 'Show files'),
+        ('builtin.sleep@1', '等待计时', 'Wait for timer'),
+        ('builtin.spawn_agent@1', '派发协作任务', 'Delegate task'),
+        ('builtin.stat_path@1', '查看文件元数据', 'Inspect file metadata'),
+        ('builtin.view_image@1', '查看图片', 'View image'),
+        ('builtin.wait@1', '等待任务', 'Wait for tasks'),
+        ('builtin.web_search@1', '网页查询', 'Web query'),
+        ('builtin.workflow_current@1', '查询当前工作流', 'Read current workflow'),
+        ('builtin.workflow_graph@1', '查询工作流图', 'Read workflow graph'),
+        ('builtin.workflow_history@1', '查询工作流历史', 'Read workflow history'),
+        ('builtin.workflow_next@1', '查询工作流后续阶段', 'Read next workflow stages'),
+        ('builtin.workflow_restart@1', '重启工作流', 'Restart workflow'),
+        ('builtin.workflow_transition@1', '推进工作流', 'Advance workflow'),
+        ('builtin.write_file@1', '写入文件', 'Write file'),
+        ('builtin.write_session_note@1', '写入会话笔记', 'Write session note'),
+        ('builtin.write_stdin@1', '写入标准输入', 'Write standard input'),
+        ('builtin.lsp_query@1', 'LSP 查询', 'LSP query'),
+        ('builtin.lsp_capabilities@1', 'LSP 能力', 'LSP capabilities'),
+        ('builtin.lsp_status@1', 'LSP 状态', 'LSP status'),
+      ]) {
+        final spec = toolDisplayRegistry[contract]!;
+        final item = _tool(contract, '{}', '{}');
+        expect(spec.displayName(_zh, item), chinese, reason: contract);
+        expect(spec.displayName(_en, item), english, reason: contract);
+      }
+      final generic = _tool('generic@1', '{}', '{}');
+      expect(
+        toolDisplayRegistry['generic@1']!.displayName(_zh, generic),
+        'exec',
+      );
+      expect(
+        toolDisplayRegistry['generic@1']!.displayName(_en, generic),
+        'exec',
+      );
+    },
+  );
+
+  testWidgets(
+    'rendered plan/workflow and generic failure/cancellation titles are localized',
+    (tester) async {
+      for (final (contract, status, locale, expected) in [
+        (
+          'builtin.plan_current@1',
+          'succeeded',
+          const Locale('zh'),
+          '查询当前计划 已完成',
+        ),
+        (
+          'builtin.plan_current@1',
+          'succeeded',
+          const Locale('en'),
+          'Read current plan completed',
+        ),
+        (
+          'builtin.workflow_current@1',
+          'running',
+          const Locale('zh'),
+          '查询当前工作流 运行中',
+        ),
+        (
+          'builtin.workflow_current@1',
+          'running',
+          const Locale('en'),
+          'Read current workflow running',
+        ),
+        ('generic@1', 'failed', const Locale('zh'), 'exec 失败'),
+        ('generic@1', 'failed', const Locale('en'), 'exec failed'),
+        ('generic@1', 'cancelled', const Locale('zh'), 'exec 已取消'),
+        ('generic@1', 'cancelled', const Locale('en'), 'exec cancelled'),
+      ]) {
+        await tester.pumpWidget(
+          _titleView(
+            _tool(contract, '{}', '{}', status: status),
+            locale: locale,
+          ),
+        );
+        expect(
+          find.text(expected),
+          findsOneWidget,
+          reason: '$contract $status $locale',
+        );
+      }
+
+      for (final (locale, output, expected) in [
+        (const Locale('zh'), '', '结果待确认'),
+        (const Locale('en'), '', 'Result pending confirmation'),
+        (
+          const Locale('zh'),
+          '{"accepted":false,"code":"staleRevision"}',
+          '工作流变更未接纳',
+        ),
+        (
+          const Locale('en'),
+          '{"accepted":false,"code":"staleRevision"}',
+          'Workflow change not accepted',
+        ),
+      ]) {
+        await tester.pumpWidget(
+          _titleView(
+            _tool(
+              'builtin.workflow_transition@1',
+              '{}',
+              output,
+              status: 'succeeded',
+            ),
+            locale: locale,
+          ),
+        );
+        expect(find.text(expected), findsOneWidget, reason: '$locale $output');
+      }
+
+      final unversionedName = TimelineToolPresentation(
+        id: 'unknown-plan',
+        toolCallId: 'call',
+        name: 'plan_current',
+        presentationContract: 'builtin.plan_current@99',
+        statusString: 'failed',
+        arguments: '{}',
+        output: '{}',
+      );
+      await tester.pumpWidget(
+        _titleView(unversionedName, locale: const Locale('en')),
+      );
+      expect(find.text('plan_current failed'), findsOneWidget);
+    },
+  );
+
+  test('write mode fields and workflow acceptance details localize labels but preserve source text', () {
+    final write = toolDisplayRegistry['builtin.write_file@1']!;
+    final writeValues = write
+        .decodeInput(
+          _zh,
+          jsonEncode({
+            'path': '/private/report.md',
+            'mode': 'append',
+            'content': 'Keep this body\nverbatim',
+          }),
+        )
+        .whereType<ToolDetailText>()
+        .toList();
+    expect(writeValues.map((value) => value.title), ['文件', '写入方式', '内容']);
+    expect(writeValues.map((value) => value.text), [
+      '/private/report.md',
+      '追加内容',
+      'Keep this body\nverbatim',
+    ]);
+    expect(writeValues.last.code, isTrue);
+    final invalidMode =
+        write
+                .decodeInput(
+                  _en,
+                  '{"path":"x","mode":"truncate","content":"body"}',
+                )
+                .single
+            as ToolDetailUnavailable;
+    expect(
+      invalidMode.reason,
+      _en.timelineToolContentMalformed(_en.timelineToolInvalidWriteMode),
+    );
+
+    final workflow = toolDisplayRegistry['builtin.workflow_transition@1']!;
+    final pending =
+        workflow
+                .acceptanceDetails(
+                  _en,
+                  const ToolAcceptanceProjection(ToolAcceptance.pending),
+                )
+                .single
+            as ToolDetailUnavailable;
+    expect(pending.reason, _en.timelineToolAcceptanceUnavailable);
+    final pendingZh =
+        workflow
+                .acceptanceDetails(
+                  _zh,
+                  const ToolAcceptanceProjection(ToolAcceptance.pending),
+                )
+                .single
+            as ToolDetailUnavailable;
+    expect(pendingZh.reason, _zh.timelineToolAcceptanceUnavailable);
+    final rejected = workflow.decodeAcceptance(
+      '{"accepted":false,"code":"staleRevision","recoveryAction":"Inspect the current workflow and retry"}',
+    );
+    final rejectionDetails = workflow
+        .acceptanceDetails(_en, rejected)
+        .whereType<ToolDetailText>()
+        .toList();
+    expect(rejectionDetails.map((value) => value.title), [
+      'Workflow change not accepted',
+      'Reason',
+    ]);
+    expect(rejectionDetails.map((value) => value.text), [
+      'staleRevision',
+      'Inspect the current workflow and retry',
+    ]);
+    final rejectionDetailsZh = workflow
+        .acceptanceDetails(_zh, rejected)
+        .whereType<ToolDetailText>()
+        .toList();
+    expect(rejectionDetailsZh.map((value) => value.title), ['工作流变更未接纳', '原因']);
+    expect(rejectionDetailsZh.map((value) => value.text), [
+      'staleRevision',
+      'Inspect the current workflow and retry',
+    ]);
+  });
+
   test('exact registry matching and immutable semantic values do not infer capabilities from names', () {
     expect(toolDisplayRegistry['builtin.exec@99'], isNull);
     expect(toolDisplayRegistry['exec'], isNull);
     final spec = toolDisplayRegistry['builtin.exec@2']!;
     final values = spec.decodeInput(
+      _zh,
       '{"command":"printf proof","cwd":"private"}',
     );
     expect(
@@ -812,15 +1132,16 @@ void main() {
       throwsUnsupportedError,
     );
     expect(
-      spec.decodeInput('{"command":3}').single,
+      spec.decodeInput(_zh, '{"command":3}').single,
       isA<ToolDetailUnavailable>(),
     );
     expect(
-      spec.decodeOutput('{"taskId":"private","stdout":').single,
+      spec.decodeOutput(_zh, '{"taskId":"private","stdout":').single,
       isA<ToolDetailUnavailable>(),
     );
     expect(
       toolDisplayRegistry['generic@1']!.decodeInput(
+        _zh,
         '{"command":"must not parse"}',
       ),
       isEmpty,
@@ -829,6 +1150,7 @@ void main() {
 
   test('execution result preserves streams, numeric signal and structured denial instead of its transport envelope', () {
     final values = toolDisplayRegistry['builtin.exec@2']!.decodeOutput(
+      _zh,
       jsonEncode({
         'stdout': {'content': 'out'},
         'stderr': {'content': 'err'},
@@ -854,14 +1176,14 @@ void main() {
     final spec = toolDisplayRegistry['builtin.write_file@1']!;
     expect(
       spec
-          .decodeInput('{"path":"empty.txt","content":"","mode":"create"}')
+          .decodeInput(_zh, '{"path":"empty.txt","content":"","mode":"create"}')
           .whereType<ToolDetailUnavailable>(),
       isEmpty,
     );
     expect(spec.readsOutput('succeeded'), isFalse);
     expect(spec.readsOutput('denied'), isTrue);
     expect(
-      spec.decodeOutput('{"error":"denied","taskId":"private"}').single,
+      spec.decodeOutput(_zh, '{"error":"denied","taskId":"private"}').single,
       isA<ToolDetailText>().having((value) => value.text, 'error', 'denied'),
     );
   });
@@ -937,7 +1259,7 @@ void main() {
         ],
       );
       await tester.pumpWidget(
-        _host(TimelineWebSearchToolCard(item: tool, initiallyExpanded: true)),
+        _host(TimelineToolDetails(item: tool, initiallyExpanded: true)),
       );
       await tester.pumpAndSettle();
       final text = _visible(tester);
