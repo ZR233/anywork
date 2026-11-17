@@ -3525,7 +3525,7 @@ mod mode_migration_tests {
         let reopened = crate::studio::StudioStore::open(&database_path).await?;
         let saved = crate::studio::thread_factory::recovery::load_current_for_recovery(
             &reopened,
-            &crate::Thread::from(thread.clone()),
+            &thread,
         )
         .await?
         .context("reopened current")?;
@@ -3884,7 +3884,7 @@ mod mode_migration_tests {
             .await?;
         let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
             &reopened,
-            &crate::Thread::from(thread.clone()),
+            &thread,
         )
         .await?
         .context("upgraded current")?;
@@ -3943,7 +3943,7 @@ mod mode_migration_tests {
         let unchanged = serde_json::to_vec(&current.state)?;
         let again = crate::studio::thread_factory::recovery::load_current_for_recovery(
             &reopened,
-            &crate::Thread::from(thread.clone()),
+            &thread,
         )
         .await?
         .context("stable current")?;
