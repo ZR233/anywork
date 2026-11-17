@@ -1,7 +1,9 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod acp_child;
+mod acp_lsp;
+pub(in crate::studio) use acp_lsp::PreparedAcpLsp;
 mod acp_workspace;
-pub(in crate::studio) use acp_workspace::PreparedAcpWorkspace;
+pub(in crate::studio) use acp_workspace::{AcpWorkspaceRequest, PreparedAcpWorkspace};
 mod bot_workspace;
 mod child_resources;
 mod close_child;

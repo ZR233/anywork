@@ -112,23 +112,23 @@ impl SkillReader for CatalogReader {
         self.0.record_model_view(name, cancellation).await
     }
 }
-impl pl_agent_tool::Tool for ThreadSkillTool {
-    type Input = OpaquePayload;
-    type Context = CallContext;
-    type Output = ToolOutput;
-    type Error = ToolError;
-    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
-        &self.definition
-    }
-    async fn execute(
+impl ThreadSkillTool {
+    /// Executes the shared author without committing Native extension state.
+    /// The optional name identifies a successfully read skill, not an activation.
+    pub async fn execute_discovery(
         &self,
         input: OpaquePayload,
-        context: CallContext,
-    ) -> Result<ToolOutput, ToolError> {
+        cancellation: CancellationToken,
+    ) -> Result<(ToolOutput, Option<String>), ToolError> {
+        if !self.sources.authorization().is_active() {
+            return Err(ToolError::new(
+                pl_core::thread::ThreadError::ToolPermissionRevoked,
+            ));
+        }
         if input.format() != "application/json" || input.version() != 1 {
             return Err(error("unsupported skill argument encoding"));
         }
-        if context.cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(error("skill operation cancelled"));
         }
         match self.kind {
@@ -136,7 +136,7 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
                 let input = decode_json(input.content()).map_err(ToolError::new)?;
                 let catalog = self
                     .sources
-                    .discover(context.cancellation)
+                    .discover(cancellation)
                     .await
                     .map_err(ToolError::new)?;
                 let rows = catalog
@@ -155,18 +155,18 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
                     .await
                     .map_err(ToolError::new)?;
                 let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
-                text_output("pl.tool.skill-list", &result, encoded)
+                Ok((text_output("pl.tool.skill-list", &result, encoded)?, None))
             }
             ThreadSkillKind::View => {
                 let input = decode_json(input.content()).map_err(ToolError::new)?;
                 let catalog = self
                     .sources
-                    .discover(context.cancellation.clone())
+                    .discover(cancellation.clone())
                     .await
                     .map_err(ToolError::new)?;
                 let result =
                     match pl_tool_skill::tools::skill_view::SkillView::new(CatalogReader(catalog))
-                        .execute(input, context.cancellation)
+                        .execute(input, cancellation)
                         .await
                     {
                         Ok(result) => result,
@@ -183,26 +183,45 @@ impl pl_agent_tool::Tool for ThreadSkillTool {
                         Err(error) => return Err(ToolError::new(error)),
                     };
                 let output = text_output("pl.tool.skill-view", &result.viewed, result.preview)?;
-                let payload = output.payload().clone();
-                let id = format!(
-                    "pl.tool.skill-view:{}",
-                    hex::encode(Sha256::digest(
-                        result.viewed.skill.name.to_ascii_lowercase().as_bytes()
-                    ))
-                );
-                let previous = context.extensions.get(&id);
-                if previous.is_some_and(|record| record.payload == payload) {
-                    return Ok(output);
-                }
-                Ok(
-                    output.with_extension_mutations(vec![ExtensionMutation::Put {
-                        id,
-                        expected_revision: previous.map(|record| record.revision),
-                        payload,
-                    }]),
-                )
+                Ok((output, Some(result.viewed.skill.name)))
             }
         }
+    }
+}
+
+impl pl_agent_tool::Tool for ThreadSkillTool {
+    type Input = OpaquePayload;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+    fn definition(&self) -> &pl_agent_tool::ToolDefinition {
+        &self.definition
+    }
+    async fn execute(
+        &self,
+        input: OpaquePayload,
+        context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        let (output, viewed_skill) = self.execute_discovery(input, context.cancellation).await?;
+        let Some(name) = viewed_skill else {
+            return Ok(output);
+        };
+        let payload = output.payload().clone();
+        let id = format!(
+            "pl.tool.skill-view:{}",
+            hex::encode(Sha256::digest(name.to_ascii_lowercase().as_bytes()))
+        );
+        let previous = context.extensions.get(&id);
+        if previous.is_some_and(|record| record.payload == payload) {
+            return Ok(output);
+        }
+        Ok(
+            output.with_extension_mutations(vec![ExtensionMutation::Put {
+                id,
+                expected_revision: previous.map(|record| record.revision),
+                payload,
+            }]),
+        )
     }
 }
 
@@ -227,32 +246,45 @@ impl ThreadSkillManageTool {
         .clone()
     }
 }
-impl TypedTool for ThreadSkillManageTool {
-    const NAME: &'static str = "skill_manage";
-    const DESCRIPTION: &'static str = <pl_tool_skill::tools::skill_manage::SkillManage<
-        super::actions::LocalSkillFiles,
-    > as TypedTool>::DESCRIPTION;
-    type Args = pl_tool_skill::tools::skill_manage::SkillManageInput;
-    type Context = CallContext;
-    type Output = ToolOutput;
-    type Error = ToolError;
-    async fn execute(
+impl ThreadSkillManageTool {
+    /// Uses the same local author and write lease under a real non-Native invocation.
+    pub async fn execute_workspace(
         &self,
-        input: Self::Args,
-        context: CallContext,
+        input: <Self as TypedTool>::Args,
+        context: crate::invocation::WorkspaceInvocation,
     ) -> Result<ToolOutput, ToolError> {
+        self.execute_mutation(input, context.cancellation).await
+    }
+
+    async fn execute_mutation(
+        &self,
+        input: pl_tool_skill::tools::skill_manage::SkillManageInput,
+        cancellation: CancellationToken,
+    ) -> Result<ToolOutput, ToolError> {
+        if !self.workspace.authorization().is_active() {
+            return Err(ToolError::new(
+                pl_core::thread::ThreadError::ToolPermissionRevoked,
+            ));
+        }
         self.workspace
             .ensure_workspace_writable()
             .map_err(ToolError::new)?;
         let lease = tokio::select! {
             biased;
-            _ = context.cancellation.cancelled() => return Err(error("operation cancelled before mutation")),
+            _ = cancellation.cancelled() => return Err(error("operation cancelled before mutation")),
             lease = self.workspace.write_lock() => lease,
         };
-        if context.cancellation.is_cancelled() {
+        if cancellation.is_cancelled() {
             return Err(error("operation cancelled before mutation"));
         }
-        let snapshot = self.catalog.snapshot();
+        let catalog = Arc::new(
+            self.catalog
+                .discovery_sources()
+                .discover(cancellation.clone())
+                .await
+                .map_err(ToolError::new)?,
+        );
+        let snapshot = catalog.snapshot();
         let candidates = snapshot
             .skills
             .iter()
@@ -273,7 +305,6 @@ impl TypedTool for ThreadSkillManageTool {
             snapshot.project_dir.clone(),
             candidates,
         );
-        let catalog = self.catalog.clone();
         let result = tokio::task::spawn_blocking(move || {
             let _lease = lease;
             let result = futures::executor::block_on(tool.execute(input, ()));
@@ -296,6 +327,24 @@ impl TypedTool for ThreadSkillManageTool {
         };
         let encoded = serde_json::to_string(&result).map_err(ToolError::new)?;
         text_output("pl.tool.skill-mutation", &result, encoded)
+    }
+}
+
+impl TypedTool for ThreadSkillManageTool {
+    const NAME: &'static str = "skill_manage";
+    const DESCRIPTION: &'static str = <pl_tool_skill::tools::skill_manage::SkillManage<
+        super::actions::LocalSkillFiles,
+    > as TypedTool>::DESCRIPTION;
+    type Args = pl_tool_skill::tools::skill_manage::SkillManageInput;
+    type Context = CallContext;
+    type Output = ToolOutput;
+    type Error = ToolError;
+    async fn execute(
+        &self,
+        input: Self::Args,
+        context: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_mutation(input, context.cancellation).await
     }
 }
 fn text_output(

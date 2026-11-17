@@ -67,6 +67,7 @@ pub(crate) struct AcpResources {
     pub(crate) completion: super::AcpSessionCompletion,
     session: OnceLock<Session>,
     pub(crate) cancellation: CancellationToken,
+    initial_configuration: AtomicBool,
     cleanup: pl_acp::auth::CleanupBudget,
     owned: Mutex<Owned>,
     association_gate: Mutex<()>,
@@ -108,6 +109,7 @@ impl AcpResources {
             completion,
             session: OnceLock::new(),
             cancellation: CancellationToken::new(),
+            initial_configuration: AtomicBool::new(false),
             cleanup,
             owned: Mutex::new(Owned {
                 draft,
@@ -140,6 +142,25 @@ impl AcpResources {
 
     pub(crate) fn session(&self) -> Result<&Session> {
         self.session.get().context("ACP process is not initialized")
+    }
+
+    pub(crate) fn begin_initial_configuration(&self) {
+        self.initial_configuration.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn finish_initial_configuration(&self) {
+        self.initial_configuration.store(false, Ordering::Release);
+    }
+
+    /// Concurrent send/configure cannot bypass a new child's first-message setup.
+    pub(crate) fn ensure_input_ready(&self) -> Result<(), pl_acp::session::Error> {
+        if self.cancellation.is_cancelled() {
+            return Err(pl_acp::session::Error::Closed);
+        }
+        if self.initial_configuration.load(Ordering::Acquire) {
+            return Err(pl_acp::session::Error::Busy);
+        }
+        Ok(())
     }
 
     pub(crate) async fn is_draft(&self) -> bool {
@@ -496,6 +517,32 @@ impl AcpResources {
         }
         // No driver was launched: dropping it settles SDK opened() waiters.
         drop(owned.driver.take());
+        // Begin independent local cleanup before observing the peer's close. A stalled prompt
+        // must not consume the shared budget while commands/LSP and the MCP transport sit idle.
+        if !owned.workspace_closed
+            && let Some(tools) = self.workspace_tools.get()
+        {
+            let mut closing = self.workspace_close.lock().await;
+            if closing.is_none() {
+                let tools = tools.clone();
+                *closing = Some(tokio::spawn(async move { tools.close().await }));
+            }
+        }
+        let mut host_mcp = self.host_mcp.lock().await;
+        if let Some(service) = host_mcp.as_mut() {
+            match tokio::time::timeout_at(self.cleanup.deadline(), service.close()).await {
+                Ok(Ok(())) => {
+                    *host_mcp = None;
+                    self.mcp_injected.store(false, Ordering::Release);
+                }
+                Ok(Err(error)) => {
+                    owned.driver_error = Some(error.to_string());
+                }
+                Err(_) => {
+                    owned.driver_error = Some("ACP Host MCP shutdown is pending".into());
+                }
+            }
+        }
         if owned.join.is_some() {
             // A failed protocol close must not short-circuit physical reclamation.
             if let Some(session) = self.session.get()
@@ -533,21 +580,6 @@ impl AcpResources {
                     completed,
                 )));
                 self.join_report(&mut owned.report_join).await;
-            }
-        }
-        let mut host_mcp = self.host_mcp.lock().await;
-        if let Some(service) = host_mcp.as_mut() {
-            match tokio::time::timeout_at(self.cleanup.deadline(), service.close()).await {
-                Ok(Ok(())) => {
-                    *host_mcp = None;
-                    self.mcp_injected.store(false, Ordering::Release);
-                }
-                Ok(Err(error)) => {
-                    owned.driver_error = Some(error.to_string());
-                }
-                Err(_) => {
-                    owned.driver_error = Some("ACP Host MCP shutdown is pending".into());
-                }
             }
         }
         let mut workspace_complete = true;
