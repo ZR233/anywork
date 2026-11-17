@@ -47,6 +47,8 @@ MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等�
 
 ## 验证
 
+测试开发按内置 [test-quality](../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)；以下补充工具作者与宿主各自负责的真实边界。
+
 通过 Cargo 完整依赖闭包检查独立工具和共享支持，包括可选特性、平台、构建与测试依赖；workspace 外下游真实消费与调用，避免特性合并掩盖耦合。不能用仅迁移 schema 或新增壳包代替行为独立；原权限与生命周期证据仍在宿主边界验证。
 
 先编译公开 API 示例再迁移相应生产路径。新库无特性、typed、typed+macros、重命名下游及必要 compile-fail 分别验证，workspace 特性合并不证明基础消费方独立。
@@ -55,4 +57,4 @@ MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等�
 
 跨语言回执测试使用生产序列化的实际封装，核对外层标签、版本及内层编码。`OpaquePayload.content` 是 UTF-8 字符串，即使内容是 JSON，也不能在客户端夹具中直接替换成对象；专用解码器先验证字符串，再按所属格式解析。分别手写两端看似一致的对象夹具不能证明互通。
 
-人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不以固定延时、放宽断言或强制生产前台化制造成功。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。
+人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不把后台操作强制前台化来绕过交付语义。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。

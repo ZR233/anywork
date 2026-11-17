@@ -14,7 +14,7 @@ description: 编写、修改、重构、调试或审查 Rust 代码时使用。�
 - 公共或共享接口、类型、错误、模块、依赖或宏：使用 `rust-api-design`。
 - 锁、原子、异步任务、回调、共享状态或资源关闭：使用 `rust-concurrency-safety`。
 - `unsafe`、裸指针、FFI 或手工线程安全实现：使用 `rust-unsafe-safety`。
-- 测试设计、修改、去重或回归证明：使用 `test-quality`。
+- 测试设计、修改、去重或回归证明：使用 [test-quality](../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。
 
 ## 工作方式
 

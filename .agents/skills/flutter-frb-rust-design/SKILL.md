@@ -55,8 +55,9 @@ SSH 项目中的 ACP 仍在宿主运行，业务工具经 Host MCP 复用普通�
 只读镜像、有界在途数据和局部 UI 状态不是第二事实源。必要的身份检查、取消与背压不能因
 “简化”直接删除；应在原 owner 内实现一次，避免逐页复制。
 
-按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety、rust-unsafe-safety 与 test-quality；
-不因本技能固定追加全量测试。交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。
+按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety 与 rust-unsafe-safety。
+测试开发按内置 [test-quality](../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)；
+交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。
 
 主时间线沿现役游标读取器交付，Flutter 的时间线会话所有者独占应用队列、主游标及规范尾部；
 SDK 只转发查询能力，历史页不自动接纳。计划、交互和文件正文借用显示租约，不能依赖 SDK

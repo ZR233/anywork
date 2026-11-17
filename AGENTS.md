@@ -173,6 +173,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 预置系统技能
 
+- 通用测试开发技能 `test-quality` 随糊来帮内置分发，canonical 内容位于 [内置测试技能](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。本仓库开发也直接使用这一份；不在 `.agents/skills/` 保留同名副本或转发技能，以免项目优先级遮蔽内置版本。
 - `pl-studio-runtime` 的上游预置技能直接存放在 `code/pl-studio-runtime/assets/skills/<name>/`：`canvas-design`、`frontend-design` 来自 anthropics/skills；Office 领域仅使用 DeepSeek Harness 的七项独立 `office` / `office-*` 技能，不混入其他文档技能来源。
 - 更新时通过工具读取固定上游提交及许可证，手动拷贝所需文件，按 `SKILL.md` 和 `references/`、`templates/`、`scripts/`、`assets/` 标准布局整理；下载副本放本会话 scratch。不得新增自动同步命令、子模块、外部仓库 checkout 或构建期下载。
 - 各技能基础约定独立完整，减少互相引用；支持文件位于本技能目录内。正文不写死工具函数调用、宿主物理路径或特定运行时的动态注入协议，遵循当前会话实际提供的发现与执行规则。
@@ -183,7 +184,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 质量技能入口
 
-Rust 单元测试放在所属源码文件尾部的 `#[cfg(test)]` 模块中；集成测试放在 crate 的 `tests/`，只通过公开接口验证行为，不为测试扩大生产接口的可见性，也不通过 `#[path]` 或 `include!` 重新编译生产实现。共享环境夹具可以放在 `tests/support/` 或仅在 `cfg(test)` 下编译的模块中。
+涉及功能开发中的测试取舍、缺陷回归、测试编写/修改/审查/清理，以及测试编译或运行成本优化时，必须先读取并使用内置 [test-quality](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。按照该技能选择开发轨道、行为边界、失败判定和清理方式；它是通用测试开发方法的唯一维护位置，不另建重复的通用 `TESTING.md`、测试规则副本或同职责项目技能。
+
+Rust、Dart/Flutter 的具体做法按该技能的参考页读取。项目命令与运行前提仍由本文件、`flutter-studio-build` 和 [测试与人工验收](design/24-testing.md) 提供；领域技能只补充对应协议、安全、所有权与迁移风险，不复制通用测试政策。
 
 通用设计、实现与测试规则由以下技能维护，本文件只规定项目约束。按任务语义选择，不以文件名或改动规模代替判断；多个边界同时涉及时组合使用，不把普通改动扩展为无关专项审计。
 
@@ -195,9 +198,9 @@ Rust 单元测试放在所属源码文件尾部的 `#[cfg(test)]` 模块中；�
 | 公共接口、类型、错误、模块、依赖与协议 | `rust-api-design` |
 | 同步、异步取消、回调与资源生命周期 | `rust-concurrency-safety` |
 | unsafe、FFI、外部句柄与安全证明 | `rust-unsafe-safety` |
-| 测试设计、回归、层级、必要性与去重 | `test-quality` |
+| 测试开发、回归、层级、必要性、去重与成本 | [内置 `test-quality`](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md) |
 
-质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护；运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
+Rust 质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护；内置 `test-quality` 统一维护通用测试方法。运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
 
 ### Rust 异步接口约定
 
@@ -215,8 +218,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 ## 检查与观察入口
 
-- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本文件不规定测试目录或类型白名单，也不另设开发、审查或返修流程。可按任务目标和实际影响选择验证，通用方法使用 `test-quality` 技能，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
-- 验证报告区分实际执行、有效复用、失败和未验证；排队、运行中、零用例、采集完成或模型自述都不能冒充通过。环境或权限阻塞保留原始错误，不伪报完成。
+- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单。验证范围、测试写法、去重与结果报告遵循上文内置 `test-quality`；本节只提供项目执行入口，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 常用入口（`PUB_HOSTED_URL` 及镜像行为由 Flutter/Dart 自身处理，xtask 不改写已跟踪的 `pubspec.lock`）：

@@ -54,4 +54,4 @@
 
 ## 5. 验证
 
-按 [test-quality](../../test-quality/SKILL.md) 优先复用已有并发行为测试，使用可控 barrier、阶段 hook、模型化状态机或顺序断言构造关键交错。验证最终状态、资源计数、错误传播和所有等待者，而不只验证“没有超时”。真实进程树或 GUI 生命周期语义必须使用项目规定的 `test-project` / `manual-gui` 入口取得证据。
+测试开发按内置 [test-quality](../../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。并发证据使用可控 barrier、阶段 hook、模型化状态机或顺序断言构造关键交错，核对最终状态、资源计数、错误传播和所有等待者。真实进程树或 GUI 生命周期语义使用项目规定的 `test-project` / `manual-gui` 入口取得证据。
