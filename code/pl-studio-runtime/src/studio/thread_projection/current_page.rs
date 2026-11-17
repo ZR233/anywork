@@ -12,8 +12,12 @@ pub(in crate::studio) fn current_page(
     encode: impl Fn(String) -> Result<String>,
 ) -> Result<CurrentCollectionPage> {
     ensure!(
-        reference.collection == "interactions"
-            && state.projection().interactions.as_ref() == Some(reference),
+        state
+            .projection()
+            .interactions
+            .iter()
+            .chain(state.projection().collections.iter())
+            .any(|current| current == reference),
         core::ChatError::StaleContent
     );
     let boundary = after

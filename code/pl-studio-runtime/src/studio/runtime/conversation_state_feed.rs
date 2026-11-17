@@ -1,6 +1,6 @@
 //! Passive State observation. One assembler owns the snapshot and continuous notifications.
 //!
-//! Opening registers on the existing observation slot and reads cold history when no source is
+//! Opening registers on the existing observation slot and reads cold current JSON when no source is
 //! installed. It never activates execution or waits for an execution workspace check.
 use super::{
     StudioRuntime,
@@ -85,15 +85,19 @@ impl StudioRuntime {
         let subscription_id = crate::studio::ids::new_id("state");
         let slot = self.thread_observations.observation_slot(thread_id);
         let (position, mut slot_changed) = slot.capture();
-        let registered = position.source.as_ref().map(|source| {
-            (
-                source.subscribe(),
-                source.storage(),
-                source.last_turn(),
-                source.conversation(),
-                source.clone(),
-            )
-        });
+        let registered = position
+            .source
+            .as_ref()
+            .filter(|source| !source.is_delivery_closed())
+            .map(|source| {
+                (
+                    source.subscribe(),
+                    source.storage(),
+                    source.last_turn(),
+                    source.conversation(),
+                    source.clone(),
+                )
+            });
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
         let mut state = None;

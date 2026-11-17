@@ -74,9 +74,8 @@ impl CurrentFile {
         };
         let file = self.clone();
         let current = tokio::task::spawn_blocking(move || {
-            let current: ThreadCurrent = serde_json::from_slice(&bytes)
+            let current = ThreadCurrent::from_json(&bytes, &file.thread_id)
                 .with_context(|| format!("invalid Thread current {}", path.display()))?;
-            file.validate(&current, None)?;
             Ok::<_, anyhow::Error>(current)
         })
         .await

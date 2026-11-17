@@ -129,7 +129,7 @@ impl CurrentReader {
             .thread_observations
             .observation_slot(self.thread_id());
         let (position, mut changed) = slot.capture();
-        if let Some(feed) = position.source {
+        if let Some(feed) = position.source.filter(|feed| !feed.is_delivery_closed()) {
             let mut registration = feed.conversation();
             loop {
                 self.check_open()?;
@@ -208,6 +208,7 @@ impl CurrentReader {
         demand: ReadDemand,
         cancellation: &CancellationToken,
     ) -> Result<(CurrentView, ConversationStateFeed)> {
+        let mut reopened = false;
         loop {
             self.check_open()?;
             ensure!(!cancellation.is_cancelled(), closed());
@@ -217,11 +218,26 @@ impl CurrentReader {
                 .thread_observations
                 .observation_slot(self.thread_id());
             let (position, _) = slot.capture();
-            let mut state = self
+            let opened = self
                 .inner
                 .runtime
                 .open_current_state_feed(self.thread_id(), cancellation.clone())
-                .await?;
+                .await;
+            let mut state = match opened {
+                Ok(state) => state,
+                Err(error)
+                    if !reopened
+                        && error.downcast_ref::<StudioError>().is_some_and(|error| {
+                            error.reason() == Some("conversationResyncRequired")
+                        }) =>
+                {
+                    // Rebinding the original publication closes the old registration before
+                    // its first source. Reopen on that new owner; no history is replayed.
+                    reopened = true;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let result = async {
                 let Some(ThreadSubscriptionUpdate::Snapshot { snapshot, .. }) =
                     state.recv().await?
@@ -294,12 +310,26 @@ impl CurrentReader {
     ) -> Result<CurrentCollectionPage> {
         demand.validate(1)?;
         let current = self.current(&self.inner.cancel).await?;
-        ensure!(reference.owner_id == current.owner_id(), stale());
+        ensure!(
+            reference.owner_id == current.owner_id()
+                && current
+                    .projection()
+                    .interactions
+                    .iter()
+                    .chain(current.projection().collections.iter())
+                    .any(|head| head == &reference),
+            stale()
+        );
         let after = continuation
             .map(|cursor| -> Result<String> {
+                ensure!(
+                    cursor.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+                    stale()
+                );
                 let (saved, after): (CurrentCollectionRef, String) =
                     serde_json::from_str(&cursor).map_err(|_| stale())?;
                 ensure!(saved == reference, stale());
+                serde_json::from_str::<(i64, String)>(&after).map_err(|_| stale())?;
                 Ok(after)
             })
             .transpose()?;
@@ -590,6 +620,7 @@ impl CurrentWatch {
             task.await?;
         }
         self.receiver.close();
+        while self.receiver.try_recv().is_ok() {}
         Ok(())
     }
 }
@@ -617,6 +648,7 @@ impl CurrentBodyWatch {
             task.await?;
         }
         self.receiver.close();
+        while self.receiver.try_recv().is_ok() {}
         Ok(())
     }
 }
@@ -631,6 +663,113 @@ mod tests {
     use super::*;
     use crate::runtime_test_support::Environment;
     use pl_core::thread::current::{RuntimeEpoch, ThreadCurrent};
+
+    #[tokio::test]
+    async fn a_new_saved_preview_cannot_replace_bytes_behind_a_sealed_cold_reference() -> Result<()>
+    {
+        use pl_core::thread::{
+            current::{SavedToolProgress, SavedToolProgressPart},
+            task::{TaskRecord, TaskStatus},
+        };
+        let mut env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let thread = env
+                .runtime
+                .create_thread(&env.project.id, "paused preview")
+                .await?;
+            let paths = env.runtime.store.registered_session_paths(&thread.id)?;
+            env.runtime.shutdown_runtime().await?;
+            let epoch = RuntimeEpoch::new();
+            let mut current = ThreadCurrent::new(thread.id.clone(), epoch);
+            current.snapshot_revision = 1;
+            current.state.start_task(TaskRecord {
+                id: "task:call".into(),
+                parent_call_id: None,
+                invocation: None,
+                call_id: "call".into(),
+                tool_id: "command".into(),
+                turn_id: "turn".into(),
+                revision: 1,
+                status: TaskStatus::Running,
+                cancel_requested: false,
+                acknowledgement: None,
+                started_sequence: None,
+            })?;
+            current.state.tool_previews.insert(
+                "call".into(),
+                SavedToolProgress {
+                    source_run_id: epoch,
+                    version: 1,
+                    parts: vec![SavedToolProgressPart {
+                        id: "stdout".into(),
+                        version: 1,
+                        text: "first observed bytes".into(),
+                    }],
+                },
+            );
+            tokio::fs::create_dir_all(paths.root()).await?;
+            tokio::fs::write(paths.current_file(), serde_json::to_vec(&current)?).await?;
+            env.restart().await?;
+            let demand = ReadDemand {
+                max_items: 64,
+                max_bytes: 64 * 1024,
+            };
+            let reader = env
+                .runtime
+                .open_current_reader(&thread.id, CURRENT_PROTOCOL_VERSION, demand)
+                .await?;
+            let view = reader.snapshot(demand).await?;
+            assert!(!view.projection.execution_present);
+            let reference = view
+                .projection
+                .atoms
+                .first()
+                .context("saved tool observation")?
+                .contents
+                .first()
+                .context("saved output body")?
+                .reference
+                .clone();
+            let range = ContentRange {
+                offset: 0,
+                max_bytes: 1024,
+            };
+            let first = reader.read_body(reference.clone(), range.clone()).await?;
+            assert_eq!(first.bytes, b"first observed bytes");
+            assert!(first.sealed);
+
+            current.snapshot_revision = 2;
+            let progress = current.state.tool_previews.get_mut("call").unwrap();
+            progress.version = 2;
+            progress.parts[0].version = 2;
+            progress.parts[0].text = "authoritatively replaced bytes".into();
+            tokio::fs::write(paths.current_file(), serde_json::to_vec(&current)?).await?;
+            let error = reader
+                .read_body(reference, range.clone())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<StudioError>()
+                    .and_then(StudioError::reason),
+                Some("staleCurrentReference")
+            );
+            let latest = reader.snapshot(demand).await?;
+            let reference = latest.projection.atoms[0].contents[0].reference.clone();
+            assert_eq!(
+                reader.read_body(reference, range).await?.bytes,
+                b"authoritatively replaced bytes"
+            );
+            reader.close().await?;
+            assert!(
+                env.root_provider.recorded().is_empty(),
+                "observing paused data executed a provider request"
+            );
+            Ok(())
+        }
+        .await;
+        env.finish(result).await
+    }
 
     #[tokio::test]
     async fn cold_current_and_its_body_survive_broken_history_and_close_joins_metadata_watch()

@@ -200,7 +200,9 @@ impl ThreadLiveFeed {
     pub(in crate::studio::runtime) fn bind_conversation(
         &self,
         store: &crate::studio::conversation_store::ConversationStore,
+        owner_id: String,
     ) {
+        store.publication.bind_current_owner(owner_id);
         *self
             .conversation
             .lock()
@@ -1426,7 +1428,7 @@ impl LiveOwner {
         if let Some(binding) = &binding {
             conversation.attach_execution(binding).await?;
         }
-        feed.bind_conversation(&conversation);
+        feed.bind_conversation(&conversation, handle.runtime_epoch().to_string());
         let history = projector.store.history(id).await?;
         let database_id = history
             .conversation_database_id()

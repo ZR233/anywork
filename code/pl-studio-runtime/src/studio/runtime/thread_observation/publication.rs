@@ -28,8 +28,38 @@ pub(in crate::studio) struct ConversationPublication {
     progress: watch::Sender<Option<Arc<ConversationSource>>>,
     content_changed: watch::Sender<u64>,
     metadata_revision: std::sync::atomic::AtomicU64,
+    current_owner: Mutex<Option<String>>,
 }
 impl ConversationPublication {
+    /// Runs at the existing execution attach boundary before the new feed is exposed.
+    /// Delayed observations from the retired owner can still become historical evidence, but
+    /// cannot replace the new owner's RAM current.
+    pub(in crate::studio) fn bind_current_owner(&self, owner_id: String) {
+        let mut owner = self
+            .current_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner.as_ref() == Some(&owner_id) {
+            return;
+        }
+        let mut latest = self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *owner = Some(owner_id);
+        *latest = None;
+        self.metadata_changed();
+        self.progress.send_replace(None);
+    }
+
+    fn permits_current(&self, current: &CurrentState) -> bool {
+        self.current_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_none_or(|owner| owner == current.owner_id())
+    }
+
     pub(in crate::studio) fn metadata_revision(&self) -> u64 {
         self.metadata_revision
             .load(std::sync::atomic::Ordering::Acquire)
@@ -53,6 +83,7 @@ impl ConversationPublication {
             progress: watch::channel(None).0,
             content_changed: watch::channel(0).0,
             metadata_revision: Default::default(),
+            current_owner: Mutex::new(None),
         }
     }
     pub(in crate::studio) fn bind_presentation(
@@ -92,6 +123,9 @@ impl ConversationPublication {
         session: &Session,
         current: Arc<CurrentState>,
     ) -> anyhow::Result<()> {
+        if !self.permits_current(&current) {
+            return Ok(());
+        }
         let source = self.prepare(session, session.head_seq(), current)?;
         self.apply(source);
         Ok(())
@@ -186,6 +220,17 @@ impl ConversationPublication {
     }
 
     pub(in crate::studio) fn apply(&self, source: Arc<ConversationSource>) {
+        let owner = self
+            .current_owner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if owner
+            .as_ref()
+            .is_some_and(|owner| owner != source.current.owner_id())
+        {
+            return;
+        }
+
         source
             .presentation
             .lock()

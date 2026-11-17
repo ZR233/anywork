@@ -88,6 +88,8 @@ pub(super) struct CurrentOwner {
     next_position: i64,
     sources: Arc<[ChatSourceState]>,
     atoms: Vec<ChatAtom>,
+    resource_versions: BTreeMap<&'static str, u64>,
+    cold_revision: Option<u64>,
 }
 impl CurrentOwner {
     pub(super) fn provenance(&mut self, sources: Vec<ChatSourceState>, atoms: Vec<ChatAtom>) {
@@ -166,7 +168,8 @@ impl CurrentOwner {
         let database_id = self
             .database_id
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("current owner has no database identity"))?;
+            .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?
+            .clone();
         let active = active.into_iter().collect::<Vec<_>>();
         let activity = self
             .activity
@@ -380,7 +383,7 @@ impl CurrentOwner {
             // Reopening or observing progress must never allocate a resource version.
             revision: state.interaction_collection_revision,
         });
-        let (entries, by_position, interactions, business_bytes) =
+        let (mut entries, mut by_position, interactions, mut business_bytes) =
             if let Some(previous) = cached_business {
                 (
                     previous.entries.clone(),
@@ -575,6 +578,72 @@ impl CurrentOwner {
                 }
             })
             .collect();
+        // Large live collections use the existing current paging/body port, not a truncated head.
+        let had_resources = entries
+            .keys()
+            .any(|(collection, _)| collection == "atoms" || collection == "sources");
+        if had_resources {
+            Arc::make_mut(&mut entries)
+                .retain(|(collection, _), _| collection != "atoms" && collection != "sources");
+            Arc::make_mut(&mut by_position)
+                .retain(|(collection, _, _), _| collection != "atoms" && collection != "sources");
+        }
+        const HEAD_BYTES: usize = 32 * 1024;
+        if serde_json::to_vec(&projection)?.len() > HEAD_BYTES && !projection.atoms.is_empty() {
+            let rows = std::mem::take(&mut projection.atoms)
+                .into_iter()
+                .map(|atom| Ok((atom.id.clone(), Arc::from(serde_json::to_vec(&atom)?))))
+                .collect::<Result<Vec<_>>>()?;
+            projection.collections.push(self.resource_collection(
+                "atoms",
+                rows,
+                Arc::make_mut(&mut entries),
+                Arc::make_mut(&mut by_position),
+                &mut next_position,
+            )?);
+        }
+        if serde_json::to_vec(&projection)?.len() > HEAD_BYTES && !projection.sources.is_empty() {
+            let rows = std::mem::take(&mut projection.sources)
+                .into_iter()
+                .map(|source| {
+                    Ok((
+                        serde_json::to_string(&source.source)?,
+                        Arc::from(serde_json::to_vec(&source)?),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            projection.collections.push(self.resource_collection(
+                "sources",
+                rows,
+                Arc::make_mut(&mut entries),
+                Arc::make_mut(&mut by_position),
+                &mut next_position,
+            )?);
+        }
+        if had_resources
+            || projection.collections.iter().any(|reference| {
+                reference.collection == "atoms" || reference.collection == "sources"
+            })
+        {
+            business_bytes = entries
+                .values()
+                .fold(0u64, |bytes, entry| {
+                    bytes
+                        .saturating_add(entry.payload.len() as u64)
+                        .saturating_add(entry.entry_id.len() as u64)
+                        .saturating_add(128)
+                })
+                .saturating_add(interactions.iter().fold(0u64, |bytes, interaction| {
+                    bytes
+                        .saturating_add(std::mem::size_of::<InteractionRequest>() as u64)
+                        .saturating_add(super::live::interaction_request_bytes(interaction))
+                }))
+                .saturating_add(if interactions.is_empty() {
+                    0
+                } else {
+                    2 * std::mem::size_of::<usize>() as u64
+                });
+        }
         let snapshot = Arc::new(CurrentState {
             revision: sequence,
             owner_id: database_id.clone(),
@@ -596,6 +665,66 @@ impl CurrentOwner {
         self.interaction_revision = Some(state.interaction_collection_revision);
         self.next_position = next_position;
         Ok(snapshot)
+    }
+
+    fn resource_collection(
+        &mut self,
+        collection: &'static str,
+        rows: Vec<(String, Arc<[u8]>)>,
+        entries: &mut BTreeMap<(String, String), Arc<CurrentEntryWrite>>,
+        by_position: &mut CurrentPositionIndex,
+        next_position: &mut i64,
+    ) -> Result<CurrentCollectionRef> {
+        let old = self.state.as_ref().map(|state| &state.entries);
+        let changed = old.is_none_or(|old| {
+            old.keys().filter(|(name, _)| name == collection).count() != rows.len()
+                || rows.iter().any(|(id, payload)| {
+                    old.get(&(collection.into(), id.clone()))
+                        .is_none_or(|entry| &entry.payload != payload)
+                })
+        });
+        let revision = self.resource_versions.entry(collection).or_default();
+        if changed || *revision == 0 {
+            *revision = revision
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("current collection revision exhausted"))?;
+        }
+        for (id, payload) in rows {
+            let key = (collection.into(), id.clone());
+            let previous = old.and_then(|old| old.get(&key));
+            let entry = if let Some(previous) = previous.filter(|entry| entry.payload == payload) {
+                previous.clone()
+            } else {
+                let position = match previous {
+                    Some(entry) => entry.position,
+                    None => {
+                        *next_position = next_position
+                            .checked_add(1)
+                            .ok_or_else(|| anyhow::anyhow!("current position exhausted"))?;
+                        *next_position
+                    }
+                };
+                Arc::new(CurrentEntryWrite {
+                    collection: collection.into(),
+                    position,
+                    entry_id: id.clone(),
+                    payload,
+                })
+            };
+            by_position.insert((collection.into(), entry.position, id), entry.clone());
+            ensure!(
+                entries.insert(key, entry).is_none(),
+                "duplicate current entity identity"
+            );
+        }
+        Ok(CurrentCollectionRef {
+            owner_id: self
+                .database_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?,
+            collection: collection.into(),
+            revision: *revision,
+        })
     }
 
     fn text(
@@ -637,7 +766,10 @@ impl CurrentOwner {
             domain,
             entity_id,
             content_key: key.key.clone(),
-            generation: format!("{scope_revision}:{generation}"),
+            generation: match self.cold_revision {
+                Some(revision) => format!("cold:{revision}:{scope_revision}:{generation}"),
+                None => format!("{scope_revision}:{generation}"),
+            },
         };
         Ok(Arc::new(CurrentContent {
             reference,
@@ -713,6 +845,13 @@ impl CurrentState {
         state: &ThreadSnapshot,
     ) -> Result<Arc<Self>> {
         let mut owner = CurrentOwner::default();
+        owner.cold_revision = Some(sequence);
+        owner
+            .resource_versions
+            .insert("atoms", sequence.saturating_sub(1));
+        owner
+            .resource_versions
+            .insert("sources", sequence.saturating_sub(1));
         owner.bind(database)?;
         let current = owner.observe(&Thread::placeholder(thread_id), state, sequence, [])?;
         let mut projection = current.projection().clone();
@@ -728,8 +867,16 @@ impl CurrentState {
         saved: &pl_core::thread::current::ThreadCurrent,
     ) -> Result<Arc<Self>> {
         use pl_core::thread::current::SavedModelPhase;
-        let state = saved.state.to_paused_snapshot();
+        let mut state = saved.state.to_paused_snapshot();
+        state.interaction_collection_revision = saved.snapshot_revision;
         let mut owner = CurrentOwner::default();
+        owner.cold_revision = Some(saved.snapshot_revision);
+        owner
+            .resource_versions
+            .insert("atoms", saved.snapshot_revision.saturating_sub(1));
+        owner
+            .resource_versions
+            .insert("sources", saved.snapshot_revision.saturating_sub(1));
         owner.bind(saved.saved_runtime_epoch.to_string())?;
         let mut active = Vec::new();
         let mut atoms = Vec::new();
@@ -1012,6 +1159,87 @@ pub(in crate::studio) fn project_business_refs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context;
+
+    #[test]
+    fn large_current_atoms_page_without_truncation_and_only_metadata_changes_expire_the_collection()
+    -> Result<()> {
+        let mut owner = CurrentOwner::default();
+        let epoch = pl_core::thread::current::RuntimeEpoch::new().to_string();
+        owner.bind(epoch.clone())?;
+        let thread = Thread::placeholder("large-current");
+        let state = ThreadSnapshot::default();
+        owner.provenance(
+            Vec::new(),
+            (0..128)
+                .map(|index| {
+                    paused_tool_atom(
+                        format!("entity-{index}"),
+                        "turn",
+                        None,
+                        format!("call-{index}"),
+                        "工具名称".repeat(200),
+                    )
+                })
+                .collect(),
+        );
+        let first = owner.observe(&thread, &state, 7, [])?;
+        assert!(first.projection().atoms.is_empty());
+        let reference = first
+            .projection()
+            .collections
+            .iter()
+            .find(|head| head.collection == "atoms")
+            .context("large collection reference")?
+            .clone();
+        assert_eq!(reference.owner_id, epoch);
+        assert!(serde_json::to_vec(first.projection())?.len() < 32 * 1024);
+        let demand = ReadDemand {
+            max_items: 3,
+            max_bytes: 8192,
+        };
+        let mut after = None;
+        let mut ids = std::collections::BTreeSet::new();
+        loop {
+            let page = crate::studio::thread_projection::current_page(
+                &first,
+                &reference,
+                after.as_deref(),
+                demand,
+                Ok,
+            )?;
+            assert!(page.entries.len() <= 3);
+            assert!(serde_json::to_vec(&page)?.len() <= demand.max_bytes as usize);
+            for entry in page.entries {
+                assert!(ids.insert(entry.id));
+            }
+            after = page.continuation;
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(ids.len(), 128);
+
+        let same = owner.observe(&thread, &state, 8, [])?;
+        assert!(
+            same.projection().collections.contains(&reference),
+            "unrelated Core progress cannot expire this collection"
+        );
+        owner.atoms[0].tool.as_mut().unwrap().name = "变更后的工具名称".repeat(200);
+        let changed = owner.observe(&thread, &state, 8, [])?;
+        assert!(!changed.projection().collections.contains(&reference));
+        assert!(
+            crate::studio::thread_projection::current_page(&changed, &reference, None, demand, Ok)
+                .is_err()
+        );
+        // A captured old cut still owns its original resource, including after a successor exists.
+        assert!(
+            !crate::studio::thread_projection::current_page(&first, &reference, None, demand, Ok)?
+                .entries
+                .is_empty()
+        );
+        Ok(())
+    }
 
     #[test]
     fn text_channel_is_independent_of_display_role_and_body_generation() -> Result<()> {
@@ -1252,18 +1480,8 @@ mod business_tests {
             "mixed-cut State refs accepted"
         );
         let old_ref = references.plan.unwrap().document.unwrap();
-        let ContentTarget::Body {
-            owner: old_owner,
-            key,
-        } = old_ref.target
-        else {
-            panic!("plan body");
-        };
         assert!(
-            !next.contents().contains_key(&ChatContentKey {
-                owner: content_owner_key(&old_owner)?,
-                key
-            }),
+            next.content(&old_ref).is_none(),
             "retired live document unexpectedly reads the latest version"
         );
         Ok(())
