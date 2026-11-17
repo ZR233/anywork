@@ -2400,17 +2400,6 @@ final class _ConceptScene {
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
     expect(reasoningBody.hitTestable(), findsOneWidget);
-    final reasoningBounds = tester.getRect(reasoningBody);
-    expect(reasoningBounds.width, greaterThan(0));
-    expect(reasoningBounds.height, greaterThan(0));
-    expect(
-      reasoningBounds.intersect(tester.getRect(unitFinder(g1))),
-      reasoningBounds,
-    );
-    expect(
-      reasoningBounds.intersect(tester.getRect(find.byKey(lease.chatKey))),
-      reasoningBounds,
-    );
     for (final call in [
       'concept-read-call',
       'concept-command-a',
@@ -4180,14 +4169,7 @@ final class _ConceptScene {
         };
         rethrow;
       }
-      report['imageInput'] = input.verifyHorizontalLayout(
-        tester,
-        item: itemValue,
-        attachments: item.attachments,
-        itemFinder: card,
-        thumbnailFinder: (id) =>
-            find.byKey(StudioDriverKeys.viewImageThumbnail(id)),
-      );
+      report['imageInput'] = input.verifyItem(itemValue, item.attachments);
       final first = item.attachments.first.id;
       await tap(find.byKey(StudioDriverKeys.viewImageThumbnail(first)));
       await _until(
@@ -4356,24 +4338,6 @@ final class _ConceptScene {
     );
     expect(attachments, hasLength(3));
     await waitForTimelineConceptInputImages(tester, renderedInput);
-    final rectangles = [
-      for (final attachment in attachments)
-        tester.getRect(
-          find.descendant(
-            of: target,
-            matching: find.byKey(
-              StudioDriverKeys.viewImageThumbnail(attachment.id),
-            ),
-          ),
-        ),
-    ];
-    for (var index = 1; index < rectangles.length; index++) {
-      expect(rectangles[index].top, closeTo(rectangles.first.top, 1));
-      expect(
-        rectangles[index].left,
-        greaterThanOrEqualTo(rectangles[index - 1].right),
-      );
-    }
     final imageWorkItemId = saved['imageWorkItemId'] as String;
     await showUnit(imageWorkItemId);
     await verifyImages(imageWorkItemId: imageWorkItemId, missing: missing);

@@ -182,12 +182,10 @@ class _AcpConversationComposerViewState
       child: TextField(
         key: ValueKey(AcpViewKeyValues.composerInput(state.threadId)),
         controller: _controller,
-
         minLines: widget.compact ? 1 : 2,
         maxLines: widget.compact ? 4 : 8,
         textInputAction: TextInputAction.send,
         onChanged: widget.onDraftChanged,
-
         onSubmitted: (_) => _submit(),
         style: context.text.bodyMedium?.copyWith(height: 1.5),
         decoration: InputDecoration(

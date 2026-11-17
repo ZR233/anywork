@@ -5,7 +5,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
 
-/// Plan-only presentation. The view owns draft text and focus; the connector supplies actions.
+/// Plan-only presentation. The view owns draft text; the connector supplies actions.
 class PlanConfirmationView extends StatefulWidget {
   const PlanConfirmationView({
     required this.interactionId,
@@ -36,7 +36,6 @@ class PlanConfirmationView extends StatefulWidget {
 
 class _PlanConfirmationViewState extends State<PlanConfirmationView> {
   late final TextEditingController _controller;
-  final FocusNode _inputFocus = FocusNode();
 
   @override
   void initState() {
@@ -58,7 +57,6 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
     _controller
       ..removeListener(_handleFeedbackChanged)
       ..dispose();
-    _inputFocus.dispose();
     super.dispose();
   }
 
@@ -67,12 +65,8 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
   }
 
   /// Button and Enter share validation and the same feature action.
-  void _submitRevision({bool fromKeyboard = false}) {
-    if ((fromKeyboard &&
-            (!_inputFocus.hasFocus || _controller.value.composing.isValid)) ||
-        !widget.available ||
-        !widget.enabled ||
-        widget.submitting) {
+  void _submitRevision() {
+    if (!widget.available || !widget.enabled || widget.submitting) {
       return;
     }
     final feedback = _controller.text.trim();
@@ -148,13 +142,11 @@ class _PlanConfirmationViewState extends State<PlanConfirmationView> {
               child: TextField(
                 key: StudioDriverKeys.planFeedbackInput,
                 controller: _controller,
-                focusNode: _inputFocus,
                 enabled: widget.enabled && !widget.submitting,
                 minLines: 2,
                 maxLines: 4,
                 textInputAction: TextInputAction.send,
-                onSubmitted: (_) => _submitRevision(fromKeyboard: true),
-                onEditingComplete: () => _inputFocus.requestFocus(),
+                onSubmitted: (_) => _submitRevision(),
                 decoration: InputDecoration(
                   hintText: context.l10n.interactionPlanAdjustHint,
                   contentPadding: const EdgeInsets.all(12),

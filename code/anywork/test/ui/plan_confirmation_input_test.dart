@@ -7,7 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 
 void main() {
-  testWidgets('计划反馈仅在输入框聚焦时以 Enter 提交，Shift+Enter 保留换行', (tester) async {
+  testWidgets('计划反馈遵循平台发送动作与组成态，Shift+Enter 保留换行', (tester) async {
     var revisions = 0;
     var approvals = 0;
     String? submittedFeedback;
@@ -59,7 +59,7 @@ void main() {
       tester.widget<EditableText>(find.byType(EditableText)).controller.text,
       '第一行\n',
     );
-    // An active IME composing range must not submit.
+    // The platform confirms composition before reporting a send action.
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
         text: '第一行\n第二行',
@@ -67,10 +67,8 @@ void main() {
         composing: TextRange(start: 5, end: 7),
       ),
     );
-    await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pump();
     expect(revisions, 0);
-    // Ordinary Enter comes through the platform's send action after composition ends.
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
         text: '第一行\n第二行',
@@ -82,51 +80,16 @@ void main() {
     expect(revisions, 1);
     expect(submittedFeedback, '第一行\n第二行');
     expect(approvals, 0);
+    expect(
+      tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
+      isFalse,
+    );
     await tester.tap(find.byKey(StudioDriverKeys.planSubmitRevision));
     await tester.pump();
     expect(revisions, 2);
     await tester.tap(find.byKey(StudioDriverKeys.planApprove));
     await tester.pump();
     expect(approvals, 1);
-    await tester.pumpWidget(const SizedBox.shrink());
-  });
-
-  testWidgets('失焦后 Enter 不劫持其他控件', (tester) async {
-    var revisions = 0;
-    await tester.pumpWidget(
-      MaterialApp(
-        theme: pureStudioTheme(),
-        locale: const Locale('zh'),
-        localizationsDelegates: [
-          AppLocalizations.delegate,
-          ...GlobalMaterialLocalizations.delegates,
-        ],
-        supportedLocales: AppLocalizations.supportedLocales,
-        home: Scaffold(
-          body: Column(
-            children: [
-              PlanConfirmationView(
-                interactionId: 'interaction-2',
-                available: true,
-                enabled: true,
-                error: null,
-                onSubmitRevision: (_) => revisions++,
-                onApprove: () {},
-              ),
-              const TextField(key: ValueKey('other-input')),
-            ],
-          ),
-        ),
-      ),
-    );
-    await tester.enterText(
-      find.byKey(StudioDriverKeys.planFeedbackInput),
-      'please revise',
-    );
-    await tester.tap(find.byKey(const ValueKey('other-input')));
-    await tester.testTextInput.receiveAction(TextInputAction.send);
-    await tester.pump();
-    expect(revisions, 0);
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

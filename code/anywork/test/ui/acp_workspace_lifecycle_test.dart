@@ -11,8 +11,7 @@ import 'package:material_ui/material_ui.dart';
 import '../../../anywork_client/test/support/acp_business_port.dart';
 import 'acp_components_support.dart';
 
-// Workspace interaction uses the production Client and widgets. Only external
-// ACP frames are controlled; native window integration has its own small test.
+// Workspace interaction uses the production Client and widgets; external ACP frames are controlled.
 void main() {
   WidgetController.hitTestWarningShouldBeFatal = true;
 
@@ -131,6 +130,7 @@ void main() {
     }
 
     await showPage('thread');
+    expect(find.byType(TextField).hitTestable(), findsOneWidget);
     await tester.enterText(find.byType(TextField), 'ACP 消息');
     await tester.pumpAndSettle();
     final draft = harness.client.drafts.composer('thread');

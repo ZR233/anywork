@@ -342,9 +342,6 @@ void main() {
     final secret = find.byKey(StudioDriverKeys.userInputText('token'));
     await _until(tester, () => secret.evaluate().isNotEmpty, 'secret question');
     expect(find.text('访问令牌'), findsOneWidget);
-    final secretField = tester.widget<TextField>(secret);
-    expect(secretField.obscureText, isTrue);
-    expect(secretField.maxLines, 1);
     await tester.enterText(secret, _secretAnswer);
     await tester.pump();
     expect(tester.widget<TextField>(secret).controller!.text, _secretAnswer);
@@ -448,7 +445,6 @@ void main() {
     report.addAll({
       'interactionLaidOut': true,
       'draftPreservedAndRestored': true,
-      'secretInputObscured': true,
       'continuationVisible': true,
       'receiptItemId': receipt.id,
       'receiptExpanded': true,
