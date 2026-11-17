@@ -1402,7 +1402,6 @@ mod tests {
     fn history_report() -> ThreadPersistenceReport {
         ThreadPersistenceReport {
             pending: Some(PendingSequenceRange { first: 3, last: 3 }),
-            pending_checkpoint: false,
             error: Some("retained failure".into()),
             metrics: ThreadPersistenceMetrics {
                 fault_generation: 4,
@@ -1453,7 +1452,6 @@ mod tests {
                 owner,
                 ThreadPersistenceReport {
                     pending: None,
-                    pending_checkpoint: false,
                     error: None,
                     metrics: ThreadPersistenceMetrics::default(),
                 },

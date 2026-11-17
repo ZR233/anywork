@@ -821,7 +821,7 @@ mod tests {
         writer: &CurrentWriter,
         predicate: impl Fn(&CurrentSaveState) -> bool,
     ) -> CurrentSaveState {
-        let mut changes = writer.subscribe();
+        let mut changes = writer.shared.changed.subscribe();
         loop {
             let state = changes.borrow_and_update().clone();
             if predicate(&state) {
@@ -1172,7 +1172,7 @@ mod tests {
                 Ok(())
             }),
         );
-        let writer = CurrentWriter::new(file);
+        let writer = CurrentWriter::new(file, || {});
         writer
             .activate(
                 None,
@@ -1190,7 +1190,7 @@ mod tests {
         waiting.await?;
         for next in 2..=100 {
             revision.store(next, Ordering::SeqCst);
-            writer.mark_dirty(epoch);
+            writer.shared.mark_dirty(epoch, None);
         }
         tokio::time::advance(Duration::from_secs(5)).await; // t=7, between ticks; I/O still owns the slot.
         assert_eq!(captures.load(Ordering::SeqCst), 1);
@@ -1254,10 +1254,10 @@ mod tests {
             |epoch| Box::pin(async move { Ok(current(epoch, 100)) }),
         );
         source.observations = Some(owner.clone());
-        let writer = CurrentWriter::new(CurrentFile::new(
-            directory.path().into(),
-            "current-test".into(),
-        ));
+        let writer = CurrentWriter::new(
+            CurrentFile::new(directory.path().into(), "current-test".into()),
+            || {},
+        );
         writer.activate(None, epoch, source).await?;
         let before = writer.snapshot().observed_revision.unwrap();
         let flushing = tokio::spawn({
@@ -1308,6 +1308,7 @@ mod tests {
                     }
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         writer
@@ -1342,7 +1343,7 @@ mod tests {
             writer.snapshot().error.is_some(),
             "epoch admission cannot acknowledge an old failure"
         );
-        writer.mark_dirty(epoch);
+        writer.shared.mark_dirty(epoch, None);
         tokio::time::advance(Duration::from_millis(4999)).await;
         tokio::task::yield_now().await;
         assert_eq!(
@@ -1354,7 +1355,7 @@ mod tests {
         let saved = observed(&writer, |s| s.receipt.is_some()).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert!(saved.error.is_none() && saved.last_successful_save_at.is_some());
-        assert!(saved.current_snapshot_age_ms().is_some());
+        assert!(saved.persistence_snapshot().snapshot_age_millis.is_some());
         assert_eq!(saved.receipt.unwrap().runtime_epoch, successor);
         writer.close(successor).await?;
         Ok(())
@@ -1372,6 +1373,7 @@ mod tests {
                     Err(io::Error::other("write refused"))
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         writer
@@ -1427,6 +1429,7 @@ mod tests {
                     Ok(())
                 },
             )),
+            || {},
         );
         let old = RuntimeEpoch::new();
         let new = RuntimeEpoch::new();
@@ -1443,7 +1446,7 @@ mod tests {
         });
         waiting.await?;
         revision.store(2, Ordering::SeqCst);
-        writer.mark_dirty(old);
+        writer.shared.mark_dirty(old, None);
         // Admit a second explicit flush behind the blocked write. It must capture again rather
         // than treating the first in-flight receipt as coverage of the newer current.
         let (flush_reply, flushed_again) = oneshot::channel();
@@ -1468,7 +1471,7 @@ mod tests {
         assert_eq!(flushed_again.await??.snapshot_revision, 2);
         switching.await??;
         writer.flush(new).await?;
-        writer.mark_dirty(old);
+        writer.shared.mark_dirty(old, None);
         assert!(!writer.snapshot().dirty);
         assert!(writer.flush(old).await.is_err());
         assert!(writer.activate(Some(old), old, producer).await.is_err());
@@ -1506,6 +1509,7 @@ mod tests {
                     Ok(())
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         writer.activate(None, epoch, source).await?;
@@ -1522,7 +1526,7 @@ mod tests {
         assert_eq!(finishes.load(Ordering::SeqCst), 1);
         assert_eq!(saved.lock().unwrap().as_slice(), &[99]);
         assert_eq!(writer.snapshot().receipt.unwrap().snapshot_revision, 99);
-        writer.mark_dirty(epoch);
+        writer.shared.mark_dirty(epoch, None);
         assert!(!writer.snapshot().dirty);
         assert!(writer.flush(epoch).await.is_err());
         writer.close(epoch).await?;
@@ -1553,6 +1557,7 @@ mod tests {
                     Ok(())
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         writer.activate(None, epoch, source).await?;
@@ -1595,6 +1600,7 @@ mod tests {
                     Ok(())
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         writer.activate(None, epoch, source).await?;
@@ -1638,6 +1644,7 @@ mod tests {
                     std::fs::write(path, bytes)
                 },
             )),
+            || {},
         );
         let epoch = RuntimeEpoch::new();
         let revision = Arc::new(AtomicU64::new(1));

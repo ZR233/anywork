@@ -1277,9 +1277,71 @@ async fn close_owner(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use pl_studio_runtime::{StudioRuntime, StudioRuntimeOptions};
+    use tokio_util::sync::CancellationToken;
 
     #[test]
     fn body_window_limit_matches_history_owner() {
         assert!(pl_studio_runtime::history::BODY_CHUNK_BYTES > 0);
+    }
+
+    #[tokio::test]
+    async fn http_open_handlers_reject_unknown_protocol_before_thread_lookup() {
+        let home = tempfile::tempdir().expect("isolated Studio home");
+        let runtime = StudioRuntime::initialize(StudioRuntimeOptions::http_server(Some(
+            home.path().to_path_buf(),
+        )))
+        .await
+        .expect("initialize isolated HTTP runtime");
+        let state = AppState::new(runtime.clone(), CancellationToken::new());
+
+        let history = match open_history(
+            State(state.clone()),
+            Path("missing-thread".into()),
+            ApiJson(OpenHistoryRequest {
+                history_protocol_version: pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION + 1,
+            }),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("unknown history protocol accepted"),
+        };
+        assert_eq!(history.0.code, StudioErrorCode::Protocol);
+        assert_eq!(
+            history.0.reason(),
+            Some(StudioErrorReason::ProtocolVersionMismatch.label())
+        );
+        assert_eq!(history.into_response().status(), StatusCode::BAD_REQUEST);
+
+        let current = match open_current(
+            State(state.clone()),
+            Path("missing-thread".into()),
+            ApiJson(OpenCurrentRequest {
+                current_protocol_version: pl_studio_runtime::CURRENT_PROTOCOL_VERSION + 1,
+                demand: ReadDemand {
+                    max_items: 1,
+                    max_bytes: 1,
+                },
+            }),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("unknown current protocol accepted"),
+        };
+        assert_eq!(current.0.code, StudioErrorCode::Protocol);
+        assert_eq!(
+            current.0.reason(),
+            Some(StudioErrorReason::ProtocolVersionMismatch.label())
+        );
+        assert_eq!(current.into_response().status(), StatusCode::BAD_REQUEST);
+
+        runtime
+            .shutdown_runtime()
+            .await
+            .expect("shutdown isolated HTTP runtime");
     }
 }

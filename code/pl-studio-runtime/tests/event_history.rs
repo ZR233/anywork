@@ -7,11 +7,11 @@ mod support;
 use anyhow::{Context, Result, ensure};
 
 use pl_core::thread::current::RuntimeEpoch;
-use pl_protocol::{
+use pl_studio_runtime::history::*;
+use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatActiveStatus, ChatTerminalOutcome, ContentRange,
     CurrentContentRef, CurrentFrame, CurrentProjection, RuntimeCostAmount,
 };
-use pl_studio_runtime::history::*;
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait,
 };
@@ -104,11 +104,11 @@ fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContent
         .atoms
         .iter()
         .filter(|atom| {
-            atom.kind == pl_protocol::ChatAtomKind::Text
-                && atom.text_channel == Some(pl_protocol::ThreadTextChannel::Final)
+            atom.kind == pl_studio_runtime::ChatAtomKind::Text
+                && atom.text_channel == Some(pl_studio_runtime::ThreadTextChannel::Final)
         })
         .flat_map(|atom| atom.contents.iter())
-        .find(|content| content.role == pl_protocol::ChatContentRole::Body)
+        .find(|content| content.role == pl_studio_runtime::ChatContentRole::Body)
         .map(|content| content.reference.clone())
 }
 
@@ -180,7 +180,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
     let result = async {
         let thread = env
             .start(
-                pl_protocol::ThreadWorkspaceMode::Worktree,
+                pl_studio_runtime::ThreadWorkspaceMode::Worktree,
                 "current-history",
             )
             .await?;
@@ -196,7 +196,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             anyhow::bail!("Current watch did not begin with Reset");
         };
         ensure!(
-            view.state.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+            view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
             "Current did not expose the current Thread schema"
         );
         ensure!(
@@ -228,6 +228,36 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             }
         }
         let reference = reference.unwrap();
+        for stale_reference in [
+            {
+                let mut stale = reference.clone();
+                stale.owner_id.push_str(":wrong-owner");
+                stale
+            },
+            {
+                let mut stale = reference.clone();
+                stale.generation.push_str(":wrong-generation");
+                stale
+            },
+        ] {
+            let stale = reader
+                .read_body(
+                    stale_reference,
+                    ContentRange {
+                        offset: 0,
+                        max_bytes: 1,
+                    },
+                )
+                .await
+                .unwrap_err();
+            ensure!(
+                stale
+                    .downcast_ref::<pl_studio_runtime::StudioError>()
+                    .and_then(|error| error.reason())
+                    == Some("staleCurrentReference"),
+                "wrong owner or body generation was accepted"
+            );
+        }
         let live_view = reader.snapshot(demand).await?;
         ensure!(
             live_view
@@ -289,7 +319,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
                 anyhow::bail!("Current watch ended before the provider Turn completed");
             };
             if let CurrentFrame::Notification { notification, .. } = frame
-                && let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                && let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
                     notification.notification
             {
                 break turn;
@@ -306,7 +336,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
                 }
                 Err(error)
                     if error
-                        .downcast_ref::<pl_protocol::studio::StudioError>()
+                        .downcast_ref::<pl_studio_runtime::StudioError>()
                         .is_some_and(|error| error.reason() == Some("staleCurrentReference")) =>
                 {
                     break;
@@ -412,7 +442,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             .unwrap_err();
         ensure!(
             stale
-                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .downcast_ref::<pl_studio_runtime::StudioError>()
                 .and_then(|error| error.reason())
                 == Some("staleCurrentReference")
         );
@@ -640,7 +670,7 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
     let mut classifier = HistoryClassifier::new(run);
     let targets = (0..2000)
         .map(|index| {
-            pl_protocol::ThreadWaitTarget::new(
+            pl_studio_runtime::ThreadWaitTarget::new(
                 format!("task-{index}"),
                 Some("terminal".into()),
                 None,
@@ -648,12 +678,12 @@ async fn large_wait_targets_are_preserved_in_a_deferred_body_and_group_close_is_
             )
         })
         .collect();
-    let presentation = pl_protocol::ThreadWaitPresentation::new(
-        pl_protocol::ThreadWaitIntent::Events {
+    let presentation = pl_studio_runtime::ThreadWaitPresentation::new(
+        pl_studio_runtime::ThreadWaitIntent::Events {
             targets,
             timeout_ms: 3000,
         },
-        pl_protocol::ThreadWaitState::Waiting,
+        pl_studio_runtime::ThreadWaitState::Waiting,
         None,
     );
     let expected = serde_json::to_vec(&presentation)?;
@@ -889,7 +919,7 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         name: "terminal".into(),
     });
     let start = HistoryEvent::new("tool-start", HistoryEventKind::EntityStarted, 10);
-    let atom = pl_protocol::ChatAtom {
+    let atom = pl_studio_runtime::ChatAtom {
         id: tool.entity_id.clone(),
         completion_item_id: None,
         completion_seq: None,
@@ -898,7 +928,7 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         source_order: None,
         kind: tool.kind,
         delivery: tool.delivery,
-        lifecycle: pl_protocol::ChatAtomLifecycle::Active {
+        lifecycle: pl_studio_runtime::ChatAtomLifecycle::Active {
             status: ChatActiveStatus::Running,
             started: None,
         },
@@ -1175,8 +1205,8 @@ async fn source_composite_identity_and_close_do_not_share_query_consumption() ->
 }
 
 fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
-    let accounting = pl_protocol::InferenceAccounting {
-        usage: pl_protocol::UsageReport {
+    let accounting = pl_studio_runtime::InferenceAccounting {
+        usage: pl_studio_runtime::UsageReport {
             input_tokens: Some(100),
             output_tokens: Some(20),
             cache_read_tokens: Some(40),
@@ -1185,7 +1215,7 @@ fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
             total_tokens: Some(120),
         },
         pricing: if priced {
-            pl_protocol::PricingOutcome::Estimated {
+            pl_studio_runtime::PricingOutcome::Estimated {
                 cost: RuntimeCostAmount {
                     currency: "CNY".into(),
                     amount: 0.25,
@@ -1196,7 +1226,7 @@ fn usage(id: &str, run: RuntimeEpoch, priced: bool) -> HistoryUsageFact {
                 }),
             }
         } else {
-            pl_protocol::PricingOutcome::default()
+            pl_studio_runtime::PricingOutcome::default()
         },
         ..Default::default()
     };

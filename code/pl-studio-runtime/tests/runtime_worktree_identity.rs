@@ -5,16 +5,14 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ObservedResourceKind, ThreadWorkspaceMode,
-    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
-    studio::{StudioErrorCode, StudioPromptInput, SubmitPromptRequest},
-};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
 use pl_studio_runtime::{
-    StudioRecoveryImpact, StudioRecoveryIssueAction, StudioRecoveryIssueCategory,
-    StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner, StudioWorktreeInspection,
-    StudioWorktreeRecoveryPreview,
+    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ObservedResourceKind, StudioErrorCode,
+    StudioPromptInput, StudioRecoveryImpact, StudioRecoveryIssueAction,
+    StudioRecoveryIssueCategory, StudioRecoveryIssueScope, StudioRecoveryWorktreeOwner,
+    StudioWorktreeInspection, StudioWorktreeRecoveryPreview, SubmitPromptRequest,
+    ThreadWorkspaceMode,
+    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
 };
 use std::{path::Path, time::Duration};
 use support::{
@@ -226,20 +224,20 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
         let recorded = conflict.clone();
         let failure = env.runtime.create_thread_command(
             env.project.id.clone(),
-            pl_protocol::studio::CreateThreadRequest {
+            pl_studio_runtime::CreateThreadRequest {
                 title: Some("Conflicting root worktree".into()),
                 input: StudioPromptInput {
                     input_id: "input-conflicting-worktree".into(),
                     text: "must not reach a model".into(),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().to_string(),
-                route: pl_protocol::studio::NewThreadModelRoute {
+                mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
+                route: pl_studio_runtime::NewThreadModelRoute {
                     account_id: "root-fixture".into(),
                     model_id: support::MODEL.into(),
                     effort: None,
                 },
-                delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: ThreadWorkspaceMode::Worktree,
             },
@@ -314,19 +312,19 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
         env.restart().await?;
         let source = env.home.join("failed-initial-attachment.txt");
         std::fs::write(&source, "retain the original worktree")?;
-        let route = pl_protocol::studio::NewThreadModelRoute {
+        let route = pl_studio_runtime::NewThreadModelRoute {
             account_id: "root-fixture".into(),
             model_id: support::MODEL.into(),
             effort: None,
         };
         let drafts = env
             .runtime
-            .admit_attachment_drafts(pl_protocol::studio::AdmitAttachmentDraftsRequest {
-                context: pl_protocol::studio::StudioAttachmentAdmissionContext::NewThread {
+            .admit_attachment_drafts(pl_studio_runtime::AdmitAttachmentDraftsRequest {
+                context: pl_studio_runtime::StudioAttachmentAdmissionContext::NewThread {
                     route: route.clone(),
                 },
                 sources: vec![
-                    pl_protocol::studio::StudioAttachmentDraftSource::LocalFile {
+                    pl_studio_runtime::StudioAttachmentDraftSource::LocalFile {
                         path: source.to_string_lossy().into_owned(),
                     },
                 ],
@@ -347,16 +345,16 @@ async fn failed_root_preparation_preserves_original_resources_and_reports_cause(
             .runtime
             .create_thread_command(
                 env.project.id.clone(),
-                pl_protocol::studio::CreateThreadRequest {
+            pl_studio_runtime::CreateThreadRequest {
                     title: Some("Rejected initial input".into()),
                     input: StudioPromptInput {
                         input_id: "input-rejected-initial".into(),
                         text: "must not reach a model".into(),
                         attachment_draft_ids: vec![draft.draft_id.clone()],
                     },
-                    mode: pl_protocol::ThreadModeId::simple().to_string(),
+                    mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                     route,
-                    delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                    delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                     delegation_preference: None,
                     workspace_mode: ThreadWorkspaceMode::Worktree,
                 },
@@ -765,8 +763,8 @@ async fn changed_root_is_rebound_in_place_and_restart_keeps_the_observed_branch(
         let after = support::saved(&env.home, &root.thread.id).await?;
         ensure!(
             before.path == after.path
-                && after.current.state.to_paused_snapshot()
-                    == before.current.state.to_paused_snapshot(),
+                && serde_json::to_value(&after.current.state)?
+                    == serde_json::to_value(&before.current.state)?,
             "cold binding changed saved history ownership or content"
         );
         ensure!(
@@ -859,7 +857,7 @@ async fn existing_hot_spawn_and_cold_child_binding_do_not_depend_on_creation_bra
             workspace.version() == 3,
             "new child did not freeze the current receipt format"
         );
-        let saved: pl_protocol::AgentWorkspaceAssignmentSnapshot =
+        let saved: pl_studio_runtime::AgentWorkspaceAssignmentSnapshot =
             serde_json::from_str(workspace.content())?;
         ensure!(
             saved.worktree.context("owned child receipt")?.path
@@ -947,8 +945,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
             "missing-worktree Current changed the complete saved snapshot"
         );
         ensure!(
-            snapshot.state.schema_version == pl_protocol::THREAD_SCHEMA_VERSION
-                && snapshot.state.revision == history.current.state.to_paused_snapshot().revision
+            snapshot.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                 && snapshot.state.thread.id == root.thread.id
                 && snapshot.state.thread.workspace_id == env.project.id
                 && snapshot.state.thread.root_thread_id == root.thread.root_thread_id
@@ -1214,7 +1211,7 @@ async fn safe_recovery_preserves_authorization_and_explicit_archive_reports_git_
             .context("explicit archive ignored a Git lock")?;
         let error = pl_studio_runtime::studio_error_from_anyhow(failure);
         ensure!(
-            error.code == pl_protocol::studio::StudioErrorCode::Unavailable
+            error.code == pl_studio_runtime::StudioErrorCode::Unavailable
                 && error.message.contains("locked")
                 && error.message.chars().count() <= 2048,
             "Git lock lost bounded typed diagnostics: {:?}: {}",

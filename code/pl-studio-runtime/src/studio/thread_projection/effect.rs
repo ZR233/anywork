@@ -246,40 +246,46 @@ pub(in crate::studio) fn project_effect_items(
             .filter(|repair| repair.call_id == call_id)
             .map(|repair| repair.reference.clone())
             .collect();
-        // Nested invocations are execution facts owned by Task, not fabricated model
-        // messages. They enter the same projection/order/writer path as direct calls.
-        let nested_task = effect
+        // Tasks retain their original invocation for foreground and nested calls alike.
+        // The context and Task may describe the same call; they must agree exactly.
+        let task = effect
             .tasks
             .iter()
             .chain(state.tasks.values())
+            .chain(state.terminal_tasks.iter())
             .find(|task| task.call_id == call_id);
-        let nested_call = match nested_task {
-            Some(task) => match (&task.parent_call_id, &task.invocation) {
-                (Some(parent), Some(call))
-                    if !parent.is_empty()
-                        && call.call_id == task.call_id
-                        && call.tool_id == task.tool_id =>
-                {
-                    Some((task.turn_id.as_str(), call))
+        let task_call = match task {
+            Some(task)
+                if task
+                    .parent_call_id
+                    .as_ref()
+                    .is_none_or(|parent| !parent.is_empty()) =>
+            {
+                match &task.invocation {
+                    Some(call) if call.call_id == task.call_id && call.tool_id == task.tool_id => {
+                        Some((task.turn_id.as_str(), call))
+                    }
+                    None if task.parent_call_id.is_none() => None,
+                    _ => return Err(ProjectionError::DuplicateCall(call_id.into())),
                 }
-                (None, None) => None,
-                _ => return Err(ProjectionError::DuplicateCall(call_id.into())),
-            },
+            }
+            Some(_) => return Err(ProjectionError::DuplicateCall(call_id.into())),
             None => None,
         };
-        let saved_call = state
-            .context
-            .records
-            .iter()
-            .find_map(|record| {
-                record.turn_id.as_deref().zip(
-                    record
-                        .tool_calls
-                        .iter()
-                        .find(|call| call.call_id == call_id),
-                )
-            })
-            .or(nested_call);
+        let context_call = state.context.records.iter().find_map(|record| {
+            record.turn_id.as_deref().zip(
+                record
+                    .tool_calls
+                    .iter()
+                    .find(|call| call.call_id == call_id),
+            )
+        });
+        if let (Some(context), Some(task)) = (context_call, task_call)
+            && context != task
+        {
+            return Err(ProjectionError::DuplicateCall(call_id.into()));
+        }
+        let saved_call = context_call.or(task_call);
         let tool_id = order::tool_id(call_id);
         // A repair lands after its result was committed, so the delivery that carried the original
         // projection has already left resident state and cannot describe the terminal result here.

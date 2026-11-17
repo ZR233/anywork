@@ -595,11 +595,11 @@ mod tests {
     async fn cancellation_after_permit_before_send_returns_this_charge_for_all_facts() {
         for kind in 0..3 {
             let cancellation = CancellationToken::new();
+            let storage =
+                crate::thread::cold::StorageHandle(Arc::new(CancelOnCharge(cancellation.clone())));
             let output = Arc::new(
                 super::super::OutputBudget::reserve(
-                    Some(crate::thread::cold::ColdStoreHandle::new(CancelOnCharge(
-                        cancellation.clone(),
-                    ))),
+                    Some(storage),
                     "thread",
                     "attempt",
                     1024 * 1024,

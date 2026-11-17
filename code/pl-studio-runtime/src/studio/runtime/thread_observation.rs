@@ -309,11 +309,6 @@ impl ThreadLiveFeed {
     pub(super) fn current_conversation(&self) -> Option<Arc<ConversationSource>> {
         self.publication().current()
     }
-    #[cfg(test)]
-    pub(super) fn content_changes(&self) -> watch::Receiver<u64> {
-        self.publication().content_changes()
-    }
-
     pub(super) fn runtime(&self) -> Option<RuntimeStateCut> {
         self.latest_runtime
             .lock()
@@ -2622,6 +2617,14 @@ async fn run(
             update = updates.next() => match update {
                 Some(snapshot) => current = snapshot,
                 None => {
+                    let final_snapshot = worker.thread.snapshot();
+                    if final_snapshot.lifecycle == ThreadLifecycle::Closed {
+                        // Physical close can retire the subscription before this consumer takes
+                        // its last update. The original owner still retains its final snapshot;
+                        // process that real Closed state and complete Current/History shutdown.
+                        current = final_snapshot;
+                        continue;
+                    }
                     worker.continuous = false;
                     worker.live_floor = worker.live_floor.max(worker.thread.snapshot().commit_sequence);
                     worker.state.reconciliation_through.fetch_max(worker.live_floor, std::sync::atomic::Ordering::AcqRel);

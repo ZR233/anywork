@@ -4,8 +4,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use pl_core::thread::current::{RuntimeEpoch, ThreadCurrent};
-#[cfg(test)]
-use tokio::sync::watch;
 
 use super::super::current_writer::CurrentSaveReceipt;
 use super::super::{
@@ -56,13 +54,6 @@ impl StateStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn mark_dirty(&self, epoch: RuntimeEpoch) {
-        if let Some(current) = &self.current {
-            current.writer.mark_dirty(epoch);
-        }
-    }
-
-    #[cfg(test)]
     pub(crate) fn current_runtime_epoch(&self) -> Option<RuntimeEpoch> {
         self.current
             .as_ref()
@@ -85,16 +76,6 @@ impl StateStore {
             .context("current source is not registered")?
             .writer
             .snapshot())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn subscribe_current(&self) -> Result<watch::Receiver<CurrentSaveState>> {
-        Ok(self
-            .current
-            .as_ref()
-            .context("current source is not registered")?
-            .writer
-            .subscribe())
     }
 
     pub(crate) async fn close_current(&self, epoch: RuntimeEpoch) -> Result<()> {
@@ -233,8 +214,6 @@ mod tests {
             .current_writer("state-test", directory.path().into())
             .await?;
         assert!(Arc::ptr_eq(&first, &second));
-        let subscribed = store.subscribe_current()?;
-        assert_eq!(subscribed.borrow().runtime_epoch, Some(epoch));
         assert!(
             coordinator
                 .current_writer("state-test", directory.path().join("another-session"))
@@ -253,7 +232,6 @@ mod tests {
             "history teardown cannot release the current slot"
         );
         assert!(coordinator.forget_deleted("state-test").is_err());
-        store.mark_dirty(epoch);
         assert_eq!(store.flush_current(epoch).await?.runtime_epoch, epoch);
         assert_eq!(
             store

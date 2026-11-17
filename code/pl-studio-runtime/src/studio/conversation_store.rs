@@ -20,9 +20,7 @@ type Initializer =
     Arc<dyn Fn() -> BoxFuture<'static, anyhow::Result<RetainedProjection>> + Send + Sync>;
 enum Mode {
     Cold,
-    Initializing {
-        operation: Initialization,
-    },
+    Initializing { operation: Initialization },
     Ready,
     Faulted { factory: Initializer },
 }
@@ -121,9 +119,7 @@ impl ConversationStore {
                                 .mode
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                                Mode::Faulted {
-                                    factory: retry,
-                                };
+                                Mode::Faulted { factory: retry };
                             Err(error)
                         }
                     }

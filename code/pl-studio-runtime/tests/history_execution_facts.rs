@@ -5,11 +5,12 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use pl_studio_runtime::{
     CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ThreadWorkspaceMode,
-    history::{HistoryBodyRole, HistoryDemand, HistoryEventsQuery},
+    history::{
+        HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
+    },
 };
-use pl_studio_runtime::history::{HistoryEventBodyRef, HistoryReader};
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use support::{Environment, completed_prompt, current_demand, prompt_step, text_reply};
 
@@ -78,7 +79,7 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
             .events_page(
                 HistoryEventsQuery::Originals {
                     scope: ChatScope {
-                        query_class: pl_protocol::ChatClassFilter::All {},
+                        query_class: pl_studio_runtime::ChatClassFilter::All {},
                         parent_id: None,
                     },
                 },

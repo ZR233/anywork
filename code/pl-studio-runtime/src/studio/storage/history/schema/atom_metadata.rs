@@ -829,7 +829,7 @@ mod tests {
             ExecutionShape::Turn(ThreadTurnItem::new(state)),
         );
         Ok(
-            crate::studio::runtime::chat_item::completion_draft(&item, 5, "fixture")?
+            crate::studio::runtime::chat_item::completion_draft(&item, 5, "fixture", None)?
                 .payload
                 .to_vec(),
         )

@@ -3615,12 +3615,39 @@ async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Resul
 mod tests {
     use super::*;
 
-    #[test]
-    fn writer_lease_path_matches_history_store_suffix() {
-        assert_eq!(
-            writer_lock_path(Path::new("/thread/history.sqlite")),
-            PathBuf::from("/thread/history.sqlite.writer.lock")
-        );
+    #[tokio::test]
+    async fn schema25_read_coexists_with_its_live_history_writer() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("history.sqlite");
+        let store = crate::history::HistoryStore::open(
+            &path,
+            "live-writer",
+            crate::history::HistoryLimits::default(),
+        )
+        .await?;
+        let report = upgrade_history(&path, "live-writer", directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::AlreadySchema25);
+        assert_eq!(report.database_id, store.database_id());
+        assert!(!directory.path().join(BACKUP_ROOT).try_exists()?);
+        assert!(!directory.path().join("current.json").try_exists()?);
+
+        let reader = store.reader();
+        let page = reader
+            .timeline_page(None, None, crate::history::HistoryDemand::default())
+            .await?;
+        assert!(page.entries.is_empty());
+        reader.close().await;
+        let accepted = store
+            .accept_batch(&[HistoryEvent::new(
+                "run-still-writable",
+                HistoryEventKind::RunStarted,
+                1,
+            )])
+            .await?;
+        assert_eq!(accepted, [1]);
+        store.flush().await?;
+        store.close().await?;
+        Ok(())
     }
 
     #[test]
@@ -3628,23 +3655,6 @@ mod tests {
         assert_eq!(milliseconds(Some(2)).unwrap(), Some(2_000));
         assert!(milliseconds(Some(i64::MAX)).is_err());
         assert_eq!(milliseconds(None).unwrap(), None);
-    }
-
-    #[test]
-    fn current_owner_body_key_is_independent_of_plan_position() {
-        let target = ContentTarget::Body {
-            owner: ContentOwner::Current {
-                domain: "model".into(),
-                id: "attempt".into(),
-                revision: 7,
-            },
-            key: "body".into(),
-        };
-        let first = plan_identity(&target, "event").unwrap();
-        let second = plan_identity(&target, "event").unwrap();
-        assert_eq!(first, second);
-        assert!(first.1.starts_with("legacy-current:"));
-        assert!(!first.1.contains(":0:"));
     }
 }
 
@@ -4654,6 +4664,195 @@ mod migration_tests {
     }
 
     #[tokio::test]
+    async fn lifecycle_migration_uses_actual_evidence_and_preserves_unknown_times() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-lifecycle-evidence";
+        write_v24_fixture(&history_path, thread_id, false).await?;
+        let cases = [
+            (
+                "ended-with-attempt",
+                true,
+                true,
+                Some(crate::ChatTerminalOutcome::Cancelled),
+                None,
+                HistoryEventKind::EntityEnded,
+            ),
+            (
+                "started-with-attempt",
+                true,
+                false,
+                None,
+                None,
+                HistoryEventKind::EntityStarted,
+            ),
+            (
+                "attempt-association-only",
+                false,
+                false,
+                None,
+                None,
+                HistoryEventKind::BoundaryObserved,
+            ),
+            (
+                "ended-known-time",
+                false,
+                false,
+                Some(crate::ChatTerminalOutcome::Completed),
+                Some(12i64),
+                HistoryEventKind::EntityEnded,
+            ),
+        ];
+        let db = schema::connect(&history_path, false, false).await?;
+        for (id, started, ended, outcome, finished_at, _) in &cases {
+            db.execute_raw(statement(
+                "INSERT INTO execution_lifecycle(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,delivery,started_effect,started_suborder,ended_effect,ended_suborder,started_at,finished_at,outcome,last_write_seq) VALUES(?,?,'operation',?,'turn-1','actual-attempt',?,'fixture-tool',?,?,?,?,?,NULL,?,?,1)",
+                vec![
+                    (*id).into(),
+                    serde_json::to_string(&crate::ChatAtomKind::ToolCall)?.into(),
+                    format!("operation:{id}").into(),
+                    (*id).into(),
+                    serde_json::to_string(&crate::ChatDeliveryKind::Foreground)?.into(),
+                    started.then_some(1i64).into(),
+                    started.then_some(0i64).into(),
+                    ended.then_some(1i64).into(),
+                    ended.then_some(1i64).into(),
+                    (*finished_at).into(),
+                    outcome.as_ref().map(serde_json::to_string).transpose()?.into(),
+                ],
+            )).await?;
+        }
+        db.close().await?;
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.imported_categories["execution_lifecycle"], 4);
+        let store =
+            CurrentHistoryStore::open(&history_path, thread_id, HistoryLimits::default()).await?;
+        let reader = store.reader();
+        for (id, started, ended, outcome, finished_at, expected_kind) in &cases {
+            let page = reader
+                .events_page(
+                    HistoryEventsQuery::Entity {
+                        entity_id: (*id).into(),
+                    },
+                    None,
+                    None,
+                    HistoryDemand::default(),
+                )
+                .await?;
+            assert_eq!(
+                page.entries.len(),
+                1,
+                "one real lifecycle observation for {id}"
+            );
+            let event = &page.entries[0];
+            assert_eq!(&event.header.kind, expected_kind, "{id}");
+            assert_eq!(event.header.attempt_id.as_deref(), Some("actual-attempt"));
+            assert_eq!(
+                event.header.occurred_at,
+                finished_at.map(|at| at * 1000),
+                "{id}"
+            );
+            let payload: serde_json::Value = serde_json::from_slice(
+                &read_all_body(
+                    &reader,
+                    event.payload_ref.clone().expect("lifecycle payload"),
+                )
+                .await?,
+            )?;
+            assert_eq!(payload["started"].is_object(), *started, "{id}");
+            assert_eq!(payload["ended"].is_object(), *ended, "{id}");
+            assert!(
+                payload["startedAt"].is_null(),
+                "{id}: no invented start time"
+            );
+            assert_eq!(payload["finishedAt"], serde_json::to_value(finished_at)?);
+            assert_eq!(payload["outcome"], serde_json::to_value(outcome)?);
+        }
+        reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_receipts_stay_in_backup_and_unknown_user_content_stops_upgrade() -> Result<()>
+    {
+        for unknown_content in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let history_path = directory.path().join("history.sqlite");
+            let thread_id = format!("migration-input-receipt-{unknown_content}");
+            write_v24_fixture(&history_path, &thread_id, false).await?;
+            let mut payload = serde_json::json!({
+                "digest": "sha256:identity-only", "delivery": {"kind":"nextTurn"},
+                "id":"identity-only", "ordinal":3, "revision":1,
+                "state":{"kind":"discarded"}, "acceptedSequence":1,
+            });
+            if unknown_content {
+                payload["userBody"] = serde_json::json!("unique user text must not be discarded");
+            }
+            let original = serde_json::to_string(&payload)?;
+            let db = schema::connect(&history_path, false, false).await?;
+            db.execute_raw(statement(
+                "INSERT INTO history_input_identities(item_id,ordinal,revision,digest,presentation,payload,last_write_seq) VALUES('identity-only',3,1,'sha256:identity-only','visible',?,1)",
+                vec![original.clone().into()],
+            )).await?;
+            db.close().await?;
+            let result = upgrade_history(&history_path, &thread_id, directory.path()).await;
+            if unknown_content {
+                assert!(
+                    result.is_err(),
+                    "unsupported user content must stop migration"
+                );
+                assert_eq!(schema_version(&history_path).await?, 24);
+            } else {
+                let report = result?;
+                assert_eq!(
+                    report.backup_only_categories["history_input_identities_identity_receipt_only"],
+                    1
+                );
+                let store =
+                    CurrentHistoryStore::open(&history_path, &thread_id, HistoryLimits::default())
+                        .await?;
+                let reader = store.reader();
+                let events = reader
+                    .events_page(
+                        HistoryEventsQuery::Entity {
+                            entity_id: "identity-only".into(),
+                        },
+                        None,
+                        None,
+                        HistoryDemand::default(),
+                    )
+                    .await?;
+                assert!(
+                    events.entries.is_empty(),
+                    "identity metadata is not a user-content event"
+                );
+                reader.close().await;
+                store.close().await?;
+            }
+            let operations = std::fs::read_dir(directory.path().join(BACKUP_ROOT))?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<std::io::Result<Vec<_>>>()?;
+            let operation = operations
+                .iter()
+                .find(|path| path.is_dir())
+                .expect("preserved operation");
+            let backup =
+                schema::connect(&operation.join("history.v24.sqlite"), true, false).await?;
+            let row = backup
+                .query_one_raw(statement(
+                    "SELECT payload FROM history_input_identities WHERE item_id='identity-only'",
+                    vec![],
+                ))
+                .await?
+                .expect("the exact receipt is preserved");
+            assert_eq!(row.try_get::<String>("", "payload")?, original);
+            backup.close().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn existing_current_bytes_are_not_rewritten_by_upgrade() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history_path = directory.path().join("history.sqlite");
@@ -4828,35 +5027,134 @@ mod migration_tests {
     }
 
     #[tokio::test]
-    async fn lost_result_after_commit_reopens_as_schema25_without_appending() -> Result<()> {
+    async fn schema24_retry_archives_its_uncommitted_report_and_preserves_inputs() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history_path = directory.path().join("history.sqlite");
-        let thread_id = "migration-lost-commit-result";
-        write_v24_fixture(&history_path, thread_id, true).await?;
-        *FAIL_NEXT_REPORT_THREAD
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+        let thread_id = "migration-uncommitted-report";
+        let fixture = write_v24_fixture(&history_path, thread_id, false).await?;
+        let operation_id = uuid::Uuid::new_v4().to_string();
+        let operation = directory.path().join(BACKUP_ROOT).join(&operation_id);
+        prepare_directory(directory.path(), &operation)?;
+        let (backup, rows) = make_backup(
+            &history_path,
+            &operation,
+            thread_id,
+            &fixture.database_id,
+            1,
+        )
+        .await?;
+        let backup_bytes = std::fs::read(&backup)?;
+        let preserved_note = operation.join("preserved-note.txt");
+        std::fs::write(&preserved_note, b"keep this operation's other material")?;
+        let staged = UpgradeReport {
+            operation_id: operation_id.clone(),
+            thread_id: thread_id.into(),
+            database_id: fixture.database_id,
+            status: UpgradeStatus::Upgraded,
+            backup: Some(backup.clone()),
+            current_original_backup: None,
+            source_table_rows: rows,
+            imported_categories: BTreeMap::from([("canonical_originals".into(), 2)]),
+            backup_only_categories: BTreeMap::new(),
+        };
+        let staged_bytes = serde_json::to_vec_pretty(&staged)?;
+        let pending = directory.path().join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
+        std::fs::write(&pending, &staged_bytes)?;
+        assert_eq!(schema_version(&history_path).await?, 24);
 
-        assert!(
-            upgrade_history(&history_path, thread_id, directory.path())
-                .await
-                .is_err(),
-            "the caller observes a failed maintenance result"
-        );
-        assert!(directory.path().join("current.json").is_file());
-        let committed_events = event_count(&history_path).await?;
-        let target = schema::connect(&history_path, true, false).await?;
-        let (_, observed_head) = schema::identity(&target, thread_id).await?;
-        target.close().await?;
-        assert!(observed_head > 0);
-
-        let observed = upgrade_history(&history_path, thread_id, directory.path()).await?;
-        assert_eq!(observed.status, UpgradeStatus::AlreadySchema25);
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_ne!(report.operation_id, operation_id);
+        assert_eq!(report.imported_categories["canonical_originals"], 2);
         assert_eq!(
-            event_count(&history_path).await?,
-            committed_events,
-            "reopening the committed schema must not append a second migration"
+            std::fs::read(operation.join("uncommitted-report.json"))?,
+            staged_bytes
         );
+        assert_eq!(std::fs::read(backup)?, backup_bytes);
+        assert_eq!(
+            std::fs::read(preserved_note)?,
+            b"keep this operation's other material"
+        );
+        assert!(!pending.try_exists()?);
+        assert!(!operation.join("upgrade-report.json").try_exists()?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lost_result_after_commit_preserves_report_and_never_appends_again() -> Result<()> {
+        for report_state in ["missing", "published", "conflict"] {
+            let directory = tempfile::tempdir()?;
+            let history_path = directory.path().join("history.sqlite");
+            let thread_id = format!("migration-lost-report-{report_state}");
+            let fixture = write_v24_fixture(&history_path, &thread_id, true).await?;
+            *FAIL_NEXT_REPORT_THREAD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.clone());
+
+            assert!(
+                upgrade_history(&history_path, &thread_id, directory.path())
+                    .await
+                    .is_err(),
+                "{report_state}: caller must observe the report publication failure"
+            );
+            let current_bytes = std::fs::read(directory.path().join("current.json"))?;
+            let committed_events = event_count(&history_path).await?;
+            let pending_path = directory.path().join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
+            let staged_bytes = std::fs::read(&pending_path)?;
+            let staged: UpgradeReport = serde_json::from_slice(&staged_bytes)?;
+            assert_eq!(staged.status, UpgradeStatus::Upgraded);
+            assert_eq!(staged.database_id, fixture.database_id);
+            assert_eq!(staged.imported_categories["canonical_originals"], 2);
+            assert_eq!(staged.imported_categories["display_member_anchors"], 2);
+            assert_eq!(staged.imported_categories["costs"], 1);
+            let backup = staged.backup.as_ref().expect("preserved v24 backup");
+            let backup_bytes = std::fs::read(backup)?;
+            let report_path = directory
+                .path()
+                .join(BACKUP_ROOT)
+                .join(&staged.operation_id)
+                .join("upgrade-report.json");
+            match report_state {
+                "missing" => assert!(!report_path.try_exists()?),
+                "published" => std::fs::write(&report_path, &staged_bytes)?,
+                "conflict" => {
+                    let conflicting_bytes = b"preserve the conflicting report";
+                    std::fs::write(&report_path, conflicting_bytes)?;
+                    assert!(matches!(
+                        upgrade_history(&history_path, &thread_id, directory.path()).await,
+                        Err(HistoryError::Conflict(_))
+                    ));
+                    assert_eq!(std::fs::read(&report_path)?, conflicting_bytes);
+                    assert_eq!(std::fs::read(&pending_path)?, staged_bytes);
+                    assert_eq!(event_count(&history_path).await?, committed_events);
+                    std::fs::remove_file(&report_path)?;
+                }
+                _ => unreachable!(),
+            }
+
+            let observed = upgrade_history(&history_path, &thread_id, directory.path()).await?;
+            let mut expected = staged;
+            expected.status = UpgradeStatus::AlreadySchema25;
+            assert_eq!(
+                serde_json::to_value(&observed)?,
+                serde_json::to_value(&expected)?
+            );
+            assert_eq!(std::fs::read(&report_path)?, staged_bytes);
+            assert!(!pending_path.try_exists()?);
+            assert_eq!(
+                event_count(&history_path).await?,
+                committed_events,
+                "{report_state}: report recovery must not append migration events"
+            );
+            assert_eq!(
+                std::fs::read(directory.path().join("current.json"))?,
+                current_bytes
+            );
+            assert_eq!(
+                std::fs::read(expected.backup.as_ref().expect("preserved backup"))?,
+                backup_bytes
+            );
+        }
         Ok(())
     }
 

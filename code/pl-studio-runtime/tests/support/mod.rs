@@ -4,15 +4,11 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::{
-    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, ContentRange, CurrentFrame, ReadDemand,
-    ThreadNotification, ThreadWorkspaceMode,
-    history::HistoryEventBodyRef,
-    studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput},
-};
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
-    StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, ContentRange, CreateThreadRequest, CurrentFrame,
+    HistoryEventBodyRef, NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput,
+    StudioRuntime, StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig, UserAgentProfile, save_user_agent_profile},
 };
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
@@ -111,7 +107,7 @@ pub async fn completed_prompt(
     runtime: &StudioRuntime,
     id: &str,
     prompt: &str,
-) -> Result<pl_protocol::Turn> {
+) -> Result<pl_studio_runtime::Turn> {
     terminal(runtime, id, Some(&format!("input-{prompt}"))).await
 }
 
@@ -126,7 +122,7 @@ async fn terminal(
     runtime: &StudioRuntime,
     id: &str,
     input: Option<&str>,
-) -> Result<pl_protocol::Turn> {
+) -> Result<pl_studio_runtime::Turn> {
     let demand = current_demand();
     let reader = runtime
         .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
@@ -231,14 +227,16 @@ impl Environment {
                 display_name: EXECUTOR.into(),
                 description: "Identity integration".into(),
                 when_to_use: "Identity integration".into(),
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                    route: Some(pl_protocol::studio::NewThreadModelRoute {
-                        account_id: "child-fixture".into(),
-                        model_id: MODEL.into(),
-                        effort: None,
-                    }),
-                    system_instructions: Some("Follow the finite fixture script.".into()),
-                }),
+                binding: pl_studio_runtime::AgentBinding::Native(
+                    pl_studio_runtime::NativeAgentConfig {
+                        route: Some(pl_studio_runtime::NewThreadModelRoute {
+                            account_id: "child-fixture".into(),
+                            model_id: MODEL.into(),
+                            effort: None,
+                        }),
+                        system_instructions: Some("Follow the finite fixture script.".into()),
+                    },
+                ),
                 workspace_mode: AgentWorkspaceMode::Worktree,
             },
             &config,
@@ -283,13 +281,13 @@ impl Environment {
                     text: prompt.into(),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().to_string(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                 route: NewThreadModelRoute {
                     account_id: "root-fixture".into(),
                     model_id: MODEL.into(),
                     effort: None,
                 },
-                delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: mode,
             },

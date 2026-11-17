@@ -5,13 +5,12 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatScope, ContentRange, CurrentContentRef,
-    CurrentFrame, CurrentProjection, ThreadWorkspaceMode,
-    history::{HistoryBodyRole, HistoryDemand, HistoryEventsQuery},
-};
 use pl_provider_fixture::{Protocol, ReplyStage, Step, WebSocketAction};
-use pl_studio_runtime::history::HistoryReader;
+use pl_studio_runtime::{
+    CURRENT_PROTOCOL_VERSION, ChatAtomKind, ChatContentRole, ChatScope, ContentRange,
+    CurrentContentRef, CurrentFrame, CurrentProjection, HistoryEventBodyRef, ThreadWorkspaceMode,
+    history::{HistoryBodyRole, HistoryDemand, HistoryEventsQuery, HistoryReader},
+};
 use std::collections::HashSet;
 use support::{Environment, current_demand, prompt_step, reached};
 use tokio_util::sync::CancellationToken;
@@ -22,13 +21,13 @@ fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContent
         .iter()
         .filter(|atom| atom.kind == ChatAtomKind::Text)
         .flat_map(|atom| atom.contents.iter())
-        .find(|content| content.role == pl_protocol::CurrentContentRole::Response)
+        .find(|content| content.role == ChatContentRole::Body)
         .map(|content| content.reference.clone())
 }
 
 async fn read_history_body(
     reader: &HistoryReader,
-    reference: &pl_protocol::history::HistoryEventBodyRef,
+    reference: &HistoryEventBodyRef,
 ) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     while bytes.len() as u64 != reference.byte_length {
@@ -53,7 +52,9 @@ async fn original_bodies(reader: &HistoryReader, event_id: &str) -> Result<Vec<(
     let mut cursor = None;
     let mut bodies = Vec::new();
     loop {
-        let page = reader.list_bodies(event_id.into(), cursor, demand).await?;
+        let page = reader
+            .list_bodies(event_id.into(), cursor.clone(), demand)
+            .await?;
         for body in page.entries {
             if matches!(
                 body.role,
@@ -106,7 +107,7 @@ async fn public_history(reader: &HistoryReader) -> Result<PublicHistory> {
                     scope: ChatScope::conversation(None),
                 },
                 None,
-                cursor,
+                cursor.clone(),
                 demand,
             )
             .await?;
@@ -506,7 +507,7 @@ async fn current_and_history_2000_item_scale() -> Result<()> {
         let terminal = support::completed_prompt(&env.runtime, id, prompt).await?;
         ensure!(matches!(
             terminal.state,
-            pl_protocol::TurnState::Completed(_)
+            pl_studio_runtime::TurnState::Completed(_)
         ));
         let published = public_history(&history).await?;
         ensure!(

@@ -428,7 +428,8 @@ mod tests {
                 ThreadContentLifecycle::completed(2),
             )),
         );
-        let mut draft = crate::studio::runtime::chat_item::completion_draft(&item, 2, &database)?;
+        let mut draft =
+            crate::studio::runtime::chat_item::completion_draft(&item, 2, &database, None)?;
         let mut a: ChatAtom = serde_json::from_slice(&draft.metadata)?;
         a.attempt_id = Some("attempt".into());
         a.source_order = Some(1);

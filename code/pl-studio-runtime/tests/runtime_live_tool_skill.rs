@@ -5,13 +5,13 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    CURRENT_PROTOCOL_VERSION, ChatScope, SkillActivationCause, ThreadWorkspaceMode, TurnState,
-    history::{HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
-    studio::StopThreadRequest,
-};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
-use pl_studio_runtime::history::HistoryReader;
+use pl_studio_runtime::{
+    CURRENT_PROTOCOL_VERSION, ChatScope, StopThreadRequest, ThreadWorkspaceMode, TurnState,
+    history::{
+        HistoryBodyRole, HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader,
+    },
+};
 use serde_json::Value;
 use support::{Environment, current_demand, held_reply, program_reply, prompt_step, reached};
 
@@ -135,17 +135,6 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
             .id()
             .to_owned();
         ensure!(runtime.active_skills.iter().any(|name| name == SKILL));
-        let skill_activation = runtime
-            .skill_activations
-            .iter()
-            .find(|skill| skill.name == SKILL)
-            .context("live skill activation")?;
-        ensure!(skill_activation.turn_id == turn_id);
-        ensure!(matches!(
-            &skill_activation.cause,
-            SkillActivationCause::Tool { tool_call_id }
-                if tool_call_id.starts_with(&format!("{CALL}:nested:"))
-        ));
 
         let current = env
             .runtime
@@ -207,12 +196,6 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
                 .active_skills
                 .iter()
                 .any(|name| name == SKILL)
-        );
-        ensure!(
-            after_snapshot
-                .skill_activations
-                .iter()
-                .any(|skill| skill.name == SKILL)
         );
         Ok(())
     }

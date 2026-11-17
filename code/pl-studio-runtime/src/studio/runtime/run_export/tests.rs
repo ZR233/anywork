@@ -23,7 +23,7 @@ use super::{NewMemberRegistration, RetiredThreadCut, RunExporter};
 use crate::history::{
     HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEntityChange, HistoryEntityHead,
     HistoryEntityState, HistoryEvent, HistoryEventKind, HistoryLimits, HistoryOriginalInfo,
-    HistoryPlacement, HistoryRowHead, HistorySingleVisibility, HistoryStore, NativeHistoryEntity,
+    HistoryPlacement, HistoryRowHead, HistorySingleVisibility, HistoryStore,
 };
 use crate::studio::thread_projection::{AuxiliaryBillingReceipt, CurrentState, PreparedAccounting};
 

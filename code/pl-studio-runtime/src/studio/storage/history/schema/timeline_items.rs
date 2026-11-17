@@ -220,7 +220,7 @@ mod tests {
             );
             store.upsert_item(db, 4, member.clone()).await?;
             let completion = pl_core::chat::ChatItem::complete(
-                crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity)?,
+                crate::studio::runtime::chat_item::completion_draft(&member, 4, &identity, None)?,
                 part,
             );
             conversation::migration::append_published(db, &completion).await?;
@@ -242,7 +242,7 @@ mod tests {
         );
         store.upsert_item(db, 4, sealed.clone()).await?;
         let completion = pl_core::chat::ChatItem::complete(
-            crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity)?,
+            crate::studio::runtime::chat_item::completion_draft(&sealed, 4, &identity, None)?,
             3,
         );
         conversation::migration::append_published(db, &completion).await?;

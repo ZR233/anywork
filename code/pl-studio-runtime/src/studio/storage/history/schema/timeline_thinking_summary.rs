@@ -134,8 +134,12 @@ mod tests {
                 ended,
                 state,
             );
-            let mut draft =
-                crate::studio::runtime::chat_item::completion_draft(&item, ended as u64, database)?;
+            let mut draft = crate::studio::runtime::chat_item::completion_draft(
+                &item,
+                ended as u64,
+                database,
+                None,
+            )?;
             let mut atom: ChatAtom = serde_json::from_slice(&draft.metadata)?;
             if id == "background" {
                 atom.source = ChatSourceId::BackgroundResult {

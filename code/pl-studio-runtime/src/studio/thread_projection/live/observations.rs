@@ -176,10 +176,22 @@ impl LiveProjection {
     ) -> Result<Observation> {
         let item = self.items.get(&atom.id).filter(|item| !item.is_terminal());
         let cut = cuts.get(&atom.id);
+        let preview = self
+            .previews
+            .get(&atom.id)
+            .filter(|preview| !preview.shape.is_terminal());
         let shape = item
             .map(|item| static_state(item.state()))
             .or_else(|| cut.and_then(|cut| cut.shape.as_ref()).map(static_state))
-            .context("boundary member has no resident shape or exact producer cut")?;
+            .or_else(|| preview.map(|preview| static_state(&preview.shape)))
+            .with_context(|| {
+                format!(
+                    "boundary member {} ({:?}, resident_terminal={:?}) has no resident shape or exact producer cut",
+                    atom.id,
+                    atom.kind,
+                    self.items.get(&atom.id).map(ExecutionItem::is_terminal)
+                )
+            })?;
         let mut bodies = item
             .map(|item| {
                 crate::studio::runtime::chat_item::content_fields(item.state())
@@ -187,6 +199,17 @@ impl LiveProjection {
             })
             .transpose()?
             .unwrap_or_default();
+        if let Some(start) =
+            preview.filter(|preview| preview.observed.is_none() && preview.observed_version == 0)
+        {
+            // The reliable member-start owns its actual empty body before the producer publishes
+            // a first part. Older nonempty previews never substitute for a missing producer cut.
+            for (key, body) in &start.fields {
+                if body.len() == 0 {
+                    bodies.entry(key.clone()).or_insert_with(|| body.clone());
+                }
+            }
+        }
         if let Some(cut) = cut {
             bodies.extend(cut.fields.clone());
         }

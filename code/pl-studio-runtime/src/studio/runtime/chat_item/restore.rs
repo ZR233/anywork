@@ -5,8 +5,8 @@ use super::{
     user_input_answer_field, user_input_header_field, user_input_option_description_field,
     user_input_option_label_field, user_input_question_field,
 };
-use crate::protocol::*;
 use crate::ExecutionShape;
+use crate::protocol::*;
 use crate::{UserQuestion, UserQuestionOption};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::ChatItem;

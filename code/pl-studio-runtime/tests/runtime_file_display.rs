@@ -3,12 +3,11 @@ mod support;
 
 use anyhow::{Context, Result, ensure};
 use pl_core::context::OpaquePayload;
-use pl_protocol::{
+use pl_studio_runtime::{
     ChatScope, ThreadWorkspaceMode,
-    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery},
+    history::{HistoryDemand, HistoryEventBodyRef, HistoryEventsQuery, HistoryReader},
+    resource_store::RESOURCE_ID_PREFIX,
 };
-use pl_studio_runtime::history::HistoryReader;
-use pl_studio_runtime::resource_store::RESOURCE_ID_PREFIX;
 use pl_tool::file_display::saved_file_display_receipt;
 use serde_json::json;
 
@@ -60,16 +59,11 @@ async fn public_artifact(
             let payload = body(&reader, payload_ref).await?;
             let value: serde_json::Value = serde_json::from_slice(&payload)?;
             let call = value["data"]["invocation"]["callId"].as_str();
-            if value["type"] != "tool"
-                || !call.is_some_and(|id| id.starts_with(call_prefix))
-            {
+            if value["type"] != "tool" || !call.is_some_and(|id| id.starts_with(call_prefix)) {
                 continue;
             }
             ensure!(event.header.turn_id.as_deref() == Some(turn));
-            ensure!(
-                value["data"]["invocation"]["presentationContract"]
-                    == "builtin.show_files@1"
-            );
+            ensure!(value["data"]["invocation"]["presentationContract"] == "builtin.show_files@1");
             let bodies = reader
                 .list_bodies(event.header.event_id.clone(), None, demand)
                 .await?;
@@ -84,7 +78,9 @@ async fn public_artifact(
                 .as_array()
                 .context("artifact array")?
                 .iter()
-                .find(|item| item["kind"] == "opaque" && item["payload"]["format"] == "pl.tool.files")
+                .find(|item| {
+                    item["kind"] == "opaque" && item["payload"]["format"] == "pl.tool.files"
+                })
                 .context("versioned file display artifact")?;
             ensure!(artifact["payload"]["version"] == 1);
             return Ok(artifact.clone());
@@ -105,7 +101,11 @@ fn show_files_reply(call: &str, arguments: serde_json::Value) -> pl_provider_fix
     }
     .program("show_files");
     let mut input: serde_json::Value = serde_json::from_str(&encoded.arguments).unwrap();
-    let invocation = input["code"].as_str().unwrap().strip_prefix("return ").unwrap();
+    let invocation = input["code"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("return ")
+        .unwrap();
     input["code"] =
         format!("local r={invocation}; return {{caption=r.caption, id=r.files[1].resource.id}}")
             .into();
@@ -171,19 +171,26 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let started = env.start(ThreadWorkspaceMode::Local, "display").await?;
         let thread = started.thread.id;
         let turn = support::completed_prompt(&env.runtime, &thread, "display").await?;
-        let live_artifact = public_artifact(&env.runtime, &thread, &turn.id, "display-call").await?;
+        let live_artifact =
+            public_artifact(&env.runtime, &thread, &turn.id, "display-call").await?;
         let requests = env.root_provider.recorded();
         let catalog = requests[0].body["tools"].as_array().context("catalog")?;
-        ensure!(!catalog
-            .iter()
-            .any(|tool| tool["name"].as_str().is_some_and(|name| name.ends_with("show_files"))));
-        ensure!(catalog.iter().any(|tool| tool["name"] == "exec"
-            && tool["description"]
+        ensure!(!catalog.iter().any(|tool| {
+            tool["name"]
                 .as_str()
-                .is_some_and(|text| text.contains("tools[\"show_files\"]"))));
-        ensure!(!catalog
-            .iter()
-            .any(|tool| tool["name"].as_str().is_some_and(|name| name.ends_with("show_image"))));
+                .is_some_and(|name| name.ends_with("show_files"))
+        }));
+        ensure!(catalog.iter().any(|tool| {
+            tool["name"] == "exec"
+                && tool["description"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("tools[\"show_files\"]"))
+        }));
+        ensure!(!catalog.iter().any(|tool| {
+            tool["name"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("show_image"))
+        }));
         let summary = support::tool_output(&env.root_provider, "display-call")?;
         ensure!(!summary.contains(std::str::from_utf8(BYTES)?.trim()));
         ensure!(!summary.contains(&env.repo.to_string_lossy().to_string()));
@@ -202,7 +209,12 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
                 == live_artifact,
             "cold History read changed the original display artifact"
         );
-        ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
+        ensure!(
+            env.runtime
+                .read_thread_attachment(thread.clone(), id.clone())
+                .await?
+                == BYTES
+        );
         ensure!(
             env.root_provider.recorded().len() == calls_before_read,
             "cold read re-executed model/tool"
@@ -218,8 +230,8 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         env.runtime
             .submit_prompt_command(
                 thread.clone(),
-                pl_protocol::studio::SubmitPromptRequest {
-                    input: pl_protocol::studio::StudioPromptInput {
+                pl_studio_runtime::SubmitPromptRequest {
+                    input: pl_studio_runtime::StudioPromptInput {
                         input_id: "input-again".into(),
                         text: "again".into(),
                         attachment_draft_ids: Vec::new(),
@@ -228,20 +240,19 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
                 },
             )
             .await?;
-        let archive_turn =
-            support::completed_prompt(&env.runtime, &thread, "again").await?;
-        let archive_artifact = public_artifact(
-            &env.runtime,
-            &thread,
-            &archive_turn.id,
-            "archive-call",
-        )
-        .await?;
+        let archive_turn = support::completed_prompt(&env.runtime, &thread, "again").await?;
+        let archive_artifact =
+            public_artifact(&env.runtime, &thread, &archive_turn.id, "archive-call").await?;
         let payload: OpaquePayload = serde_json::from_value(archive_artifact["payload"].clone())?;
         let receipt = saved_file_display_receipt(&payload)?.context("archive file receipt")?;
         ensure!(receipt.caption.is_none());
         ensure!(receipt.files.len() == 3);
-        ensure!(env.runtime.read_thread_attachment(thread.clone(), id.clone()).await? == BYTES);
+        ensure!(
+            env.runtime
+                .read_thread_attachment(thread.clone(), id.clone())
+                .await?
+                == BYTES
+        );
         ensure!(
             env.runtime
                 .read_thread_attachment(thread, "pl.studio.resource:unreferenced".into())

@@ -96,8 +96,11 @@ impl StudioStore {
             // Only the named maintenance boundary may import a v2 TOML-only session. A normal
             // current file wins; stale legacy originals are retained as evidence, never a fallback.
             if state.load_current().await?.is_none() && state.legacy_checkpoint().await?.is_some() {
-                self.thread_persistence.retire_history_for_upgrade(thread_id).await?;
-                let legacy = crate::studio::storage::history::HistoryStore::open(&path, thread_id).await?;
+                self.thread_persistence
+                    .retire_history_for_upgrade(thread_id)
+                    .await?;
+                let legacy =
+                    crate::studio::storage::history::HistoryStore::open(&path, thread_id).await?;
                 let imported = state.legacy_prepare(&legacy).await;
                 let closed = legacy.close_for_deletion().await;
                 imported?;
