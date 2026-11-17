@@ -64,29 +64,15 @@ class AcpTimelineProcessGroupView extends StatelessWidget {
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
                 active: row.active,
-                isIssue: row.failedCount > 0,
                 expandable: false,
                 tooltip: summary,
               ),
-              if (row.active || row.failedCount > 0)
+              if (row.active)
                 Padding(
                   padding: const EdgeInsets.only(
                     left: TimelineActivityRow.contentIndent,
                   ),
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 4,
-                    children: [
-                      if (row.active) Text(l10n.acpProcessGroupRunning),
-                      if (row.failedCount > 0)
-                        Text(
-                          l10n.acpProcessGroupFailed(row.failedCount),
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          ),
-                        ),
-                    ],
-                  ),
+                  child: Text(l10n.acpProcessGroupRunning),
                 ),
             ],
           ),

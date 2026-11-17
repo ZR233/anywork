@@ -27,11 +27,6 @@ final class AcpTimelineProcessRow extends AcpTimelineRow {
 
   int get toolCount => items.whereType<AcpTimelineToolCallItem>().length;
 
-  int get failedCount => items
-      .whereType<AcpTimelineToolCallItem>()
-      .where((item) => item.status == AcpToolStatusKind.failed)
-      .length;
-
   bool get active => items.any(
     (item) => switch (item) {
       AcpTimelineToolCallItem(:final status) =>

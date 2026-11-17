@@ -6388,11 +6388,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get acpProcessGroupRunning => '执行中';
 
   @override
-  String acpProcessGroupFailed(int count) {
-    return '$count 个工具失败';
-  }
-
-  @override
   String get acpContentAudioLabel => '音频内容';
 
   @override

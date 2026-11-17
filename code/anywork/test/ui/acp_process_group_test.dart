@@ -289,9 +289,9 @@ void main() {
       await tester.pumpWidget(_app(AcpTimelineProcessGroupView(row: row)));
       expect(find.byType(AcpToolCard), findsNothing);
       expect(find.text('过程 · 3 项活动 · 1 个工具'), findsOneWidget);
-      if (status == AcpToolStatusKind.failed) {
-        expect(find.text('1 个工具失败'), findsOneWidget);
-      }
+      expect(find.text('1 个工具失败'), findsNothing);
+      expect(find.byIcon(Icons.account_tree_outlined), findsOneWidget);
+      expect(find.byIcon(Icons.error_outline), findsNothing);
       await tester.tap(find.byType(ListTile).first);
       await tester.pumpAndSettle();
       expect(find.byType(AcpToolCard), findsOneWidget);
@@ -308,6 +308,7 @@ void main() {
         ),
       );
       expect(members, isNotEmpty);
+      expect(members.every((row) => !row.isIssue), isTrue);
       expect(
         members.every((row) => !row.expandable),
         isTrue,
@@ -336,6 +337,20 @@ void main() {
       }
     });
   }
+
+  testWidgets('失败工具保持类别图标且保留失败输出', (tester) async {
+    final tool = sampleAcpProcessRow(status: AcpToolStatusKind.failed).items
+        .whereType<AcpTimelineToolCallItem>()
+        .single
+        .copyWith(diffs: const []);
+    await tester.pumpWidget(_app(AcpToolCard(item: tool)));
+    expect(find.text('验证失败：权限不足，原文件未改动。'), findsNothing);
+    expect(find.byIcon(Icons.edit_note_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.error_outline), findsNothing);
+    await tester.tap(find.byType(TimelineActivityRow));
+    await tester.pumpAndSettle();
+    expect(find.text('验证失败：权限不足，原文件未改动。'), findsOneWidget);
+  });
 
   testWidgets('原位状态更新、成员追加和组身份替换不串展开状态', (tester) async {
     final source = ValueNotifier(
@@ -491,7 +506,10 @@ void main() {
         )
         .first;
     expect(first.row.id, firstId);
-    expect(first.row.failedCount, 1);
+    expect(
+      first.row.items.whereType<AcpTimelineToolCallItem>().single.status,
+      AcpToolStatusKind.failed,
+    );
     expect(find.textContaining('原位更新的失败输出'), findsOneWidget);
     expect(find.text('工具 second'), findsNothing, reason: '其他组仍独立折叠');
   });

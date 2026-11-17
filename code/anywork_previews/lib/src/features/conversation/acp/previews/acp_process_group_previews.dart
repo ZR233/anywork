@@ -181,6 +181,22 @@ Widget acpProcessGroupFailedPreview() => _shell(
   ),
 );
 
+@Preview(name: '过程组 · 失败详情', group: 'ACP 过程', size: Size(760, 720))
+Widget acpProcessGroupFailedDetailsPreview() => _shell(
+  SingleChildScrollView(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: AcpTimelineProcessGroupView(
+        row: sampleAcpProcessRow(
+          id: 'preview:failed-details',
+          status: AcpToolStatusKind.failed,
+        ),
+        initiallyExpanded: true,
+      ),
+    ),
+  ),
+);
+
 @Preview(name: '过程组 · 长内容全部展开', group: 'ACP 过程', size: Size(760, 720))
 Widget acpProcessGroupLongPreview() => _shell(
   SingleChildScrollView(

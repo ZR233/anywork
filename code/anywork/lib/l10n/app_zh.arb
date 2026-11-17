@@ -2621,8 +2621,6 @@
   "acpProcessGroupSummary": "过程 · {count} 项活动 · {toolCount} 个工具",
   "@acpProcessGroupSummary": {"placeholders": {"count": {"type": "int"}, "toolCount": {"type": "int"}}},
   "acpProcessGroupRunning": "执行中",
-  "acpProcessGroupFailed": "{count} 个工具失败",
-  "@acpProcessGroupFailed": {"placeholders": {"count": {"type": "int"}}},
   "acpContentAudioLabel": "音频内容",
   "acpContentResourceLabel": "内嵌资源",
   "acpContentBinarySummary": "{mimeType} · {byteCount} 字节",

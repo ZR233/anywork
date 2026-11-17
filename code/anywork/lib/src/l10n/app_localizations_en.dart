@@ -6771,17 +6771,6 @@ class AppLocalizationsEn extends AppLocalizations {
   String get acpProcessGroupRunning => 'Running';
 
   @override
-  String acpProcessGroupFailed(int count) {
-    String _temp0 = intl.Intl.pluralLogic(
-      count,
-      locale: localeName,
-      other: '$count tools failed',
-      one: '1 tool failed',
-    );
-    return '$_temp0';
-  }
-
-  @override
   String get acpContentAudioLabel => 'Audio content';
 
   @override

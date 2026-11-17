@@ -48,9 +48,7 @@ class AcpToolCard extends StatefulWidget {
 
 class _AcpToolCardState extends State<AcpToolCard> {
   late bool _expanded =
-      widget.initiallyExpanded ||
-      widget.item.diffs.isNotEmpty ||
-      widget.item.status == AcpToolStatusKind.failed;
+      widget.initiallyExpanded || widget.item.diffs.isNotEmpty;
 
   bool get _hasExpandableDetails {
     final item = widget.item;
@@ -68,7 +66,6 @@ class _AcpToolCardState extends State<AcpToolCard> {
     final active =
         item.status == AcpToolStatusKind.pending ||
         item.status == AcpToolStatusKind.inProgress;
-    final isIssue = item.status == AcpToolStatusKind.failed;
     final expandable = _hasExpandableDetails;
     final locationSummary = item.locations.isEmpty
         ? null
@@ -80,7 +77,6 @@ class _AcpToolCardState extends State<AcpToolCard> {
       label: item.tool.name,
       meta: item.kindLabel,
       active: active,
-      isIssue: isIssue,
       expanded: expandable && (_expanded || widget.fullDetails),
       expandable: expandable && !widget.fullDetails,
       tooltip: [item.tool.name, ?locationSummary].join('\n'),

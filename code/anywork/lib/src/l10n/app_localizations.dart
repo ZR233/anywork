@@ -12021,12 +12021,6 @@ abstract class AppLocalizations {
   /// **'Running'**
   String get acpProcessGroupRunning;
 
-  /// No description provided for @acpProcessGroupFailed.
-  ///
-  /// In en, this message translates to:
-  /// **'{count, plural, =1{1 tool failed} other{{count} tools failed}}'**
-  String acpProcessGroupFailed(int count);
-
   /// No description provided for @acpContentAudioLabel.
   ///
   /// In en, this message translates to:
