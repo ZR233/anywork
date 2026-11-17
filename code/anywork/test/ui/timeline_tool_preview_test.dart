@@ -95,11 +95,9 @@ void main() {
     });
     await tester.pumpWidget(narrowToolDetailPreview());
     await tester.pumpAndSettle();
-    final result = toolDetailPreviewFixtures
+    final output = toolDetailPreviewFixtures
         .singleWhere((fixture) => fixture.contract == 'builtin.web_search@1')
         .output;
-    final output =
-        (jsonDecode(result) as Map<String, Object?>)['output'] as String;
     final paragraph = tester.renderObject<RenderParagraph>(
       find.descendant(of: find.text(output), matching: find.byType(RichText)),
     );
@@ -144,7 +142,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('长结果预览解码真实搜索回执且滚动后可访问末条正文', (tester) async {
+  testWidgets('长搜索文本预览滚动后可访问末条正文', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(960, 640);
     addTearDown(() {
@@ -154,17 +152,32 @@ void main() {
     await tester.pumpWidget(longToolResultPreview());
     await tester.pumpAndSettle();
     expect(find.textContaining('结构化结果不可用'), findsNothing);
-    final lastResult = find.text('第 24 条结果：在合成文档中找到与查询相关的段落，并保留来源标题。');
+    const lastText = '第 24 条结果：在合成文档中找到与查询相关的段落，并保留来源标题。';
+    final lastResult = find.textContaining(lastText);
     expect(lastResult, findsOneWidget);
     final scrollable = find.byWidgetPredicate(
       (widget) =>
           widget is Scrollable && widget.axisDirection == AxisDirection.down,
     );
     expect(scrollable, findsOneWidget);
-    await tester.scrollUntilVisible(lastResult, 300, scrollable: scrollable);
+    final position = tester.state<ScrollableState>(scrollable).position;
+    expect(position.maxScrollExtent, greaterThan(0));
+    position.jumpTo(position.maxScrollExtent);
     await tester.pumpAndSettle();
-    expect(tester.getRect(lastResult).bottom, lessThanOrEqualTo(640));
-    expect(tester.getRect(lastResult).top, greaterThanOrEqualTo(0));
+    final paragraph = tester.renderObject<RenderParagraph>(
+      find.descendant(of: lastResult, matching: find.byType(RichText)),
+    );
+    final text = paragraph.text.toPlainText();
+    final start = text.indexOf(lastText);
+    final boxes = paragraph.getBoxesForSelection(
+      TextSelection(baseOffset: start, extentOffset: start + lastText.length),
+    );
+    expect(boxes, isNotEmpty);
+    for (final box in boxes) {
+      final rect = box.toRect().shift(paragraph.localToGlobal(Offset.zero));
+      expect(rect.bottom, lessThanOrEqualTo(640));
+      expect(rect.top, greaterThanOrEqualTo(0));
+    }
     expect(tester.takeException(), isNull);
   });
 
