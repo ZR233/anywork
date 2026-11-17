@@ -11,19 +11,17 @@ pub use signals::SignalListener;
 
 use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::history::{
-    BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryDemand,
+    BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryCut, HistoryDemand,
     HistoryEventBodyRef, HistoryReader, HistoryRowHead, HistoryTurnState,
 };
 use pl_studio_runtime::{
-    BuildInfoV3, CHAT_BATCH_MAX_BYTES, CURRENT_PROTOCOL_VERSION, CurrentFrame, ExecutionErrorStage,
-    ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION, ReadDemand, ResultOutcome, ResultV3,
-    RunExportOptions, RunExportReport, RunExporter, StudioPendingPersistence, StudioRuntime,
-    StudioShutdownOutcome, StudioShutdownReport, StudioStartNewThreadRequest, StudioStartupError,
-    StudioStartupErrorKind, StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
+    BuildInfoV3, ExecutionErrorStage, ExecutionErrorV3, ExecutionOutcome, RESULT_SCHEMA_VERSION,
+    ResultOutcome, ResultV3, RunExportOptions, RunExportReport, RunExporter,
+    StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
+    StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
+    StudioSubmitPromptOptions, TimingReportV3, format_export_utc_rfc3339,
 };
-use pl_studio_runtime::{
-    StudioPromptInput, ThreadNotification, ThreadWorkspaceMode, Turn, TurnCompletion, TurnState,
-};
+use pl_studio_runtime::{StudioPromptInput, ThreadWorkspaceMode, Turn, TurnCompletion, TurnState};
 use std::future::Future;
 use std::time::{Instant, SystemTime};
 
@@ -388,12 +386,7 @@ async fn execute_observed(
     if report.signal.is_none()
         && let Some(submission) = &report.submission
     {
-        let task = wait_for_input(
-            &runtime,
-            &submission.thread_id,
-            &submission.input_id,
-            submission.cursor,
-        );
+        let task = wait_for_input(&runtime, &submission.thread_id, &submission.input_id);
         let export_cancelled = async {
             match &exporter {
                 Some(exp) => exp.cancellation().cancelled().await,
@@ -570,90 +563,29 @@ fn build_result_v1(
     }
 }
 
-async fn wait_for_input(
-    runtime: &StudioRuntime,
-    thread_id: &str,
-    input_id: &str,
-    _cursor: u64,
-) -> Result<Turn> {
-    // The submission cursor is a Chat acceptance sequence, not a Turn revision or History cut.
-    let current_demand = ReadDemand {
-        max_items: 128,
-        max_bytes: CHAT_BATCH_MAX_BYTES,
-    };
-    let reader = runtime
-        .open_current_reader(thread_id, CURRENT_PROTOCOL_VERSION, current_demand)
-        .await?;
-    let history = match runtime
+async fn wait_for_input(runtime: &StudioRuntime, thread_id: &str, input_id: &str) -> Result<Turn> {
+    let history = runtime
         .open_history_reader(thread_id, HISTORY_PROTOCOL_VERSION)
-        .await
-    {
-        Ok(history) => history,
-        Err(error) => {
-            return match reader.close().await {
-                Ok(()) => Err(error),
-                Err(close) => {
-                    Err(error.context(format!("CurrentReader close also failed: {close}")))
-                }
-            };
-        }
-    };
+        .await?;
     let result = async {
-        let watch = reader.watch(None, current_demand).await?;
-        let watched = async {
-            loop {
-                let frame = watch.next().await?.context("任务状态流提前结束")?;
-                match frame {
-                    CurrentFrame::Reset { view } => {
-                        if let Some(turn) = view.state.active_turn
-                            && is_target_terminal(&turn, input_id, _cursor)
-                        {
-                            return Ok(turn);
-                        }
-                        if let Some(turn) =
-                            terminal_turn_for_input(&history, thread_id, input_id).await?
-                        {
-                            return Ok(turn);
-                        }
-                    }
-                    CurrentFrame::Notification { notification, .. } => match notification
-                        .notification
-                    {
-                        ThreadNotification::TurnCompleted { turn }
-                            if is_target_terminal(&turn, input_id, _cursor) =>
-                        {
-                            return Ok(turn);
-                        }
-                        ThreadNotification::Lagged { .. } => anyhow::bail!("任务状态流丢失连续性"),
-                        _ => {}
-                    },
-                    CurrentFrame::Projection { .. } => {}
-                }
+        let mut cut = history.capture().await?;
+        loop {
+            if let Some(turn) =
+                terminal_turn_for_input(&history, thread_id, input_id, cut.clone()).await?
+            {
+                return Ok(turn);
             }
-        }
-        .await;
-        let closed = watch.close().await;
-        match (watched, closed) {
-            (Ok(turn), Ok(())) => Ok(turn),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Err(error), Err(close)) => {
-                Err(error.context(format!("CurrentWatch close also failed: {close}")))
-            }
+            // History owns its own terminal facts. A Current notification cannot prove that
+            // those facts are already queryable, and no later Current frame is owed to us.
+            cut = history.wait_changed(cut).await?;
         }
     }
     .await;
     history.close().await;
-    let current_closed = reader.close().await;
-    match (result, current_closed) {
-        (Ok(turn), Ok(())) => Ok(turn),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(close)) => {
-            Err(error.context(format!("CurrentReader close also failed: {close}")))
-        }
-    }
+    result
 }
 
-fn is_target_terminal(turn: &Turn, input_id: &str, _cursor: u64) -> bool {
+fn is_target_terminal(turn: &Turn, input_id: &str) -> bool {
     turn.input_id.as_deref() == Some(input_id) && turn.state.is_terminal()
 }
 
@@ -661,11 +593,12 @@ async fn terminal_turn_for_input(
     history: &HistoryReader,
     thread_id: &str,
     input_id: &str,
+    cut: HistoryCut,
 ) -> Result<Option<Turn>> {
     let mut page_cursor = None;
     loop {
         let page = history
-            .turns_page(None, page_cursor.clone(), history_demand())
+            .turns_page(Some(cut.clone()), page_cursor.clone(), history_demand())
             .await?;
         for entry in page.entries {
             let HistoryRowHead::Turn(head) = entry.head else {
@@ -689,8 +622,7 @@ async fn terminal_turn_for_input(
             ensure!(
                 turn.id == head.turn_id
                     && turn.thread_id == thread_id
-                    && turn.input_id.as_deref() == Some(input_id)
-                    && turn.state.is_terminal(),
+                    && is_target_terminal(&turn, input_id),
                 "terminal History Turn identity does not match the submitted input"
             );
             return Ok(Some(turn));
@@ -889,9 +821,8 @@ mod tests {
             )),
             updated_at: 2,
         };
-        assert!(!is_target_terminal(&turn, "another-input", 1));
-        assert!(!is_target_terminal(&turn, "accepted", 13));
-        assert!(is_target_terminal(&turn, "accepted", 10));
+        assert!(!is_target_terminal(&turn, "another-input"));
+        assert!(is_target_terminal(&turn, "accepted"));
         let mut report = ExecutionReport {
             submission: None,
             turn: Some(turn),

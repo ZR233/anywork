@@ -349,15 +349,19 @@ async fn original_from_event(
     let bodies = read_body_entries(read, &detail.header.event_id, remaining, deadline).await?;
     let metadata_head =
         canonical_head(read, &detail.header.event_id, &bodies, remaining, deadline).await?;
-    let head = match detail.head {
+    let mut indexed_fact = match detail.head {
         Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
         None => metadata_head.clone(),
         Some(_) => bail!("canonical original has a non-entity head"),
     };
+    indexed_fact.single_visibility = None;
+    let mut original_fact = metadata_head.clone();
+    original_fact.single_visibility = None;
     ensure!(
-        head == metadata_head,
+        indexed_fact == original_fact,
         "canonical metadata and indexed History head disagree"
     );
+    let head = metadata_head;
     let payload_ref = detail
         .payload_ref
         .context("canonical original omitted its opaque payload")?;

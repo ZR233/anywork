@@ -56,7 +56,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 
-`HistoryEntityHead` 是 Single 与 member 的小型 metadata，记录实体、run、attempt、来源、kind、delivery、状态、真实时间、工具身份、wait、内容存在性、`HistorySingleVisibility`、观察、展示契约和按需引用。canonical payload 是 `anywork.chat/1` 的不可变正文，普通产品 payload/metadata 中的旧引用在迁移时改写为新 `HistoryEventBodyRef`，producer opaque 字节保持不变。
+`HistoryEntityHead` 是 Single 与 member 的小型 metadata，记录实体、run、attempt、来源、kind、delivery、状态、真实时间、工具身份、wait、内容存在性、`HistorySingleVisibility`、观察、展示契约和按需引用。canonical payload 是 `anywork.chat/1` 的不可变正文，普通产品 payload/metadata 中的旧引用在迁移时改写为新 `HistoryEventBodyRef`，producer opaque 字节保持不变。 `single_visibility` 是行投影资格，不属于 producer 原始业务事实；导出保留冻结 metadata，只在一致性校验时排除该展示字段，其他事实字段必须完全一致。
 
 历史同时支持 Work、Single、Member、Turn、Source、Cost 与 Accounting 行头。Work 和 Single 在主时间线使用稳定 `row_key` 与首次 anchor；成员按 `group_id` 和成员 anchor 读取。工作尾组只在首次可靠可显示的独立 Single 到来时关闭，来源结束、Turn 成功、idle、owner 关闭和冷重开均不关闭。旧组始终按当时观察到的历史 bytes 读取，后来的 B3、终稿或其他来源终态不能替换它；后续终态进入当前 run 的新组，重启也不续写旧组。
 
@@ -64,7 +64,7 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 History writer 先在数据库事务外固定 RAM pending 根，再开始 SQLite 事务；接纳事实和数据库提交是不同阶段。查询先捕获 accepted head 与 pending 根，再开新的只读快照，合并数据库与尚未 flush 的不可变事实。flush 成功后才 reclaim 对应 pending；在途查询持有旧根，回收不破坏其读取。失败保留原事件与写入错误，重试复用同一身份和字节；内容冲突明确失败。History 在同 effect 的原始 producer cut 上冻结边界，不能读取更新的 Current 正文。模型终态先把最后真实 progress 交给 History 再释放 receiver；工具中断或取消的 partial 作为原 canonical 正文保留，不冒充成功终稿。历史不保存全会话缓存。
 
-提交、失败、压力和关闭沿用原 HistoryChannel 责任：容量不足返回类型化背压，调用方保留原事实；写入失败保留 pending；关闭先封闭接纳、取消并等待读取，再 flush 剩余事实并释放 writer lease。关闭一个 `HistoryReader` 只关闭该读取资格，不关闭共享 HistoryStore 或其他读者。
+提交、失败、压力和关闭沿用原 HistoryChannel 责任：容量不足返回类型化背压，调用方保留原事实；写入失败保留 pending；关闭先封闭接纳、取消并等待读取，再 flush 剩余事实并释放 writer lease。关闭一个 `HistoryReader` 只关闭该读取资格，不关闭共享 HistoryStore 或其他读者。 CLI/bot 等等待终态的消费者在同一 History cut 上查询 Turn，读取其不可变 `turn_detail`，未命中时等待该 History reader 的 change；不依靠 Current 的最后一次通知，不比较两域 revision。Turn 分页只由持有资格的 HistoryReader 提供，不保留另开 reader 的独立 `/turns` 快捷接口。
 
 投影交给 History 的 `PreparedEffect` 使用 `retained_resources` 表达本 effect 的真实交付与 repair 资源；`turn_id` 可以为空，只有能由原任务证明时才填写。该计划不复制 `latestTask`，也不创建 `history_tool_tasks`。资源身份、摘要和引用冲突使事件接纳失败，不能先发布完成 head 再补资源。
 

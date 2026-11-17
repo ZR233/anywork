@@ -508,7 +508,7 @@ Client 按 `threadId` 借用会话 LSP 主题并在同一个只读接纳入口�
 
 conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 data 实现，领域消费者不依赖 Flutter、Riverpod 或 FRB。ConversationRepository 持有各域当前态、观察/操作资源与传输责任，DraftsRepository 持有冻结提交和附件归属；不经旧 AnyworkClient 转发，不建立历史镜像。
 
-五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。会话 Repository 是 Current State 的唯一 Dart writer，通过 `CurrentReader` 接纳 Reset、notification 与 projection；HistoryReader 只向时间线 owner 交付纯 query/page/cut/change。各资源独立持有 reader、generation、错误与关闭资格，正文消费受阻时仍能接纳 State；State 断流只重建 Current 基线，不清空已加载历史或草稿。历史页和正文查询在应用队列外执行，不竞争 Current watch；两者没有共同 ACK 或共同水位。
+五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。 Current 活动头在 FRB 与 SDK 中保留完整 `ThreadActivityKind`（包括 `waitingApi`）；只有呈现层将其映射为界面的较粗活动分类，传输接纳不按 enum 名称猜测另一种类型。会话 Repository 是 Current State 的唯一 Dart writer，通过 `CurrentReader` 接纳 Reset、notification 与 projection；HistoryReader 只向时间线 owner 交付纯 query/page/cut/change。各资源独立持有 reader、generation、错误与关闭资格，正文消费受阻时仍能接纳 State；State 断流只重建 Current 基线，不清空已加载历史或草稿。历史页和正文查询在应用队列外执行，不竞争 Current watch；两者没有共同 ACK 或共同水位。
 
 Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollectionRef` 机械接纳到原领域 owner，不暴露旧 `content.current`。形状与空值语义见 [26.6](./26-timeline-content.md#266-业务引用由-state-交付)。引用与可操作业务状态来自同一发布者，不建第二可写模型；Current collection page 不覆盖可操作问题。引用 revision 变化只撤销受影响展开窗口，保留历史、其他详情和草稿。
 

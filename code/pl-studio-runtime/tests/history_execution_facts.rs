@@ -46,8 +46,8 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
         let id = &started.thread.id;
         let turn = completed_prompt(&env.runtime, id, "facts").await?;
         env.runtime.synchronize_thread_observation(id).await?;
-        let saved = support::saved(&env.home, id).await?;
         env.restart().await?;
+        let saved = support::saved(&env.home, id).await?;
 
         let current = env
             .runtime
@@ -119,17 +119,17 @@ async fn durable_reopen_uses_original_records_without_execution_or_run_copies() 
         }
         ensure!(saw_inference, "history lost the inference diagnostic");
         let text_identity = text_identity.context("real model text original")?;
+        let page = reader.turns_page(None, None, demand).await?;
+        ensure!(page.entries.iter().any(|entry| matches!(
+            &entry.head, pl_studio_runtime::history::HistoryRowHead::Turn(head)
+                if head.turn_id == turn.id
+        )));
+        let events = reader.events_page(
+            HistoryEventsQuery::Turn { turn_id: turn.id.clone() },
+            Some(page.cut), None, demand,
+        ).await?;
+        ensure!(events.entries.iter().any(|entry| entry.header.event_id == text_identity));
         reader.close().await;
-
-        let page = env.runtime.list_thread_turns(id, None, 10).await?;
-        ensure!(page
-            .turns
-            .iter()
-            .any(|history| history.turn.id == turn.id
-                && history
-                    .items
-                    .iter()
-                    .any(|entry| entry.header.event_id == text_identity)));
 
         let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
         let check = async {

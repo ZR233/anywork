@@ -47,49 +47,62 @@ async fn public_tool(
     let reader = runtime
         .open_history_reader(thread, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
         .await?;
-    let checked = async {
-        let originals = reader
-            .events_page(
-                HistoryEventsQuery::Originals {
-                    scope: ChatScope::conversation(None),
-                },
-                None,
-                None,
-                demand,
-            )
-            .await?;
-        for event in originals.entries {
-            let Some(payload_ref) = &event.payload_ref else {
-                continue;
-            };
-            let payload = body(&reader, payload_ref).await?;
-            let value: Value = serde_json::from_slice(&payload)?;
-            if value["type"] != "tool"
-                || !value["data"]["invocation"]["callId"]
-                    .as_str()
-                    .is_some_and(|id| id.starts_with(&format!("{CALL}:nested:")))
-            {
-                continue;
+    let checked = tokio::time::timeout(support::integration_test_deadline()?, async {
+        let mut cut = reader.capture().await?;
+        loop {
+            let mut cursor = None;
+            loop {
+                let originals = reader
+                    .events_page(
+                        HistoryEventsQuery::Originals {
+                            scope: ChatScope::conversation(None),
+                        },
+                        Some(cut.clone()),
+                        cursor.clone(),
+                        demand,
+                    )
+                    .await?;
+                for event in originals.entries {
+                    let Some(payload_ref) = &event.payload_ref else {
+                        continue;
+                    };
+                    let payload = body(&reader, payload_ref).await?;
+                    let value: Value = serde_json::from_slice(&payload)?;
+                    if event.header.turn_id.as_deref() != Some(turn)
+                        || value["type"] != "tool"
+                        || value["data"]["invocation"]["name"] != "skill_view"
+                    {
+                        continue;
+                    }
+                    ensure!(event.header.turn_id.as_deref() == Some(turn));
+                    let bodies = reader
+                        .list_bodies(event.header.event_id.clone(), None, demand)
+                        .await?;
+                    let result = bodies
+                        .entries
+                        .into_iter()
+                        .find(|entry| {
+                            entry.body_key == "tool.result"
+                                && entry.role == HistoryBodyRole::ToolOutput
+                        })
+                        .context("original tool result")?;
+                    let bytes = body(&reader, &result.reference).await?;
+                    return Ok((event.header.event_id.clone(), value, bytes));
+                }
+                let Some(next) = originals.next else { break };
+                ensure!(
+                    cursor.as_ref() != Some(&next),
+                    "originals cursor did not advance"
+                );
+                cursor = Some(next);
             }
-            ensure!(event.header.turn_id.as_deref() == Some(turn));
-            let bodies = reader
-                .list_bodies(event.header.event_id.clone(), None, demand)
-                .await?;
-            let result = bodies
-                .entries
-                .into_iter()
-                .find(|entry| {
-                    entry.body_key == "tool.result" && entry.role == HistoryBodyRole::ToolOutput
-                })
-                .context("original tool result")?;
-            let bytes = body(&reader, &result.reference).await?;
-            return Ok((event.header.event_id.clone(), value, bytes));
+            cut = reader.wait_changed(cut).await?;
         }
-        anyhow::bail!("completed nested tool original missing")
-    }
-    .await;
+    })
+    .await
+    .context("completed nested tool original not observed");
     reader.close().await;
-    checked
+    checked?
 }
 
 #[tokio::test]

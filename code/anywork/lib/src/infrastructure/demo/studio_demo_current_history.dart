@@ -628,27 +628,7 @@ final class _DemoCurrentReader implements CurrentReader {
             ? null
             : CurrentActivityHead(
                 id: activity.identity,
-                kind: switch (activity.kind) {
-                  ThreadActivityKind.preparing =>
-                    ConversationActivityKind.preparing,
-                  ThreadActivityKind.compacting =>
-                    ConversationActivityKind.compacting,
-                  ThreadActivityKind.waitingApi ||
-                  ThreadActivityKind.thinking =>
-                    ConversationActivityKind.thinking,
-                  ThreadActivityKind.responding =>
-                    ConversationActivityKind.responding,
-                  ThreadActivityKind.planning =>
-                    ConversationActivityKind.planning,
-                  ThreadActivityKind.runningTool =>
-                    ConversationActivityKind.runningTool,
-                  ThreadActivityKind.awaitingApproval =>
-                    ConversationActivityKind.awaitingApproval,
-                  ThreadActivityKind.awaitingInput =>
-                    ConversationActivityKind.awaitingInput,
-                  ThreadActivityKind.stopping =>
-                    ConversationActivityKind.stopping,
-                },
+                kind: activity.kind,
                 summary: activity.summary,
                 thinkingSummary: activity.thinkingSummary,
                 thinkingSeconds: activity.thinkingSeconds,

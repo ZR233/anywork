@@ -139,7 +139,7 @@ async fn export_single_original<S: ContentBlobSink>(
         payload_entry.role == HistoryBodyRole::CanonicalPayload,
         "History payload body is not typed canonicalPayload"
     );
-    let atom = match detail.head {
+    let mut indexed_fact = match detail.head {
         Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
         None => metadata_head.clone(),
         Some(_) => {
@@ -149,11 +149,17 @@ async fn export_single_original<S: ContentBlobSink>(
             )
         }
     };
+    // Visibility belongs to a Timeline row. Canonical metadata was frozen by the producer before
+    // that display classification and retains the original business facts and opaque bytes.
+    indexed_fact.single_visibility = None;
+    let mut original_fact = metadata_head.clone();
+    original_fact.single_visibility = None;
     ensure!(
-        atom == metadata_head,
+        indexed_fact == original_fact,
         "canonical metadata and indexed History head disagree for {}",
         detail.header.event_id
     );
+    let atom = metadata_head;
 
     let payload = read_body_bytes(
         history,

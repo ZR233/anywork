@@ -1100,10 +1100,7 @@ async fn factory_missing_error_stays_typed_and_recovery_never_calls_missing_deta
                 && !Path::new(&restored.workspace_path).exists()
         );
         let retained = support::saved(&env.home, &root.thread.id).await?;
-        ensure!(
-            history.path.exists()
-                && serde_json::to_vec(&retained.current)? == serde_json::to_vec(&history.current)?
-        );
+        ensure!(serde_json::to_vec(&retained.current)? == serde_json::to_vec(&history.current)?);
         ensure!(
             env.root_provider.recorded().len() == 1,
             "failed identity recovery executed a model request"

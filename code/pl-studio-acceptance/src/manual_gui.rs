@@ -6247,6 +6247,7 @@ mod history_fault_tests {
             event.header.call_id = head.tool.as_ref().map(|tool| tool.call_id.clone());
             event.header.group_id = Some("fault-group".into());
             event.header.row_key = Some("member:fault-group:boundary-result".into());
+            event.is_anchor = true;
             event.head = Some(HistoryRowHead::Member(head));
             event.bodies.push(HistoryBody::new(
                 "tool.result",
@@ -6341,6 +6342,7 @@ mod history_fault_tests {
             ],
         )?;
         assert!(history_fault_originals(&database)?.validate().is_err());
+        let database = temp.path().join("cross-turn.sqlite");
         write_items(
             &database,
             &[

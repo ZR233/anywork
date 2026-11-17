@@ -453,23 +453,6 @@ pub enum ThreadSubscriptionUpdate {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTurnPage {
-    pub turns: Vec<ThreadTurnHistory>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ThreadTurnHistory {
-    pub turn: Turn,
-    pub items: Vec<crate::HistoryEventDetail>,
-    #[serde(default)]
-    pub context_disposition: ThreadContextDisposition,
-}
-
 pl_protocol::impl_labeled_enum!(
     ThreadStatus,
     "ThreadStatus",

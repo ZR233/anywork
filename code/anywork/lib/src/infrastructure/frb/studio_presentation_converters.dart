@@ -539,7 +539,7 @@ CurrentProjection _currentProjectionFromFrb(
       ? null
       : CurrentActivityHead(
           id: value.active!.id,
-          kind: ConversationActivityKind.values.byName(value.active!.kind.name),
+          kind: _threadActivityKindFromFrb(value.active!.kind),
           summary: value.active!.summary,
           thinkingSummary: value.active!.thinkingSummary,
           thinkingSeconds: value.active!.thinkingSeconds == null

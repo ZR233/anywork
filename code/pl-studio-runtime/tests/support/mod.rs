@@ -6,12 +6,10 @@ use pl_model::{
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
-    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, CreateThreadRequest, CurrentFrame,
-    NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput, StudioRuntime,
-    StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode,
+    AgentWorkspaceMode, CreateThreadRequest, NewThreadModelRoute, ReadDemand, StudioHostKind,
+    StudioPromptInput, StudioRuntime, StudioRuntimeOptions, ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig, UserAgentProfile, save_user_agent_profile},
 };
-use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -123,44 +121,97 @@ async fn terminal(
     id: &str,
     input: Option<&str>,
 ) -> Result<pl_studio_runtime::Turn> {
-    let deadline = integration_test_deadline()?;
-    let demand = current_demand();
+    use pl_studio_runtime::history::{HistoryDemand, HistoryRowHead, HistoryTurnState};
     let reader = runtime
-        .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
+        .open_history_reader(id, pl_studio_runtime::history::HISTORY_PROTOCOL_VERSION)
         .await?;
-    let observed = tokio::time::timeout(deadline, async {
-        let watch = reader.watch(None, demand).await?;
+    let demand = HistoryDemand {
+        max_rows: 128,
+        max_bytes: 256 * 1024,
+    };
+    let observed = tokio::time::timeout(integration_test_deadline()?, async {
+        let mut cut = reader.capture().await?;
         loop {
-            let frame = watch
-                .next()
-                .await?
-                .context("Current watch ended before terminal Turn")?;
-            let turn = match frame {
-                CurrentFrame::Reset { view } => view
-                    .state
-                    .active_turn
-                    .filter(|turn| turn.state.is_terminal()),
-                CurrentFrame::Notification { notification, .. } => {
-                    match notification.notification {
-                        ThreadNotification::TurnCompleted { turn } => Some(turn),
-                        _ => None,
+            let mut cursor = None;
+            loop {
+                let page = reader
+                    .turns_page(Some(cut.clone()), cursor.clone(), demand)
+                    .await?;
+                for entry in page.entries {
+                    let HistoryRowHead::Turn(head) = entry.head else {
+                        continue;
+                    };
+                    if !input.is_none_or(|input| head.input_id.as_deref() == Some(input))
+                        || !matches!(
+                            head.state,
+                            HistoryTurnState::Completed
+                                | HistoryTurnState::Cancelled
+                                | HistoryTurnState::Failed
+                                | HistoryTurnState::BudgetLimited
+                        )
+                    {
+                        continue;
                     }
+                    let event = head.detail_event_id.context("terminal Turn detail event")?;
+                    let mut body_cursor = None;
+                    let mut detail = None;
+                    loop {
+                        let bodies = reader
+                            .list_bodies(event.clone(), body_cursor.clone(), demand)
+                            .await?;
+                        ensure!(bodies.owner_event_id == event, "Turn body owner differs");
+                        for body in bodies.entries {
+                            if body.body_key == "turn_detail" {
+                                ensure!(detail.is_none(), "duplicate Turn detail body");
+                                detail = Some(body.reference);
+                            }
+                        }
+                        let Some(next) = bodies.next else { break };
+                        ensure!(
+                            body_cursor.as_ref() != Some(&next),
+                            "Turn body cursor did not advance"
+                        );
+                        body_cursor = Some(next);
+                    }
+                    let reference = detail.context("immutable Turn detail body")?;
+                    let mut bytes = Vec::new();
+                    while (bytes.len() as u64) < reference.byte_length {
+                        let offset = bytes.len() as u64;
+                        let limit = (reference.byte_length - offset).min(64 * 1024) as u32;
+                        let window = reader.read_body(reference.clone(), offset, limit).await?;
+                        ensure!(
+                            window.offset == offset
+                                && window.total_length == reference.byte_length
+                                && !window.bytes.is_empty()
+                                && window.bytes.len() <= limit as usize,
+                            "Turn detail body did not advance"
+                        );
+                        bytes.extend(window.bytes);
+                    }
+                    let turn: pl_studio_runtime::Turn = serde_json::from_slice(&bytes)?;
+                    ensure!(
+                        turn.id == head.turn_id
+                            && turn.thread_id == id
+                            && turn.state.is_terminal()
+                            && input.is_none_or(|input| turn.input_id.as_deref() == Some(input)),
+                        "immutable Turn detail identity differs"
+                    );
+                    return Ok::<_, anyhow::Error>(turn);
                 }
-                CurrentFrame::Projection { .. } => None,
-            };
-            if let Some(turn) = turn
-                && input.is_none_or(|input| turn.input_id.as_deref() == Some(input))
-            {
-                return Ok::<_, anyhow::Error>(turn);
+                let Some(next) = page.next else { break };
+                ensure!(
+                    cursor.as_ref() != Some(&next),
+                    "Turn cursor did not advance"
+                );
+                cursor = Some(next);
             }
+            cut = reader.wait_changed(cut).await?;
         }
     })
     .await
-    .context("terminal Turn not observed");
-    let closed = reader.close().await.context("close CurrentReader");
-    let turn = observed??;
-    closed?;
-    Ok(turn)
+    .context("terminal History Turn not observed");
+    reader.close().await;
+    observed?
 }
 
 pub struct Environment {
@@ -383,47 +434,33 @@ pub struct Saved {
     pub current: pl_core::thread::current::ThreadCurrent,
 }
 
-/// Locate and decode the Thread-owned schema-25 storage without opening a provider.
+/// Locate the Thread-owned saved Current without opening a provider or requiring History.
+/// The returned History path can legitimately be absent for a Current-only Thread.
 pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
     let mut pending = vec![home.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(directory)? {
+        for entry in std::fs::read_dir(&directory)? {
             let entry = entry?;
             if entry.file_type()?.is_dir() {
                 pending.push(entry.path());
                 continue;
             }
-            if entry.file_name() != "history.sqlite" {
+            if entry.file_name() != "current.json" {
                 continue;
             }
-            let path = entry.path();
-            let db = Database::connect(format!("sqlite://{}?mode=ro", path.display())).await?;
-            let row = db
-                .query_one_raw(Statement::from_string(
-                    DbBackend::Sqlite,
-                    "SELECT thread_id FROM history_store_meta WHERE singleton=1",
-                ))
-                .await?;
-            if let Some(row) = row
-                && row.try_get::<String>("", "thread_id")?.as_str() == id
-            {
-                db.close().await?;
-                let root = path
-                    .parent()
-                    .context("history database has no parent")?
-                    .to_path_buf();
-                let current_path = root.join("current.json");
-                let current: pl_core::thread::current::ThreadCurrent =
-                    serde_json::from_slice(&std::fs::read(&current_path)?)?;
-                current.validate(id)?;
-                return Ok(Saved {
-                    path,
-                    root,
-                    current,
-                });
+            let current: pl_core::thread::current::ThreadCurrent =
+                serde_json::from_slice(&std::fs::read(entry.path())?)?;
+            if current.thread_id != id {
+                continue;
             }
-            db.close().await?;
+            current.validate(id)?;
+            let root = directory.clone();
+            return Ok(Saved {
+                path: root.join("history.sqlite"),
+                root,
+                current,
+            });
         }
     }
-    anyhow::bail!("no durable checkpoint for {id}")
+    anyhow::bail!("no saved Current for {id}")
 }

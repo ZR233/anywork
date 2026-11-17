@@ -1102,6 +1102,13 @@ pub enum RequestMatch {
         text: String,
         step: usize,
     },
+    /// Exact text around one runtime-allocated, nonempty identity. The scenario can compare the
+    /// captured identity with its public receipt after execution without predicting its encoding.
+    PromptIdentity {
+        prefix: String,
+        suffix: String,
+        step: usize,
+    },
     /// The latest user message contains an optional prompt and ordered caption/PNG pairs.
     PromptImages {
         text: Option<String>,
@@ -4712,6 +4719,11 @@ fn match_step(
                                 pending.is_empty() || tool_scroll_wait_count(body, index) < 32
                             })
                     }
+                    RequestMatch::PromptIdentity {
+                        prefix,
+                        suffix,
+                        step,
+                    } => *step == index && prompt_identity_matches(prompt(body), prefix, suffix),
                     RequestMatch::ToolCompletion {
                         call_id,
                         tool_id,
@@ -4809,6 +4821,10 @@ fn reject_diagnostic(
     let actual = prompt(body);
     let (expected_kind, expected_prompt) = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => ("prompt", Some(text.clone())),
+        Some(RequestMatch::PromptIdentity { prefix, suffix, .. }) => (
+            "prompt_identity",
+            Some(format!("{prefix}<runtime identity>{suffix}")),
+        ),
         Some(RequestMatch::PromptImages { text, .. }) => ("prompt_images", text.clone()),
         Some(RequestMatch::EmptyContinuation {
             previous_response_id,
@@ -4855,6 +4871,9 @@ fn reject_diagnostic(
     let actual_prompt_present = actual.is_some();
     let prompt_matches_expected = match expected.map(|step| step.request.base()) {
         Some(RequestMatch::Prompt { text, .. }) => actual == Some(text.as_str()),
+        Some(RequestMatch::PromptIdentity { prefix, suffix, .. }) => {
+            prompt_identity_matches(actual, prefix, suffix)
+        }
         Some(RequestMatch::PromptImages { text, images, .. }) => {
             prompt_images_match(body, text.as_deref(), images)
         }
@@ -4945,6 +4964,13 @@ fn reject_diagnostic(
         delivery_seen,
         tool_output_seen,
     }
+}
+
+fn prompt_identity_matches(actual: Option<&str>, prefix: &str, suffix: &str) -> bool {
+    actual
+        .and_then(|text| text.strip_prefix(prefix))
+        .and_then(|text| text.strip_suffix(suffix))
+        .is_some_and(|identity| !identity.is_empty())
 }
 
 fn prompt_images_match(body: &Value, text: Option<&str>, images: &[PromptImage]) -> bool {
@@ -5071,10 +5097,10 @@ fn tool_images_pending(
             }
             previous_media = Some(position);
             immediate_media.push(position);
-        } else if output == tool_running_receipt(&image.call_id) {
+        } else if let Some(task_id) = running_task_id(body, &image.call_id) {
             let lua = call_is_lua(body, &image.call_id);
             let tool = if lua { "exec" } else { "view_image" };
-            let prefix = format!("Task task:{} for tool {tool} finished: ", image.call_id);
+            let prefix = format!("Task {task_id} for tool {tool} finished: ");
             let deliveries = items
                 .iter()
                 .enumerate()
@@ -5082,7 +5108,7 @@ fn tool_images_pending(
                 .filter(|(_, item)| user_text(item).is_some_and(|text| text.starts_with(&prefix)))
                 .collect::<Vec<_>>();
             if deliveries.is_empty() {
-                pending.push(image.call_id.clone());
+                pending.push(task_id.strip_prefix("task:")?.to_owned());
                 continue;
             }
             let &(delivery_index, delivery) = deliveries.first()?;
@@ -5205,10 +5231,10 @@ fn user_text(item: &Value) -> Option<&str> {
 /// user message. Do not combine an unrelated task's payload with this task's
 /// notice, and do not accept a running receipt as completion.
 fn tool_delivery_contains(body: &Value, call_id: &str, tool_id: &str, marker: &str) -> bool {
-    if !tool_output_contains(body, call_id, &tool_running_receipt(call_id)) {
+    let Some(task_id) = running_task_id(body, call_id) else {
         return false;
-    }
-    let notice = format!("Task task:{call_id} for tool {tool_id} finished: Succeeded.");
+    };
+    let notice = format!("Task {task_id} for tool {tool_id} finished: Succeeded.");
     body.get("input")
         .or_else(|| body.get("messages"))
         .and_then(Value::as_array)
@@ -5234,6 +5260,15 @@ fn tool_delivery_contains(body: &Value, call_id: &str, tool_id: &str, marker: &s
 
 fn tool_running_receipt(call_id: &str) -> String {
     format!("Task task:{call_id} is running. Its result will be delivered when execution finishes.")
+}
+
+/// Task identity comes from the exact wire call's accepted receipt. The provider call id
+/// is intentionally independent of the runtime's attempt-qualified task identity.
+fn running_task_id<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
+    direct_tool_output(body, call_id)?
+        .strip_prefix("Task ")?
+        .strip_suffix(" is running. Its result will be delivered when execution finishes.")
+        .filter(|id| id.starts_with("task:") && id.len() > "task:".len())
 }
 
 /// The current tool-scroll batch is ready only after every exact command has a
@@ -5262,12 +5297,10 @@ fn tool_scroll_pending(body: &Value, call_ids: &[String]) -> Option<Vec<String>>
         if exec_result_is_terminal(output) {
             continue;
         }
-        if !output.contains(&tool_running_receipt(call_id)) {
-            return None;
-        }
+        let task_id = running_task_id(body, call_id)?;
         let delivered = program_terminal_message(body, call_id).is_some();
         if !delivered {
-            pending.push(call_id.clone());
+            pending.push(task_id.strip_prefix("task:")?.to_owned());
         }
     }
     Some(pending)
@@ -5341,13 +5374,10 @@ fn pending_programs(body: &Value, outputs: &[(String, String)]) -> Option<Vec<St
         if tool_output_contains(body, id, marker) {
             continue;
         }
-        if !call_is_lua(body, id)
-            || !direct_tool_output_contains(body, id, &tool_running_receipt(id))
-            || program_terminal_message(body, id).is_some()
-        {
+        if !call_is_lua(body, id) || program_terminal_message(body, id).is_some() {
             return None;
         }
-        pending.push(id.clone());
+        pending.push(running_task_id(body, id)?.strip_prefix("task:")?.to_owned());
     }
     Some(pending)
 }
@@ -5356,14 +5386,15 @@ fn program_wait_needed(body: &Value, outputs: &[(String, String)], step: usize) 
         && pending_programs(body, outputs).is_some_and(|pending| !pending.is_empty())
 }
 fn program_terminal_message<'a>(body: &'a Value, id: &str) -> Option<&'a Value> {
-    if !call_is_lua(body, id) || !direct_tool_output_contains(body, id, &tool_running_receipt(id)) {
+    if !call_is_lua(body, id) {
         return None;
     }
+    let task_id = running_task_id(body, id)?;
     let items = body
         .get("input")
         .or_else(|| body.get("messages"))?
         .as_array()?;
-    let prefix = format!("Task task:{id} for tool exec finished: ");
+    let prefix = format!("Task {task_id} for tool exec finished: ");
     items.iter().find(|item| {
         item["role"] == "user"
             && user_text(item).is_some_and(|text| {
@@ -5402,7 +5433,8 @@ pub fn observed_tool_output(body: &Value, call_id: &str) -> Option<String> {
         let mut selected = Vec::new();
         for (index, text) in texts.into_iter().enumerate() {
             if index == 0 {
-                let prefix = format!("Task task:{call_id} for tool exec finished: ");
+                let task_id = running_task_id(body, call_id)?;
+                let prefix = format!("Task {task_id} for tool exec finished: ");
                 let status = text.strip_prefix(&prefix)?;
                 let end = status.find('.')? + 1;
                 let rest = status[end..].trim_start_matches('\n');
@@ -5439,26 +5471,24 @@ pub fn observed_tool_output(body: &Value, call_id: &str) -> Option<String> {
 /// identity check on one delivered result: the original prompt alone, or any
 /// unrelated request, never satisfies it.
 fn direct_tool_output_contains(body: &Value, call_id: &str, marker: &str) -> bool {
-    let items = body
-        .get("input")
-        .or_else(|| body.get("messages"))
-        .and_then(Value::as_array);
-    items.is_some_and(|items| {
-        items.iter().any(|item| {
-            (item.get("role").and_then(Value::as_str) == Some("tool")
-                && item.get("tool_call_id").and_then(Value::as_str) == Some(call_id)
-                && item
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .is_some_and(|output| output.contains(marker)))
-                || (item.get("type").and_then(Value::as_str) == Some("function_call_output")
-                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
-                    && item
-                        .get("output")
-                        .and_then(Value::as_str)
-                        .is_some_and(|output| output.contains(marker)))
+    direct_tool_output(body, call_id).is_some_and(|output| output.contains(marker))
+}
+
+fn direct_tool_output<'a>(body: &'a Value, call_id: &str) -> Option<&'a str> {
+    body.get("input")
+        .or_else(|| body.get("messages"))?
+        .as_array()?
+        .iter()
+        .rev()
+        .find_map(|item| {
+            if item["type"] == "function_call_output" && item["call_id"] == call_id {
+                item["output"].as_str()
+            } else if item["role"] == "tool" && item["tool_call_id"] == call_id {
+                item["content"].as_str()
+            } else {
+                None
+            }
         })
-    })
 }
 
 /// Flattens scenario-owned text so one diagnostic fact stays one log line.

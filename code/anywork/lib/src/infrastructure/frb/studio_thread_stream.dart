@@ -121,6 +121,28 @@ ThreadWorkspace _threadWorkspaceFromSnapshot(frb.BridgeThreadSnapshot value) {
   );
 }
 
+ThreadActivityKind _threadActivityKindFromFrb(
+  frb_activity.BridgeThreadActivityKind value,
+) => switch (value) {
+  frb_activity.BridgeThreadActivityKind.preparing =>
+    ThreadActivityKind.preparing,
+  frb_activity.BridgeThreadActivityKind.compacting =>
+    ThreadActivityKind.compacting,
+  frb_activity.BridgeThreadActivityKind.waitingApi =>
+    ThreadActivityKind.waitingApi,
+  frb_activity.BridgeThreadActivityKind.thinking => ThreadActivityKind.thinking,
+  frb_activity.BridgeThreadActivityKind.responding =>
+    ThreadActivityKind.responding,
+  frb_activity.BridgeThreadActivityKind.planning => ThreadActivityKind.planning,
+  frb_activity.BridgeThreadActivityKind.runningTool =>
+    ThreadActivityKind.runningTool,
+  frb_activity.BridgeThreadActivityKind.awaitingApproval =>
+    ThreadActivityKind.awaitingApproval,
+  frb_activity.BridgeThreadActivityKind.awaitingInput =>
+    ThreadActivityKind.awaitingInput,
+  frb_activity.BridgeThreadActivityKind.stopping => ThreadActivityKind.stopping,
+};
+
 ThreadActivityView _threadActivityFromFrb(
   frb_activity.BridgeThreadActivity value,
 ) {
@@ -135,28 +157,7 @@ ThreadActivityView _threadActivityFromFrb(
     executionId: value.executionId,
     inputId: value.inputId,
     attemptId: value.attemptId,
-    kind: switch (value.kind) {
-      frb_activity.BridgeThreadActivityKind.preparing =>
-        ThreadActivityKind.preparing,
-      frb_activity.BridgeThreadActivityKind.compacting =>
-        ThreadActivityKind.compacting,
-      frb_activity.BridgeThreadActivityKind.waitingApi =>
-        ThreadActivityKind.waitingApi,
-      frb_activity.BridgeThreadActivityKind.thinking =>
-        ThreadActivityKind.thinking,
-      frb_activity.BridgeThreadActivityKind.responding =>
-        ThreadActivityKind.responding,
-      frb_activity.BridgeThreadActivityKind.planning =>
-        ThreadActivityKind.planning,
-      frb_activity.BridgeThreadActivityKind.runningTool =>
-        ThreadActivityKind.runningTool,
-      frb_activity.BridgeThreadActivityKind.awaitingApproval =>
-        ThreadActivityKind.awaitingApproval,
-      frb_activity.BridgeThreadActivityKind.awaitingInput =>
-        ThreadActivityKind.awaitingInput,
-      frb_activity.BridgeThreadActivityKind.stopping =>
-        ThreadActivityKind.stopping,
-    },
+    kind: _threadActivityKindFromFrb(value.kind),
     summary: value.summary,
     summaryTruncated: value.summaryTruncated,
     thinkingSummary: value.thinkingSummary,

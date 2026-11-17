@@ -31,7 +31,6 @@ async fn public_artifact(
     runtime: &pl_studio_runtime::StudioRuntime,
     thread: &str,
     turn: &str,
-    call_prefix: &str,
 ) -> Result<serde_json::Value> {
     let demand = HistoryDemand {
         max_rows: 128,
@@ -58,8 +57,10 @@ async fn public_artifact(
             };
             let payload = body(&reader, payload_ref).await?;
             let value: serde_json::Value = serde_json::from_slice(&payload)?;
-            let call = value["data"]["invocation"]["callId"].as_str();
-            if value["type"] != "tool" || !call.is_some_and(|id| id.starts_with(call_prefix)) {
+            if event.header.turn_id.as_deref() != Some(turn)
+                || value["type"] != "tool"
+                || value["data"]["invocation"]["name"] != "show_files"
+            {
                 continue;
             }
             ensure!(event.header.turn_id.as_deref() == Some(turn));
@@ -171,8 +172,7 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let started = env.start(ThreadWorkspaceMode::Local, "display").await?;
         let thread = started.thread.id;
         let turn = support::completed_prompt(&env.runtime, &thread, "display").await?;
-        let live_artifact =
-            public_artifact(&env.runtime, &thread, &turn.id, "display-call").await?;
+        let live_artifact = public_artifact(&env.runtime, &thread, &turn.id).await?;
         let requests = env.root_provider.recorded();
         let catalog = requests[0].body["tools"].as_array().context("catalog")?;
         ensure!(!catalog.iter().any(|tool| {
@@ -205,8 +205,7 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
         let calls_before_read = env.root_provider.recorded().len();
         env.restart().await?;
         ensure!(
-            public_artifact(&env.runtime, &thread, &turn.id, "display-call").await?
-                == live_artifact,
+            public_artifact(&env.runtime, &thread, &turn.id).await? == live_artifact,
             "cold History read changed the original display artifact"
         );
         ensure!(
@@ -241,8 +240,7 @@ async fn show_files_real_thread_cold_read_and_archive_reselection() -> Result<()
             )
             .await?;
         let archive_turn = support::completed_prompt(&env.runtime, &thread, "again").await?;
-        let archive_artifact =
-            public_artifact(&env.runtime, &thread, &archive_turn.id, "archive-call").await?;
+        let archive_artifact = public_artifact(&env.runtime, &thread, &archive_turn.id).await?;
         let payload: OpaquePayload = serde_json::from_value(archive_artifact["payload"].clone())?;
         let receipt = saved_file_display_receipt(&payload)?.context("archive file receipt")?;
         ensure!(receipt.caption.is_none());

@@ -136,6 +136,14 @@ impl StudioStore {
         }
         let paths = self.registered_session_paths(thread_id)?;
         let path = paths.history_database();
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(crate::StudioError::new(
+                crate::StudioErrorCode::NotFound,
+                "Thread history database does not exist",
+                false,
+            )
+            .into());
+        }
         crate::history::upgrade_history(&path, thread_id, paths.root()).await?;
         crate::history::HistoryStore::open_reader(
             path,

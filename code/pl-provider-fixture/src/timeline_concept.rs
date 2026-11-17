@@ -1201,7 +1201,7 @@ mod tests {
                 "type":"function_call", "call_id":id, "name":"exec", "arguments":"{}"
             }));
             body["input"].as_array_mut().unwrap().push(json!({
-                "type":"function_call_output", "call_id":id, "output":tool_running_receipt(id)
+                "type":"function_call_output", "call_id":id, "output":tool_running_receipt(&format!("accepted-{id}"))
             }));
         }
         assert_eq!(
@@ -1213,7 +1213,7 @@ mod tests {
         for (completed, index) in [2, 0, 1].into_iter().enumerate() {
             let image = &images[index];
             body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
-                {"type":"input_text","text":format!("Task task:{} for tool exec finished: Succeeded.", image.call_id)},
+                {"type":"input_text","text":format!("Task task:accepted-{} for tool exec finished: Succeeded.", image.call_id)},
                 {"type":"input_text","text":json!({"original":{"contentDigest":format!("sha256:{}",image.png_sha256)}}).to_string()},
                 source["input"][4]["content"][index * 2 + 1]
             ]}));
@@ -1225,7 +1225,7 @@ mod tests {
             );
         }
         body["input"].as_array_mut().unwrap().push(json!({"role":"user","content":[
-            {"type":"input_text","text":"Task task:concept-image-failed for tool exec finished: Failed."},
+            {"type":"input_text","text":"Task task:accepted-concept-image-failed for tool exec finished: Failed."},
             {"type":"input_text","text":"Lua execution failed: image source is not a regular file"}
         ]}));
         assert_eq!(

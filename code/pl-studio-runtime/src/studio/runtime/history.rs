@@ -34,58 +34,7 @@ impl StudioRuntime {
         }
         let thread = self.read_protocol_thread(thread_id).await?;
         self.check_thread_read_access(&thread)?;
-        let paths = self
-            .store
-            .registered_session_paths(thread_id)
-            .with_context(|| format!("resolve history storage for Thread {thread_id}"))?;
-        let path = paths.history_database();
-        if !tokio::fs::try_exists(&path).await? {
-            return Err(anyhow::Error::new(StudioError::new(
-                StudioErrorCode::NotFound,
-                "Thread history database does not exist",
-                false,
-            )));
-        }
         self.store.open_history_reader(thread_id).await
-    }
-
-    pub async fn list_thread_turns(
-        &self,
-        thread_id: &str,
-        cursor: Option<&str>,
-        limit: usize,
-    ) -> Result<crate::ThreadTurnPage> {
-        let reader = self
-            .open_history_reader(thread_id, crate::history::HISTORY_PROTOCOL_VERSION)
-            .await?;
-        let limit = limit.clamp(1, 512);
-        let page = reader
-            .turns_page(
-                None,
-                cursor.map(str::to_owned),
-                crate::history::HistoryDemand {
-                    max_rows: limit as u32,
-                    max_bytes: 1024 * 1024,
-                },
-            )
-            .await
-            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-        let mut turns = Vec::new();
-        for entry in page.entries {
-            let crate::history::HistoryRowHead::Turn(head) = entry.head else {
-                continue;
-            };
-            let items = history_turn_items(&reader, &head.turn_id, 512).await?;
-            turns.push(crate::ThreadTurnHistory {
-                context_disposition: head.context_disposition,
-                turn: history_turn(&reader, head).await?,
-                items,
-            });
-        }
-        Ok(crate::ThreadTurnPage {
-            turns,
-            next_cursor: page.next,
-        })
     }
 }
 
@@ -147,29 +96,4 @@ pub(crate) async fn history_turn(
         cursor = Some(next);
     }
     anyhow::bail!("history Turn {} detail body is missing", head.turn_id)
-}
-
-async fn history_turn_items(
-    reader: &crate::history::HistoryReader,
-    turn: &str,
-    limit: usize,
-) -> Result<Vec<crate::HistoryEventDetail>> {
-    let (_, items, _) = reader
-        .events_window(
-            crate::history::HistoryEventsQuery::Turn {
-                turn_id: turn.into(),
-            },
-            None,
-            None,
-            false,
-            crate::history::HistoryDemand {
-                max_rows: limit.min(512) as u32,
-                max_bytes: 64 * 1024,
-            },
-        )
-        .await?;
-    Ok(items
-        .into_iter()
-        .filter(|event| event.header.original.is_some())
-        .collect())
 }

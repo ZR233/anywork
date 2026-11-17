@@ -356,7 +356,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(thread_mode_definition_schema))
         .routes(routes!(preview_thread_mode_workflow))
         .routes(routes!(set_thread_model_route))
-        .routes(routes!(list_thread_turns))
         .routes(routes!(timeline::open_history))
         .routes(routes!(timeline::capture))
         .routes(routes!(timeline::timeline))
@@ -791,21 +790,6 @@ async fn preview_thread_mode_workflow(
         state
             .runtime
             .preview_thread_mode_workflow(request)
-            .map_err(ApiError::from)?,
-    ))
-}
-
-#[utoipa::path(get, path = "/api/v1/threads/{thread_id}/turns", operation_id = "thread.listTurns", params(("thread_id" = String, Path), ("cursor" = Option<String>, Query), ("limit" = Option<u32>, Query)), responses(StudioApiErrors, (status = 200)))]
-async fn list_thread_turns(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    ApiQuery(query): ApiQuery<ThreadPageQuery>,
-) -> Result<impl IntoResponse, ApiError> {
-    Ok(Json(
-        state
-            .runtime
-            .list_thread_turns(&thread_id, query.cursor.as_deref(), query.limit())
-            .await
             .map_err(ApiError::from)?,
     ))
 }

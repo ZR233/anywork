@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'chat_models.dart';
-import 'conversation_activity_models.dart';
 import 'thread_activity_models.dart';
 import 'thread_directory_models.dart' show ThreadStatusView;
 import 'thread_models.dart' show ThreadTextChannel;
@@ -395,7 +394,7 @@ final class CurrentActivityHead {
     this.latestTool,
   });
   final String id;
-  final ConversationActivityKind kind;
+  final ThreadActivityKind kind;
   final String summary;
   final String? thinkingSummary;
   final int? thinkingSeconds;
