@@ -139,6 +139,9 @@ class _ChatItemViewState extends State<ChatItemView> {
       // Model text can use part.outputText.N. Do not reinterpret its manifest.
       return item.bodies;
     }
+    if (item.historyEventId != null) {
+      return item.bodies.where((body) => body.key == 'body');
+    }
     final keys = {
       for (final content in item.currentContents)
         if (content.role == ChatContentRole.body) content.reference.contentKey,
@@ -169,7 +172,14 @@ class _ChatItemViewState extends State<ChatItemView> {
         );
   @override
   Widget build(BuildContext context) {
-    final content = _buildContent(context);
+    var content = _buildContent(context);
+    final unit = item.displayUnit;
+    if (unit?.body is SingleDisplayBlock) {
+      content = TimelineGroupBodyIntent(
+        intent: unit!.expansion,
+        child: content,
+      );
+    }
     if (item.authorId != 'parentAgent') return content;
     // Identity is independent of payload availability. Keep the same read
     // widgets below it when metadata or body ranges have not arrived yet.
@@ -215,16 +225,13 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (unit != null && item.type == 'displayUnit') {
       if (unit.body is SingleDisplayBlock) {
         final atom = unit.atom!;
-        return TimelineGroupBodyIntent(
-          intent: unit.expansion,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              if (item.currentContents.isEmpty) const Text('内容状态未知'),
-              for (var index = 0; index < item.currentContents.length; index++)
-                _declaredContent(atom, index),
-            ],
-          ),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (item.currentContents.isEmpty) const Text('内容状态未知'),
+            for (var index = 0; index < item.currentContents.length; index++)
+              _declaredContent(atom, index),
+          ],
         );
       }
       return KeyedSubtree(

@@ -89,6 +89,7 @@ abstract class ComposerDockViewState with _$ComposerDockViewState {
     required int revision,
     required ComposerThreadState composer,
     required PendingInteraction? activeInteraction,
+    Object? interactionReadError,
     required StudioTurnView? turn,
     required AgentExecutionView? execution,
     required ContinuationView? continuation,

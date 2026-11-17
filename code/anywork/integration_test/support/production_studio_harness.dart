@@ -9,6 +9,8 @@ import 'package:anywork/src/app/studio_shutdown.dart';
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork/src/rust/api/studio/handlers/persistence.dart'
+    as persistence;
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/studio_client.dart';
@@ -215,6 +217,30 @@ final class ProductionStudioHarness {
       closeClient: (budget) => graph.close(budget: budget),
       closeRoot: graph.closeLifecycleRoot,
     );
+    Object? retainedPersistence;
+    if (!report.shutdown.isClean) {
+      try {
+        // The Client is sealed now. This normal public bridge diagnostic still
+        // identifies the retained native writer after a degraded shutdown.
+        final queue = (await persistence.readPersistenceQueue().timeout(
+          const Duration(seconds: 2),
+        )).queue;
+        retainedPersistence = {
+          'pendingOperations': queue.pendingOperations.toString(),
+          'lastError': queue.lastError,
+          'threads': [
+            for (final thread in queue.threads)
+              {
+                'threadId': thread.threadId,
+                'lastError': thread.lastError,
+                'currentError': thread.current?.lastError,
+              },
+          ],
+        };
+      } catch (error) {
+        retainedPersistence = {'readFailureType': error.runtimeType.toString()};
+      }
+    }
     final shutdownDiagnostic = const JsonEncoder.withIndent('  ').convert({
       'clean': report.shutdown.isClean,
       'issues': report.shutdown.issues
@@ -229,6 +255,7 @@ final class ProductionStudioHarness {
           )
           .toList(growable: false),
       'persistence': report.shutdown.persistence.runtimeType.toString(),
+      'retainedPersistence': ?retainedPersistence,
     });
     await File('${artifacts.path}/sidebar-shutdown.json')
         .writeAsString(shutdownDiagnostic, flush: true);

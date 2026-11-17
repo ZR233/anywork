@@ -696,13 +696,11 @@ PendingInteraction _interactionFromFrb(frb.BridgeInteractionRequest value) {
           ) as InteractionPayload,
         ),
   );
-  return PendingInteraction(
+  return PendingInteraction.fromPayload(
     id: value.interactionId,
     threadId: value.scope.threadId,
     turnId: value.scope.turnId,
     kind: mapped.kind,
-    title: _interactionTitle(mapped.kind, mapped.payload),
-    body: _interactionBody(mapped.kind, mapped.payload),
     payload: mapped.payload,
     revision: _exactTimelineInt(value.revision, 'state counter'),
   );

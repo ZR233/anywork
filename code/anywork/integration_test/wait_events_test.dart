@@ -125,6 +125,13 @@ void main() {
       timeout: const Duration(minutes: 2),
     );
     expect(completed.inputId, isNotNull);
+    bool isObservedWait(ChatAtom? atom) =>
+        atom?.tool?.name == 'wait' &&
+        atom?.source == ForegroundTurnChatSource(turnId: completed.turnId) &&
+        switch (atom?.wait?.intent) {
+          ThreadWaitEventsIntentView(:final targets) => targets.length == 2,
+          _ => false,
+        };
     await _until(
       tester,
       () => graph.timeline.lease(threadId!) != null,
@@ -157,14 +164,10 @@ void main() {
 
     await _until(
       tester,
-      () => observed.mountedMembers.any(
-        (atom) => atom.tool?.callId.startsWith('sleep-first-wait-t') ?? false,
-      ),
+      () => observed.mountedMembers.any(isObservedWait),
       'historical wait tool member',
     );
-    final atom = observed.mountedMembers.singleWhere(
-      (item) => item.tool?.callId.startsWith('sleep-first-wait-t') ?? false,
-    );
+    final atom = observed.mountedMembers.singleWhere(isObservedWait);
     expect(atom.wait?.state, ThreadWaitStateView.ready);
     expect(atom.lifecycle, isA<TerminalChatAtom>());
 
@@ -172,11 +175,7 @@ void main() {
     await _until(tester, () {
       final matches = tester
           .widgetList<ChatItemView>(find.byType(ChatItemView))
-          .where(
-            (view) =>
-                view.item.atom?.tool?.callId.startsWith('sleep-first-wait-t') ??
-                false,
-          )
+          .where((view) => isObservedWait(view.item.atom))
           .toList();
       if (matches.length != 1) return false;
       waitItem = matches.single.item;
@@ -184,10 +183,7 @@ void main() {
     }, 'wait tool canonical original');
     expect(waitItem.displayRecord?.contentSource, isA<CompletedOriginal>());
     final toolRow = find.byWidgetPredicate(
-      (widget) =>
-          widget is ChatItemView &&
-          (widget.item.atom?.tool?.callId.startsWith('sleep-first-wait-t') ??
-              false),
+      (widget) => widget is ChatItemView && isObservedWait(widget.item.atom),
     );
 
     final panel = tester

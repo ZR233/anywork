@@ -77,7 +77,7 @@ Plan 与交互的当前读引用由同一 State 发布者交付。`CurrentPlanHe
 
 `plan = None` 表示当前没有计划；计划存在但没有文档时 document 为 `None`。interactions collection 未建立时引用为 `None`；已经建立的空集合可拥有有效引用，不能把读取失败吞成空集合。
 
-Plan、交互详情和文件内容通过引用自己的 owner/generation 读取；资源换代只退役对应详情窗口。Current State 不复制完整业务列表，也不把 collection 页拼回 State。旧的 `content.current`、完成批次 current 或展示 tail 不能作为业务引用来源。
+Plan、交互详情和文件内容通过引用自己的 owner/generation 读取；资源换代只退役对应详情窗口。交互集合按待审批、待回答、已结束及稳定身份排序。原 Session State owner 独立读取首条，最多物化一个当前决定，不累计完整列表；结构化载荷上限为 1 MiB，deferred 原文按 64 KiB 分段读取。引用变化、Reset 与关闭撤销旧请求；解析或读取失败单独交付交互错误，不阻塞其他 Current State 或冒充空集合。当前引用未读完或失败时不授予交互基线，不能因空展示确认原交互已处理；只有匹配引用的成功结果可证明缺席。命令仍对原交互身份与 revision 做 CAS，详情窗口不改变当前决定。旧的 `content.current`、完成批次 current 或展示 tail 不能作为业务引用来源。
 
 ## 26.7 正文、成员与附件
 

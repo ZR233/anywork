@@ -6,7 +6,6 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
-import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
 import '../../interactions/widgets/question_step.dart';
@@ -448,95 +447,11 @@ InteractionPayload _requestPayload(
   Object? value, {
   required String id,
   required String threadId,
-}) {
-  final request = chatObject(value, 'InteractionRequest');
-  final scope = chatObject(request['scope'], 'scope');
-  if (chatString(request['interactionId'], 'interactionId') != id ||
-      chatString(scope['threadId'], 'scope.threadId') != threadId ||
-      chatInteger(request['revision'], 'revision') < 0) {
-    throw const FormatException('Interaction identity mismatch');
-  }
-  chatString(scope['turnId'], 'scope.turnId');
-  chatInteger(request['createdAt'], 'createdAt');
-  chatInteger(request['updatedAt'], 'updatedAt');
-  final content = chatObject(request['content'], 'content');
-  final data = chatObject(content['data'], 'content.data');
-  final state = chatObject(data['state'], 'content.data.state');
-  if (!const {
-    'pending',
-    'resolved',
-    'cancelled',
-    'expired',
-  }.contains(state['kind'])) {
-    throw const FormatException('Invalid interaction lifecycle');
-  }
-  return switch (content['kind']) {
-    'userInput' => UserInputInteractionPayload(
-      questions: [
-        for (final raw in _requestList(data['questions']))
-          _requestQuestion(raw),
-      ],
-    ),
-    'toolApproval' => _requestApproval(data['request']),
-    _ => throw const FormatException('Unknown interaction content'),
-  };
-}
-
-List<Object?> _requestList(Object? value) {
-  if (value is List) return value;
-  throw const FormatException('Expected interaction list');
-}
-
-bool _requestFlag(Object? value) {
-  if (value == null) return false;
-  if (value is bool) return value;
-  throw const FormatException('Expected interaction flag');
-}
-
-UserQuestionView _requestQuestion(Object? value) {
-  final question = chatObject(value, 'question');
-  return UserQuestionView(
-    id: chatString(question['id'], 'question.id'),
-    header: chatString(question['header'], 'question.header'),
-    question: chatString(question['question'], 'question.question'),
-    isOther: _requestFlag(question['isOther']),
-    isSecret: _requestFlag(question['isSecret']),
-    options: [
-      for (final raw
-          in question['options'] == null
-              ? const []
-              : _requestList(question['options']))
-        (() {
-          final option = chatObject(raw, 'option');
-          return UserQuestionOptionView(
-            label: chatString(option['label'], 'option.label'),
-            description: chatString(
-              option['description'],
-              'option.description',
-            ),
-          );
-        })(),
-    ],
-  );
-}
-
-ToolApprovalInteractionPayload _requestApproval(Object? value) {
-  final request = chatObject(value, 'toolApproval.request');
-  if (!request.containsKey('arguments')) {
-    throw const FormatException('Missing tool arguments');
-  }
-  return ToolApprovalInteractionPayload(
-    toolName: chatString(request['name'], 'request.name'),
-    arguments: request['arguments'],
-    workingDirectory:
-        chatOptionalString(request['workingDirectory'], 'workingDirectory') ??
-        '',
-    parentAgentId: chatOptionalString(
-      request['parentAgentId'],
-      'parentAgentId',
-    ),
-  );
-}
+}) => decodeCurrentInteraction(
+  value,
+  expectedId: id,
+  threadId: threadId,
+).interaction.payload;
 
 class _ReadOnlyInteractionDetails extends StatefulWidget {
   const _ReadOnlyInteractionDetails({

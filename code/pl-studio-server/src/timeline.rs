@@ -1279,12 +1279,46 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
+    use pl_model::{
+        config::{AccountConfig, AccountId, ModelRouteConfig},
+        model::ModelInfo,
+        protocol::ProtocolEndpoint,
+    };
     use pl_studio_runtime::{StudioRuntime, StudioRuntimeOptions};
     use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn http_open_handlers_reject_unknown_protocol_before_thread_lookup() {
         let home = tempfile::tempdir().expect("isolated Studio home");
+        // Protocol rejection needs no provider or machine credential service.
+        let mut config = pl_studio_runtime::config::StudioConfig::default_config()
+            .expect("default isolated configuration");
+        config.models.accounts.clear();
+        let account_id = AccountId::new("http-protocol").expect("fixture account id");
+        config.models.accounts.insert(
+            account_id.clone(),
+            AccountConfig::from_explicit_models(
+                ProtocolEndpoint::compatible("HTTP protocol", "http://127.0.0.1:1"),
+                vec![ModelInfo::compatible("protocol-model")],
+            ),
+        );
+        for route in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
+            *route = ModelRouteConfig {
+                account_id: account_id.clone(),
+                model_id: "protocol-model".into(),
+                effort: None,
+            };
+        }
+        pl_studio_runtime::config::ConfigStore::new(
+            pl_studio_runtime::config::ConfigPaths::from_config_dir(home.path()),
+        )
+        .save(&config)
+        .expect("save credential-free HTTP configuration");
         let runtime = StudioRuntime::initialize(StudioRuntimeOptions::http_server(Some(
             home.path().to_path_buf(),
         )))

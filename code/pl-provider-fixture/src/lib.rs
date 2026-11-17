@@ -4803,6 +4803,32 @@ fn match_step(
     Ok(reply)
 }
 
+fn bind_task_argument_receipts(arguments: &mut Value, request: &Value) -> bool {
+    fn bind(task: &mut Value, request: &Value) -> bool {
+        let Some(identity) = task
+            .as_str()
+            .and_then(|id| id.strip_prefix("task:"))
+            .and_then(|call| running_task_id(request, call))
+        else {
+            return false;
+        };
+        *task = identity.into();
+        true
+    }
+    let mut changed = false;
+    if let Some(task) = arguments.get_mut("taskId") {
+        changed |= bind(task, request);
+    }
+    if let Some(tasks) = arguments.get_mut("taskIds").and_then(Value::as_array_mut) {
+        for task in tasks {
+            changed |= bind(task, request);
+        }
+    }
+    // A real wire receipt alone authorizes replacing a fixture's task shorthand.
+    // Unknown or malformed targets remain ordinary model inputs for validation.
+    changed
+}
+
 /// A simulated model must echo the opaque task identity from the accepted wire result.
 /// Script call ids identify fixture actions; they cannot predict runtime task ids across attempts.
 fn bind_reply_task_receipts(reply: &mut Reply, request: &Value) {
@@ -4813,23 +4839,7 @@ fn bind_reply_task_receipts(reply: &mut Reply, request: &Value) {
         let Ok(mut args) = serde_json::from_str::<Value>(encoded) else {
             return;
         };
-        let Some(tasks) = args.get_mut("taskIds").and_then(Value::as_array_mut) else {
-            return;
-        };
-        let mut changed = false;
-        for task in tasks {
-            if let Some(identity) = task
-                .as_str()
-                .and_then(|id| id.strip_prefix("task:"))
-                .and_then(|call| running_task_id(request, call))
-            {
-                *task = identity.into();
-                changed = true;
-            }
-        }
-        // Literal malformed/unknown targets remain the model's input for normal product
-        // validation. Only a real receipt authorizes replacing a fixture call reference.
-        if changed {
+        if bind_task_argument_receipts(&mut args, request) {
             *value = args.to_string().into();
         }
     }

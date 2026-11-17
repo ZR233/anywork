@@ -217,19 +217,6 @@ impl CurrentOwner {
         let mut contents = BTreeMap::new();
         let mut entries = BTreeMap::new();
         let mut next_position = self.next_position;
-        let mut collection_position = |collection: &str, id: &str| -> Result<i64> {
-            if let Some(entry) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.entries.get(&(collection.into(), id.into())))
-            {
-                return Ok(entry.position);
-            }
-            next_position = next_position
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("current position exhausted"))?;
-            Ok(next_position)
-        };
         for (id, position, block, _ordinal, text_channel, _model_part) in active {
             let key = position.as_key();
             let owner = ContentOwner::Item {
@@ -306,7 +293,19 @@ impl CurrentOwner {
                 {
                     let entry = CurrentEntryWrite {
                         collection: "interactions".into(),
-                        position: collection_position("interactions", &interaction.interaction_id)?,
+                        // The first row is the active decision: pending permissions precede
+                        // pending questions; settled records remain independently pageable.
+                        position: match (interaction.status(), interaction.kind()) {
+                            (
+                                crate::InteractionStatus::Pending,
+                                crate::InteractionKind::ToolApproval,
+                            ) => 0,
+                            (
+                                crate::InteractionStatus::Pending,
+                                crate::InteractionKind::UserInput,
+                            ) => 1,
+                            _ => 2,
+                        },
                         entry_id: interaction.interaction_id.clone(),
                         payload: Arc::from(serde_json::to_vec(&interaction)?),
                     };
@@ -1398,6 +1397,16 @@ mod business_tests {
             ..Default::default()
         };
         for id in ["first", "second"] {
+            let state = if id == "first" {
+                InteractionState::Cancelled
+            } else {
+                InteractionState::Pending
+            };
+            let revision = if matches!(&state, InteractionState::Pending) {
+                1
+            } else {
+                2
+            };
             let id = pl_core::tool::opaque::tool_interaction_id(id);
             before.interactions.insert(
                 id.clone(),
@@ -1405,8 +1414,8 @@ mod business_tests {
                     created_at: 1,
                     updated_at: 1,
                     continuation_id: None,
-                    revision: 1,
-                    state: InteractionState::Pending,
+                    revision,
+                    state,
                     extension_mutations: vec![],
                     request: InteractionRequest {
                         id,
@@ -1434,6 +1443,34 @@ mod business_tests {
             .business_refs()
             .interactions
             .expect("interaction collection");
+        let page = super::super::current_page(
+            &first,
+            &initial,
+            None,
+            ReadDemand {
+                max_items: 1,
+                max_bytes: 4096,
+            },
+            Ok,
+        )?;
+        let crate::CurrentPayloadData::Inline { bytes } = &page.entries[0].payload else {
+            panic!("the small current decision should be inline");
+        };
+        let active: crate::InteractionRequest = serde_json::from_slice(bytes)?;
+        assert_eq!(active.status(), crate::InteractionStatus::Pending);
+        assert_eq!(
+            active,
+            crate::thread_assembler::project_thread_interaction(
+                &thread.id,
+                &pl_core::tool::opaque::tool_interaction_id("second"),
+                &before,
+            )?
+            .expect("original pending question"),
+        );
+        assert!(
+            page.continuation.is_some(),
+            "settled details must remain pageable"
+        );
 
         let mut after = before.clone();
         after

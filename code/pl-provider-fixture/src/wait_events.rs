@@ -834,7 +834,8 @@ pub(super) async fn responses(
     }
 
     for call in &mut tool_calls {
-        let input: Value = serde_json::from_str(&call.arguments).expect("fixture arguments");
+        let mut input: Value = serde_json::from_str(&call.arguments).expect("fixture arguments");
+        bind_task_argument_receipts(&mut input, &body);
         let (name, arguments) = crate::lua::invocation(&body, &call.name, &input);
         call.name = name;
         call.arguments = arguments;

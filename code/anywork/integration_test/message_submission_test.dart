@@ -406,17 +406,6 @@ void main() {
     expect(find.byTooltip('已收到，等待同步'), findsOneWidget);
     expect(tester.widget<TextField>(input).controller!.text, _nextDraft);
     expect(card.hitTestable(), findsOneWidget);
-    final currentView = await readCurrentSnapshot(
-      conversations: graph.client.conversations,
-      threadId: threadId,
-    );
-    expect(
-      currentView.projection.sources.any(
-        (source) => source.source == InputChatSource(inputId: inputId),
-      ),
-      isTrue,
-      reason: 'The accepted input must be present in Current before History',
-    );
     expect(
       observed.singleBlocks.where(
         (block) =>

@@ -219,7 +219,7 @@ SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发
 
 History 不是 SDK 当前态缓存。`HistoryTimelinePage`、`HistoryGroupPage`、`HistoryEventDetail` 与 `HistoryBodyWindow` 经 FRB 和 SDK 机械映射后交唯一 Flutter 时间线 owner；页面、Work/Single 与成员合同见 [26](./26-timeline-content.md)。controller 按稳定 `row_key`／`entity_id` 保存已加载行和展开意图，不建立原子、展示块、消息三份全量镜像。older page 只返回结果，不自动修改组件。状态栏由 Current 单独投影，诊断借用已得到的结果。
 
-Current State 的 `CurrentStateField` 只有 `Body` 与 `Collection` 两个分支。Body 按 `CurrentContentRef`、byte length 与 64 KiB 窗口读取；Collection 按 `CurrentCollectionRef`、demand 和 continuation 分页，`count` 始终是完整集合量，条目 deferred 时再读取其 body。Provider/ViewModel 不把分页结果拼成第二份常驻 State，也不公开或推导 live/cold generation。
+Current State 的 `CurrentStateField` 只有 `Body` 与 `Collection` 两个分支。Body 按 `CurrentContentRef`、byte length 与 64 KiB 窗口读取；Collection 按 `CurrentCollectionRef`、demand 和 continuation 分页，`count` 始终是完整集合量，条目 deferred 时再读取其 body。原 Session owner 只查询并保留一个优先处理的交互决定，异步查询独立于 State 通知；不累计完整集合，查询错误独立可见。只有当前引用读取完成后才具备交互基线；读取中或失败都不能用缺席确认原交互已处理。Provider/ViewModel 不把分页结果拼成第二份常驻 State，也不公开或推导 live/cold generation。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -510,7 +510,7 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 五域 execution、authoring、configuration、metrics、context 是所有权与恢复边界，不要求五个连接。 Current 活动头在 FRB 与 SDK 中保留完整 `ThreadActivityKind`（包括 `waitingApi`）；只有呈现层将其映射为界面的较粗活动分类，传输接纳不按 enum 名称猜测另一种类型。会话 Repository 是 Current State 的唯一 Dart writer，通过 `CurrentReader` 接纳 Reset、notification 与 projection；HistoryReader 只向时间线 owner 交付纯 query/page/cut/change。各资源独立持有 reader、generation、错误与关闭资格，正文消费受阻时仍能接纳 State；State 断流只重建 Current 基线，不清空已加载历史或草稿。历史页和正文查询在应用队列外执行，不竞争 Current watch；两者没有共同 ACK 或共同水位。
 
-Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollectionRef` 机械接纳到原领域 owner，不暴露旧 `content.current`。形状与空值语义见 [26.6](./26-timeline-content.md#266-业务引用由-state-交付)。引用与可操作业务状态来自同一发布者，不建第二可写模型；Current collection page 不覆盖可操作问题。引用 revision 变化只撤销受影响展开窗口，保留历史、其他详情和草稿。
+Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollectionRef` 机械接纳到原领域 owner，不暴露旧 `content.current`。形状与空值语义见 [26.6](./26-timeline-content.md#266-业务引用由-state-交付)。引用与可操作业务状态来自同一发布者，不建第二可写模型；Session owner 的有界当前决定查询是可操作问题的唯一交付入口，展开的只读详情不覆盖它。引用 revision 变化只撤销受影响查询和展开窗口，保留历史、其他详情和草稿。
 
 时间线 Set/Prepend/最新 head replace 只接纳 History 页面；明细通过 `group_id`、`row_key`、`entity_id` 与 typed event/body ref 打开有界成员窗口。Current 与 History 使用共同稳定业务身份合并在同一画面，但各自引用不改名。Flutter 不解析 payload、seq 或 ordinal 猜类别，不扫描 atom 找组头；成员页 cursor/数量不覆盖主列表或其他范围，见 [26](./26-timeline-content.md)。
 

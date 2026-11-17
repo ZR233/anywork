@@ -38,6 +38,7 @@ final class ConversationSessionImpl implements ConversationSession {
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,
+      onInteractions: _onInteractions,
     );
     _directoryLease = _scope.acquireLease(
       'conversation-directory',
@@ -164,6 +165,30 @@ final class ConversationSessionImpl implements ConversationSession {
               _publishCurrentInputFacts(candidate);
         }
     }
+  }
+
+  void _onInteractions(
+    AttemptId attemptId,
+    CurrentCollectionRef reference,
+    List<PendingInteraction> interactions,
+    bool complete,
+    Object? error,
+  ) {
+    final workspace = state.workspace;
+    if (_closed ||
+        _state.currentAttemptId != attemptId ||
+        workspace == null ||
+        workspace.businessRefs.interactions != reference)
+      return;
+    _source.publish(
+      state.copyWith(
+        workspace: complete
+            ? workspace.copyWith(interactions: List.unmodifiable(interactions))
+            : workspace,
+        interactionReadReference: complete ? reference : null,
+        interactionReadError: error,
+      ),
+    );
   }
 
   void _onFailure(AttemptId attemptId, Object error, bool exhausted) {

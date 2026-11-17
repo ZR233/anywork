@@ -165,13 +165,3 @@ ThreadRuntimeView _emptyRuntimeView() {
     activeLspServers: [],
   );
 }
-
-String _jsonText(Object? value) {
-  if (value == null) {
-    return '';
-  }
-  if (value is String) {
-    return value;
-  }
-  return const JsonEncoder.withIndent('  ').convert(value);
-}

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 
 import '../../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
@@ -18,6 +19,7 @@ final class ConversationStateOwner {
     required this.onState,
     required this.onFailure,
     required this.onAttempt,
+    required this.onInteractions,
     required this.demand,
   }) : _transport = transport;
 
@@ -27,6 +29,14 @@ final class ConversationStateOwner {
   final void Function(AttemptId, ThreadStreamFrame) onState;
   final void Function(AttemptId, Object, bool) onFailure;
   final void Function(AttemptId) onAttempt;
+  final void Function(
+    AttemptId,
+    CurrentCollectionRef,
+    List<PendingInteraction>,
+    bool,
+    Object?,
+  )
+  onInteractions;
   final Map<AttemptId, _StateAttempt> _attempts = {};
   final String _resourceScopeId = _newResourceScopeId();
   _StateAttempt? _current;
@@ -211,6 +221,20 @@ final class ConversationStateOwner {
         }
       }
       onState(attempt.id, frame);
+      final references = switch (frame) {
+        ThreadSnapshotFrame(:final workspace) => workspace.businessRefs,
+        ThreadNotificationFrame(
+          update: ThreadBusinessRefsUpdate(:final references),
+        ) =>
+          references,
+        _ => null,
+      };
+      if (references != null)
+        _refreshInteractions(
+          attempt,
+          references.interactions,
+          force: frame is ThreadSnapshotFrame,
+        );
     });
     unawaited(
       work.then(
@@ -222,6 +246,122 @@ final class ConversationStateOwner {
         },
       ),
     );
+  }
+
+  void _refreshInteractions(
+    _StateAttempt attempt,
+    CurrentCollectionRef? reference, {
+    bool force = false,
+  }) {
+    if (!_live(attempt) || (!force && reference == attempt.interactions))
+      return;
+    attempt.interactions = reference;
+    final query = ++attempt.interactionQuery;
+    if (reference == null) return;
+    onInteractions(attempt.id, reference, const [], false, null);
+    if (!_live(attempt)) return;
+    final done = Completer<void>();
+    final task = done.future;
+    attempt.pending.add(task);
+    done.complete(
+      Future<void>.sync(() => _readInteraction(attempt, reference, query)),
+    );
+    unawaited(
+      task.then<void>(
+        (_) => attempt.pending.remove(task),
+        onError: (Object error, StackTrace _) {
+          attempt.pending.remove(task);
+          if (_live(attempt)) _failAttempt(attempt, error);
+        },
+      ),
+    );
+  }
+
+  Future<void> _readInteraction(
+    _StateAttempt attempt,
+    CurrentCollectionRef reference,
+    int query,
+  ) async {
+    bool eligible() =>
+        _live(attempt) &&
+        attempt.interactions == reference &&
+        attempt.interactionQuery == query;
+    try {
+      final reader = attempt.reader!;
+      // Current orders pending approvals, then pending questions, then settled records.
+      // Only the one active decision is materialized; the full collection remains pageable.
+      final page = await reader.pageCollection(
+        reference: reference,
+        demand: const ReadDemand(maxItems: 1, maxBytes: 64 * 1024),
+      );
+      if (!eligible()) return;
+      if (page.revision != reference.revision || page.entries.length > 1) {
+        throw const ConversationContinuityError(
+          'Current interaction page changed its reference',
+        );
+      }
+      final entry = page.entries.firstOrNull;
+      if (entry == null) {
+        onInteractions(attempt.id, reference, const [], true, null);
+        return;
+      }
+      final List<int> bytes;
+      switch (entry.payload) {
+        case InlineCurrentPayload(bytes: final inline):
+          bytes = inline;
+        case DeferredCurrentPayload(reference: final body, :final byteLength):
+          if (byteLength < 0 || byteLength > 1024 * 1024) {
+            throw const ConversationContinuityError(
+              'Current interaction exceeds the structured payload budget',
+            );
+          }
+          bytes = <int>[];
+          while (bytes.length < byteLength) {
+            if (!eligible()) return;
+            final remaining = byteLength - bytes.length;
+            final window = await reader.readBody(
+              reference: body,
+              range: ContentRange(
+                offset: bytes.length,
+                maxBytes: remaining < 64 * 1024 ? remaining : 64 * 1024,
+              ),
+            );
+            if (!eligible()) return;
+            if (window.offset != bytes.length ||
+                window.generation != body.generation ||
+                window.availableThrough != byteLength ||
+                window.bytes.isEmpty ||
+                window.bytes.length > remaining) {
+              throw const ConversationContinuityError(
+                'Current interaction body is discontinuous',
+              );
+            }
+            bytes.addAll(window.bytes);
+          }
+      }
+      final Object? value;
+      try {
+        value = jsonDecode(utf8.decode(bytes));
+      } on FormatException {
+        throw const FormatException('Invalid Current interaction payload');
+      }
+      final decoded = decodeCurrentInteraction(
+        value,
+        expectedId: entry.id,
+        threadId: threadId,
+      );
+      if (eligible())
+        onInteractions(
+          attempt.id,
+          reference,
+          decoded.pending ? [decoded.interaction] : const [],
+          true,
+          null,
+        );
+    } catch (error) {
+      if (eligible())
+        onInteractions(attempt.id, reference, const [], false, error);
+    }
   }
 
   Future<void> _enqueue(
@@ -399,6 +539,8 @@ final class _StateAttempt {
   final ClientResourceId resourceId;
   final int demandVersion;
   CurrentReader? reader;
+  CurrentCollectionRef? interactions;
+  int interactionQuery = 0;
   CurrentWatch? watch;
   // ignore: cancel_subscriptions
   StreamSubscription<CurrentFrame>? subscription;
