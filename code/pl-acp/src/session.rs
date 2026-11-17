@@ -1127,7 +1127,10 @@ fn start_prompt(
     if let Some(instructions) = &owner.prompt_instructions {
         content.insert(
             0,
-            ContentBlock::Text(TextContent::new(instructions.clone())),
+            ContentBlock::Text(
+                TextContent::new(instructions.clone())
+                    .annotations(Annotations::new().audience(vec![Role::Assistant])),
+            ),
         );
     }
     owner.next_run += 1;
@@ -2058,7 +2061,11 @@ mod tests {
                     {
                         let mut expected = Vec::new();
                         if !system_prompt {
-                            expected.extend(input("Host instructions\n保持原文"));
+                            expected.push(ContentBlock::Text(
+                                TextContent::new("Host instructions\n保持原文").annotations(
+                                    Annotations::new().audience(vec![Role::Assistant]),
+                                ),
+                            ));
                         }
                         expected.extend(original.clone());
                         assert_eq!(request.prompt, expected);
