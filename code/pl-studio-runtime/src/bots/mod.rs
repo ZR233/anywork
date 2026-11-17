@@ -31,8 +31,6 @@ pub(crate) use protocol::error::FeishuError;
 /// 一条已受理输入的持久身份读取：显式区分 Ready/Absent，不把读失败折叠成 None。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInputRead {
-    /// Already accepted by the resident owner; its durable projection is still catching up.
-    NotReady,
     /// 持久索引知道该输入：原始路由与消费状态。
     Ready {
         delivery: pl_core::thread::input::InputDelivery,
@@ -60,12 +58,10 @@ pub(crate) struct BotInteractionFact {
     pub continuation_input: Option<String>,
 }
 
-/// 交互事实读取的三值结果。
+/// 交互事实读取；读取失败独立返回错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BotInteractionRead {
     Ready(BotInteractionFact),
-    /// 驻留已见终局但持久回执尚未可见：事实未定，不能解释为取消或无 continuation。
-    NotReady,
     /// 驻留、checkpoint 与持久回执都不知道该身份。
     Absent,
 }

@@ -27,22 +27,6 @@ impl StudioRuntime {
         Ok(*result?.state)
     }
 
-    /// 该 Thread 的 typed 持久化快照；没有登记过持久化的 Thread 为 `None`（未知不等于健康）。
-    ///
-    /// 这是 [`crate::ThreadStorageState`] 的 typed 来源：故障类别、代数与水位都来自协调器
-    /// 的类型化值，不是错误文本的解析结果。
-    pub(in crate::studio) fn thread_persistence_snapshot(
-        &self,
-        thread_id: &str,
-    ) -> Option<crate::ThreadPersistenceSnapshot> {
-        self.store
-            .thread_persistence()
-            .queue_snapshot()
-            .threads
-            .into_iter()
-            .find(|snapshot| snapshot.thread_id == thread_id)
-    }
-
     pub(in crate::studio) async fn read_thread_state(
         &self,
         thread_id: &str,

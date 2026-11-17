@@ -641,10 +641,6 @@ pub(in crate::studio::runtime) struct SettledDecisions {
 enum DecisionRecord {
     Question(pl_core::thread::interactions::InteractionRecord),
     Approval(pl_core::thread::permissions::PermissionRecord),
-    /// A saved decision whose stored payload cannot be decoded; only its identity is known.
-    Unreadable {
-        local_id: String,
-    },
 }
 
 /// What a saved decision can prove about the operation that produced it.
@@ -662,7 +658,6 @@ impl DecisionRecord {
         match self {
             Self::Question(record) => &record.request.id,
             Self::Approval(record) => &record.id,
-            Self::Unreadable { local_id } => local_id,
         }
     }
 
@@ -670,8 +665,6 @@ impl DecisionRecord {
         match self {
             Self::Question(record) => record.revision,
             Self::Approval(record) => record.revision,
-            // An undecodable row cannot prove a revision, so it never supersedes a decodable one.
-            Self::Unreadable { .. } => 0,
         }
     }
 
@@ -689,7 +682,6 @@ impl DecisionRecord {
                     pl_core::thread::permissions::PermissionState::Pending
                 )
             }
-            Self::Unreadable { .. } => false,
         }
     }
 
@@ -697,7 +689,6 @@ impl DecisionRecord {
         match self {
             Self::Question(record) => decided_operation_identity(&record.state),
             Self::Approval(record) => permission_operation_identity(record.response.as_ref()),
-            Self::Unreadable { .. } => DecisionIdentity::Unreadable,
         }
     }
 
@@ -712,7 +703,6 @@ impl DecisionRecord {
                 record.state,
                 pl_core::thread::permissions::PermissionState::Cancelled
             ),
-            Self::Unreadable { .. } => false,
         }
     }
 
@@ -722,7 +712,7 @@ impl DecisionRecord {
             Self::Question(record) => {
                 record.request.payload.format() == crate::plan_tool::PLAN_CONFIRMATION_FORMAT
             }
-            Self::Approval(_) | Self::Unreadable { .. } => false,
+            Self::Approval(_) => false,
         }
     }
 
@@ -736,7 +726,6 @@ impl DecisionRecord {
             Self::Approval(record) => {
                 snapshot.permissions.insert(local_id.to_owned(), record);
             }
-            Self::Unreadable { .. } => {}
         }
         snapshot
     }

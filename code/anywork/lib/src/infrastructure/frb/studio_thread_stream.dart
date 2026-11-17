@@ -1,6 +1,6 @@
 part of 'studio_api.dart';
 
-ThreadStreamFrame _threadNotificationFrameFromEnvelope(
+ThreadNotificationFrame _currentNotificationFrameFromEnvelope(
   frb.BridgeThreadNotificationEnvelope envelope,
 ) {
   final threadId = envelope.threadId;
@@ -80,10 +80,8 @@ ThreadStreamFrame _threadNotificationFrameFromEnvelope(
         references: _businessRefsFromFrb(references),
       ),
     ),
-    lagged: (dropped) => ThreadResyncRequiredFrame(
-      threadId: threadId,
-      dropped: _exactTimelineInt(dropped, 'state counter'),
-      epoch: epoch,
+    lagged: (dropped) => throw ConversationContinuityError(
+      'Current notification gap (thread=$threadId, dropped=$dropped)',
     ),
   );
 }
@@ -129,7 +127,7 @@ ThreadActivityView _threadActivityFromFrb(
   return ThreadActivityView(
     threadId: value.threadId,
     deferred: [
-      for (final field in value.deferred) _currentStateFieldFromFrb(field),
+      for (final field in value.deferred_) _currentStateFieldFromFrb(field),
     ],
     identity: value.identity,
     revision: _exactTimelineInt(value.revision, 'state counter'),
@@ -446,7 +444,7 @@ ThreadRuntimeView _threadRuntimeFromFrb(frb.BridgeThreadRuntimeSnapshot value) {
   final costLabel = formatRuntimeCosts(estimatedCosts);
   return ThreadRuntimeView(
     deferred: [
-      for (final field in value.deferred) _currentStateFieldFromFrb(field),
+      for (final field in value.deferred_) _currentStateFieldFromFrb(field),
     ],
     usageDiagnostics: threadUsageDiagnosticsFromFrb(usage.diagnostics),
     modelId: usage.modelId,

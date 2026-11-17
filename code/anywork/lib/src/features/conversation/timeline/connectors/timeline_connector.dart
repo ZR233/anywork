@@ -11,6 +11,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../composer/composer.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../../../presentation/providers/client_provider.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../../../../shared/studio_driver_keys.dart';
 import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
@@ -345,7 +346,11 @@ class _TimelineConnectorBodyState
           active() ? owner.returnToLive(threadId) : Future.value(),
       onEnterHistory: () {
         if (active()) {
-          unawaited(owner.dispatch(threadId, const TimelineEnterHistory()));
+          unawaited(
+            owner
+                .dispatch(threadId, const TimelineEnterHistory())
+                .catchError((Object _, StackTrace _) {}),
+          );
         }
       },
       onRetryConnection: () {

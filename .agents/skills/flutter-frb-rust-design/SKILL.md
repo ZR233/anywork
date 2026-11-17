@@ -58,7 +58,8 @@ SSH 项目中的 ACP 仍在宿主运行，业务工具经 Host MCP 复用普通�
 按风险读取 rust-code-quality、rust-api-design、rust-concurrency-safety 与 rust-unsafe-safety。
 交付时说明改变的边界、删除的重复职责、保留的协议限制与实际验证范围。
 
-主时间线沿现役游标读取器交付，Flutter 的时间线会话所有者独占应用队列、主游标及规范尾部；
-SDK 只转发查询能力，历史页不自动接纳。计划、交互和文件正文借用显示租约，不能依赖 SDK
-完成原件消费者的 attempt／ready 充当 GUI 资格。组件 Future 失败须用新读取器 Set 重建；
-局部详情、状态栏分页和诊断分别复用原范围、局部请求身份及实际视图结果，详见设计 25、26。
+主时间线只接纳 History 页，由 Flutter 时间线所有者串行应用到 Flyer 的唯一有界窗口；
+每页、成员范围与 opaque 游标保留自己的固定 cut，旧页不能覆盖较新的 head。
+Current 只为本 run 提供活动与正文 overlay，不持有或确认历史 tail。
+Plan、交互及正文按各自 Current scope／History reader 管理读取、失效与 cancel/join；
+组件操作失败由新 generation 的 Set 接管。具体合同见设计 25、26。

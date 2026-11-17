@@ -561,7 +561,7 @@ impl StudioRuntime {
         };
         if matches!(
             self.bot_input_fact(&args.session_id, &input_id).await?,
-            crate::bots::BotInputRead::Ready { .. } | crate::bots::BotInputRead::NotReady
+            crate::bots::BotInputRead::Ready { .. }
         ) {
             return output(&receipt(true));
         }

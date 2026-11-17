@@ -388,8 +388,8 @@ async fn decode_envelope(
     }))
 }
 
-fn unique_body<'a>(
-    bodies: &'a [Body],
+fn unique_body(
+    bodies: &[Body],
     key: &str,
     detail: &HistoryEventDetail,
     _id: &str,

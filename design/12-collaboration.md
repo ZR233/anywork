@@ -96,7 +96,9 @@ Native 与 ACP 适配共用同一协作所有者。ACP 的宿主 MCP 工具使�
 
 Native recipient 的 ParentReport、ReviewException 与 ACP result 都先写入 recipient Current 的 `studio.pending-native-delivery:<message-id>` opaque marker。marker 携带精确 `ThreadMessage`、digest、kind、来源/终态 provenance 与 `wake` 资格，是待投递义务而非第二历史或 report projection。
 
-投递顺序固定为：先 flush Current marker；再把同一消息接入 recipient Core；随后 flush Current 消息/inbox 已持久身份证明；成功后用 CAS 删除 marker 并再次 flush；最后按 marker 的 `wake` 与当前执行资格唤醒。崩溃后只枚举 Current 中的显式 marker 恢复，不扫描全部 History 报告推测未完成投递。
+投递先保存完整 marker，再由同一个 Core owner 命令原子接纳消息并把 marker 推进到 `accepted`。随后独立保存 Current 并回读同 owner 的 accepted marker，作为精确受理证明；不依赖最多 64 条的已消费消息身份记录。只有仍在真实 inbox 中的原消息才按冻结 `wake` 资格唤醒；已消费的消息不重发。CAS 删除 marker 是最后一个可能失败的业务动作，不在删除后再安排唤醒或保存屏障。删除尚未周期落盘时崩溃，磁盘 accepted marker 只恢复清理责任。崩溃恢复只枚举 Current 的显式 marker，不扫描全部 History 报告推测待投递工作。
+
+审查反馈沿受限 inbox+continue 准入，在目标 Current 的 `studio.review-feedback:<message-id>` extension 中与消息原子保存精确回执。审查者先保存完整 ReviewDecision，目标回执保存成功后再把结算责任转入自己的 `studio.review-feedback-settlement:<message-id>` marker；随后删除 ReviewDecision、通过原 storage-only owner 清理目标回执，最后清理 settlement。任何清理失败或取消均保留 settlement 供重试；冷恢复只确认原回执或补清理，不重新发送、激活或唤醒目标。这些记录只服务尚未结算的显式业务义务，不形成永久消息索引。
 
 Native 父下的 ACP 子结果使用同一 marker 类型，以运行实例和完成序号形成稳定消息身份。ACP 父直接读取 Native 子 History 的 ParentReport 或 ACP 子唯一 `last_completed`，不创建 Native receiver。Native 子自身的报告保存责任保留，ACP 父没有 Native 收件箱确认义务。
 

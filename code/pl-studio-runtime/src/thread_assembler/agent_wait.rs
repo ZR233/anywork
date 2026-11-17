@@ -104,7 +104,7 @@ enum Source {
         history: crate::history::HistoryReader,
         thread_id: String,
         last_cut: Option<crate::history::HistoryCut>,
-        thread: Option<pl_core::thread::ThreadHandle>,
+        thread: Option<Box<pl_core::thread::ThreadHandle>>,
         lifecycle: Option<pl_core::thread::ThreadSubscription>,
     },
     Acp {
@@ -345,7 +345,7 @@ impl super::agents::AgentHost {
                 let changes = resources.session().map_err(service)?.completion_changes();
                 Source::Acp { resources, changes }
             } else {
-                let thread = native.map(|(thread, _)| thread);
+                let thread = native.map(|(thread, _)| Box::new(thread));
                 let lifecycle = thread.as_ref().map(|thread| thread.subscribe());
                 let services = services.ok_or_else(|| {
                     service(anyhow::anyhow!(

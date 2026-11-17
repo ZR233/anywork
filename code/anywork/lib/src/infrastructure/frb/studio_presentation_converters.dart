@@ -657,7 +657,6 @@ CurrentView _currentViewFromFrb(frb_presentation.BridgeCurrentView value) =>
       revision: _currentRevisionFromFrb(value.revision),
       state: ThreadSnapshotFrame(
         workspace: _threadWorkspaceFromSnapshot(value.state),
-        completedHistoryVersion: completedHistoryVersion,
         schemaVersion: value.state.schemaVersion,
       ),
       projection: _currentProjectionFromFrb(value.projection),
@@ -673,7 +672,7 @@ CurrentFrame _currentFrameFromFrb(frb_presentation.BridgeCurrentFrame value) =>
       ) =>
         NotificationCurrentFrame(
           revision: _currentRevisionFromFrb(revision),
-          notification: _threadNotificationFrameFromEnvelope(notification),
+          notification: _currentNotificationFrameFromEnvelope(notification),
         ),
       frb_presentation.BridgeCurrentFrame_Projection(
         :final revision,

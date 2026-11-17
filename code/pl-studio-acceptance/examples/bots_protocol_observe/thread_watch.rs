@@ -1,334 +1,283 @@
-//! Thread-state SSE watch for the reply observe cases.
+//! Typed Current observation for reply cases that wait on interactions.
 //!
-//! Decodes `/api/v1/threads/{id}/events` with the workspace `eventsource-stream`
-//! crate and the public `pl_protocol` thread DTOs. The first `snapshot` frame is
-//! the authoritative interaction projection (wire interaction IDs and scope);
-//! later `notification` frames only update typed state. This is not a general
-//! SSE client and never re-implements the model line adapter.
+//! The previous thread State SSE route is not a current product port. Every wait opens a public
+//! CurrentReader, consumes ordered CurrentFrame values, reads complete interaction resources through
+//! their typed collection references, and closes the capability before returning.
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
-use eventsource_stream::{Event, EventStreamError, Eventsource};
-use futures::{StreamExt, stream::BoxStream};
+use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::{
-    InteractionRequest, InteractionStatus, ThreadBusinessRefs, ThreadNotification, ThreadSnapshot,
-    ThreadSubscriptionUpdate,
+    CurrentFrame, CurrentView, InteractionRequest, InteractionStatus, ThreadBusinessRefs,
+    ThreadNotification, ThreadSnapshot,
 };
-use reqwest::redirect::Policy as RedirectPolicy;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-const MAX_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_EVENTS: u32 = 256;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const HEADER_BUDGET: Duration = Duration::from_secs(5);
-const STATE_TRANSPORT_MAX_ITEMS: u32 = 1;
-const STATE_TRANSPORT_MAX_BYTES: u32 = 4096;
-type SseItem = Result<Event, EventStreamError<anyhow::Error>>;
+use crate::http::{CurrentRead, StudioHttp};
+use crate::support::{
+    HISTORY_OBSERVATION_BYTES, charge_history_bytes, current_demand, current_payload_bytes,
+};
+
+const MAX_EVENTS: usize = 256;
 
 pub(crate) struct ThreadWatch {
-    stream: BoxStream<'static, SseItem>,
-    bytes: Arc<AtomicU64>,
-    events: u32,
+    http: StudioHttp,
     thread_id: String,
-    interactions: Vec<InteractionRequest>,
-    business_refs: Option<ThreadBusinessRefs>,
-    revision: Option<u64>,
-    saw_snapshot: bool,
 }
 
 impl ThreadWatch {
-    /// Opens the public thread event stream. The first adopted frame must be a
-    /// `snapshot`; without `Last-Event-ID` the server never replays.
-    pub async fn connect(origin: &str, thread_id: &str) -> Result<Self> {
+    /// Prepares a public Current reader target. No history or State SSE is opened here.
+    pub(crate) fn connect(http: StudioHttp, thread_id: &str) -> Result<Self> {
         ensure!(
-            origin.starts_with("http://127.0.0.1:"),
-            "thread SSE must stay on loopback"
+            http.origin().starts_with("http://127.0.0.1:"),
+            "Current observation must stay on loopback"
         );
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(RedirectPolicy::none())
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()
-            .context("failed to build thread SSE client")?;
-        let mut url = reqwest::Url::parse(&format!("{origin}/api/v1/threads/{thread_id}/events"))
-            .context("invalid thread SSE URL")?;
-        url.query_pairs_mut()
-            .append_pair("maxItems", &STATE_TRANSPORT_MAX_ITEMS.to_string())
-            .append_pair("maxBytes", &STATE_TRANSPORT_MAX_BYTES.to_string())
-            .append_pair(
-                "queryClass",
-                &serde_json::to_string(&pl_studio_runtime::ChatClassFilter::All {})?,
-            );
-        let request = client
-            .get(url)
-            .header(reqwest::header::ACCEPT, "text/event-stream");
-        let response = match tokio::time::timeout(HEADER_BUDGET, request.send()).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                return Err(error).context("thread SSE request failed before headers");
-            }
-            Err(_) => bail!("thread SSE headers timed out"),
-        };
-        ensure!(
-            response.status().is_success(),
-            "thread SSE HTTP {}",
-            response.status()
-        );
-        let bytes = Arc::new(AtomicU64::new(0));
-        let counted = bytes.clone();
-        let stream = response
-            .bytes_stream()
-            .map(move |chunk| match chunk {
-                Err(error) => Err(anyhow!("thread SSE transport: {error:#}")),
-                Ok(chunk) => {
-                    let total = counted.fetch_add(chunk.len() as u64, Ordering::Relaxed)
-                        + chunk.len() as u64;
-                    if total > MAX_BYTES {
-                        Err(anyhow!("thread SSE exceeded 4MiB before a complete event"))
-                    } else {
-                        Ok(chunk)
-                    }
-                }
-            })
-            .eventsource()
-            .boxed();
         Ok(Self {
-            stream,
-            bytes,
-            events: 0,
+            http,
             thread_id: thread_id.to_owned(),
-            interactions: Vec::new(),
-            business_refs: None,
-            revision: None,
-            saw_snapshot: false,
         })
     }
 
-    /// Waits for the authoritative first snapshot and returns it.
-    pub async fn wait_snapshot(&mut self, budget: Duration) -> Result<ThreadSnapshot> {
+    /// Waits for the first Current Reset and returns its complete State snapshot.
+    pub(crate) async fn wait_snapshot(&mut self, budget: Duration) -> Result<ThreadSnapshot> {
         let deadline = Instant::now() + budget;
-        loop {
-            let frame = self.next_frame(deadline).await?;
-            if let WatchFrame::Snapshot(snapshot) = frame {
-                return Ok(*snapshot);
+        let current = self.open().await?;
+        let observed = async {
+            let mut watch = current.watch(None, current_demand()).await?;
+            let mut events = 0usize;
+            loop {
+                let frame = next_frame(&mut watch, &mut events, deadline).await?;
+                match frame {
+                    CurrentFrame::Reset { view } => {
+                        validate_view(&view, &self.thread_id)?;
+                        return Ok(*view.state);
+                    }
+                    CurrentFrame::Notification { .. } | CurrentFrame::Projection { .. } => {
+                        anyhow::bail!("Current watch delivered a frame before Reset")
+                    }
+                }
             }
-            ensure!(
-                self.saw_snapshot,
-                "thread SSE delivered a notification before the snapshot"
-            );
         }
+        .await;
+        finish_current(current, observed).await
     }
 
-    /// Wait for State to supply a concrete business resource reference. This
-    /// never substitutes Activity, Chat, or an empty collection for absence.
-    pub async fn wait_business_refs(
+    /// Waits for State business references, starting from the Current Reset baseline.
+    pub(crate) async fn wait_business_refs(
         &mut self,
         budget: Duration,
         predicate: impl Fn(&ThreadBusinessRefs) -> bool,
         phase: &'static str,
     ) -> Result<ThreadBusinessRefs> {
         let deadline = Instant::now() + budget;
-        loop {
-            if let Some(references) = self.business_refs.as_ref()
-                && predicate(references)
-            {
-                return Ok(references.clone());
-            }
-            match self
-                .next_frame(deadline)
-                .await
-                .map_err(|error| anyhow!("{phase}: {error:#}"))?
-            {
-                WatchFrame::Snapshot(_) | WatchFrame::BusinessRefs => {}
-                WatchFrame::Interaction(_) => {}
+        let current = self.open().await?;
+        let observed = async {
+            let mut watch = current.watch(None, current_demand()).await?;
+            let mut events = 0usize;
+            let mut saw_reset = false;
+            loop {
+                let frame = next_frame(&mut watch, &mut events, deadline).await?;
+                match frame {
+                    CurrentFrame::Reset { view } => {
+                        validate_view(&view, &self.thread_id)?;
+                        saw_reset = true;
+                        if predicate(&view.state.business_refs) {
+                            return Ok(view.state.business_refs.clone());
+                        }
+                    }
+                    CurrentFrame::Notification { notification, .. } => {
+                        ensure!(saw_reset, "{phase}: notification arrived before Reset");
+                        if let ThreadNotification::BusinessRefsChanged { references } =
+                            notification.notification
+                        {
+                            validate_business_refs(&references)?;
+                            if predicate(&references) {
+                                return Ok(references);
+                            }
+                        }
+                    }
+                    CurrentFrame::Projection { .. } => {}
+                }
             }
         }
+        .await;
+        finish_current(current, observed).await
     }
 
-    /// Waits for an interaction matching `predicate`, starting from the adopted
-    /// snapshot projection and continuing over typed `InteractionChanged`
-    /// notifications. Fails closed on lag or stream errors.
-    pub async fn wait_interaction(
+    /// Waits for an interaction from Reset/Current notifications or its typed collection resource.
+    pub(crate) async fn wait_interaction(
         &mut self,
         budget: Duration,
         predicate: impl Fn(&InteractionRequest) -> bool,
         phase: &'static str,
     ) -> Result<InteractionRequest> {
         let deadline = Instant::now() + budget;
-        loop {
-            if let Some(found) = self.interactions.iter().find(|item| predicate(item)) {
-                return Ok(found.clone());
-            }
-            let frame = self
-                .next_frame(deadline)
-                .await
-                .map_err(|error| anyhow!("{phase}: {error:#}"))?;
-            if let WatchFrame::Interaction(interaction) = frame
-                && predicate(&interaction)
-            {
-                return Ok(*interaction);
+        let current = self.open().await?;
+        let observed = async {
+            let mut watch = current.watch(None, current_demand()).await?;
+            let mut events = 0usize;
+            let mut saw_reset = false;
+            loop {
+                let frame = next_frame(&mut watch, &mut events, deadline).await?;
+                match frame {
+                    CurrentFrame::Reset { view } => {
+                        validate_view(&view, &self.thread_id)?;
+                        saw_reset = true;
+                        if let Some(found) =
+                            view.state.interactions.iter().find(|item| predicate(item))
+                        {
+                            return Ok(found.clone());
+                        }
+                        if let Some(found) = find_referenced_interaction(
+                            &current,
+                            &view.state.business_refs,
+                            &self.thread_id,
+                            &predicate,
+                            deadline,
+                        )
+                        .await?
+                        {
+                            return Ok(found);
+                        }
+                    }
+                    CurrentFrame::Notification { notification, .. } => {
+                        ensure!(saw_reset, "{phase}: notification arrived before Reset");
+                        match notification.notification {
+                            ThreadNotification::InteractionChanged { interaction }
+                                if predicate(&interaction) =>
+                            {
+                                ensure!(
+                                    interaction.scope.thread_id == self.thread_id,
+                                    "{phase}: interaction belonged to another Thread"
+                                );
+                                return Ok(*interaction);
+                            }
+                            ThreadNotification::BusinessRefsChanged { references } => {
+                                validate_business_refs(&references)?;
+                                if let Some(found) = find_referenced_interaction(
+                                    &current,
+                                    &references,
+                                    &self.thread_id,
+                                    &predicate,
+                                    deadline,
+                                )
+                                .await?
+                                {
+                                    return Ok(found);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    CurrentFrame::Projection { .. } => {}
+                }
             }
         }
+        .await;
+        finish_current(current, observed).await
     }
 
-    async fn next_frame(&mut self, deadline: Instant) -> Result<WatchFrame> {
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                bail!(
-                    "thread {} SSE timed out at revision={:?} events={} bytes={} interactions={}",
-                    self.thread_id,
-                    self.revision,
-                    self.events,
-                    self.bytes.load(Ordering::Relaxed),
-                    self.interactions.len()
-                );
-            }
-            let item = tokio::time::timeout(remaining, self.stream.next())
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "thread {} SSE timed out at revision={:?} events={} bytes={}",
-                        self.thread_id,
-                        self.revision,
-                        self.events,
-                        self.bytes.load(Ordering::Relaxed)
-                    )
-                })?;
-            let Some(item) = item else {
-                bail!(
-                    "thread {} SSE closed before the expected state",
-                    self.thread_id
-                );
-            };
-            self.events = self.events.saturating_add(1);
+    async fn open(&self) -> Result<CurrentRead> {
+        self.http
+            .open_current(&self.thread_id, current_demand())
+            .await
+    }
+}
+
+async fn next_frame(
+    watch: &mut crate::http::CurrentWatchStream,
+    events: &mut usize,
+    deadline: Instant,
+) -> Result<CurrentFrame> {
+    *events = (*events)
+        .checked_add(1)
+        .context("Current event count overflow")?;
+    ensure!(
+        *events <= MAX_EVENTS,
+        "Current watch exceeded {MAX_EVENTS} events"
+    );
+    watch
+        .next(deadline)
+        .await?
+        .context("Current watch ended before the expected frame")
+}
+
+fn validate_view(view: &CurrentView, thread_id: &str) -> Result<()> {
+    ensure!(
+        view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
+            && view.state.thread.id == thread_id,
+        "Current Reset belonged to another Thread or schema"
+    );
+    validate_business_refs(&view.state.business_refs)?;
+    ensure!(
+        view.state
+            .interactions
+            .iter()
+            .all(|interaction| interaction.scope.thread_id == thread_id),
+        "Current Reset interaction belonged to another Thread"
+    );
+    ensure!(
+        !view.revision.owner_id.is_empty(),
+        "Current Reset omitted its owner identity"
+    );
+    Ok(())
+}
+
+async fn find_referenced_interaction(
+    current: &CurrentRead,
+    references: &ThreadBusinessRefs,
+    thread_id: &str,
+    predicate: &impl Fn(&InteractionRequest) -> bool,
+    deadline: Instant,
+) -> Result<Option<InteractionRequest>> {
+    let Some(reference) = references.interactions.as_ref() else {
+        return Ok(None);
+    };
+    let mut remaining = HISTORY_OBSERVATION_BYTES;
+    let mut continuation = None;
+    let mut seen = std::collections::HashSet::new();
+    for page_index in 0..256 {
+        let page = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            current.page_current(reference, continuation.as_deref(), current_demand()),
+        )
+        .await
+        .context("Current interaction page exceeded its deadline")??;
+        ensure!(
+            page.revision == reference.revision,
+            "Current interaction page revision changed"
+        );
+        charge_history_bytes(serde_json::to_vec(&page)?.len(), &mut remaining)?;
+        for entry in &page.entries {
+            let bytes =
+                current_payload_bytes(current, &entry.payload, &mut remaining, deadline).await?;
+            let interaction: InteractionRequest =
+                serde_json::from_slice(&bytes).context("invalid Current interaction payload")?;
             ensure!(
-                self.events <= MAX_EVENTS,
-                "thread {} SSE exceeded {MAX_EVENTS} events",
-                self.thread_id
+                entry.id == interaction.interaction_id && interaction.scope.thread_id == thread_id,
+                "Current interaction entry identity or scope mismatch"
             );
-            let event = match item {
-                Ok(event) => event,
-                Err(error) => return Err(map_stream_error(error)),
-            };
-            match event.event.as_str() {
-                "snapshot" => {
-                    let update: ThreadSubscriptionUpdate = decode(&event.data, "snapshot")?;
-                    let ThreadSubscriptionUpdate::Snapshot {
-                        completed_history_version,
-                        snapshot,
-                    } = update
-                    else {
-                        bail!("thread SSE snapshot frame carried a different update");
-                    };
-                    ensure!(
-                        completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
-                        "thread SSE completed history version {completed_history_version} is unsupported"
-                    );
-                    ensure!(
-                        snapshot.thread.id == self.thread_id,
-                        "thread SSE snapshot belonged to another Thread"
-                    );
-                    ensure!(
-                        snapshot.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION,
-                        "thread SSE schema version {} is unsupported; expected {}",
-                        snapshot.schema_version,
-                        pl_studio_runtime::THREAD_SCHEMA_VERSION
-                    );
-                    validate_business_refs(&snapshot.business_refs)?;
-                    ensure!(
-                        !self.saw_snapshot,
-                        "thread SSE delivered a second snapshot without a reconnect"
-                    );
-                    self.saw_snapshot = true;
-                    self.revision = Some(snapshot.revision);
-                    self.business_refs = Some(snapshot.business_refs.clone());
-                    ensure!(
-                        snapshot
-                            .interactions
-                            .iter()
-                            .all(|interaction| { interaction.scope.thread_id == self.thread_id }),
-                        "thread SSE snapshot interaction belonged to another Thread"
-                    );
-                    self.interactions = snapshot.interactions.clone();
-                    return Ok(WatchFrame::Snapshot(snapshot));
-                }
-                "notification" | "lagged" => {
-                    ensure!(
-                        self.saw_snapshot,
-                        "thread SSE delivered a notification before the snapshot"
-                    );
-                    let lagged = event.event.as_str() == "lagged";
-                    let update: ThreadSubscriptionUpdate = decode(&event.data, "notification")?;
-                    let ThreadSubscriptionUpdate::Notification { notification } = update else {
-                        bail!("thread SSE notification frame carried a different update");
-                    };
-                    if notification.thread_id != self.thread_id {
-                        continue;
-                    }
-                    if let Some(mark) = self.revision
-                        && notification.revision < mark
-                    {
-                        continue;
-                    }
-                    self.revision = Some(notification.revision);
-                    if lagged {
-                        bail!(
-                            "thread {} SSE lagged before the expected interaction; \
-                             discovery evidence is incomplete and cannot be claimed",
-                            self.thread_id
-                        );
-                    }
-                    match notification.notification {
-                        ThreadNotification::InteractionChanged { interaction } => {
-                            let interaction = *interaction;
-                            ensure!(
-                                interaction.scope.thread_id == self.thread_id,
-                                "thread SSE interaction belonged to another Thread"
-                            );
-                            match self
-                                .interactions
-                                .iter_mut()
-                                .find(|item| item.interaction_id == interaction.interaction_id)
-                            {
-                                Some(existing) => *existing = interaction.clone(),
-                                None => self.interactions.push(interaction.clone()),
-                            }
-                            return Ok(WatchFrame::Interaction(Box::new(interaction)));
-                        }
-                        ThreadNotification::BusinessRefsChanged { references } => {
-                            validate_business_refs(&references)?;
-                            self.business_refs = Some(references.clone());
-                            return Ok(WatchFrame::BusinessRefs);
-                        }
-                        _ => continue,
-                    }
-                }
-                // History/body reads are owned by HistoryReader; State never derives from Chat.
-                "chat" => continue,
-                "stale" => bail!(
-                    "thread {} SSE delivered stale although no Last-Event-ID was sent",
-                    self.thread_id
-                ),
-                "error" => {
-                    let message = event.data.lines().next().unwrap_or_default().to_owned();
-                    bail!(
-                        "thread {} SSE error frame: {}",
-                        self.thread_id,
-                        crate::env::redact(&message)
-                    );
-                }
-                "closed" => bail!(
-                    "thread {} SSE closed before the expected state",
-                    self.thread_id
-                ),
-                "" | "message" => continue,
-                _ => bail!(
-                    "thread {} SSE delivered an unsupported event kind",
-                    self.thread_id
-                ),
+            if predicate(&interaction) {
+                return Ok(Some(interaction));
             }
+        }
+        let Some(next) = page.continuation else {
+            return Ok(None);
+        };
+        ensure!(
+            page_index + 1 < 256 && seen.insert(next.clone()),
+            "Current interaction collection exceeded its page budget or repeated a cursor"
+        );
+        continuation = Some(next);
+    }
+    anyhow::bail!("Current interaction collection exceeded its page budget")
+}
+
+async fn finish_current<T>(current: CurrentRead, observed: Result<T>) -> Result<T> {
+    let closed = current.close().await;
+    match (observed, closed) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close_error)) => {
+            Err(error.context(format!("Current close also failed: {close_error:#}")))
         }
     }
 }
@@ -336,8 +285,8 @@ impl ThreadWatch {
 fn validate_business_refs(references: &ThreadBusinessRefs) -> Result<()> {
     if let Some(interactions) = &references.interactions {
         ensure!(
-            !interactions.database_id.is_empty() && interactions.collection == "interactions",
-            "State interaction reference is not a canonical interactions collection"
+            !interactions.owner_id.is_empty() && interactions.collection == "interactions",
+            "Current interaction reference is not a canonical interactions collection"
         );
     }
     if let Some(plan) = &references.plan
@@ -348,35 +297,11 @@ fn validate_business_refs(references: &ThreadBusinessRefs) -> Result<()> {
                 && document.domain == "plan"
                 && document.entity_id == "document"
                 && document.content_key == "document"
-                && document.generation == plan.revision.to_string(),
-            "State Plan reference did not match its exact current document version"
+                && !document.generation.is_empty(),
+            "Current Plan reference did not match its exact current document version"
         );
     }
     Ok(())
-}
-
-enum WatchFrame {
-    Snapshot(Box<ThreadSnapshot>),
-    Interaction(Box<InteractionRequest>),
-    BusinessRefs,
-}
-
-fn decode<T: serde::de::DeserializeOwned>(data: &str, kind: &str) -> Result<T> {
-    serde_json::from_str(data).map_err(|error| {
-        anyhow!(
-            "thread SSE {kind} JSON failed at {}:{}",
-            error.line(),
-            error.column()
-        )
-    })
-}
-
-fn map_stream_error(error: EventStreamError<anyhow::Error>) -> anyhow::Error {
-    match error {
-        EventStreamError::Utf8(_) => anyhow!("thread SSE was not valid UTF-8"),
-        EventStreamError::Parser(_) => anyhow!("thread SSE framing failed"),
-        EventStreamError::Transport(error) => error,
-    }
 }
 
 /// Safe typed summary used in case evidence lines.

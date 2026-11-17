@@ -7,6 +7,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../../../presentation/providers/client_provider.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/thread_session_store.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../view_models/timeline_view_model.dart';
 import 'live_status_state.dart';
 import 'live_status_projection.dart';
@@ -220,10 +221,13 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
               bytes: await _readActivityPayload(scope, reference, byteLength),
             ),
         };
+        final bytes = switch (payload) {
+          InlineCurrentPayload(:final bytes) => bytes,
+          DeferredCurrentPayload() =>
+            throw const ConversationStateFieldDiscontinuity(),
+        };
         loaded.add(
-          decodeCurrentActivityToolState(
-            jsonDecode(utf8.decode(payload.bytes)),
-          ),
+          decodeCurrentActivityToolState(jsonDecode(utf8.decode(bytes))),
         );
       }
       _activityTools = List.unmodifiable(

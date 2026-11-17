@@ -104,13 +104,22 @@ impl Owner {
         &mut self,
         message: inbox::ThreadMessage,
         options: input::InputDriverOptions,
+        receipt: Option<&str>,
     ) -> Result<u64, ThreadError> {
+        if let Some(id) = receipt
+            && let Some(saved) = inbox::message_receipt(&self.state, id, &message)?
+        {
+            return Ok(saved.sequence);
+        }
         // An already accepted identity is answered from its original receipt before any new
         // admission check or continuation action: a repeat is not new work, so it must not be
         // refused because the owner is closing, is waiting for an interaction or is under storage
         // pressure, and it must not interrupt the Turn that is currently running. Only a genuinely
         // new message takes the admission path, which is what warms the driver and interrupts.
         if let Some(sequence) = self.accepted_message_receipt(&message)? {
+            if receipt.is_some() {
+                return self.receive_message(message, None, None, receipt);
+            }
             return Ok(sequence);
         }
         self.validate_continuation_admission()?;
@@ -126,7 +135,7 @@ impl Owner {
         {
             return Err(ThreadError::NoContinuation);
         }
-        let sequence = self.receive_message(message, Some(options), claim.as_deref())?;
+        let sequence = self.receive_message(message, Some(options), claim.as_deref(), receipt)?;
         self.request_continuation(options);
         Ok(sequence)
     }

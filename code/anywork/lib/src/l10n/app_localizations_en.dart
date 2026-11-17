@@ -17,10 +17,6 @@ class AppLocalizationsEn extends AppLocalizations {
       'Conversation content needs to be synchronized again. Please retry.';
 
   @override
-  String get studioFailureStaleViewCursor =>
-      'The current reading position has expired. Reopen the conversation.';
-
-  @override
   String get studioFailureConcurrentNext =>
       'Conversation content is being read. Wait for the current read to finish.';
 

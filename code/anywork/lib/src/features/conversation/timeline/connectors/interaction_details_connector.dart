@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
 import '../state/chat_payload_reading.dart';
+import '../state/content_reference_identity.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
 import '../../interactions/widgets/question_step.dart';
 

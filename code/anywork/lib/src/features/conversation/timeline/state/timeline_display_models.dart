@@ -5,17 +5,29 @@ import 'package:anywork_client/models.dart';
 const presentationVersion = 6;
 
 final class DisplayBlockRef {
-  const DisplayBlockRef({required this.databaseId, required this.blockId});
-  final String databaseId;
+  const DisplayBlockRef({
+    required this.blockId,
+    required this.cut,
+    required this.anchorSeq,
+    required this.headSeq,
+  });
   final String blockId;
+
+  /// Fixed immutable-history cut. The token is signed by and valid only for
+  /// its original History reader/database scope.
+  final HistoryCut cut;
+  final int anchorSeq;
+  final int headSeq;
 
   @override
   bool operator ==(Object other) =>
       other is DisplayBlockRef &&
-      databaseId == other.databaseId &&
-      blockId == other.blockId;
+      blockId == other.blockId &&
+      cut == other.cut &&
+      anchorSeq == other.anchorSeq &&
+      headSeq == other.headSeq;
   @override
-  int get hashCode => Object.hash(databaseId, blockId);
+  int get hashCode => Object.hash(blockId, cut, anchorSeq, headSeq);
 }
 
 /// Wall-clock interval owned by the Work block, in Unix seconds.
@@ -30,9 +42,22 @@ sealed class DisplayBlockBody {
 }
 
 final class WorkDisplayBlock extends DisplayBlockBody {
-  const WorkDisplayBlock({required this.timing, required this.members});
+  const WorkDisplayBlock({
+    required this.timing,
+    required this.members,
+    required this.executionPresent,
+    required this.memberCount,
+    required this.unfinishedCount,
+    required this.groupClosed,
+    this.summary,
+  });
   final WorkTiming timing;
   final DisplayBlockRef members;
+  final bool executionPresent;
+  final int memberCount;
+  final int unfinishedCount;
+  final bool groupClosed;
+  final String? summary;
 }
 
 final class SingleDisplayBlock extends DisplayBlockBody {
@@ -115,7 +140,12 @@ bool sameDisplayBlockBody(DisplayBlockBody first, DisplayBlockBody second) {
   if (first is WorkDisplayBlock && second is WorkDisplayBlock) {
     return first.members == second.members &&
         first.timing.startedAt == second.timing.startedAt &&
-        first.timing.finishedAt == second.timing.finishedAt;
+        first.timing.finishedAt == second.timing.finishedAt &&
+        first.executionPresent == second.executionPresent &&
+        first.memberCount == second.memberCount &&
+        first.unfinishedCount == second.unfinishedCount &&
+        first.groupClosed == second.groupClosed &&
+        first.summary == second.summary;
   }
   if (first is! SingleDisplayBlock || second is! SingleDisplayBlock) {
     return false;
@@ -246,8 +276,8 @@ final class LatestDisplayMembers extends DisplayMemberWindow {
 }
 
 final class BeforeDisplayMembers extends DisplayMemberWindow {
-  const BeforeDisplayMembers({required this.memberOrder});
-  final int memberOrder;
+  const BeforeDisplayMembers({required this.cursor});
+  final String cursor;
 }
 
 final class DisplayMemberHead {
@@ -264,19 +294,19 @@ final class DisplayMemberHead {
 final class DisplayMemberPage {
   DisplayMemberPage({
     required this.block,
+    required this.cut,
     required this.revision,
     required this.sealed,
     required List<DisplayMemberHead> entries,
-    this.before,
     this.nextCursor,
   }) : entries = List.unmodifiable(entries);
   final DisplayBlockRef block;
+  final HistoryCut cut;
   final int revision;
   final bool sealed;
   final List<DisplayMemberHead> entries;
-  final int? before;
   final String? nextCursor;
-  bool get hasOlder => before != null || nextCursor != null;
+  bool get hasOlder => nextCursor != null;
 }
 
 abstract interface class DisplayMembers {

@@ -16,9 +16,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get studioFailureConversationResyncRequired => '会话内容需要重新同步，请重试。';
 
   @override
-  String get studioFailureStaleViewCursor => '当前阅读位置已失效，请重新打开会话。';
-
-  @override
   String get studioFailureConcurrentNext => '正在读取会话内容，请等待当前读取完成。';
 
   @override

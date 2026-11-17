@@ -26,8 +26,6 @@ const MAX_BYTES: u64 = 1024 * 1024;
 #[derive(Debug)]
 pub(super) struct FrozenBatch {
     count: usize,
-    first: u64,
-    last: u64,
     usage: UsageSummary,
     accepted_steps: usize,
 }
@@ -103,8 +101,6 @@ pub(super) fn select(
         }
         progress.in_flight = Some(FrozenBatch {
             count,
-            first: head.sequence,
-            last,
             usage: progress.usage.clone(),
             accepted_steps: 0,
         });
@@ -126,12 +122,6 @@ pub(super) fn select(
         })
         .collect();
     Selection::Ready(selected)
-}
-
-struct Candidate {
-    summary: UsageSummary,
-    revision: u64,
-    pressure_paused: bool,
 }
 
 fn millis(at: i64) -> Result<i64> {
@@ -421,16 +411,11 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             effect.sequence
         );
         projected.accounting.fold_into(&mut summary);
-        candidates.push(Candidate {
-            summary: summary.clone(),
-            revision: effect.write.effect.sequence,
-            pressure_paused: effect.write.state.persistence.pressure_paused,
-        });
+        candidates.push(summary.clone());
     }
     {
         let mut progress = lock_progress(inner);
         progress.in_flight_bytes = effects.iter().map(|effect| effect.bytes).sum();
-        progress.saving_revision = candidates.last().expect("nonempty batch").revision;
         report(inner, &progress);
     }
 
@@ -592,7 +577,6 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
                 &safe_error_reasons(error),
             );
         }
-        progress.saving_revision = 0;
         progress.enter_stage(Some(HistoryStage::WriterQueue), Instant::now());
     }
     if let Err(error) = committed {
@@ -614,20 +598,15 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
         .conversation
         .confirm_committed(&CommittedBatch { database_id })?;
     for (effect, candidate) in effects.iter().zip(candidates) {
-        super::super::state::clear_checkpoint_recovery(&inner.thread.id);
         inner.store.calls().record_effect(&effect.write.effect);
         let mut progress = lock_progress(inner);
-        if candidate.summary.applied_sequence >= progress.usage.applied_sequence {
+        if candidate.applied_sequence >= progress.usage.applied_sequence {
             inner
                 .store
                 .thread_persistence()
-                .set_usage(&inner.thread.id, candidate.summary.clone());
-            progress.usage = candidate.summary;
+                .set_usage(&inner.thread.id, candidate.clone());
+            progress.usage = candidate;
         }
-        if candidate.revision >= progress.published_revision {
-            progress.pressure_paused = candidate.pressure_paused;
-        }
-        progress.published_revision = progress.published_revision.max(candidate.revision);
     }
     inner
         .channel

@@ -96,7 +96,6 @@ struct ReportIdentity {
 }
 pub(crate) struct Report {
     pub event_seq: u64,
-    pub terminal_sequence: u64,
     pub message: ThreadMessage,
 }
 /// A bounded page of one Thread's actual parent-report producer facts.
@@ -159,7 +158,6 @@ pub(crate) async fn reports(
         bytes += size;
         page.push(Report {
             event_seq: event.header.seq,
-            terminal_sequence: identity.commit_sequence,
             message,
         });
     }
@@ -184,37 +182,4 @@ pub(crate) async fn review_exception(
         "review delivery identity differs"
     );
     Ok(Some(fact))
-}
-pub(crate) async fn review_exceptions(
-    reader: &HistoryReader,
-    thread: &str,
-    after: u64,
-) -> Result<
-    Vec<(
-        u64,
-        crate::thread_assembler::review_delivery::ReviewDeliveryFact,
-    )>,
-> {
-    let (_, events, _) = reader
-        .events_window(
-            HistoryEventsQuery::Source {
-                source: source(thread, "review_delivery"),
-            },
-            None,
-            Some(after),
-            true,
-            demand(),
-        )
-        .await?;
-    let mut results = Vec::new();
-    for event in events {
-        let fact: crate::thread_assembler::review_delivery::ReviewDeliveryFact =
-            decode(reader, &event, "pl.studio.review-delivery").await?;
-        ensure!(
-            event.header.message_id.as_deref() == Some(fact.message.id.as_str()),
-            "review delivery identity differs"
-        );
-        results.push((event.header.seq, fact));
-    }
-    Ok(results)
 }

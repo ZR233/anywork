@@ -102,7 +102,7 @@ pub enum BridgeHistoryWaitHead {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryEntityHead {
     pub entity_id: String,
     pub run_id: Option<String>,
@@ -286,7 +286,7 @@ pub struct BridgeHistoryEventBodyRef {
     pub byte_length: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryEventDetail {
     pub header: BridgeHistoryEventHeader,
     pub head: Option<BridgeHistoryRowHead>,
@@ -338,7 +338,7 @@ pub struct BridgeHistoryBodyPage {
     pub next: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BridgeHistoryAccounting {
     pub head: BridgeHistoryAccountingHead,
 }

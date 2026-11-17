@@ -814,9 +814,6 @@ impl AgentHost {
             Ok(DeliveryDisposition::Conflict) => {
                 Err(ThreadAssemblyError::MessageConflict(message.id.clone()))
             }
-            Ok(DeliveryDisposition::Unverifiable) => {
-                Err(ThreadAssemblyError::MessageUnverifiable(message.id.clone()))
-            }
             Err(error) => Err(error),
         };
         let (sequence, message_error) = match delivery {
@@ -1038,11 +1035,6 @@ impl AgentControlHost for AgentHost {
                 return Err(ControlError::service(ThreadAssemblyError::MessageConflict(
                     message.id.clone(),
                 )));
-            }
-            DeliveryDisposition::Unverifiable => {
-                return Err(ControlError::service(
-                    ThreadAssemblyError::MessageUnverifiable(message.id.clone()),
-                ));
             }
         };
         Ok(AgentSendResult {

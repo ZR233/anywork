@@ -1,9 +1,9 @@
 //! Managed terminal-to-feedback handoff. The projection registers, but never waits on this job.
-use super::observation::DurableMessageIdentity;
 use super::{
     SessionRuntime,
     agent_review::{
-        ReviewDeliverySource, ReviewFeedbackDelivery, ReviewForward, ReviewForwardReason,
+        ReviewDeliverySource, ReviewFeedbackDelivery, ReviewFeedbackSettlement, ReviewForward,
+        ReviewForwardReason, review_feedback_message,
     },
     pending_delivery::PendingNativeDelivery,
     review_delivery::ReviewDeliveryException,
@@ -466,12 +466,61 @@ impl SessionRuntime {
             .clone()
             .context("review services unavailable")?;
         self.recover_pending_native_deliveries(reviewer).await?;
+        self.recover_review_feedback_settlements(reviewer, &services)
+            .await?;
         self.recover_review_decisions(reviewer, &services).await?;
         if let Some(parent) = reviewer.parent_thread_id.as_deref()
             && !self.parent_is_acp(parent)
         {
             let parent = services.record(parent).await?;
             self.recover_pending_native_deliveries(&parent).await?;
+        }
+        Ok(())
+    }
+
+    async fn recover_review_feedback_settlements(
+        &self,
+        reviewer: &crate::Thread,
+        services: &super::agent_services::AgentServices,
+    ) -> Result<()> {
+        let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
+            &services.store,
+            reviewer,
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        let settlements = ReviewFeedbackSettlement::saved_in(&current.state.to_paused_snapshot())?;
+        if settlements.is_empty() {
+            return Ok(());
+        }
+        let decisions = self
+            .pending_native_deliveries(reviewer)
+            .await?
+            .into_iter()
+            .filter(PendingNativeDelivery::is_review_decision)
+            .collect::<Vec<_>>();
+        for settlement in settlements {
+            if let Some(decision) = decisions
+                .iter()
+                .find(|decision| decision.message().id == settlement.decision_message_id())
+            {
+                services
+                    .clear_pending_native_source(self, &reviewer.id, decision.clone())
+                    .await?;
+            }
+            services
+                .clear_review_feedback_receipt(
+                    self,
+                    settlement.target_agent_id(),
+                    settlement.message().clone(),
+                    settlement.sequence(),
+                )
+                .await?;
+            services
+                .clear_review_feedback_settlement(self, &reviewer.id, settlement)
+                .await?;
         }
         Ok(())
     }
@@ -559,18 +608,6 @@ impl SessionRuntime {
         services
             .deliver_pending_native(self, parent, pending)
             .await?;
-        match self.durable_message_identity(parent, &message.id).await? {
-            Some(DurableMessageIdentity::Proven { digest, .. }) => ensure!(
-                digest == message.digest(),
-                TerminalIntegrityError("parent terminal message conflicts with durable original")
-            ),
-            Some(DurableMessageIdentity::Unverifiable) => {
-                anyhow::bail!(TerminalIntegrityError(
-                    "parent terminal receipt is unverifiable"
-                ))
-            }
-            None => anyhow::bail!("parent review exception was not durably acknowledged"),
-        }
         Ok(())
     }
     // Keep this owned handoff out of the much larger close/recovery future's inline state.
@@ -666,7 +703,18 @@ impl SessionRuntime {
             let channel = request.channel;
             let revocation = request.revocation;
             let source = request.source;
+            let decision_message_id = request.original.id.clone();
             Box::pin(async move {
+                if let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
+                    &services.store, &reviewer,
+                ).await? {
+                    let settled = ReviewFeedbackSettlement::saved_in(&current.state.to_paused_snapshot())?
+                        .iter().any(|settlement| settlement.decision_message_id() == decision_message_id);
+                    if settled {
+                        owner.recover_review_feedback_settlements(&reviewer, &services).await?;
+                        return Ok(());
+                    }
+                }
                 if let Some(channel) = channel.filter(|channel| channel.handoff_ticket() >= sequence) {
                     channel
                         .await_handoff_durable(&reviewer.id, sequence)
@@ -704,8 +752,8 @@ impl SessionRuntime {
                 .context("recovery exception identity missing")?
                 .into_fact()?;
                 let saved = crate::studio::history_delivery::review_exception(&history.reader(),&recovery_fact.message.id).await?;
-                let fact = if let Some(saved) = saved {
-                    Some(saved)
+                let (fact, feedback_settlement) = if let Some(saved) = saved {
+                    (Some(saved), None)
                 } else {
                     // Terminal is observable before its execution residency is released. Wait only
                     // for this exact execution, not for a later incarnation to become idle again.
@@ -782,7 +830,27 @@ impl SessionRuntime {
                     {
                         anyhow::bail!("review feedback remains pending: {forward:?}");
                     }
-                    match ReviewDeliveryException::from_forward(
+                    let settlement = match (&forward, review_decision.as_ref()) {
+                        (
+                            ReviewForward::Accepted { sequence: accepted_sequence, .. },
+                            Some(decision),
+                        ) => Some(ReviewFeedbackSettlement::new(
+                            decision.message().id.clone(),
+                            target_id.clone(),
+                            *accepted_sequence,
+                            review_feedback_message(
+                                &reviewer.id,
+                                &turn.turn_id,
+                                sequence,
+                                &body,
+                            ),
+                        )?),
+                        (ReviewForward::Accepted { .. }, None) => {
+                            anyhow::bail!("review feedback receipt has no source decision marker")
+                        }
+                        _ => None,
+                    };
+                    let fact = match ReviewDeliveryException::from_forward(
                         &reviewer.id,
                         &turn.turn_id,
                         turn.input_id.as_deref(),
@@ -801,7 +869,8 @@ impl SessionRuntime {
                                 .await?,
                         ),
                         None => None,
-                    }
+                    };
+                    (fact, settlement)
                 };
                 if let Some(fact) = fact {
                     let parent = reviewer
@@ -818,7 +887,36 @@ impl SessionRuntime {
                         )
                         .await?;
                 }
-                if let Some(decision) = review_decision {
+                if let Some(settlement) = feedback_settlement {
+                    services
+                        .persist_review_feedback_settlement(
+                            &owner,
+                            &reviewer.id,
+                            settlement.clone(),
+                        )
+                        .await?;
+                    let decision = review_decision
+                        .as_ref()
+                        .context("review feedback settlement has no source decision")?;
+                    services
+                        .clear_pending_native_source(&owner, &reviewer.id, decision.clone())
+                        .await?;
+                    services
+                        .clear_review_feedback_receipt(
+                            &owner,
+                            settlement.target_agent_id(),
+                            settlement.message().clone(),
+                            settlement.sequence(),
+                        )
+                        .await?;
+                    services
+                        .clear_review_feedback_settlement(
+                            &owner,
+                            &reviewer.id,
+                            settlement,
+                        )
+                        .await?;
+                } else if let Some(decision) = review_decision {
                     services
                         .clear_pending_native_source(&owner, &reviewer.id, decision)
                         .await?;

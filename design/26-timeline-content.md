@@ -95,6 +95,10 @@ Flutter 的现有 timeline controller 是应用内唯一已加载历史窗口。
 
 画面键使用稳定 `row_key`／`entity_id`。主列表“最新 head”可对已加载窗口中的同一 row 做受控 replace；older query 是纯页查询，只能通过明确 apply 入口一次 Prepend，不能隐藏 apply、推进 Current owner 或复写其他 scopes。新增 anchor 通过范围页或新首屏发现，不能为了刷新一个 head 拉回全部历史。
 
+实时模式只接纳最新一页及其 cut，在 Flyer 中按稳定 row key 更新、追加和移除到该有界页面，并在组件成功后同时提交该页的 older 游标。进入历史浏览后，整个已加载历史窗口固定原 cut；后台变化只提示存在新输出，older 仍使用该 cut 的 opaque 游标，不裁掉正在浏览的行。历史行与成员在此模式中只读 History，不叠加当前 run 后来的正文。回到实时位置通过原 reader 读取新的最新页并建立新的展示资格；保留同 row 的展开意图，旧正文与查询资格退休。提交消息不等待这次查询或绘制。
+
+Work 的成员引用和组关闭等 metadata 必须来自该行接纳的同一 cut；不能把 H1 的成员引用与 H2 的组边界拼在一起。成员与原件详情按 opaque 游标读取有界页，窗口只保留有限导航描述符；EOF 只表示该页范围耗尽，不证明组已关闭。
+
 所有历史 apply 串行执行：前一个 controller 操作完成后才启动下一次 UI 应用。generation 覆盖换 Thread、换 reader、页面销毁和显示接管；旧 query 成功、失败或 finally 不能写入新 generation。普通绘制、动画或滚动不进业务 apply 队列，也不构成 ACK。
 
 controller 调用异常时，无法证明列表未被部分修改，因此终止当前 generation，并以新 HistoryReader 的 Set 重建；不盲重放 Prepend。重建成功前保留旧画面，成功后一次替换；失败显示真实错误，不删除草稿、Current 状态或无关会话。
@@ -107,7 +111,7 @@ controller 调用异常时，无法证明列表未被部分修改，因此终止
 
 状态栏从唯一 Current State 和当前显示窗口派生，直接消费 usage、live usage、activity、tools、todo/progress 和错误。`execution_present` 不等于正在执行，完整运行资格仍来自真实 sources、activity 和原 owner 状态。无 active turn 的有效后台活动仍可显示。
 
-实时 Work 只来自当前 Projection；历史 Work 只来自 HistoryReader。当前 Work 可随内容更新，历史 Work 的成员和显示身份保持稳定。实时正文 renderer 与历史成员 renderer 使用同一内容组件，但各自持有独立读取 owner；不靠 Flutter 推断组边界。
+实时活动概览来自 Current Projection；主列表的 Work 和稳定行始终来自 HistoryReader。活动正文可随 Current 更新，历史 Work 的成员和显示身份按自身 cut 保持稳定。实时正文 renderer 与历史成员 renderer 使用同一内容组件，但各自持有独立读取 owner；不靠 Flutter 推断组边界。
 
 折叠 Work 默认一行，呈现真实图标、单行摘要与经过时间；展开后才显示成员。隐藏或折叠撤销该视图自己的正文/媒体读取，不停止业务执行。封存历史行使用真实 finished/start 时间；未知时间不推算。实时计时只是 UI 派生值，不写 Current 或 History。
 

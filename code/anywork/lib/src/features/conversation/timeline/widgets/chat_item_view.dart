@@ -15,6 +15,7 @@ import '../state/content_reference_identity.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/tool_display_registry.dart';
 import '../views/plan_receipt_view.dart';
+import 'timeline_content_range_view.dart';
 import 'content_layout_witness.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_plain_text.dart';
@@ -22,7 +23,6 @@ import 'timeline_reasoning_view.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
 import 'timeline_display_unit_view.dart';
-import '../connectors/timeline_owned_body_connector.dart';
 
 /// Renders one admitted item or display unit. Grouping belongs to the sole
 /// presentation owner; this view owns only disclosure and decoded presentation.

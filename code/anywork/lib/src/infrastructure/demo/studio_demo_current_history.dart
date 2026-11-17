@@ -66,19 +66,17 @@ final class _DemoHistoryReader implements HistoryReader {
         .where((value) => value.id == groupId)
         .firstOrNull;
     if (block == null) throw _demoMissing();
+    final body = block.body;
+    if (body is! WorkDisplayBlock) throw _demoMissing();
     final heads =
-        _history.displayHeads[DisplayBlockRef(
-          databaseId: _history.epoch,
-          blockId: groupId,
-        )] ??
-        const <DisplayMemberHead>[];
+        _history.displayHeads[body.members] ?? const <DisplayMemberHead>[];
     final start = cursor == null ? 0 : int.tryParse(cursor) ?? 0;
     final selected = heads.skip(start).take(demand.maxRows).toList();
     final next = start + selected.length < heads.length
         ? '${start + selected.length}'
         : null;
     return HistoryGroupPage(
-      cut: cut ?? _cut(),
+      cut: cut ?? body.members.cut,
       groupId: groupId,
       members: [
         for (final head in selected)
@@ -183,10 +181,7 @@ final class _DemoHistoryReader implements HistoryReader {
             _historyEntityHead(
               DisplayRecord(
                 atom: item.message,
-                contentSource: CompletedOriginal(
-                  completionId:
-                      item.message.completionItemId ?? item.message.id,
-                ),
+                contentSource: CompletedOriginal(completionId: item.message.id),
               ),
             ),
           ),
@@ -370,23 +365,28 @@ final class _DemoHistoryReader implements HistoryReader {
         anchorSeq: block.blockOrder,
         headSeq: block.blockOrder,
         head: switch (block.body) {
-          WorkDisplayBlock(:final timing, :final members) => WorkHistoryRow(
-            HistoryWorkHead(
-              groupId: members.blockId,
-              runId: null,
-              startedAt: timing.startedAt,
-              boundaryAt: timing.finishedAt,
-              closed: timing.finishedAt != null,
-              memberCount:
-                  _history.displayHeads[members]?.length ??
-                  _history.displayMembership.values
-                      .where((id) => id == members.blockId)
-                      .length,
-              unfinishedCount: 0,
-              executionPresent: false,
-              summary: null,
+          WorkDisplayBlock(
+            :final timing,
+            :final members,
+            :final executionPresent,
+            :final memberCount,
+            :final unfinishedCount,
+            :final groupClosed,
+            :final summary,
+          ) =>
+            WorkHistoryRow(
+              HistoryWorkHead(
+                groupId: members.blockId,
+                runId: null,
+                startedAt: timing.startedAt,
+                boundaryAt: timing.finishedAt,
+                closed: groupClosed,
+                memberCount: memberCount,
+                unfinishedCount: unfinishedCount,
+                executionPresent: executionPresent,
+                summary: summary,
+              ),
             ),
-          ),
           SingleDisplayBlock(:final record, :final visibility) =>
             SingleHistoryRow(
               _historyEntityHead(record, visibility: visibility),
@@ -433,7 +433,7 @@ final class _DemoHistoryReader implements HistoryReader {
           kind: HistoryObservationKind.original,
         ),
       },
-      detailEventId: atom.completionItemId ?? atom.id,
+      detailEventId: atom.id,
     );
   }
 }
@@ -575,7 +575,6 @@ final class _DemoCurrentReader implements CurrentReader {
       revision: _revision,
       state: ThreadSnapshotFrame(
         workspace: workspace,
-        completedHistoryVersion: completedHistoryVersion,
         schemaVersion: threadSchemaVersion,
       ),
       projection: CurrentProjection(
@@ -878,12 +877,12 @@ final class _DemoCurrentReader implements CurrentReader {
   }
 
   @override
-  CurrentBodyWatch watchBody({
+  Future<CurrentBodyWatch> watchBody({
     required CurrentContentRef reference,
     required ContentRange range,
   }) {
     _checkOpen();
-    return _DemoCurrentBodyWatch(this, reference, range);
+    return Future.value(_DemoCurrentBodyWatch(this, reference, range));
   }
 
   @override

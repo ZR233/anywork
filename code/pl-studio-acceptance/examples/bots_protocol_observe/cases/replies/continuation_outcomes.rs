@@ -122,7 +122,7 @@ async fn continuation_outcomes_inner(
         .send_event(inbound(MESSAGE_FAIL, PROMPT_FAIL))
         .await?;
     let thread_id = super::wait_thread_binding(&session.home, &bot_id, DIRECT_CHAT_ID).await?;
-    let mut watch = ThreadWatch::connect(session.http()?.origin(), &thread_id).await?;
+    let mut watch = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
     watch.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
     wait_gate(fail_preview_stage(), "failing continuation preview").await?;
     let preview = wait_preview(session, "CARD_CONT_FAIL_PREVIEW").await?;

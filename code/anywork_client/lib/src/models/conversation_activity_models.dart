@@ -324,10 +324,10 @@ ConversationActivityView? projectConversationActivity({
     activeToolCount: activity.tools.count,
     backgroundToolCount: activity.tools.background,
     expandable:
-        (snapshot?.entries.any((entry) => entry.atom.contents.isNotEmpty) ??
-            false) ||
+        activity.deferred.isNotEmpty ||
         businessRefs?.plan?.document != null ||
         businessRefs?.interactions != null,
+    deferred: activity.deferred,
   );
 }
 

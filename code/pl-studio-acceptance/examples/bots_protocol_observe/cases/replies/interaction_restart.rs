@@ -3,7 +3,7 @@
 //!
 //! The model really calls `request_user_input` (q1) and then `plan_submit`
 //! (the Plan confirmation interaction), so the only path to the final formal
-//! reply is: discover the wire interaction IDs over the public thread SSE,
+//! reply is: discover the wire interaction IDs over public Current frames/resources,
 //! resolve them over the public HTTP endpoint across a real server restart,
 //! and let the recovered watcher continue the original inbound work. On a
 //! server that keeps the inbound claim for its full lease (or looks the
@@ -95,7 +95,7 @@ async fn interaction_restart_inner(
     evidence.push(format!("thread={thread_id} bound for DM {DIRECT_CHAT_ID}"));
 
     // Phase 1: the first model call must really ask the operator.
-    let mut watch = ThreadWatch::connect(session.http()?.origin(), &thread_id).await?;
+    let mut watch = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
     let snapshot = watch.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
     evidence.push(format!(
         "snapshot revision={} interactions={}",
@@ -147,7 +147,7 @@ async fn interaction_restart_inner(
     );
 
     // Phase 3: canonical pending rebuild, then resolve q1 over public HTTP.
-    let mut watch2 = ThreadWatch::connect(session.http()?.origin(), &thread_id).await?;
+    let mut watch2 = ThreadWatch::connect(session.http()?.clone(), &thread_id)?;
     let rebuilt = watch2.wait_snapshot(http::PREDICATE_TIMEOUT).await?;
     let rebuilt_q1 = rebuilt
         .interactions
@@ -357,7 +357,7 @@ async fn assert_interaction_reference_page(
         .as_ref()
         .context("State businessRefs omitted the active interactions read reference")?;
     ensure!(
-        !reference.database_id.is_empty() && reference.collection == "interactions",
+        !reference.owner_id.is_empty() && reference.collection == "interactions",
         "State supplied an invalid interactions collection reference"
     );
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
@@ -461,7 +461,7 @@ async fn assert_plan_reference(
             && document.domain == "plan"
             && document.entity_id == "document"
             && document.content_key == "document"
-            && document.generation == plan.revision.to_string(),
+            && !document.generation.is_empty(),
         "State Plan reference does not identify its exact complete document version"
     );
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;

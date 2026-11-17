@@ -567,14 +567,14 @@ pub(super) async fn search(
         )
         .await?;
         for detail in page.entries {
-            if let Some(text) = search_text(&reader, &detail).await? {
-                if let Some(snippet) = matched_snippet(&text, &needle) {
-                    matches.push(Match {
-                        session_id: session.clone(),
-                        event_id: detail.header.event_id.clone(),
-                        snippet,
-                    });
-                }
+            if let Some(text) = search_text(&reader, &detail).await?
+                && let Some(snippet) = matched_snippet(&text, &needle)
+            {
+                matches.push(Match {
+                    session_id: session.clone(),
+                    event_id: detail.header.event_id.clone(),
+                    snippet,
+                });
             }
             if matches.len() >= 10 {
                 break;

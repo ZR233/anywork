@@ -311,8 +311,10 @@ TimelineDisplayFacts? _timelineFacts(
           'expanded': display.expanded,
           'blockReference': switch (display.blockReference) {
             final reference? => {
-              'databaseId': reference.databaseId,
               'blockId': reference.blockId,
+              'cut': reference.cut.token,
+              'anchorSeq': reference.anchorSeq,
+              'headSeq': reference.headSeq,
             },
             null => null,
           },
@@ -410,7 +412,7 @@ Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
       for (final observation in display.windows)
         {
           'id': observation.id,
-          'reference': _currentReferenceJson(observation.reference),
+          'reference': _timelineWindowReferenceJson(observation.reference),
           'offset': observation.offset,
           'error': observation.error?.toString(),
           'window': switch (observation.window) {
@@ -428,6 +430,26 @@ Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
     ],
   };
 }
+
+Map<String, Object?> _timelineWindowReferenceJson(Object reference) =>
+    switch (reference) {
+      final CurrentContentRef value => _currentContentRefJson(value),
+      final HistoryEventBodyRef value => {
+        'kind': 'historyBody',
+        'databaseId': value.databaseId,
+        'ownerEventId': value.ownerEventId,
+        'bodyKey': value.bodyKey,
+        'bodyId': value.bodyId,
+        'byteStart': value.byteStart,
+        'byteLength': value.byteLength,
+      },
+      final ContentRef value => _currentReferenceJson(value),
+      _ => throw ArgumentError.value(
+        reference,
+        'reference',
+        'Unsupported timeline window reference',
+      ),
+    };
 
 Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
   'databaseId': reference.databaseId,
@@ -485,16 +507,20 @@ TimelineItemFacts _timelineMessageFacts(Message message) {
         'blockOrder': unit.blockOrder,
         'members': switch (unit.memberReference) {
           final reference? => {
-            'databaseId': reference.databaseId,
             'blockId': reference.blockId,
+            'cut': reference.cut.token,
+            'anchorSeq': reference.anchorSeq,
+            'headSeq': reference.headSeq,
           },
           null => null,
         },
         if (atom != null) ...{
-          'recordId': atom.completionItemId,
-          'completionSeq': atom.completionSeq,
+          'entityId': atom.id,
           'source': _sourceFacts(atom.source),
         },
+        'runId': ?item?.displayRecord?.runId,
+        'historyEventId': ?item?.displayRecord?.historyEventId,
+        'historyDetailEventId': ?item?.displayRecord?.historyDetailEventId,
       },
     );
   }
@@ -531,9 +557,7 @@ TimelineItemFacts _atomFacts(ChatAtom atom) {
     channel: atom.textChannel?.name,
     atomic: {
       'source': _sourceFacts(atom.source),
-      'completionSeq': atom.completionSeq,
       'sourceOrder': atom.sourceOrder,
-      'completionItemId': atom.completionItemId,
       'toolCallId': atom.tool?.callId,
       'toolName': atom.tool?.name,
     },
@@ -643,14 +667,17 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
       'unknown';
   return TimelineItemFacts(
     id: item.id,
-    timeline: timeline == null ? null : _timelineEnvelopeFacts(timeline),
+    timeline: item.displayUnit == null
+        ? null
+        : {
+            'blockId': item.displayUnit!.id,
+            'blockOrder': item.displayUnit!.blockOrder,
+          },
     atomic: item.atom == null
         ? null
         : {
             'source': _sourceFacts(item.atom!.source),
             'sourceOrder': item.atom!.sourceOrder,
-            'completionSeq': item.atom!.completionSeq,
-            'completionItemId': item.atom!.completionItemId,
           },
     sealedAt: _diagnosticUnixSeconds(item.createdAt),
     compatibility: item.compatibility.name,
@@ -687,7 +714,7 @@ TimelineItemFacts _loadedItemFacts(ChatItemPresentation item) {
           field: body.key,
           totalBytes: body.byteLength,
           previewBytes: body.inline?.length ?? 0,
-          hasReference: body.reference != null,
+          hasReference: body.hasReference,
         ),
     ],
     attachments: attachments,

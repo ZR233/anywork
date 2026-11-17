@@ -430,12 +430,6 @@ impl RuntimeOrderIndex {
         Ok(())
     }
 
-    fn seed(&self, ceiling: u64, durable: u64) {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        state.ceiling = state.ceiling.max(ceiling);
-        state.durable = state.durable.max(durable);
-    }
-
     /// Reserve only the explicit execution boundaries, before Core may reserve provider parts.
     /// This does not project content. The admitted effect owns these charged shells until its
     /// actual save, even if the projection is still processing an older checkpoint.
@@ -547,54 +541,6 @@ impl RuntimeOrderIndex {
             .pending
             .last()
             .is_some_and(|(effect, _)| *effect > state.durable)
-    }
-
-    pub(in crate::studio) fn materialize(
-        &self,
-        item: &crate::ExecutionItem,
-        effect: u64,
-    ) -> Result<()> {
-        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        ensure!(
-            item.ordinal <= i64::MAX as u64,
-            "execution ordinal space is exhausted"
-        );
-        if let Some(entry) = state.assigned.get(&item.id) {
-            ensure!(entry.ordinal == item.ordinal, "execution ordinal conflict");
-        }
-        let mut staged = BTreeMap::new();
-        Self::stage_materialization(
-            &state,
-            &mut staged,
-            &ExecutionMaterialization {
-                item_id: &item.id,
-                ordinal: Some(item.ordinal),
-                revision: item.revision,
-                created_at: item.created_at,
-                updated_at: item.updated_at,
-                turn_id: &item.turn_id,
-                terminal: item.is_terminal(),
-            },
-            item.ordinal,
-            effect,
-        )?;
-        #[cfg(test)]
-        {
-            let gate = self.materialize_gate.lock().unwrap().take();
-            if let Some(gate) = gate {
-                let _ = gate.entered.send(());
-                gate.release
-                    .recv_timeout(Duration::from_secs(10))
-                    .expect("materialization regression gate was not released");
-            }
-        }
-        let ceiling = state.ceiling.max(item.ordinal);
-        let released = self.commit_execution_batch(&mut state, staged, ceiling)?;
-        drop(state);
-        if released > 0 {
-            self.notify_capacity();
-        }
-        Ok(())
     }
 
     /// Assigns placement and funds all stamps in one commit. No body or codec runs
@@ -1041,13 +987,9 @@ impl HistoryStage {
 struct Progress {
     stopped: bool,
     deleting: bool,
-    /// Highest effect sequence whose history/checkpoint transaction completed.
+    /// Highest effect sequence whose History transaction completed.
     durable: u64,
-    /// Highest checkpoint revision already committed with its effect.
-    published_revision: u64,
-    /// Checkpoint revision of the effect whose atomic history+checkpoint write is in progress.
-    saving_revision: u64,
-    /// Admitted effects awaiting their ordered history/checkpoint transaction.
+    /// Admitted effects awaiting their ordered History transaction.
     ///
     /// An entry leaves the queue only once the durable store committed it *and* the Thread's single
     /// live projection owner took it over, so this queue is the one reliable handoff between a core
@@ -1060,7 +1002,7 @@ struct Progress {
     effect_bytes: u64,
     /// Conservatively charged entries in `pending_saved_at`.
     queue_metadata_bytes: u64,
-    /// Counts queued checkpoint timestamps so the maximum age is available without a queue scan.
+    /// Counts original effect timestamps so the maximum age needs no queue scan.
     pending_saved_at: BTreeMap<i64, u64>,
     pending_accounting: Option<PendingAccounting>,
     /// Retained bytes of the prepared batches the queue still holds.
@@ -1230,22 +1172,6 @@ enum Step {
     Idle,
     /// Coalesce until the oldest obligation's fixed deadline, or until notified.
     Coalescing(Instant),
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{source}")]
-struct ClassifiedWriteError {
-    kind: crate::HistoryFault,
-    #[source]
-    source: anyhow::Error,
-}
-
-fn classified(kind: crate::HistoryFault, source: impl Into<anyhow::Error>) -> anyhow::Error {
-    ClassifiedWriteError {
-        kind,
-        source: source.into(),
-    }
-    .into()
 }
 
 /// Reliable admission state owned by the session manager, not by a writer incarnation.
@@ -2064,7 +1990,6 @@ impl HistoryChannel {
             progress.fault = Some(crate::HistoryFault::WriteFailed);
             progress.error = Some(message);
             progress.fault_recovered = false;
-            progress.saving_revision = 0;
             if published {
                 self.diagnose(
                     &progress,
@@ -2489,7 +2414,7 @@ async fn history_store(inner: &Inner) -> Result<HistoryStore> {
 }
 
 /// Publishes the current queue state so `wait_for_drain` and the product snapshot never report a
-/// Thread as finished while an effect (and therefore its checkpoint) is still queued.
+/// Thread as finished while an admitted History export is still queued.
 fn report(inner: &Inner, progress: &Progress) {
     report_with_calls(inner, progress, Some(inner.store.calls()));
 }
@@ -2516,8 +2441,7 @@ fn report_with_calls(
     let pending_bytes = progress
         .effect_bytes
         .saturating_add(progress.queue_metadata_bytes);
-    // 每个待写 effect 自带它的候选 checkpoint，并与其在同一个事务落盘：队列非空就意味着历史与
-    // checkpoint 都还 dirty，最老待写年龄因此只来自队列里每条 effect 自己的 saved_at。
+    // Only admitted History exports contribute here. Current has its own writer and dirty bit.
     let pending_operations = progress.effects.len() as u64;
     let now = crate::studio::unix_seconds();
     let oldest_pending_age_millis =
@@ -2534,17 +2458,9 @@ fn report_with_calls(
         .back()
         .map(|queued| queued.sequence)
         .unwrap_or(0);
-    let dirty_revision = progress
-        .effects
-        .back()
-        .map(|queued| queued.write.effect.sequence)
-        .unwrap_or(progress.published_revision);
     let metrics = ThreadPersistenceMetrics {
         fault_generation: progress.fault_generation,
         fault: progress.fault,
-        state_dirty_revision: dirty_revision,
-        state_saving_revision: progress.saving_revision,
-        state_durable_revision: progress.published_revision,
         history_admitted_sequence: max_admitted.max(progress.durable),
         history_durable_sequence: progress.durable,
         pending_operations,
@@ -2558,7 +2474,6 @@ fn report_with_calls(
         inner.owner,
         ThreadPersistenceReport {
             pending,
-            pending_checkpoint: false,
             error: progress.error.clone(),
             metrics,
         },
@@ -2567,10 +2482,7 @@ fn report_with_calls(
 }
 
 fn clear_recovered_fault(progress: &mut Progress) -> bool {
-    if progress.retry_requested
-        && progress.durable >= progress.fault_target
-        && progress.published_revision >= progress.fault_target
-    {
+    if progress.retry_requested && progress.durable >= progress.fault_target {
         progress.error = None;
         progress.fault = None;
         progress.retry_requested = false;
@@ -2769,9 +2681,7 @@ impl ThreadStorageSink {
                         if !is_retryable_write(&message)
                             || now.saturating_duration_since(since) >= RETRYABLE_BUSY_WINDOW
                         {
-                            let kind = error
-                                .downcast_ref::<ClassifiedWriteError>()
-                                .map_or(crate::HistoryFault::WriteFailed, |typed| typed.kind);
+                            let kind = crate::HistoryFault::WriteFailed;
                             record_error(
                                 &inner,
                                 kind,
@@ -3088,7 +2998,6 @@ fn record_error(
         progress.fault_recovered = false;
         // A failed publication is no longer being serialized; the retained checkpoint stays queued
         // for retry, and the metric must not keep reporting it as actively saving.
-        progress.saving_revision = 0;
         progress.in_flight_bytes = 0;
         inner.channel.diagnose(
             &progress,
@@ -3123,8 +3032,6 @@ fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
                 "database_error"
             } else if cause.is::<sqlx::Error>() {
                 "sql_driver_error"
-            } else if cause.is::<ClassifiedWriteError>() {
-                "classified_history_error"
             } else {
                 "redacted_error"
             }
@@ -3141,7 +3048,6 @@ fn safe_error_reasons(error: &anyhow::Error) -> Vec<&'static str> {
 fn note_absorbed_conflict(inner: &Inner) {
     let mut progress = lock_progress(inner);
     progress.in_flight_bytes = 0;
-    progress.saving_revision = 0;
     report(inner, &progress);
 }
 
@@ -3538,60 +3444,6 @@ impl ThreadStorageSink {
         drop(progress);
         self.0.changed.notify_one();
         Ok(())
-    }
-
-    pub(crate) async fn flush(&self, thread_id: &str, sequence: u64) -> Result<(), ColdStoreError> {
-        tracing::debug!(
-            target: "conversation_work",
-            thread_id,
-            flush_requests = 1,
-            "thread flush requested"
-        );
-        if thread_id != self.0.thread.id {
-            return Err(ColdStoreError {
-                source: Box::new(std::io::Error::other("Thread persistence owner mismatch")),
-            });
-        }
-        // 固定目标只需等待它自己的 effect durable：checkpoint 与该 effect 在同一事务落盘，所以
-        // durable 前进即意味着目标 checkpoint 也已提交，不再有独立的发布水位要等。
-        self.0.channel.request_flush(sequence);
-        let coordinator = self.0.store.thread_persistence().clone();
-        let mut progress = coordinator.subscribe();
-        // 第二个失败来源是可靠受理通道自己的状态：一个投影无法完成的事实永远到不了协调器的
-        // 水位，只有通道会带着投影的真实原因报告它。只等协调器会把这种失败变成永久挂起，
-        // 因此两处都必须唤醒这次屏障。
-        let mut status = self.0.channel.subscribe();
-        loop {
-            {
-                let local = lock_progress(&self.0);
-                // The effect and its checkpoint commit atomically, so durable covers both: a released
-                // owner never leaves an effect whose checkpoint is not yet committed behind.
-                if local.durable >= sequence {
-                    return Ok(());
-                }
-                if let Some(error) = local.error.clone() {
-                    return Err(ColdStoreError {
-                        source: Box::new(std::io::Error::other(error)),
-                    });
-                }
-            }
-            tokio::select! {
-                changed = progress.changed() => {
-                    changed.map_err(|_| ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "Thread persistence progress channel closed",
-                        )),
-                    })?;
-                }
-                changed = status.changed() => {
-                    changed.map_err(|_| ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "Thread history status channel closed",
-                        )),
-                    })?;
-                }
-            }
-        }
     }
 
     pub(crate) fn read_tool_task(

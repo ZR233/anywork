@@ -518,7 +518,7 @@ Plan/交互读取头从 Current State 的 `CurrentPlanHead`／`CurrentCollection
 
 History row 保留真实 entity、member、source 与 observation 身份；主列表只返回 Work/Single anchor，members、turn、source、cost 和 event 查询各自保持类型化成员资格。SDK 机械转发 `HistoryCut` 与 Next 游标，过滤间隔不补记录。Current 不提供 completed-through，History 也不从 Current source 状态重算组边界；各 scope 的 entries、cut 与编码成本受需求约束。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。时间线 controller 持唯一已加载历史：Set 一次，Prepend/最新 head replace 批量修改稳定 rows，不复制 Current 或历史 tail。主更新与 older page 经过同一应用队列；controller 操作成功并复核原 reader generation 后，才公开最新 head 与 Current overlay。空历史更新不枚举主列表，也不产生绘制确认。Current 同身份行只更新 overlay 或当前引用，不插入第二个历史位置。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。时间线 controller 持唯一有界历史窗口：实时模式接纳最新页的 rows、cut 和 older 游标，普通更新按稳定 key 修改并裁到该页；历史浏览模式固定原 cut，older 只在同一应用队列中接纳，后台变化提示新输出而不覆盖旧窗口。回到实时位置以原 reader 的新最新页建立展示资格，同 row 只保留局部展开意图；业务提交不等待查询或绘制。组件操作成功并复核原 reader／display／mode 后，才公开 head 与 Current overlay。历史浏览不把当前 run 正文叠到旧行，Current State 与状态栏继续独立更新。具体 cut、成员与关闭合同见 [26](./26-timeline-content.md)。
 
 底部实时状态栏由 `features/conversation/timeline/live_status/` 自包含呈现，外壳只传入会话标识。其视图模型观察 Current State 和实际历史窗口，用 `LiveStatusProjection` 纯函数派生状态栏、当前活动与成员详情意图；局部请求只保留加载/错误与资格，不复制业务快照或归约状态机。诊断借用同一派生结果。保存、停止、审批和错误等业务状态独立可见，正文未加载不能推断执行结束。Current 与 History 同身份行不重复叠加；展开、滚动与跟随输出属于 UI，不进入业务摘要。
 

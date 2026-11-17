@@ -6,21 +6,44 @@ import 'package:flutter/foundation.dart';
 import 'conversation_current_owner.dart';
 import '../state/timeline_display_unit.dart';
 
+const _maxMemberWindowDescriptors = 16;
+
 /// One display-lease-owned bounded member demand, stable across live/history.
 final class DisplayMemberController extends ChangeNotifier {
-  DisplayMemberController({
+  factory DisplayMemberController({
+    required DisplayBlockRef reference,
+    required bool groupClosed,
+    required ReadDemand demand,
+    required Future<DisplayMembers> Function(
+      DisplayBlockRef,
+      DisplayMemberWindow,
+      ReadDemand,
+      bool,
+    )
+    open,
+  }) => DisplayMemberController._(
+    groupClosed,
+    reference: reference,
+    demand: demand,
+    open: open,
+  );
+
+  DisplayMemberController._(
+    this._groupClosed, {
     required this.reference,
     required this.demand,
     required this.open,
   }) {
     select(const LatestDisplayMembers());
   }
-  final DisplayBlockRef reference;
+  DisplayBlockRef reference;
+  bool _groupClosed;
   final ReadDemand demand;
   final Future<DisplayMembers> Function(
     DisplayBlockRef,
     DisplayMemberWindow,
     ReadDemand,
+    bool,
   )
   open;
   DisplayMemberWindow window = const LatestDisplayMembers();
@@ -38,7 +61,6 @@ final class DisplayMemberController extends ChangeNotifier {
   final Map<String, TimelineMemberDisclosure> _disclosures = {};
   final Map<String, ValueNotifier<DisplayMemberHead?>> _rows = {};
   final List<DisplayMemberWindow> _newer = [];
-  int? _seekAfter;
   Future<void> _joins = Future.value();
 
   bool get isActive => !_retired;
@@ -51,42 +73,63 @@ final class DisplayMemberController extends ChangeNotifier {
   // accepted result is one backend cut, including the overlapping anchor row.
   void older() {
     final current = page;
-    if (loading || current == null || !current.hasOlder) return;
-    if (window is LatestDisplayMembers) {
-      _newer.add(window);
-      _newer.add(
-        BeforeDisplayMembers(memberOrder: current.entries.last.memberOrder + 1),
-      );
-    } else {
-      _newer.add(window);
-    }
-    _select(
-      BeforeDisplayMembers(
-        memberOrder:
-            current.entries.first.memberOrder +
-            (current.entries.length > 1 ? 1 : 0),
-      ),
-    );
+    final cursor = current?.nextCursor;
+    if (loading || current == null || cursor == null) return;
+    _rememberWindow();
+    _select(BeforeDisplayMembers(cursor: cursor));
   }
 
   void newer() {
     if (loading || _newer.isEmpty) return;
-    _seekAfter = page?.entries.lastOrNull?.memberOrder;
     _select(_newer.removeLast());
   }
 
   void holdLatest() {
     final current = page;
     if (loading ||
-        window is! LatestDisplayMembers ||
+        window is LatestDisplayMembers ||
         current == null ||
         current.entries.isEmpty) {
       return;
     }
+    _rememberWindow();
+    _select(const LatestDisplayMembers());
+  }
+
+  void _rememberWindow() {
     _newer.add(window);
-    _select(
-      BeforeDisplayMembers(memberOrder: current.entries.last.memberOrder + 1),
-    );
+    if (_newer.length > _maxMemberWindowDescriptors) {
+      _newer.removeAt(0);
+    }
+  }
+
+  void rebase(
+    DisplayBlockRef next, {
+    required bool groupClosed,
+    bool force = false,
+  }) {
+    if (_retired ||
+        !force && reference == next && _groupClosed == groupClosed) {
+      return;
+    }
+    reference = next;
+    _groupClosed = groupClosed;
+    _newer.clear();
+    _requiresSealed = groupClosed;
+    page = null;
+    for (final row in _rows.values) {
+      row.dispose();
+    }
+    _rows.clear();
+    final expanded = {
+      for (final entry in _disclosures.entries) entry.key: entry.value.expanded,
+    };
+    _retireDisclosures();
+    for (final entry in expanded.entries) {
+      _disclosures[entry.key] = TimelineMemberDisclosure()
+        ..expanded = entry.value;
+    }
+    select(const LatestDisplayMembers());
   }
 
   TimelineMemberDisclosure disclosure(String memberKey) =>
@@ -119,7 +162,6 @@ final class DisplayMemberController extends ChangeNotifier {
 
   void select(DisplayMemberWindow next) {
     _newer.clear();
-    _seekAfter = null;
     _select(next);
   }
 
@@ -160,78 +202,58 @@ final class DisplayMemberController extends ChangeNotifier {
       if (_closing.isNotEmpty) {
         throw cleanupError ?? StateError('Member window still closing');
       }
-      handle = await open(reference, selected, demand);
+      handle = await open(reference, selected, demand, _groupClosed);
       if (!_eligible(qualification)) {
         _close(handle);
         return;
       }
       _handle = handle;
-      while (_eligible(qualification)) {
-        final value = await handle.next();
-        if (!_eligible(qualification)) return;
-        if (value == null) {
-          if (awaitingSealed) {
-            throw const ConversationContinuityError(
-              'Sealed display member snapshot is unavailable',
-            );
-          }
-          final changed = loading;
-          loading = false;
-          _closeHandle();
-          if (changed) notifyListeners();
-          return;
-        }
-        if (_requiresSealed && !value.sealed) continue;
-        final seek = _seekAfter;
-        if (seek != null &&
-            value.entries.isNotEmpty &&
-            value.entries.first.memberOrder > seek &&
-            value.before != null) {
-          // New members may have filled more than one Latest window while the
-          // user was reading. Discover only cursor descriptors on the way back
-          // to the reading boundary; never publish a page that skips the gap.
-          _newer.add(selected);
-          _select(
-            BeforeDisplayMembers(
-              memberOrder:
-                  value.entries.first.memberOrder +
-                  (value.entries.length > 1 ? 1 : 0),
-            ),
+      final value = await handle.next();
+      if (!_eligible(qualification)) return;
+      if (value == null) {
+        if (awaitingSealed) {
+          throw const ConversationContinuityError(
+            'Sealed display member snapshot is unavailable',
           );
-          return;
         }
-        _seekAfter = null;
-        final previous = page;
-        final structural =
-            loading ||
-            _error != null ||
-            previous?.sealed != value.sealed ||
-            previous?.before != value.before ||
-            !listEquals(
-              previous?.entries.map((e) => e.memberKey).toList(),
-              value.entries.map((e) => e.memberKey).toList(),
-            );
-        page = value;
-        _retireDisclosures(
-          keep: value.entries.map((entry) => entry.memberKey).toSet(),
+        throw const ConversationContinuityError(
+          'History member window returned no page',
         );
-        loading = false;
-        _error = null;
-        for (final entry in value.entries) {
-          final row = _rows.putIfAbsent(
-            entry.memberKey,
-            () => ValueNotifier(null),
-          );
-          if (!_sameMember(row.value, entry)) row.value = entry;
-        }
-        final keys = value.entries.map((entry) => entry.memberKey).toSet();
-        for (final key in _rows.keys.toList()) {
-          if (!keys.contains(key)) _rows.remove(key)!.dispose();
-        }
-        if (structural) notifyListeners();
-        // Sealed is still one real page. Consume the explicit EOF next, rather
-        // than synthesizing another page or leaving a useless history watch.
       }
+      if (_requiresSealed && !value.sealed) {
+        throw const ConversationContinuityError(
+          'History member page disagrees with its fixed group boundary',
+        );
+      }
+      final previous = page;
+      final structural =
+          loading ||
+          _error != null ||
+          previous?.sealed != value.sealed ||
+          previous?.nextCursor != value.nextCursor ||
+          !listEquals(
+            previous?.entries.map((e) => e.memberKey).toList(),
+            value.entries.map((e) => e.memberKey).toList(),
+          );
+      page = value;
+      _retireDisclosures(
+        keep: value.entries.map((entry) => entry.memberKey).toSet(),
+      );
+      loading = false;
+      _error = null;
+      for (final entry in value.entries) {
+        final row = _rows.putIfAbsent(
+          entry.memberKey,
+          () => ValueNotifier(null),
+        );
+        if (!_sameMember(row.value, entry)) row.value = entry;
+      }
+      final keys = value.entries.map((entry) => entry.memberKey).toSet();
+      for (final key in _rows.keys.toList()) {
+        if (!keys.contains(key)) _rows.remove(key)!.dispose();
+      }
+      if (structural) notifyListeners();
+      _closeHandle();
     } catch (failure) {
       if (_eligible(qualification)) {
         _error = failure;
@@ -279,7 +301,6 @@ final class DisplayMemberController extends ChangeNotifier {
     _closeHandle();
     page = null;
     _newer.clear();
-    _seekAfter = null;
     for (final row in _rows.values) {
       row.dispose();
     }
@@ -346,8 +367,6 @@ Object _recordValue(DisplayRecord record) {
       CompletedOriginal(:final completionId) => ('completed', completionId),
     },
     atom.id,
-    atom.completionItemId,
-    atom.completionSeq,
     atom.source,
     _sourceState(atom.sourceState),
     atom.sourceOrder,

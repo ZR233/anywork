@@ -82,10 +82,6 @@ impl ReplyWatch {
         })
     }
 
-    pub(super) fn reader(&self) -> crate::history::HistoryReader {
-        self.history_reader.clone()
-    }
-
     pub(super) fn preview(&self) -> Option<String> {
         self.projection.as_ref().and_then(ReplyProjection::preview)
     }

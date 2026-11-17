@@ -1,5 +1,130 @@
 part of 'studio_api.dart';
 
+const _conversationClosedFailure = StudioFailure(
+  code: StudioFailureCode.cancelled,
+  message: 'The timeline read scope is closed',
+  retryable: false,
+  correlationId: 'client-timeline-closed',
+);
+
+int _exactTimelineInt(BigInt value, String what) {
+  final result = value.toInt();
+  if (value.isNegative || result < 0 || BigInt.from(result) != value) {
+    throw StudioFailure(
+      code: StudioFailureCode.overloaded,
+      message: 'Timeline $what cannot be represented exactly',
+      retryable: false,
+      correlationId: 'client-timeline-range',
+    );
+  }
+  return result;
+}
+
+int? _exactNullableTimelineInt(BigInt? value, String what) =>
+    value == null ? null : _exactTimelineInt(value, what);
+
+int _exactSignedTimelineInt(Object value) {
+  final integer = switch (value) {
+    final BigInt number => number,
+    final int number => BigInt.from(number),
+    _ => throw const StudioFailure(
+      code: StudioFailureCode.internal,
+      message: 'Timeline integer has an unsupported representation',
+      retryable: false,
+      correlationId: 'client-timeline-integer-type',
+    ),
+  };
+  final converted = integer.toInt();
+  if (BigInt.from(converted) != integer) {
+    throw const StudioFailure(
+      code: StudioFailureCode.overloaded,
+      message: 'Timeline integer cannot be represented exactly',
+      retryable: false,
+      correlationId: 'client-timeline-range',
+    );
+  }
+  return converted;
+}
+
+ChatSourceId _chatSourceFromFrb(frb_chat_types.BridgeChatSourceId value) =>
+    switch (value) {
+      frb_chat_types.BridgeChatSourceId_ForegroundTurn(:final turnId) =>
+        ForegroundTurnChatSource(turnId: turnId),
+      frb_chat_types.BridgeChatSourceId_Input(:final inputId) =>
+        InputChatSource(inputId: inputId),
+      frb_chat_types.BridgeChatSourceId_InboxMessage(
+        :final sourceId,
+        :final messageId,
+      ) =>
+        InboxMessageChatSource(sourceId: sourceId, messageId: messageId),
+      frb_chat_types.BridgeChatSourceId_BackgroundResult(:final messageId) =>
+        BackgroundResultChatSource(messageId: messageId),
+      frb_chat_types.BridgeChatSourceId_Operation(:final operationId) =>
+        OperationChatSource(operationId: operationId),
+      frb_chat_types.BridgeChatSourceId_Receipt(:final receiptId) =>
+        ReceiptChatSource(receiptId: receiptId),
+    };
+
+ChatFactPosition _chatPositionFromFrb(
+  frb_chat_types.BridgeChatFactPosition value,
+) => ChatFactPosition(
+  effectSeq: _exactTimelineInt(value.effectSeq, 'effect sequence'),
+  suborder: value.suborder,
+);
+
+ChatSourceState _chatSourceStateFromFrb(
+  frb_chat_types.BridgeChatSourceState value,
+) => ChatSourceState(
+  source: _chatSourceFromFrb(value.source),
+  lifecycle: switch (value.lifecycle) {
+    frb_chat_types.BridgeChatSourceLifecycle_Unknown() =>
+      const UnknownChatSource(),
+    frb_chat_types.BridgeChatSourceLifecycle_Active() =>
+      const ActiveChatSource(),
+    frb_chat_types.BridgeChatSourceLifecycle_Ended(:final outcome) =>
+      EndedChatSource(outcome: ChatTerminalOutcome.values.byName(outcome.name)),
+  },
+  started: value.started == null ? null : _chatPositionFromFrb(value.started!),
+  ended: value.ended == null ? null : _chatPositionFromFrb(value.ended!),
+);
+
+ThreadBusinessRefs _businessRefsFromFrb(frb.BridgeThreadBusinessRefs value) =>
+    ThreadBusinessRefs(
+      plan: value.plan == null
+          ? null
+          : CurrentPlanHead(
+              revision: _exactTimelineInt(
+                value.plan!.revision,
+                'plan revision',
+              ),
+              phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
+              document: value.plan!.document == null
+                  ? null
+                  : _currentContentRefFromFrb(value.plan!.document!),
+            ),
+      interactions: value.interactions == null
+          ? null
+          : _currentCollectionRefFromFrb(value.interactions!),
+    );
+
+ContentWindow _contentWindowFromFrb(frb_chat_types.BridgeContentWindow value) =>
+    ContentWindow(
+      offset: _exactTimelineInt(value.offset, 'content offset'),
+      bytes: value.bytes,
+      generation: value.generation,
+      availableThrough: _exactTimelineInt(
+        value.availableThrough,
+        'available bytes',
+      ),
+      sealed: value.sealed,
+    );
+
+frb_chat_types.BridgeReadDemand _readDemandToFrb(ReadDemand value) =>
+    frb_chat_types.BridgeReadDemand(
+      maxItems: value.maxItems,
+      maxBytes: value.maxBytes,
+    );
+
 ProductTopicEventPayload _productPayloadFromFrb(
   frb.BridgeProductEventPayload payload,
 ) {
@@ -814,10 +939,20 @@ PersistenceQueueSnapshot _persistenceQueueFromFrb(
           threadId: thread.threadId,
           faultGeneration: thread.faultGeneration.toInt(),
           fault: thread.fault,
-          // `None` 是未知（没有 writer 上报），与已观测到的 0 区分保留。
-          stateDirtyRevision: thread.stateDirtyRevision?.toInt(),
-          stateSavingRevision: thread.stateSavingRevision?.toInt(),
-          stateDurableRevision: thread.stateDurableRevision?.toInt(),
+          current: switch (thread.current) {
+            final current? => CurrentPersistenceSnapshot(
+              runtimeEpoch: current.runtimeEpoch,
+              dirty: current.dirty,
+              inFlight: current.inFlight,
+              savedRuntimeEpoch: current.savedRuntimeEpoch,
+              savedRevision: current.savedRevision?.toInt(),
+              lastSuccessfulSaveAt: current.lastSuccessfulSaveAt,
+              lastSuccessfulCaptureAt: current.lastSuccessfulCaptureAt,
+              snapshotAgeMillis: current.snapshotAgeMillis?.toInt(),
+              lastError: current.lastError,
+            ),
+            null => null,
+          },
           historyAdmittedSequence: thread.historyAdmittedSequence?.toInt(),
           historyDurableSequence: thread.historyDurableSequence?.toInt(),
           pendingOperations: thread.pendingOperations.toInt(),

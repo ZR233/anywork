@@ -121,6 +121,68 @@ final class TimelineMessageController {
     return _serialize(() => _replaceBlocks(blocks));
   }
 
+  /// Reconciles one replaceable History window by stable row identity.
+  ///
+  /// Existing rows are updated in place, genuinely new rows append in order,
+  /// and rows outside the accepted page are removed. This is not a Flyer Set.
+  Future<void> reconcileBlocks(List<DisplayBlock> blocks) {
+    if (_disposed || _retired) throw const StaleConversationScope();
+    return _serialize(() => _reconcileBlocks(blocks));
+  }
+
+  Future<void> _reconcileBlocks(List<DisplayBlock> blocks) async {
+    final desired = <String, DisplayBlock>{};
+    for (final block in blocks) {
+      if (block.id.isEmpty || desired.containsKey(block.id)) {
+        throw const ConversationContinuityError(
+          'Accepted History window has duplicate or empty row identities',
+        );
+      }
+      desired[block.id] = block;
+    }
+    for (final message in List.of(controller.messages)) {
+      if (desired.containsKey(message.id)) continue;
+      await controller.removeMessage(message, animated: false);
+      if (_disposed || _retired) return;
+      _retire(_unitOf(message));
+    }
+    final existing = {
+      for (final message in controller.messages) message.id: message,
+    };
+    for (var index = 0; index < blocks.length; index++) {
+      final block = blocks[index];
+      final old = existing[block.id];
+      if (old == null) {
+        final next = _message(block);
+        await controller.insertAllMessages(
+          [next],
+          index: index,
+          animated: false,
+        );
+        if (_disposed || _retired) return;
+        final unit = _unitOf(next);
+        unit.expansion.current = unit;
+        onUnitCreated?.call(unit);
+        continue;
+      }
+      if (controller.messages[index].id != block.id) {
+        throw const ConversationContinuityError(
+          'Stable History rows changed order',
+        );
+      }
+      final oldUnit = _unitOf(old);
+      if (sameDisplayBlock(oldUnit.block, block)) continue;
+      final next = _message(block);
+      if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
+        continue;
+      }
+      await controller.updateMessage(old, next);
+      if (_disposed || _retired) return;
+      final unit = _unitOf(next);
+      _replaceUnit(oldUnit, unit);
+    }
+  }
+
   Future<void> _replaceBlocks(List<DisplayBlock> blocks) async {
     final existingById = {
       for (final message in controller.messages) message.id: message,
@@ -140,10 +202,8 @@ final class TimelineMessageController {
       }
       await controller.updateMessage(old, next);
       if (_disposed || _retired) return;
-      _retire(oldUnit);
       final unit = _unitOf(next);
-      unit.expansion.current = unit;
-      onUnitCreated?.call(unit);
+      _replaceUnit(oldUnit, unit);
     }
     if (appended.isNotEmpty) {
       await _applyBlocks(
@@ -168,7 +228,7 @@ final class TimelineMessageController {
 
   Future<void> _serialize(Future<void> Function() operation) {
     final work = _admission.then((_) => operation());
-    _admission = work.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    _admission = work.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return work;
   }
 
@@ -181,6 +241,15 @@ final class TimelineMessageController {
   void _retire(TimelineDisplayUnit unit) {
     unit.expansion.retire();
     onUnitRetired?.call(unit);
+  }
+
+  /// A stable row keeps its disclosure identity while every body/query
+  /// capability from the superseded unit retires.
+  void _replaceUnit(TimelineDisplayUnit previous, TimelineDisplayUnit next) {
+    previous.expansion.replaceBody();
+    next.expansion.current = next;
+    onUnitRetired?.call(previous);
+    onUnitCreated?.call(next);
   }
 
   void retireDisplays() {

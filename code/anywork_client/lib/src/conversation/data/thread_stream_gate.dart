@@ -10,7 +10,6 @@ ThreadFrameDecision classifyThreadFrame(
 ) {
   return switch (frame) {
     ThreadSnapshotFrame() => ThreadFrameDecision.apply,
-    ThreadResyncRequiredFrame() => ThreadFrameDecision.resync,
     ThreadNotificationFrame(
       :final revision,
       :final epoch,

@@ -24,10 +24,7 @@ enum Mode {
         operation: Initialization,
     },
     Ready,
-    Faulted {
-        error: Arc<anyhow::Error>,
-        factory: Initializer,
-    },
+    Faulted { factory: Initializer },
 }
 
 pub(crate) struct ConversationStore {
@@ -125,7 +122,6 @@ impl ConversationStore {
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                                 Mode::Faulted {
-                                    error: error.clone(),
                                     factory: retry,
                                 };
                             Err(error)

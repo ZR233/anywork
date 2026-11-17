@@ -1,6 +1,8 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
+import 'timeline_display_models.dart';
+
 /// Actual mounted expanded Run window. No query is started by these
 /// synchronous borrows; business Children keeps its independent parent domain.
 abstract interface class TimelineGroupDisplay {

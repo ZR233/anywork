@@ -1,6 +1,8 @@
 //! Temporary, storage-only report reception shares the ordinary identity/Entry owner.
 use super::{
-    EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices,
+    EntryPurpose, SessionRuntime, ThreadAssemblyError,
+    agent_review::{ReviewFeedbackSettlement, review_feedback_receipt_extension_id},
+    agent_services::AgentServices,
     pending_delivery::PendingNativeDelivery,
 };
 use anyhow::{Context, Result};
@@ -19,6 +21,12 @@ enum StorageWrite {
     Pending(PendingNativeDelivery),
     PendingSource(PendingNativeDelivery),
     ClearPendingSource(PendingNativeDelivery),
+    ReviewSettlement(ReviewFeedbackSettlement),
+    ClearReviewSettlement(ReviewFeedbackSettlement),
+    ClearReviewReceipt {
+        message: ThreadMessage,
+        sequence: u64,
+    },
     ReviewDelivery(super::review_delivery::ReviewDeliveryFact),
 }
 
@@ -162,6 +170,45 @@ impl AgentServices {
     ) -> Result<()> {
         self.write_storage_message(owner, source, StorageWrite::ClearPendingSource(pending))
             .await
+    }
+
+    pub(super) async fn persist_review_feedback_settlement(
+        &self,
+        owner: &SessionRuntime,
+        source: &str,
+        settlement: ReviewFeedbackSettlement,
+    ) -> Result<()> {
+        self.write_storage_message(owner, source, StorageWrite::ReviewSettlement(settlement))
+            .await
+    }
+
+    pub(super) async fn clear_review_feedback_settlement(
+        &self,
+        owner: &SessionRuntime,
+        source: &str,
+        settlement: ReviewFeedbackSettlement,
+    ) -> Result<()> {
+        self.write_storage_message(
+            owner,
+            source,
+            StorageWrite::ClearReviewSettlement(settlement),
+        )
+        .await
+    }
+
+    pub(super) async fn clear_review_feedback_receipt(
+        &self,
+        owner: &SessionRuntime,
+        target: &str,
+        message: ThreadMessage,
+        sequence: u64,
+    ) -> Result<()> {
+        self.write_storage_message(
+            owner,
+            target,
+            StorageWrite::ClearReviewReceipt { message, sequence },
+        )
+        .await
     }
 
     /// All operations use the same installation, attachment and cleanup owner. Recipient and
@@ -320,6 +367,91 @@ impl AgentServices {
                     }
                     StorageWrite::ClearPendingSource(pending) => {
                         super::pending_delivery::clear_pending_marker(&thread, pending).await?;
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
+                    }
+                    StorageWrite::ReviewSettlement(settlement) => {
+                        use pl_core::thread::extensions::ExtensionMutation;
+                        let extension_id = settlement.extension_id();
+                        if !thread.snapshot().extensions.contains_key(&extension_id) {
+                            thread
+                                .mutate_extensions(vec![ExtensionMutation::Put {
+                                    id: extension_id.clone(),
+                                    expected_revision: None,
+                                    payload: settlement.encode()?,
+                                }])
+                                .await?;
+                        }
+                        let saved = thread
+                            .snapshot()
+                            .extensions
+                            .get(&extension_id)
+                            .map(|record| {
+                                ReviewFeedbackSettlement::decode(&extension_id, &record.payload)
+                            })
+                            .transpose()?
+                            .context("review feedback settlement was not committed")?;
+                        anyhow::ensure!(
+                            saved == *settlement,
+                            "review feedback settlement conflicts with its Current marker"
+                        );
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
+                    }
+                    StorageWrite::ClearReviewSettlement(settlement) => {
+                        use pl_core::thread::extensions::ExtensionMutation;
+                        let extension_id = settlement.extension_id();
+                        if let Some(record) =
+                            thread.snapshot().extensions.get(&extension_id).cloned()
+                        {
+                            let saved =
+                                ReviewFeedbackSettlement::decode(&extension_id, &record.payload)?;
+                            anyhow::ensure!(
+                                saved == *settlement,
+                                "review feedback settlement changed before cleanup"
+                            );
+                            thread
+                                .mutate_extensions(vec![ExtensionMutation::Delete {
+                                    id: extension_id,
+                                    expected_revision: record.revision,
+                                }])
+                                .await?;
+                        }
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
+                    }
+                    StorageWrite::ClearReviewReceipt { message, sequence } => {
+                        use pl_core::thread::extensions::ExtensionMutation;
+                        let extension_id = review_feedback_receipt_extension_id(&message.id);
+                        if let Some(record) =
+                            thread.snapshot().extensions.get(&extension_id).cloned()
+                        {
+                            let receipt = pl_core::thread::inbox::message_receipt(
+                                &thread.snapshot(),
+                                &extension_id,
+                                message,
+                            )?
+                            .context("review feedback receipt extension is unreadable")?;
+                            anyhow::ensure!(
+                                receipt.sequence == *sequence,
+                                "review feedback receipt changed before cleanup"
+                            );
+                            thread
+                                .mutate_extensions(vec![ExtensionMutation::Delete {
+                                    id: extension_id,
+                                    expected_revision: record.revision,
+                                }])
+                                .await?;
+                        }
                         self.store
                             .conversation_store(parent)
                             .await?

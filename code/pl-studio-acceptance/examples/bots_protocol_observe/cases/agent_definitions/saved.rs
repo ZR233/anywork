@@ -442,11 +442,11 @@ fn optional<T: DeserializeOwned>(
         .map(|record| {
             ensure!(
                 record.revision > 0
-                    && record.payload.format == format
-                    && record.payload.version == version,
+                    && record.payload.format() == format
+                    && record.payload.version() == version,
                 "unsupported saved extension {id}"
             );
-            serde_json::from_str(&record.payload.content)
+            serde_json::from_str(record.payload.content())
                 .with_context(|| format!("decode saved extension {id}"))
         })
         .transpose()

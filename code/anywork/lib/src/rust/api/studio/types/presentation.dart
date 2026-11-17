@@ -5,453 +5,1472 @@
 
 import '../../../frb_generated.dart';
 import 'chat.dart';
+import 'delegation.dart';
 
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 
+import 'runtime.dart';
+import 'thread_activity.dart';
+import 'thread_stream.dart';
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `BridgeHistoryCostPage`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
-class BridgeDisplayBlock {
+class BridgeCurrentActivityHead {
   final String id;
-  final BigInt blockOrder;
-  final BridgeDisplayBlockBody body;
-
-  const BridgeDisplayBlock({
-    required this.id,
-    required this.blockOrder,
-    required this.body,
-  });
-
-  @override
-  int get hashCode => id.hashCode ^ blockOrder.hashCode ^ body.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayBlock &&
-          runtimeType == other.runtimeType &&
-          id == other.id &&
-          blockOrder == other.blockOrder &&
-          body == other.body;
-}
-
-@freezed
-sealed class BridgeDisplayBlockBody with _$BridgeDisplayBlockBody {
-  const BridgeDisplayBlockBody._();
-
-  const factory BridgeDisplayBlockBody.work({
-    required BridgeWorkTiming timing,
-    required BridgeDisplayBlockRef members,
-  }) = BridgeDisplayBlockBody_Work;
-  const factory BridgeDisplayBlockBody.single({
-    required BridgeDisplayRecord record,
-    required BridgeSingleVisibility visibility,
-  }) = BridgeDisplayBlockBody_Single;
-}
-
-class BridgeDisplayBlockRef {
-  final String databaseId;
-  final String blockId;
-
-  const BridgeDisplayBlockRef({
-    required this.databaseId,
-    required this.blockId,
-  });
-
-  @override
-  int get hashCode => databaseId.hashCode ^ blockId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayBlockRef &&
-          runtimeType == other.runtimeType &&
-          databaseId == other.databaseId &&
-          blockId == other.blockId;
-}
-
-enum BridgeDisplayBlockState { open, sealed }
-
-@freezed
-sealed class BridgeDisplayContentSource with _$BridgeDisplayContentSource {
-  const BridgeDisplayContentSource._();
-
-  const factory BridgeDisplayContentSource.currentAtom() =
-      BridgeDisplayContentSource_CurrentAtom;
-  const factory BridgeDisplayContentSource.frozenObservation({
-    PlatformInt64? capturedAt,
-    required bool available,
-  }) = BridgeDisplayContentSource_FrozenObservation;
-  const factory BridgeDisplayContentSource.completedOriginal({
-    required String completionId,
-  }) = BridgeDisplayContentSource_CompletedOriginal;
-}
-
-class BridgeDisplayMemberHead {
-  final String memberKey;
-  final BigInt memberOrder;
-  final BridgeDisplayRecord record;
-
-  const BridgeDisplayMemberHead({
-    required this.memberKey,
-    required this.memberOrder,
-    required this.record,
-  });
-
-  @override
-  int get hashCode =>
-      memberKey.hashCode ^ memberOrder.hashCode ^ record.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayMemberHead &&
-          runtimeType == other.runtimeType &&
-          memberKey == other.memberKey &&
-          memberOrder == other.memberOrder &&
-          record == other.record;
-}
-
-class BridgeDisplayMemberPage {
-  final BridgeDisplayBlockRef block;
-  final BigInt revision;
-  final bool sealed;
-  final List<BridgeDisplayMemberHead> entries;
-  final BigInt? before;
-
-  const BridgeDisplayMemberPage({
-    required this.block,
-    required this.revision,
-    required this.sealed,
-    required this.entries,
-    this.before,
-  });
-
-  @override
-  int get hashCode =>
-      block.hashCode ^
-      revision.hashCode ^
-      sealed.hashCode ^
-      entries.hashCode ^
-      before.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayMemberPage &&
-          runtimeType == other.runtimeType &&
-          block == other.block &&
-          revision == other.revision &&
-          sealed == other.sealed &&
-          entries == other.entries &&
-          before == other.before;
-}
-
-@freezed
-sealed class BridgeDisplayMemberWindow with _$BridgeDisplayMemberWindow {
-  const BridgeDisplayMemberWindow._();
-
-  const factory BridgeDisplayMemberWindow.latest() =
-      BridgeDisplayMemberWindow_Latest;
-  const factory BridgeDisplayMemberWindow.before({
-    required BigInt memberOrder,
-  }) = BridgeDisplayMemberWindow_Before;
-}
-
-class BridgeDisplayRecord {
-  final BridgeChatAtom atom;
-  final BridgeChatFactPosition? startFact;
-  final BridgeChatFactPosition? endFact;
-  final BridgeDisplayContentSource contentSource;
-
-  const BridgeDisplayRecord({
-    required this.atom,
-    this.startFact,
-    this.endFact,
-    required this.contentSource,
-  });
-
-  @override
-  int get hashCode =>
-      atom.hashCode ^
-      startFact.hashCode ^
-      endFact.hashCode ^
-      contentSource.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayRecord &&
-          runtimeType == other.runtimeType &&
-          atom == other.atom &&
-          startFact == other.startFact &&
-          endFact == other.endFact &&
-          contentSource == other.contentSource;
-}
-
-class BridgeHistoryDelta {
-  final BridgeHistoryPlacement placement;
-  final BigInt? fromOrder;
-  final BigInt throughOrder;
-  final List<BridgeDisplayBlock> blocks;
-  final String? before;
-
-  const BridgeHistoryDelta({
-    required this.placement,
-    this.fromOrder,
-    required this.throughOrder,
-    required this.blocks,
-    this.before,
-  });
-
-  @override
-  int get hashCode =>
-      placement.hashCode ^
-      fromOrder.hashCode ^
-      throughOrder.hashCode ^
-      blocks.hashCode ^
-      before.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeHistoryDelta &&
-          runtimeType == other.runtimeType &&
-          placement == other.placement &&
-          fromOrder == other.fromOrder &&
-          throughOrder == other.throughOrder &&
-          blocks == other.blocks &&
-          before == other.before;
-}
-
-enum BridgeHistoryPlacement { set_, append }
-
-class BridgeLiveDisplayBlock {
-  final String id;
-  final BigInt blockOrder;
-  final BridgeChatSourceId? source;
-  final BridgeDisplayBlockBody body;
-  final BridgeDisplayBlockState state;
-  final bool hasUnfinishedMembers;
+  final BridgeThreadActivityKind kind;
+  final String summary;
   final String? thinkingSummary;
+  final BigInt? thinkingSeconds;
+  final int toolCount;
+  final int backgroundToolCount;
+  final BridgeCurrentToolHead? latestTool;
 
-  const BridgeLiveDisplayBlock({
+  const BridgeCurrentActivityHead({
     required this.id,
-    required this.blockOrder,
-    this.source,
-    required this.body,
-    required this.state,
-    required this.hasUnfinishedMembers,
+    required this.kind,
+    required this.summary,
     this.thinkingSummary,
+    this.thinkingSeconds,
+    required this.toolCount,
+    required this.backgroundToolCount,
+    this.latestTool,
   });
 
   @override
   int get hashCode =>
       id.hashCode ^
-      blockOrder.hashCode ^
-      source.hashCode ^
-      body.hashCode ^
-      state.hashCode ^
-      hasUnfinishedMembers.hashCode ^
-      thinkingSummary.hashCode;
+      kind.hashCode ^
+      summary.hashCode ^
+      thinkingSummary.hashCode ^
+      thinkingSeconds.hashCode ^
+      toolCount.hashCode ^
+      backgroundToolCount.hashCode ^
+      latestTool.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeLiveDisplayBlock &&
+      other is BridgeCurrentActivityHead &&
           runtimeType == other.runtimeType &&
           id == other.id &&
-          blockOrder == other.blockOrder &&
-          source == other.source &&
-          body == other.body &&
-          state == other.state &&
-          hasUnfinishedMembers == other.hasUnfinishedMembers &&
-          thinkingSummary == other.thinkingSummary;
+          kind == other.kind &&
+          summary == other.summary &&
+          thinkingSummary == other.thinkingSummary &&
+          thinkingSeconds == other.thinkingSeconds &&
+          toolCount == other.toolCount &&
+          backgroundToolCount == other.backgroundToolCount &&
+          latestTool == other.latestTool;
 }
 
-class BridgeOpenTimeline {
-  final String readerId;
-  final int presentationVersion;
-  final int readerProtocolVersion;
-  final String initialCursor;
+/// Current atoms carry business identity only. History qualification is never inferred here.
+class BridgeCurrentAtom {
+  final String id;
+  final BridgeChatSourceId source;
+  final BridgeChatSourceState? sourceState;
+  final BigInt? sourceOrder;
+  final BridgeChatAtomKind kind;
+  final BridgeChatDeliveryKind delivery;
+  final BridgeChatAtomLifecycle lifecycle;
+  final String? turnId;
+  final String? attemptId;
+  final BridgeChatToolIdentity? tool;
+  final BridgeThreadWaitPresentation? wait;
+  final BridgeThreadTextChannel? textChannel;
+  final PlatformInt64? startedAt;
+  final PlatformInt64? finishedAt;
+  final bool? contentPresent;
+  final List<BridgeCurrentAtomContent> contents;
 
-  const BridgeOpenTimeline({
+  const BridgeCurrentAtom({
+    required this.id,
+    required this.source,
+    this.sourceState,
+    this.sourceOrder,
+    required this.kind,
+    required this.delivery,
+    required this.lifecycle,
+    this.turnId,
+    this.attemptId,
+    this.tool,
+    this.wait,
+    this.textChannel,
+    this.startedAt,
+    this.finishedAt,
+    this.contentPresent,
+    required this.contents,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      source.hashCode ^
+      sourceState.hashCode ^
+      sourceOrder.hashCode ^
+      kind.hashCode ^
+      delivery.hashCode ^
+      lifecycle.hashCode ^
+      turnId.hashCode ^
+      attemptId.hashCode ^
+      tool.hashCode ^
+      wait.hashCode ^
+      textChannel.hashCode ^
+      startedAt.hashCode ^
+      finishedAt.hashCode ^
+      contentPresent.hashCode ^
+      contents.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentAtom &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          source == other.source &&
+          sourceState == other.sourceState &&
+          sourceOrder == other.sourceOrder &&
+          kind == other.kind &&
+          delivery == other.delivery &&
+          lifecycle == other.lifecycle &&
+          turnId == other.turnId &&
+          attemptId == other.attemptId &&
+          tool == other.tool &&
+          wait == other.wait &&
+          textChannel == other.textChannel &&
+          startedAt == other.startedAt &&
+          finishedAt == other.finishedAt &&
+          contentPresent == other.contentPresent &&
+          contents == other.contents;
+}
+
+class BridgeCurrentAtomContent {
+  final BridgeChatContentRole role;
+  final BridgeCurrentContentRef reference;
+
+  const BridgeCurrentAtomContent({required this.role, required this.reference});
+
+  @override
+  int get hashCode => role.hashCode ^ reference.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentAtomContent &&
+          runtimeType == other.runtimeType &&
+          role == other.role &&
+          reference == other.reference;
+}
+
+class BridgeCurrentCollectionEntry {
+  final String id;
+  final PlatformInt64 position;
+  final BridgeCurrentPayloadData payload;
+
+  const BridgeCurrentCollectionEntry({
+    required this.id,
+    required this.position,
+    required this.payload,
+  });
+
+  @override
+  int get hashCode => id.hashCode ^ position.hashCode ^ payload.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentCollectionEntry &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          position == other.position &&
+          payload == other.payload;
+}
+
+class BridgeCurrentCollectionPage {
+  final BigInt revision;
+  final List<BridgeCurrentCollectionEntry> entries;
+  final String? continuation;
+
+  const BridgeCurrentCollectionPage({
+    required this.revision,
+    required this.entries,
+    this.continuation,
+  });
+
+  @override
+  int get hashCode =>
+      revision.hashCode ^ entries.hashCode ^ continuation.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentCollectionPage &&
+          runtimeType == other.runtimeType &&
+          revision == other.revision &&
+          entries == other.entries &&
+          continuation == other.continuation;
+}
+
+class BridgeCurrentCollectionRef {
+  final String ownerId;
+  final String collection;
+  final BigInt revision;
+
+  const BridgeCurrentCollectionRef({
+    required this.ownerId,
+    required this.collection,
+    required this.revision,
+  });
+
+  @override
+  int get hashCode =>
+      ownerId.hashCode ^ collection.hashCode ^ revision.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentCollectionRef &&
+          runtimeType == other.runtimeType &&
+          ownerId == other.ownerId &&
+          collection == other.collection &&
+          revision == other.revision;
+}
+
+class BridgeCurrentContentPreview {
+  final String id;
+  final BridgeCurrentContentRole role;
+  final BridgeThreadTextChannel? textChannel;
+  final String text;
+  final BridgeCurrentContentRef reference;
+
+  const BridgeCurrentContentPreview({
+    required this.id,
+    required this.role,
+    this.textChannel,
+    required this.text,
+    required this.reference,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      role.hashCode ^
+      textChannel.hashCode ^
+      text.hashCode ^
+      reference.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentContentPreview &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          role == other.role &&
+          textChannel == other.textChannel &&
+          text == other.text &&
+          reference == other.reference;
+}
+
+class BridgeCurrentContentRef {
+  final String ownerId;
+  final String domain;
+  final String entityId;
+  final String contentKey;
+  final String generation;
+
+  const BridgeCurrentContentRef({
+    required this.ownerId,
+    required this.domain,
+    required this.entityId,
+    required this.contentKey,
+    required this.generation,
+  });
+
+  @override
+  int get hashCode =>
+      ownerId.hashCode ^
+      domain.hashCode ^
+      entityId.hashCode ^
+      contentKey.hashCode ^
+      generation.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentContentRef &&
+          runtimeType == other.runtimeType &&
+          ownerId == other.ownerId &&
+          domain == other.domain &&
+          entityId == other.entityId &&
+          contentKey == other.contentKey &&
+          generation == other.generation;
+}
+
+enum BridgeCurrentContentRole { reasoning, response, toolArguments, toolOutput }
+
+@freezed
+sealed class BridgeCurrentFrame with _$BridgeCurrentFrame {
+  const BridgeCurrentFrame._();
+
+  const factory BridgeCurrentFrame.reset({required BridgeCurrentView view}) =
+      BridgeCurrentFrame_Reset;
+  const factory BridgeCurrentFrame.notification({
+    required BridgeCurrentRevision revision,
+    required BridgeThreadNotificationEnvelope notification,
+  }) = BridgeCurrentFrame_Notification;
+  const factory BridgeCurrentFrame.projection({
+    required BridgeCurrentRevision revision,
+    required BridgeCurrentProjection projection,
+  }) = BridgeCurrentFrame_Projection;
+}
+
+@freezed
+sealed class BridgeCurrentPayloadData with _$BridgeCurrentPayloadData {
+  const BridgeCurrentPayloadData._();
+
+  const factory BridgeCurrentPayloadData.inline({required Uint8List bytes}) =
+      BridgeCurrentPayloadData_Inline;
+  const factory BridgeCurrentPayloadData.deferred_({
+    required BridgeCurrentContentRef reference,
+    required BigInt byteLength,
+  }) = BridgeCurrentPayloadData_Deferred;
+}
+
+class BridgeCurrentProjection {
+  final BridgeThreadStatus logicalStatus;
+  final bool executionPresent;
+  final BridgeCurrentActivityHead? active;
+  final BridgeCurrentTurnHead? activeTurn;
+  final List<BridgeChatSourceState> sources;
+  final List<BridgeCurrentAtom> atoms;
+  final BridgeCurrentPlanHead? plan;
+  final BridgeCurrentCollectionRef? interactions;
+  final List<BridgeCurrentContentPreview> previews;
+  final List<BridgeCurrentCollectionRef> collections;
+
+  const BridgeCurrentProjection({
+    required this.logicalStatus,
+    required this.executionPresent,
+    this.active,
+    this.activeTurn,
+    required this.sources,
+    required this.atoms,
+    this.plan,
+    this.interactions,
+    required this.previews,
+    required this.collections,
+  });
+
+  @override
+  int get hashCode =>
+      logicalStatus.hashCode ^
+      executionPresent.hashCode ^
+      active.hashCode ^
+      activeTurn.hashCode ^
+      sources.hashCode ^
+      atoms.hashCode ^
+      plan.hashCode ^
+      interactions.hashCode ^
+      previews.hashCode ^
+      collections.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentProjection &&
+          runtimeType == other.runtimeType &&
+          logicalStatus == other.logicalStatus &&
+          executionPresent == other.executionPresent &&
+          active == other.active &&
+          activeTurn == other.activeTurn &&
+          sources == other.sources &&
+          atoms == other.atoms &&
+          plan == other.plan &&
+          interactions == other.interactions &&
+          previews == other.previews &&
+          collections == other.collections;
+}
+
+class BridgeCurrentRevision {
+  final String ownerId;
+  final BigInt revision;
+
+  const BridgeCurrentRevision({required this.ownerId, required this.revision});
+
+  @override
+  int get hashCode => ownerId.hashCode ^ revision.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentRevision &&
+          runtimeType == other.runtimeType &&
+          ownerId == other.ownerId &&
+          revision == other.revision;
+}
+
+@freezed
+sealed class BridgeCurrentStateField with _$BridgeCurrentStateField {
+  const BridgeCurrentStateField._();
+
+  const factory BridgeCurrentStateField.body({
+    required String field,
+    required BridgeCurrentContentRef reference,
+    required BigInt byteLength,
+  }) = BridgeCurrentStateField_Body;
+  const factory BridgeCurrentStateField.collection({
+    required String field,
+    required BridgeCurrentCollectionRef reference,
+    required BigInt count,
+  }) = BridgeCurrentStateField_Collection;
+}
+
+class BridgeCurrentToolHead {
+  final String callId;
+  final String name;
+  final BridgeThreadActivityToolState state;
+
+  const BridgeCurrentToolHead({
+    required this.callId,
+    required this.name,
+    required this.state,
+  });
+
+  @override
+  int get hashCode => callId.hashCode ^ name.hashCode ^ state.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentToolHead &&
+          runtimeType == other.runtimeType &&
+          callId == other.callId &&
+          name == other.name &&
+          state == other.state;
+}
+
+class BridgeCurrentTurnHead {
+  final String id;
+  final BridgeTurnPhase phase;
+
+  const BridgeCurrentTurnHead({required this.id, required this.phase});
+
+  @override
+  int get hashCode => id.hashCode ^ phase.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentTurnHead &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          phase == other.phase;
+}
+
+class BridgeCurrentView {
+  final BridgeCurrentRevision revision;
+  final BridgeThreadSnapshot state;
+  final BridgeCurrentProjection projection;
+
+  const BridgeCurrentView({
+    required this.revision,
+    required this.state,
+    required this.projection,
+  });
+
+  @override
+  int get hashCode => revision.hashCode ^ state.hashCode ^ projection.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentView &&
+          runtimeType == other.runtimeType &&
+          revision == other.revision &&
+          state == other.state &&
+          projection == other.projection;
+}
+
+class BridgeHistoryAccounting {
+  final BridgeHistoryAccountingHead head;
+
+  const BridgeHistoryAccounting({required this.head});
+
+  @override
+  int get hashCode => head.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryAccounting &&
+          runtimeType == other.runtimeType &&
+          head == other.head;
+}
+
+class BridgeHistoryAccountingHead {
+  final BigInt promptTokens;
+  final BigInt completionTokens;
+  final BigInt cachedPromptTokens;
+  final BigInt cacheWriteTokens;
+  final BigInt reasoningTokens;
+  final BigInt inferenceCount;
+  final BigInt totalTokens;
+  final BridgeCacheUsageSummary cacheUsage;
+  final bool hasIncompleteUsage;
+  final bool hasUnpricedUsage;
+  final PlatformInt64 updatedAt;
+  final String? detailEventId;
+
+  const BridgeHistoryAccountingHead({
+    required this.promptTokens,
+    required this.completionTokens,
+    required this.cachedPromptTokens,
+    required this.cacheWriteTokens,
+    required this.reasoningTokens,
+    required this.inferenceCount,
+    required this.totalTokens,
+    required this.cacheUsage,
+    required this.hasIncompleteUsage,
+    required this.hasUnpricedUsage,
+    required this.updatedAt,
+    this.detailEventId,
+  });
+
+  @override
+  int get hashCode =>
+      promptTokens.hashCode ^
+      completionTokens.hashCode ^
+      cachedPromptTokens.hashCode ^
+      cacheWriteTokens.hashCode ^
+      reasoningTokens.hashCode ^
+      inferenceCount.hashCode ^
+      totalTokens.hashCode ^
+      cacheUsage.hashCode ^
+      hasIncompleteUsage.hashCode ^
+      hasUnpricedUsage.hashCode ^
+      updatedAt.hashCode ^
+      detailEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryAccountingHead &&
+          runtimeType == other.runtimeType &&
+          promptTokens == other.promptTokens &&
+          completionTokens == other.completionTokens &&
+          cachedPromptTokens == other.cachedPromptTokens &&
+          cacheWriteTokens == other.cacheWriteTokens &&
+          reasoningTokens == other.reasoningTokens &&
+          inferenceCount == other.inferenceCount &&
+          totalTokens == other.totalTokens &&
+          cacheUsage == other.cacheUsage &&
+          hasIncompleteUsage == other.hasIncompleteUsage &&
+          hasUnpricedUsage == other.hasUnpricedUsage &&
+          updatedAt == other.updatedAt &&
+          detailEventId == other.detailEventId;
+}
+
+class BridgeHistoryBodyEntry {
+  final BigInt ordinal;
+  final String bodyKey;
+  final BridgeHistoryBodyRole role;
+  final BridgeHistoryEventBodyRef reference;
+  final String? mediaType;
+
+  const BridgeHistoryBodyEntry({
+    required this.ordinal,
+    required this.bodyKey,
+    required this.role,
+    required this.reference,
+    this.mediaType,
+  });
+
+  @override
+  int get hashCode =>
+      ordinal.hashCode ^
+      bodyKey.hashCode ^
+      role.hashCode ^
+      reference.hashCode ^
+      mediaType.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryBodyEntry &&
+          runtimeType == other.runtimeType &&
+          ordinal == other.ordinal &&
+          bodyKey == other.bodyKey &&
+          role == other.role &&
+          reference == other.reference &&
+          mediaType == other.mediaType;
+}
+
+class BridgeHistoryBodyPage {
+  final String ownerEventId;
+  final List<BridgeHistoryBodyEntry> entries;
+  final String? next;
+
+  const BridgeHistoryBodyPage({
+    required this.ownerEventId,
+    required this.entries,
+    this.next,
+  });
+
+  @override
+  int get hashCode => ownerEventId.hashCode ^ entries.hashCode ^ next.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryBodyPage &&
+          runtimeType == other.runtimeType &&
+          ownerEventId == other.ownerEventId &&
+          entries == other.entries &&
+          next == other.next;
+}
+
+@freezed
+sealed class BridgeHistoryBodyRole with _$BridgeHistoryBodyRole {
+  const BridgeHistoryBodyRole._();
+
+  const factory BridgeHistoryBodyRole.canonicalPayload() =
+      BridgeHistoryBodyRole_CanonicalPayload;
+  const factory BridgeHistoryBodyRole.canonicalMetadata() =
+      BridgeHistoryBodyRole_CanonicalMetadata;
+  const factory BridgeHistoryBodyRole.body() = BridgeHistoryBodyRole_Body;
+  const factory BridgeHistoryBodyRole.reasoningSummary() =
+      BridgeHistoryBodyRole_ReasoningSummary;
+  const factory BridgeHistoryBodyRole.toolArguments() =
+      BridgeHistoryBodyRole_ToolArguments;
+  const factory BridgeHistoryBodyRole.toolOutput() =
+      BridgeHistoryBodyRole_ToolOutput;
+  const factory BridgeHistoryBodyRole.attachment() =
+      BridgeHistoryBodyRole_Attachment;
+  const factory BridgeHistoryBodyRole.waitPresentation() =
+      BridgeHistoryBodyRole_WaitPresentation;
+  const factory BridgeHistoryBodyRole.other({required String name}) =
+      BridgeHistoryBodyRole_Other;
+}
+
+class BridgeHistoryBodyWindow {
+  final BigInt offset;
+  final Uint8List bytes;
+  final BigInt totalLength;
+  final String? mediaType;
+
+  const BridgeHistoryBodyWindow({
+    required this.offset,
+    required this.bytes,
+    required this.totalLength,
+    this.mediaType,
+  });
+
+  @override
+  int get hashCode =>
+      offset.hashCode ^
+      bytes.hashCode ^
+      totalLength.hashCode ^
+      mediaType.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryBodyWindow &&
+          runtimeType == other.runtimeType &&
+          offset == other.offset &&
+          bytes == other.bytes &&
+          totalLength == other.totalLength &&
+          mediaType == other.mediaType;
+}
+
+enum BridgeHistoryContextDisposition { active, rolledBack }
+
+class BridgeHistoryCostHead {
+  final String? purpose;
+  final String currency;
+  final double? costDelta;
+  final double costTotal;
+  final double? cacheSavingsDelta;
+  final double? cacheSavingsTotal;
+  final PlatformInt64 updatedAt;
+  final String? detailEventId;
+
+  const BridgeHistoryCostHead({
+    this.purpose,
+    required this.currency,
+    this.costDelta,
+    required this.costTotal,
+    this.cacheSavingsDelta,
+    this.cacheSavingsTotal,
+    required this.updatedAt,
+    this.detailEventId,
+  });
+
+  @override
+  int get hashCode =>
+      purpose.hashCode ^
+      currency.hashCode ^
+      costDelta.hashCode ^
+      costTotal.hashCode ^
+      cacheSavingsDelta.hashCode ^
+      cacheSavingsTotal.hashCode ^
+      updatedAt.hashCode ^
+      detailEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryCostHead &&
+          runtimeType == other.runtimeType &&
+          purpose == other.purpose &&
+          currency == other.currency &&
+          costDelta == other.costDelta &&
+          costTotal == other.costTotal &&
+          cacheSavingsDelta == other.cacheSavingsDelta &&
+          cacheSavingsTotal == other.cacheSavingsTotal &&
+          updatedAt == other.updatedAt &&
+          detailEventId == other.detailEventId;
+}
+
+class BridgeHistoryCut {
+  final String token;
+
+  const BridgeHistoryCut({required this.token});
+
+  @override
+  int get hashCode => token.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryCut &&
+          runtimeType == other.runtimeType &&
+          token == other.token;
+}
+
+class BridgeHistoryDemand {
+  final int maxRows;
+  final int maxBytes;
+
+  const BridgeHistoryDemand({required this.maxRows, required this.maxBytes});
+
+  @override
+  int get hashCode => maxRows.hashCode ^ maxBytes.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryDemand &&
+          runtimeType == other.runtimeType &&
+          maxRows == other.maxRows &&
+          maxBytes == other.maxBytes;
+}
+
+class BridgeHistoryEntityHead {
+  final String entityId;
+  final String? runId;
+  final String? attemptId;
+  final BridgeChatSourceId source;
+  final BridgeChatAtomKind kind;
+  final BridgeChatDeliveryKind delivery;
+  final BridgeHistoryEntityState state;
+  final PlatformInt64? startedAt;
+  final PlatformInt64? finishedAt;
+  final BridgeThreadTextChannel? textChannel;
+  final BridgeChatToolIdentity? tool;
+  final BridgeHistoryWaitHead? wait;
+  final bool? contentPresent;
+  final BridgeSingleVisibility? singleVisibility;
+  final BridgeHistoryObservation observation;
+  final String? presentationContract;
+  final String? detailEventId;
+  final String? inputManifestEventId;
+  final String? bodyManifestEventId;
+
+  const BridgeHistoryEntityHead({
+    required this.entityId,
+    this.runId,
+    this.attemptId,
+    required this.source,
+    required this.kind,
+    required this.delivery,
+    required this.state,
+    this.startedAt,
+    this.finishedAt,
+    this.textChannel,
+    this.tool,
+    this.wait,
+    this.contentPresent,
+    this.singleVisibility,
+    required this.observation,
+    this.presentationContract,
+    this.detailEventId,
+    this.inputManifestEventId,
+    this.bodyManifestEventId,
+  });
+
+  @override
+  int get hashCode =>
+      entityId.hashCode ^
+      runId.hashCode ^
+      attemptId.hashCode ^
+      source.hashCode ^
+      kind.hashCode ^
+      delivery.hashCode ^
+      state.hashCode ^
+      startedAt.hashCode ^
+      finishedAt.hashCode ^
+      textChannel.hashCode ^
+      tool.hashCode ^
+      wait.hashCode ^
+      contentPresent.hashCode ^
+      singleVisibility.hashCode ^
+      observation.hashCode ^
+      presentationContract.hashCode ^
+      detailEventId.hashCode ^
+      inputManifestEventId.hashCode ^
+      bodyManifestEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryEntityHead &&
+          runtimeType == other.runtimeType &&
+          entityId == other.entityId &&
+          runId == other.runId &&
+          attemptId == other.attemptId &&
+          source == other.source &&
+          kind == other.kind &&
+          delivery == other.delivery &&
+          state == other.state &&
+          startedAt == other.startedAt &&
+          finishedAt == other.finishedAt &&
+          textChannel == other.textChannel &&
+          tool == other.tool &&
+          wait == other.wait &&
+          contentPresent == other.contentPresent &&
+          singleVisibility == other.singleVisibility &&
+          observation == other.observation &&
+          presentationContract == other.presentationContract &&
+          detailEventId == other.detailEventId &&
+          inputManifestEventId == other.inputManifestEventId &&
+          bodyManifestEventId == other.bodyManifestEventId;
+}
+
+@freezed
+sealed class BridgeHistoryEntityState with _$BridgeHistoryEntityState {
+  const BridgeHistoryEntityState._();
+
+  const factory BridgeHistoryEntityState.unknown() =
+      BridgeHistoryEntityState_Unknown;
+  const factory BridgeHistoryEntityState.knownActive({
+    required BridgeChatActiveStatus status,
+  }) = BridgeHistoryEntityState_KnownActive;
+  const factory BridgeHistoryEntityState.knownTerminal({
+    required BridgeChatTerminalOutcome outcome,
+  }) = BridgeHistoryEntityState_KnownTerminal;
+}
+
+class BridgeHistoryEventBodyRef {
+  final String databaseId;
+  final String ownerEventId;
+  final String bodyKey;
+  final String bodyId;
+  final BigInt byteStart;
+  final BigInt byteLength;
+
+  const BridgeHistoryEventBodyRef({
+    required this.databaseId,
+    required this.ownerEventId,
+    required this.bodyKey,
+    required this.bodyId,
+    required this.byteStart,
+    required this.byteLength,
+  });
+
+  @override
+  int get hashCode =>
+      databaseId.hashCode ^
+      ownerEventId.hashCode ^
+      bodyKey.hashCode ^
+      bodyId.hashCode ^
+      byteStart.hashCode ^
+      byteLength.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryEventBodyRef &&
+          runtimeType == other.runtimeType &&
+          databaseId == other.databaseId &&
+          ownerEventId == other.ownerEventId &&
+          bodyKey == other.bodyKey &&
+          bodyId == other.bodyId &&
+          byteStart == other.byteStart &&
+          byteLength == other.byteLength;
+}
+
+class BridgeHistoryEventDetail {
+  final BridgeHistoryEventHeader header;
+  final BridgeHistoryRowHead? head;
+  final BridgeHistoryEventBodyRef? payloadRef;
+  final String? ownedManifestEventId;
+
+  const BridgeHistoryEventDetail({
+    required this.header,
+    this.head,
+    this.payloadRef,
+    this.ownedManifestEventId,
+  });
+
+  @override
+  int get hashCode =>
+      header.hashCode ^
+      head.hashCode ^
+      payloadRef.hashCode ^
+      ownedManifestEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryEventDetail &&
+          runtimeType == other.runtimeType &&
+          header == other.header &&
+          head == other.head &&
+          payloadRef == other.payloadRef &&
+          ownedManifestEventId == other.ownedManifestEventId;
+}
+
+class BridgeHistoryEventHeader {
+  final BigInt seq;
+  final String eventId;
+  final String kind;
+  final String? runId;
+  final String? attemptId;
+  final String? entityId;
+  final String? turnId;
+  final BridgeChatSourceId? source;
+  final String? callId;
+  final String? messageId;
+  final String? groupId;
+  final String? rowKey;
+  final BridgeHistoryOriginalInfo? original;
+  final PlatformInt64? occurredAt;
+  final PlatformInt64 recordedAt;
+
+  const BridgeHistoryEventHeader({
+    required this.seq,
+    required this.eventId,
+    required this.kind,
+    this.runId,
+    this.attemptId,
+    this.entityId,
+    this.turnId,
+    this.source,
+    this.callId,
+    this.messageId,
+    this.groupId,
+    this.rowKey,
+    this.original,
+    this.occurredAt,
+    required this.recordedAt,
+  });
+
+  @override
+  int get hashCode =>
+      seq.hashCode ^
+      eventId.hashCode ^
+      kind.hashCode ^
+      runId.hashCode ^
+      attemptId.hashCode ^
+      entityId.hashCode ^
+      turnId.hashCode ^
+      source.hashCode ^
+      callId.hashCode ^
+      messageId.hashCode ^
+      groupId.hashCode ^
+      rowKey.hashCode ^
+      original.hashCode ^
+      occurredAt.hashCode ^
+      recordedAt.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryEventHeader &&
+          runtimeType == other.runtimeType &&
+          seq == other.seq &&
+          eventId == other.eventId &&
+          kind == other.kind &&
+          runId == other.runId &&
+          attemptId == other.attemptId &&
+          entityId == other.entityId &&
+          turnId == other.turnId &&
+          source == other.source &&
+          callId == other.callId &&
+          messageId == other.messageId &&
+          groupId == other.groupId &&
+          rowKey == other.rowKey &&
+          original == other.original &&
+          occurredAt == other.occurredAt &&
+          recordedAt == other.recordedAt;
+}
+
+class BridgeHistoryEventsPage {
+  final BridgeHistoryCut cut;
+  final List<BridgeHistoryEventDetail> entries;
+  final String? next;
+
+  const BridgeHistoryEventsPage({
+    required this.cut,
+    required this.entries,
+    this.next,
+  });
+
+  @override
+  int get hashCode => cut.hashCode ^ entries.hashCode ^ next.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryEventsPage &&
+          runtimeType == other.runtimeType &&
+          cut == other.cut &&
+          entries == other.entries &&
+          next == other.next;
+}
+
+@freezed
+sealed class BridgeHistoryEventsQuery with _$BridgeHistoryEventsQuery {
+  const BridgeHistoryEventsQuery._();
+
+  const factory BridgeHistoryEventsQuery.allEvents() =
+      BridgeHistoryEventsQuery_AllEvents;
+  const factory BridgeHistoryEventsQuery.entity({required String entityId}) =
+      BridgeHistoryEventsQuery_Entity;
+  const factory BridgeHistoryEventsQuery.turn({required String turnId}) =
+      BridgeHistoryEventsQuery_Turn;
+  const factory BridgeHistoryEventsQuery.source({
+    required BridgeChatSourceId source,
+  }) = BridgeHistoryEventsQuery_Source;
+  const factory BridgeHistoryEventsQuery.call({required String callId}) =
+      BridgeHistoryEventsQuery_Call;
+  const factory BridgeHistoryEventsQuery.message({required String messageId}) =
+      BridgeHistoryEventsQuery_Message;
+  const factory BridgeHistoryEventsQuery.attempt({
+    required String runId,
+    required String attemptId,
+  }) = BridgeHistoryEventsQuery_Attempt;
+  const factory BridgeHistoryEventsQuery.originals({
+    required String queryClass,
+    String? parentId,
+  }) = BridgeHistoryEventsQuery_Originals;
+  const factory BridgeHistoryEventsQuery.textOriginals() =
+      BridgeHistoryEventsQuery_TextOriginals;
+}
+
+class BridgeHistoryGroupPage {
+  final BridgeHistoryCut cut;
+  final String groupId;
+  final List<BridgeHistoryTimelineEntry> members;
+  final String? next;
+
+  const BridgeHistoryGroupPage({
+    required this.cut,
+    required this.groupId,
+    required this.members,
+    this.next,
+  });
+
+  @override
+  int get hashCode =>
+      cut.hashCode ^ groupId.hashCode ^ members.hashCode ^ next.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryGroupPage &&
+          runtimeType == other.runtimeType &&
+          cut == other.cut &&
+          groupId == other.groupId &&
+          members == other.members &&
+          next == other.next;
+}
+
+@freezed
+sealed class BridgeHistoryObservation with _$BridgeHistoryObservation {
+  const BridgeHistoryObservation._();
+
+  const factory BridgeHistoryObservation.original() =
+      BridgeHistoryObservation_Original;
+  const factory BridgeHistoryObservation.boundary({PlatformInt64? capturedAt}) =
+      BridgeHistoryObservation_Boundary;
+  const factory BridgeHistoryObservation.unavailableLegacy({
+    PlatformInt64? capturedAt,
+  }) = BridgeHistoryObservation_UnavailableLegacy;
+}
+
+class BridgeHistoryOriginalInfo {
+  final String queryClass;
+  final String? parentId;
+  final BridgeChatAtomKind originalKind;
+  final String? toolName;
+
+  const BridgeHistoryOriginalInfo({
+    required this.queryClass,
+    this.parentId,
+    required this.originalKind,
+    this.toolName,
+  });
+
+  @override
+  int get hashCode =>
+      queryClass.hashCode ^
+      parentId.hashCode ^
+      originalKind.hashCode ^
+      toolName.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryOriginalInfo &&
+          runtimeType == other.runtimeType &&
+          queryClass == other.queryClass &&
+          parentId == other.parentId &&
+          originalKind == other.originalKind &&
+          toolName == other.toolName;
+}
+
+@freezed
+sealed class BridgeHistoryRowHead with _$BridgeHistoryRowHead {
+  const BridgeHistoryRowHead._();
+
+  const factory BridgeHistoryRowHead.work(BridgeHistoryWorkHead field0) =
+      BridgeHistoryRowHead_Work;
+  const factory BridgeHistoryRowHead.single(BridgeHistoryEntityHead field0) =
+      BridgeHistoryRowHead_Single;
+  const factory BridgeHistoryRowHead.member(BridgeHistoryEntityHead field0) =
+      BridgeHistoryRowHead_Member;
+  const factory BridgeHistoryRowHead.turn(BridgeHistoryTurnHead field0) =
+      BridgeHistoryRowHead_Turn;
+  const factory BridgeHistoryRowHead.source(BridgeHistorySourceHead field0) =
+      BridgeHistoryRowHead_Source;
+  const factory BridgeHistoryRowHead.cost(BridgeHistoryCostHead field0) =
+      BridgeHistoryRowHead_Cost;
+  const factory BridgeHistoryRowHead.accounting(
+    BridgeHistoryAccountingHead field0,
+  ) = BridgeHistoryRowHead_Accounting;
+}
+
+class BridgeHistorySourceHead {
+  final BridgeChatSourceId source;
+  final BridgeHistorySourceLifecycle lifecycle;
+  final PlatformInt64? startedAt;
+  final PlatformInt64? endedAt;
+  final PlatformInt64? observedAt;
+  final String? detailEventId;
+
+  const BridgeHistorySourceHead({
+    required this.source,
+    required this.lifecycle,
+    this.startedAt,
+    this.endedAt,
+    this.observedAt,
+    this.detailEventId,
+  });
+
+  @override
+  int get hashCode =>
+      source.hashCode ^
+      lifecycle.hashCode ^
+      startedAt.hashCode ^
+      endedAt.hashCode ^
+      observedAt.hashCode ^
+      detailEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistorySourceHead &&
+          runtimeType == other.runtimeType &&
+          source == other.source &&
+          lifecycle == other.lifecycle &&
+          startedAt == other.startedAt &&
+          endedAt == other.endedAt &&
+          observedAt == other.observedAt &&
+          detailEventId == other.detailEventId;
+}
+
+@freezed
+sealed class BridgeHistorySourceLifecycle with _$BridgeHistorySourceLifecycle {
+  const BridgeHistorySourceLifecycle._();
+
+  const factory BridgeHistorySourceLifecycle.unknown() =
+      BridgeHistorySourceLifecycle_Unknown;
+  const factory BridgeHistorySourceLifecycle.active() =
+      BridgeHistorySourceLifecycle_Active;
+  const factory BridgeHistorySourceLifecycle.ended({
+    required BridgeChatTerminalOutcome outcome,
+  }) = BridgeHistorySourceLifecycle_Ended;
+}
+
+class BridgeHistoryTimelineEntry {
+  final String rowKey;
+  final BigInt anchorSeq;
+  final BigInt headSeq;
+  final BridgeHistoryRowHead head;
+
+  const BridgeHistoryTimelineEntry({
+    required this.rowKey,
+    required this.anchorSeq,
+    required this.headSeq,
+    required this.head,
+  });
+
+  @override
+  int get hashCode =>
+      rowKey.hashCode ^ anchorSeq.hashCode ^ headSeq.hashCode ^ head.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryTimelineEntry &&
+          runtimeType == other.runtimeType &&
+          rowKey == other.rowKey &&
+          anchorSeq == other.anchorSeq &&
+          headSeq == other.headSeq &&
+          head == other.head;
+}
+
+class BridgeHistoryTimelinePage {
+  final BridgeHistoryCut cut;
+  final List<BridgeHistoryTimelineEntry> entries;
+  final String? next;
+
+  const BridgeHistoryTimelinePage({
+    required this.cut,
+    required this.entries,
+    this.next,
+  });
+
+  @override
+  int get hashCode => cut.hashCode ^ entries.hashCode ^ next.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryTimelinePage &&
+          runtimeType == other.runtimeType &&
+          cut == other.cut &&
+          entries == other.entries &&
+          next == other.next;
+}
+
+class BridgeHistoryTurnHead {
+  final String turnId;
+  final String? inputId;
+  final String? runId;
+  final BridgeHistoryTurnState state;
+  final BridgeTurnPhase? phase;
+  final BridgeHistoryContextDisposition contextDisposition;
+  final PlatformInt64? queuedAt;
+  final PlatformInt64? startedAt;
+  final PlatformInt64? finishedAt;
+  final PlatformInt64 updatedAt;
+  final String? detailEventId;
+
+  const BridgeHistoryTurnHead({
+    required this.turnId,
+    this.inputId,
+    this.runId,
+    required this.state,
+    this.phase,
+    required this.contextDisposition,
+    this.queuedAt,
+    this.startedAt,
+    this.finishedAt,
+    required this.updatedAt,
+    this.detailEventId,
+  });
+
+  @override
+  int get hashCode =>
+      turnId.hashCode ^
+      inputId.hashCode ^
+      runId.hashCode ^
+      state.hashCode ^
+      phase.hashCode ^
+      contextDisposition.hashCode ^
+      queuedAt.hashCode ^
+      startedAt.hashCode ^
+      finishedAt.hashCode ^
+      updatedAt.hashCode ^
+      detailEventId.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryTurnHead &&
+          runtimeType == other.runtimeType &&
+          turnId == other.turnId &&
+          inputId == other.inputId &&
+          runId == other.runId &&
+          state == other.state &&
+          phase == other.phase &&
+          contextDisposition == other.contextDisposition &&
+          queuedAt == other.queuedAt &&
+          startedAt == other.startedAt &&
+          finishedAt == other.finishedAt &&
+          updatedAt == other.updatedAt &&
+          detailEventId == other.detailEventId;
+}
+
+enum BridgeHistoryTurnState {
+  unknown,
+  queued,
+  running,
+  completed,
+  cancelled,
+  failed,
+  budgetLimited,
+}
+
+@freezed
+sealed class BridgeHistoryWaitHead with _$BridgeHistoryWaitHead {
+  const BridgeHistoryWaitHead._();
+
+  const factory BridgeHistoryWaitHead.inline({
+    required BridgeThreadWaitPresentation presentation,
+  }) = BridgeHistoryWaitHead_Inline;
+  const factory BridgeHistoryWaitHead.deferred_({
+    required BridgeHistoryWaitIntent intent,
+    required BridgeHistoryWaitState state,
+    bool? messagesReady,
+    required BridgeHistoryEventBodyRef presentation,
+  }) = BridgeHistoryWaitHead_Deferred;
+}
+
+@freezed
+sealed class BridgeHistoryWaitIntent with _$BridgeHistoryWaitIntent {
+  const BridgeHistoryWaitIntent._();
+
+  const factory BridgeHistoryWaitIntent.events({
+    required BigInt targetCount,
+    required BigInt timeoutMs,
+  }) = BridgeHistoryWaitIntent_Events;
+  const factory BridgeHistoryWaitIntent.timer({required BigInt durationMs}) =
+      BridgeHistoryWaitIntent_Timer;
+}
+
+enum BridgeHistoryWaitState {
+  waiting,
+  ready,
+  timedOut,
+  elapsed,
+  cancelled,
+  failed,
+  interrupted,
+}
+
+class BridgeHistoryWorkHead {
+  final String groupId;
+  final String? runId;
+  final PlatformInt64? startedAt;
+  final PlatformInt64? boundaryAt;
+  final bool closed;
+  final BigInt memberCount;
+  final BigInt unfinishedCount;
+  final bool executionPresent;
+  final String? summary;
+
+  const BridgeHistoryWorkHead({
+    required this.groupId,
+    this.runId,
+    this.startedAt,
+    this.boundaryAt,
+    required this.closed,
+    required this.memberCount,
+    required this.unfinishedCount,
+    required this.executionPresent,
+    this.summary,
+  });
+
+  @override
+  int get hashCode =>
+      groupId.hashCode ^
+      runId.hashCode ^
+      startedAt.hashCode ^
+      boundaryAt.hashCode ^
+      closed.hashCode ^
+      memberCount.hashCode ^
+      unfinishedCount.hashCode ^
+      executionPresent.hashCode ^
+      summary.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeHistoryWorkHead &&
+          runtimeType == other.runtimeType &&
+          groupId == other.groupId &&
+          runId == other.runId &&
+          startedAt == other.startedAt &&
+          boundaryAt == other.boundaryAt &&
+          closed == other.closed &&
+          memberCount == other.memberCount &&
+          unfinishedCount == other.unfinishedCount &&
+          executionPresent == other.executionPresent &&
+          summary == other.summary;
+}
+
+class BridgeOpenCurrentReader {
+  final String readerId;
+  final int currentProtocolVersion;
+  final String currentOwnerId;
+
+  const BridgeOpenCurrentReader({
     required this.readerId,
-    required this.presentationVersion,
-    required this.readerProtocolVersion,
-    required this.initialCursor,
+    required this.currentProtocolVersion,
+    required this.currentOwnerId,
   });
 
   @override
   int get hashCode =>
       readerId.hashCode ^
-      presentationVersion.hashCode ^
-      readerProtocolVersion.hashCode ^
-      initialCursor.hashCode;
+      currentProtocolVersion.hashCode ^
+      currentOwnerId.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is BridgeOpenTimeline &&
+      other is BridgeOpenCurrentReader &&
           runtimeType == other.runtimeType &&
           readerId == other.readerId &&
-          presentationVersion == other.presentationVersion &&
-          readerProtocolVersion == other.readerProtocolVersion &&
-          initialCursor == other.initialCursor;
+          currentProtocolVersion == other.currentProtocolVersion &&
+          currentOwnerId == other.currentOwnerId;
+}
+
+class BridgeOpenHistoryReader {
+  final String readerId;
+  final int historyProtocolVersion;
+
+  const BridgeOpenHistoryReader({
+    required this.readerId,
+    required this.historyProtocolVersion,
+  });
+
+  @override
+  int get hashCode => readerId.hashCode ^ historyProtocolVersion.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeOpenHistoryReader &&
+          runtimeType == other.runtimeType &&
+          readerId == other.readerId &&
+          historyProtocolVersion == other.historyProtocolVersion;
 }
 
 enum BridgeSingleVisibility { content, finalEmptyAfterContent }
-
-class BridgeTailSnapshot {
-  final BigInt revision;
-  final BigInt layoutRevision;
-  final BigInt readyFrontier;
-  final bool executionPresent;
-  final String? currentWorkId;
-  final List<BridgeLiveDisplayBlock> blocks;
-  final String? older;
-
-  const BridgeTailSnapshot({
-    required this.revision,
-    required this.layoutRevision,
-    required this.readyFrontier,
-    required this.executionPresent,
-    this.currentWorkId,
-    required this.blocks,
-    this.older,
-  });
-
-  @override
-  int get hashCode =>
-      revision.hashCode ^
-      layoutRevision.hashCode ^
-      readyFrontier.hashCode ^
-      executionPresent.hashCode ^
-      currentWorkId.hashCode ^
-      blocks.hashCode ^
-      older.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeTailSnapshot &&
-          runtimeType == other.runtimeType &&
-          revision == other.revision &&
-          layoutRevision == other.layoutRevision &&
-          readyFrontier == other.readyFrontier &&
-          executionPresent == other.executionPresent &&
-          currentWorkId == other.currentWorkId &&
-          blocks == other.blocks &&
-          older == other.older;
-}
-
-@freezed
-sealed class BridgeTailUpdate with _$BridgeTailUpdate {
-  const BridgeTailUpdate._();
-
-  const factory BridgeTailUpdate.keep() = BridgeTailUpdate_Keep;
-  const factory BridgeTailUpdate.replace({
-    required BridgeTailSnapshot snapshot,
-  }) = BridgeTailUpdate_Replace;
-  const factory BridgeTailUpdate.status({
-    required BigInt baseLayoutRevision,
-    required BigInt revision,
-    String? currentWorkId,
-    String? thinkingSummary,
-  }) = BridgeTailUpdate_Status;
-}
-
-class BridgeTimelinePage {
-  final int presentationVersion;
-  final String databaseId;
-  final BigInt ceiling;
-  final List<BridgeDisplayBlock> blocks;
-  final String? before;
-
-  const BridgeTimelinePage({
-    required this.presentationVersion,
-    required this.databaseId,
-    required this.ceiling,
-    required this.blocks,
-    this.before,
-  });
-
-  @override
-  int get hashCode =>
-      presentationVersion.hashCode ^
-      databaseId.hashCode ^
-      ceiling.hashCode ^
-      blocks.hashCode ^
-      before.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeTimelinePage &&
-          runtimeType == other.runtimeType &&
-          presentationVersion == other.presentationVersion &&
-          databaseId == other.databaseId &&
-          ceiling == other.ceiling &&
-          blocks == other.blocks &&
-          before == other.before;
-}
-
-class BridgeViewUpdate {
-  final int presentationVersion;
-  final int readerProtocolVersion;
-  final String after;
-  final String next;
-  final BridgeHistoryDelta history;
-  final BridgeTailUpdate tail;
-
-  const BridgeViewUpdate({
-    required this.presentationVersion,
-    required this.readerProtocolVersion,
-    required this.after,
-    required this.next,
-    required this.history,
-    required this.tail,
-  });
-
-  @override
-  int get hashCode =>
-      presentationVersion.hashCode ^
-      readerProtocolVersion.hashCode ^
-      after.hashCode ^
-      next.hashCode ^
-      history.hashCode ^
-      tail.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeViewUpdate &&
-          runtimeType == other.runtimeType &&
-          presentationVersion == other.presentationVersion &&
-          readerProtocolVersion == other.readerProtocolVersion &&
-          after == other.after &&
-          next == other.next &&
-          history == other.history &&
-          tail == other.tail;
-}
-
-class BridgeWorkTiming {
-  final PlatformInt64? startedAt;
-  final PlatformInt64? finishedAt;
-
-  const BridgeWorkTiming({this.startedAt, this.finishedAt});
-
-  @override
-  int get hashCode => startedAt.hashCode ^ finishedAt.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeWorkTiming &&
-          runtimeType == other.runtimeType &&
-          startedAt == other.startedAt &&
-          finishedAt == other.finishedAt;
-}

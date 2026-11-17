@@ -1,11 +1,10 @@
-import '../../models/chat_models.dart';
 import 'conversation_watermark.dart';
 
 final class ProtocolVersionMismatch implements Exception {
   const ProtocolVersionMismatch({
     required this.received,
-    this.supported = completedHistoryVersion,
-    this.field = 'completedHistoryVersion',
+    required this.supported,
+    required this.field,
   });
   final int? received;
   final int supported;
@@ -13,24 +12,6 @@ final class ProtocolVersionMismatch implements Exception {
   @override
   String toString() =>
       'ProtocolVersionMismatch($field=$received, supported=$supported)';
-}
-
-/// The producer explicitly lost observation frames. This is distinct from a
-/// notification whose envelope does not join the current subscription watermark.
-final class ThreadStateLagged implements Exception {
-  const ThreadStateLagged({
-    required this.threadId,
-    required this.dropped,
-    this.epoch,
-  });
-
-  final String threadId;
-  final int dropped;
-  final int? epoch;
-
-  @override
-  String toString() =>
-      'Thread state lagged (thread=$threadId, epoch=$epoch, dropped=$dropped)';
 }
 
 /// The logical Thread demand ended before its replacement stream established a

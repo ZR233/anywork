@@ -8,7 +8,7 @@ use crate::studio::{
 use crate::*;
 use anyhow::{Result, ensure};
 use pl_core::{
-    chat::{ChatContent, ChatContentKey, ChatContents, ContentData, ContentDescriptor},
+    chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
     model::ContentBlock,
     thread::ThreadSnapshot,
 };
@@ -75,7 +75,6 @@ pub(in crate::studio) struct CurrentState {
     source_states: Arc<[ChatSourceState]>,
     contents: Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>>,
     references: Arc<BTreeMap<CurrentContentRef, Arc<CurrentContent>>>,
-    materialized: OnceLock<Arc<ChatContents>>,
     entries: Arc<BTreeMap<(String, String), Arc<CurrentEntryWrite>>>,
     by_position: Arc<CurrentPositionIndex>,
     active_turn: Option<Turn>,
@@ -128,12 +127,6 @@ impl CurrentOwner {
         self.owner_id = Some(owner_id);
         Ok(())
     }
-    pub(super) fn item_contents(&self) -> Arc<ChatContents> {
-        self.state
-            .as_ref()
-            .map(|state| state.materialized_contents())
-            .unwrap_or_default()
-    }
     pub(super) fn snapshot(&self) -> Option<Arc<CurrentState>> {
         self.state.clone()
     }
@@ -170,7 +163,7 @@ impl CurrentOwner {
             .iter()
             .filter(|source| {
                 matches!(source.lifecycle, ChatSourceLifecycle::Active)
-                    || source.ended.is_some_and(|at| at.effect_seq == sequence)
+                    || source.ended.is_none_or(|at| at.effect_seq == sequence)
             })
             .cloned()
             .collect();
@@ -645,7 +638,6 @@ impl CurrentOwner {
             activity_entries: activity_entries.into(),
             source_states: self.sources.clone(),
             contents: Arc::new(contents),
-            materialized: OnceLock::new(),
             entries,
             by_position,
             active_turn,
@@ -837,8 +829,10 @@ impl CurrentState {
         sequence: u64,
         state: &ThreadSnapshot,
     ) -> Result<Arc<Self>> {
-        let mut owner = CurrentOwner::default();
-        owner.cold_revision = Some(sequence);
+        let mut owner = CurrentOwner {
+            cold_revision: Some(sequence),
+            ..Default::default()
+        };
         owner.resource_versions.insert("atoms", sequence);
         owner.resource_versions.insert("sources", sequence);
         owner.bind(database)?;
@@ -858,8 +852,10 @@ impl CurrentState {
         use pl_core::thread::current::SavedModelPhase;
         let mut state = saved.state.to_paused_snapshot();
         state.interaction_collection_revision = saved.snapshot_revision;
-        let mut owner = CurrentOwner::default();
-        owner.cold_revision = Some(saved.snapshot_revision);
+        let mut owner = CurrentOwner {
+            cold_revision: Some(saved.snapshot_revision),
+            ..Default::default()
+        };
         owner
             .resource_versions
             .insert("atoms", saved.snapshot_revision);
@@ -991,78 +987,8 @@ impl CurrentState {
     pub fn business_refs(&self) -> ThreadBusinessRefs {
         project_business_refs(self.projection())
     }
-    /// Qualify references against the exact Core business slice used by a State
-    /// baseline. Unrelated execution/token revisions may differ; Plan content
-    /// and the full typed interaction list with its resource revision may not.
-    pub(in crate::studio) fn business_refs_at(
-        &self,
-        thread_id: &str,
-        state: &ThreadSnapshot,
-    ) -> Result<ThreadBusinessRefs> {
-        ensure!(
-            self.projection()
-                .interactions
-                .as_ref()
-                .is_some_and(|reference| {
-                    reference.revision == state.interaction_collection_revision
-                }),
-            pl_core::chat::ChatError::StaleContent
-        );
-        let interactions = state
-            .permissions
-            .keys()
-            .chain(state.interactions.keys())
-            .map(|id| crate::thread_assembler::project_thread_interaction(thread_id, id, state))
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-        ensure!(
-            interactions.as_slice() == self.interactions.as_ref(),
-            pl_core::chat::ChatError::StaleContent
-        );
-        let plan = state
-            .extensions
-            .get(crate::plan_tool::PLAN_EXTENSION)
-            .map(|record| crate::plan_tool::decode_plan_state(&record.payload))
-            .transpose()?;
-        match (plan, self.projection().plan.as_ref()) {
-            (None, None) => {}
-            (Some(plan), Some(head)) => {
-                ensure!(
-                    plan.revision == head.revision && plan.state == head.phase,
-                    pl_core::chat::ChatError::StaleContent
-                );
-                match (plan.document.as_ref(), head.document.as_ref()) {
-                    (None, None) => {}
-                    (Some(document), Some(reference)) => {
-                        let content = self
-                            .references
-                            .get(reference)
-                            .ok_or(pl_core::chat::ChatError::StaleContent)?;
-                        ensure!(
-                            ContentBlock::text_eq(
-                                &content.block,
-                                &ContentBlock::from_text(&document.markdown)
-                            ),
-                            pl_core::chat::ChatError::StaleContent
-                        );
-                    }
-                    _ => anyhow::bail!(pl_core::chat::ChatError::StaleContent),
-                }
-            }
-            _ => anyhow::bail!(pl_core::chat::ChatError::StaleContent),
-        }
-        Ok(self.business_refs())
-    }
-    pub fn activity_entries(&self) -> &Arc<[ActivityEntry]> {
-        &self.activity_entries
-    }
     pub fn frozen_projection(&self) -> &Arc<FrozenCurrentProjection> {
         &self.projection
-    }
-    pub fn contents(&self) -> &Arc<BTreeMap<ChatContentKey, Arc<CurrentContent>>> {
-        &self.contents
     }
     pub fn entries(&self) -> &Arc<BTreeMap<(String, String), Arc<CurrentEntryWrite>>> {
         &self.entries
@@ -1073,10 +999,6 @@ impl CurrentState {
     pub fn active_turn(&self) -> Option<&Turn> {
         self.active_turn.as_ref()
     }
-    pub fn interactions(&self) -> &Arc<[InteractionRequest]> {
-        &self.interactions
-    }
-
     /// Changes only the bounded head, retaining the original body/collection owners.
     pub(in crate::studio) fn with_projection(
         state: Arc<Self>,
@@ -1093,7 +1015,6 @@ impl CurrentState {
             activity_entries: state.activity_entries.clone(),
             source_states: state.source_states.clone(),
             contents: state.contents.clone(),
-            materialized: OnceLock::new(),
             entries: state.entries.clone(),
             by_position: state.by_position.clone(),
             active_turn: state.active_turn.clone(),
@@ -1103,18 +1024,6 @@ impl CurrentState {
         })
     }
 
-    fn materialized_contents(&self) -> Arc<ChatContents> {
-        self.materialized
-            .get_or_init(|| {
-                Arc::new(
-                    self.contents
-                        .iter()
-                        .map(|(key, content)| (key.clone(), content.content()))
-                        .collect(),
-                )
-            })
-            .clone()
-    }
     pub(super) fn metadata_bytes(&self) -> u64 {
         *self.metadata_bytes.get_or_init(|| {
             let entries = self

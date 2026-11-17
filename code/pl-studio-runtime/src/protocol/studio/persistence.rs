@@ -80,7 +80,25 @@ pub struct ThreadStorageState {
     pub last_error: Option<String>,
 }
 
-/// One Thread's persistence watermarks and queue pressure.
+/// Independent Current file publication. Revisions are meaningful only within their runtime epoch.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CurrentPersistenceSnapshot {
+    pub runtime_epoch: Option<String>,
+    pub dirty: bool,
+    pub in_flight: bool,
+    pub saved_runtime_epoch: Option<String>,
+    pub saved_revision: Option<u64>,
+    /// Unix milliseconds when the last successful file write returned.
+    pub last_successful_save_at: Option<i64>,
+    /// Unix milliseconds of the capture in that successfully written file.
+    pub last_successful_capture_at: Option<i64>,
+    /// Age of that capture at observation time; absent before the first successful save.
+    pub snapshot_age_millis: Option<u64>,
+    pub last_error: Option<String>,
+}
+
+/// One Thread's independent Current publication and reliable History queue pressure.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadPersistenceSnapshot {
@@ -90,26 +108,16 @@ pub struct ThreadPersistenceSnapshot {
     pub fault_generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fault: Option<HistoryFault>,
-    /// Newest checkpoint revision admitted for publication; absent when no writer ever reported.
-    ///
-    /// A `None` is *unknown*, not measured zero: a Thread that only appears through a recovery
-    /// diagnostic has no reporting writer, so its watermark is not a fact about it. Consumers must
-    /// render unknown distinctly instead of substituting `0`.
+    /// Absent when no Current writer is registered; History never supplies these facts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_dirty_revision: Option<u64>,
-    /// Checkpoint revision being serialized or synced; absent when nothing is in flight or unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_saving_revision: Option<u64>,
-    /// Newest checkpoint revision committed with history; absent when unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_durable_revision: Option<u64>,
+    pub current: Option<CurrentPersistenceSnapshot>,
     /// Newest effect sequence admitted for the history write; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_admitted_sequence: Option<u64>,
     /// Newest effect sequence whose history write completed; absent when unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_durable_sequence: Option<u64>,
-    /// Queued effects plus one for a retained checkpoint publication.
+    /// Queued effects plus one while the independent Current writer is dirty or saving.
     pub pending_operations: u64,
     /// Encoded bytes of the queued effects.
     pub pending_bytes: u64,

@@ -8,8 +8,6 @@ String _threadTextChannelToJson(ThreadTextChannel channel) =>
 /// Mechanical canonical conversation JSON. No presentation grouping or state.
 Map<String, Object?> chatAtomToJson(ChatAtom atom) => {
   'id': atom.id,
-  'completionItemId': atom.completionItemId,
-  'completionSeq': atom.completionSeq,
   'source': chatSourceIdToJson(atom.source),
   if (atom.sourceState case final state?)
     'sourceState': chatSourceStateToJson(state),

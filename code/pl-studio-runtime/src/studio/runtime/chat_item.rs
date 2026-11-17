@@ -96,21 +96,17 @@ pub(crate) fn atom_content_role_by_key(key: &str) -> Option<crate::ChatContentRo
     atom_content_role(&parsed)
 }
 
-/// 一次完成只编码一次。后续查询不再通过当前 renderer 解码历史。
-#[cfg(test)]
+/// Freezes one terminal canonical item together with an optional original producer body.
+///
+/// `original_body` supplies a real partial body only when the terminal typed state cannot carry it
+/// (for example an interrupted tool). It is inserted into the same body map before the original
+/// manifest/byte-length freeze, and never replaces an authoritative result already projected from
+/// the terminal item.
 pub(crate) fn completion_draft(
     item: &ExecutionItem,
     source_effect_seq: u64,
     database_id: &str,
-) -> Result<ChatDraft> {
-    completion_draft_reusing(item, source_effect_seq, database_id, &ChatContents::new())
-}
-
-pub(crate) fn completion_draft_reusing(
-    item: &ExecutionItem,
-    source_effect_seq: u64,
-    database_id: &str,
-    previous: &ChatContents,
+    original_body: Option<(BodyKey, Arc<ContentBlock>)>,
 ) -> Result<ChatDraft> {
     ensure!(
         item.is_terminal(),
@@ -135,6 +131,13 @@ pub(crate) fn completion_draft_reusing(
     } else {
         content_fields(item.state())?
     };
+    if let Some((field, block)) = original_body
+        && !bodies.contains_key(&field)
+    {
+        // A terminal tool state that cannot carry output still owns its original producer body.
+        // An authoritative result already present above always wins over this partial cut.
+        bodies.insert(field, block);
+    }
     freeze(
         item,
         CompletionStamp {
@@ -145,7 +148,6 @@ pub(crate) fn completion_draft_reusing(
         database_id,
         serde_json::to_value(descriptor)?,
         &mut bodies,
-        previous,
         None,
     )
 }
@@ -193,7 +195,6 @@ pub(crate) fn background_started_draft(
         database_id,
         value,
         &mut bodies,
-        &ChatContents::new(),
         None,
     )
 }
@@ -277,7 +278,6 @@ fn freeze(
     database_id: &str,
     descriptor: serde_json::Value,
     bodies: &mut BTreeMap<BodyKey, Arc<ContentBlock>>,
-    previous: &ChatContents,
     metadata: Option<crate::ChatAtom>,
 ) -> Result<ChatDraft> {
     let CompletionStamp {
@@ -306,49 +306,14 @@ fn freeze(
             owner: owner_key.clone(),
             key: key.clone(),
         };
-        let old = previous.get(&content_key);
-        let mut generation = old.map_or(1, |content| content.descriptor.generation);
-        let mut body_block = block.clone();
-        let shared = old.filter(|content| {
-            matches!(&content.data, ContentData::Text(text) if ContentBlock::text_eq(text.block(), block))
-        });
-        if let Some(old) = old.filter(|_| shared.is_none()) {
-            let candidate = ContentData::text(block.clone());
-            let old_bytes = old.data.len();
-            let prefix_matches = old_bytes <= block.len()
-                && (0..old_bytes).step_by(4096).all(|offset| {
-                    old.data
-                        .range(offset as u64, 4096.min(old_bytes - offset))
-                        .ok()
-                        .zip(
-                            candidate
-                                .range(offset as u64, 4096.min(old_bytes - offset))
-                                .ok(),
-                        )
-                        .is_some_and(|(left, right)| left.as_bytes() == right.as_bytes())
-                });
-            if prefix_matches {
-                if let ContentData::Text(text) = &old.data
-                    && let Some(suffix) = block.suffix_since(old_bytes)
-                {
-                    body_block = ContentBlock::append(text.block(), &suffix);
-                }
-            } else {
-                generation = generation
-                    .checked_add(1)
-                    .ok_or_else(|| anyhow::anyhow!("content generation exhausted"))?;
-            }
-        }
-        let content = shared.cloned().unwrap_or_else(|| {
-            Arc::new(ChatContent {
-                descriptor: ContentDescriptor {
-                    key: content_key,
-                    byte_length,
-                    generation,
-                    media_type: Some("text/plain; charset=utf-8".into()),
-                },
-                data: ContentData::text(body_block),
-            })
+        let content = Arc::new(ChatContent {
+            descriptor: ContentDescriptor {
+                key: content_key,
+                byte_length,
+                generation: 1,
+                media_type: Some("text/plain; charset=utf-8".into()),
+            },
+            data: ContentData::text(block.clone()),
         });
         let body = body_envelope(&content, database_id, &owner, true)?;
         contents.insert(content.descriptor.key.clone(), content);
@@ -1273,7 +1238,6 @@ mod tests {
                 "database",
                 serde_json::to_value(descriptor::item_descriptor(&shell)?)?,
                 &mut blocks,
-                &ChatContents::new(),
                 None,
             )?;
             let metadata: ChatAtom = serde_json::from_slice(&draft.metadata)?;

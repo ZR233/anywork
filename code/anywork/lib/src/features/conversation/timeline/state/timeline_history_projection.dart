@@ -1,49 +1,95 @@
-import 'package:anywork_client/models.dart';
+import 'package:anywork_client/conversation.dart';
 
 import 'timeline_display_models.dart';
 
 /// Projects only the typed main-history heads that own a visual row. Turn,
 /// source, cost and accounting heads stay on their dedicated query surfaces.
 abstract final class TimelineHistoryProjection {
-  static List<DisplayBlock> blocks(List<HistoryTimelineEntry> entries) => [
-    for (final entry in entries)
-      if (_block(entry) case final block?) block,
-  ];
+  static List<DisplayBlock> blocks(
+    Iterable<HistoryTimelineEntry> entries, {
+    required HistoryCut cut,
+  }) => [for (final entry in entries) ?_block(entry, cut: cut)];
 
-  static DisplayBlock? block(HistoryTimelineEntry entry) => _block(entry);
+  static DisplayBlock? block(
+    HistoryTimelineEntry entry, {
+    required HistoryCut cut,
+  }) => _block(entry, cut: cut);
 
-  static DisplayBlock? eventDetail(HistoryEventDetail detail) {
+  static DisplayBlock? eventDetail(
+    HistoryEventDetail detail, {
+    required HistoryCut cut,
+  }) {
     final head = detail.head;
     if (head == null) return null;
+    if (detail.header.eventId.isEmpty) {
+      throw const ConversationContinuityError(
+        'History event has no stable event identity',
+      );
+    }
+    final anchorSeq = detail.header.seq;
     return _blockFromHead(
       rowKey: detail.header.rowKey ?? 'event:${detail.header.eventId}',
-      anchorSeq: detail.header.seq,
+      anchorSeq: anchorSeq,
+      headSeq: anchorSeq,
       head: head,
+      cut: cut,
     );
   }
 
-  static DisplayBlock? _block(HistoryTimelineEntry entry) => _blockFromHead(
+  static DisplayBlock? _block(
+    HistoryTimelineEntry entry, {
+    required HistoryCut cut,
+  }) => _blockFromHead(
     rowKey: entry.rowKey,
     anchorSeq: entry.anchorSeq,
+    headSeq: entry.headSeq,
     head: entry.head,
+    cut: cut,
   );
 
   static DisplayBlock? _blockFromHead({
     required String rowKey,
     required int anchorSeq,
+    required int headSeq,
     required HistoryRowHead head,
+    required HistoryCut cut,
   }) {
+    if (rowKey.isEmpty) {
+      throw const ConversationContinuityError(
+        'History row has no stable row identity',
+      );
+    }
     final DisplayBlockBody? body;
     switch (head) {
       case WorkHistoryRow(:final head):
+        if (head.groupId.isEmpty) {
+          throw const ConversationContinuityError(
+            'History Work has no stable group identity',
+          );
+        }
         body = WorkDisplayBlock(
           timing: WorkTiming(
             startedAt: head.startedAt,
             finishedAt: head.boundaryAt,
           ),
-          members: DisplayBlockRef(databaseId: '', blockId: head.groupId),
+          members: DisplayBlockRef(
+            blockId: head.groupId,
+            cut: cut,
+            anchorSeq: anchorSeq,
+            headSeq: headSeq,
+          ),
+          executionPresent: head.executionPresent,
+          memberCount: head.memberCount,
+          unfinishedCount: head.unfinishedCount,
+          groupClosed: head.closed,
+          summary: head.summary,
         );
       case SingleHistoryRow(:final head):
+        if (head.entityId.isEmpty) {
+          throw const ConversationContinuityError(
+            'History row has no stable entity identity',
+          );
+        }
         body = _single(
           head,
           visibility: switch (head.singleVisibility) {
@@ -54,6 +100,11 @@ abstract final class TimelineHistoryProjection {
           },
         );
       case MemberHistoryRow(:final head):
+        if (head.entityId.isEmpty) {
+          throw const ConversationContinuityError(
+            'History member has no stable entity identity',
+          );
+        }
         body = _single(head, visibility: HistorySingleVisibility.content);
       case TurnHistoryRow() ||
           SourceHistoryRow() ||
@@ -105,6 +156,7 @@ abstract final class TimelineHistoryProjection {
   static ChatAtom _atom(HistoryEntityHead head) => ChatAtom(
     id: head.entityId,
     source: head.source,
+    sourceOrder: null,
     kind: head.kind,
     delivery: head.delivery,
     lifecycle: switch (head.state.kind) {

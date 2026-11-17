@@ -13,6 +13,8 @@ use sea_orm_migration::{DbErr, MigrationName, MigrationTrait, MigratorTraitSelf,
 use super::{HistoryError, Result, db::statement};
 
 const MIGRATION: &str = "m20261116_000001_append_only_history";
+pub(super) type StageUpgradeReport =
+    Box<dyn FnOnce(super::upgrade::ImportCounts) -> Result<()> + Send>;
 fn known_legacy_versions() -> &'static std::collections::BTreeSet<String> {
     static VERSIONS: std::sync::OnceLock<std::collections::BTreeSet<String>> =
         std::sync::OnceLock::new();
@@ -51,7 +53,7 @@ struct Migration {
     database_id: String,
     source: Option<super::import::V24HistorySource>,
     source_watermark: Option<u64>,
-    counts: Option<Arc<Mutex<Option<super::upgrade::ImportCounts>>>>,
+    stage_report: Option<Arc<Mutex<Option<StageUpgradeReport>>>>,
 }
 impl MigrationName for Migration {
     fn name(&self) -> &str {
@@ -65,6 +67,13 @@ impl MigrationTrait for Migration {
     }
     async fn up(&self, manager: &SchemaManager) -> std::result::Result<(), DbErr> {
         let db = manager.get_connection();
+        let stage_report = match &self.stage_report {
+            Some(slot) => slot
+                .lock()
+                .map_err(|_| DbErr::Migration("pending report stage lock poisoned".into()))?
+                .take(),
+            None => None,
+        };
         db.execute_unprepared(include_str!("schema.sql")).await?;
         db.execute_raw(statement(
             "INSERT INTO history_store_meta(singleton,schema_version,database_id,thread_id) VALUES(1,25,?,?)",
@@ -82,11 +91,10 @@ impl MigrationTrait for Migration {
             )
             .await
             .map_err(|error| DbErr::Migration(format!("{error:#}")))?;
-            if let Some(slot) = &self.counts {
-                *slot
-                    .lock()
-                    .map_err(|_| DbErr::Migration("import count lock poisoned".into()))? =
-                    Some(counts);
+            if let Some(stage_report) = stage_report {
+                stage_report(counts).map_err(|error| {
+                    DbErr::Migration(format!("schema 25 report staging failed: {error:#}"))
+                })?;
             }
         }
         Ok(())
@@ -96,7 +104,7 @@ struct Migrator {
     thread_id: String,
     legacy_versions: Vec<String>,
     migration: Option<(String, super::import::V24HistorySource, u64)>,
-    counts: Option<Arc<Mutex<Option<super::upgrade::ImportCounts>>>>,
+    stage_report: Option<Arc<Mutex<Option<StageUpgradeReport>>>>,
 }
 impl MigratorTraitSelf for Migrator {
     fn migrations(&self) -> Vec<Box<dyn MigrationTrait>> {
@@ -127,7 +135,7 @@ impl MigratorTraitSelf for Migrator {
             database_id,
             source,
             source_watermark,
-            counts: self.counts.clone(),
+            stage_report: self.stage_report.clone(),
         }));
         migrations
     }
@@ -173,7 +181,7 @@ pub(super) async fn initialize(db: &DatabaseConnection, thread_id: &str) -> Resu
             thread_id: thread_id.into(),
             legacy_versions: Vec::new(),
             migration: None,
-            counts: None,
+            stage_report: None,
         },
         db,
     )
@@ -187,24 +195,20 @@ pub(super) async fn run_upgrade(
     database_id: &str,
     source_watermark: u64,
     source: super::import::V24HistorySource,
-) -> Result<super::upgrade::ImportCounts> {
-    let counts = Arc::new(Mutex::new(None));
+    stage_report: StageUpgradeReport,
+) -> Result<()> {
+    let stage_report = Arc::new(Mutex::new(Some(stage_report)));
     run_immediate(
         Migrator {
             thread_id: thread_id.into(),
             legacy_versions: legacy_versions(db).await?,
             migration: Some((database_id.to_owned(), source, source_watermark)),
-            counts: Some(counts.clone()),
+            stage_report: Some(stage_report),
         },
         db,
     )
     .await?;
-    let imported = counts
-        .lock()
-        .map_err(|_| HistoryError::Integrity("import count lock poisoned".into()))?
-        .take()
-        .ok_or_else(|| HistoryError::Integrity("migration import counts are missing".into()))?;
-    Ok(imported)
+    Ok(())
 }
 
 async fn run_immediate(migrator: Migrator, db: &DatabaseConnection) -> Result<()> {

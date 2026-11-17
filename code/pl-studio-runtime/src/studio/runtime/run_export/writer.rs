@@ -233,17 +233,7 @@ pub enum ExportCommand {
         thread_id: String,
         report: pl_tool::skill::SkillDiscoveryReport,
     },
-    LiveHandoff {
-        thread_id: String,
-        effect_seq: u64,
-        accounting: PreparedAccounting,
-        lifecycle: Arc<[ExecutionLifecycleExportV3]>,
-        history: HistoryReader,
-        history_cut: HistoryCut,
-        history_seq: u64,
-        current_owner_id: String,
-        current_revision: u64,
-    },
+    LiveHandoff(Box<LiveHandoff>),
     Finalize {
         store: Option<StudioStore>,
         agent_ok: bool,
@@ -251,6 +241,18 @@ pub enum ExportCommand {
         pending_after: Option<usize>,
         reply: tokio::sync::oneshot::Sender<FinalizeWriterOutcome>,
     },
+}
+
+pub(in crate::studio) struct LiveHandoff {
+    pub(super) thread_id: String,
+    pub(super) effect_seq: u64,
+    pub(super) accounting: PreparedAccounting,
+    pub(super) lifecycle: Arc<[ExecutionLifecycleExportV3]>,
+    pub(super) history: HistoryReader,
+    pub(super) history_cut: HistoryCut,
+    pub(super) history_seq: u64,
+    pub(super) current_owner_id: String,
+    pub(super) current_revision: u64,
 }
 
 pub struct FinalizeWriterOutcome {
@@ -772,47 +774,26 @@ impl WriterWorker {
                 )
                 .await?;
             }
-            ExportCommand::LiveHandoff {
-                thread_id,
-                effect_seq,
-                accounting,
-                lifecycle,
-                history,
-                history_cut,
-                history_seq,
-                current_owner_id,
-                current_revision,
-            } => {
-                self.handle_live_handoff(
-                    thread_id,
-                    effect_seq,
-                    accounting,
-                    lifecycle,
-                    history,
-                    history_cut,
-                    history_seq,
-                    current_owner_id,
-                    current_revision,
-                )
-                .await?;
+            ExportCommand::LiveHandoff(handoff) => {
+                self.handle_live_handoff(*handoff).await?;
             }
             ExportCommand::Finalize { .. } => {}
         }
         Ok(())
     }
 
-    async fn handle_live_handoff(
-        &mut self,
-        thread_id: String,
-        effect_seq: u64,
-        accounting: PreparedAccounting,
-        lifecycle: Arc<[ExecutionLifecycleExportV3]>,
-        history: HistoryReader,
-        history_cut: HistoryCut,
-        history_seq: u64,
-        current_owner_id: String,
-        current_revision: u64,
-    ) -> Result<()> {
+    async fn handle_live_handoff(&mut self, handoff: LiveHandoff) -> Result<()> {
+        let LiveHandoff {
+            thread_id,
+            effect_seq,
+            accounting,
+            lifecycle,
+            history,
+            history_cut,
+            history_seq,
+            current_owner_id,
+            current_revision,
+        } = handoff;
         let member = self
             .members
             .get_mut(&thread_id)
@@ -976,7 +957,7 @@ impl WriterWorker {
                     record.source,
                     EventBodyV3::Completion {
                         header: record.header,
-                        atom: record.atom,
+                        atom: Box::new(record.atom),
                         payload: record.payload,
                         contents_manifest: record.contents_manifest,
                     },
@@ -1210,7 +1191,7 @@ impl WriterWorker {
                             thread_id: thread_id.clone(),
                             through_effect_seq,
                             history_cut: completion_cursor.clone(),
-                            summary,
+                            summary: Box::new(summary),
                             status,
                             aborted,
                             error: err_msg,

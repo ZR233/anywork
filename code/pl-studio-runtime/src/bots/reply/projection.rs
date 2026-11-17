@@ -11,7 +11,6 @@ pub(super) struct ReplyProjection {
     covered: bool,
     active: bool,
     previews: Vec<(String, String)>,
-    observed_terminal: Option<TurnState>,
     history_terminal: bool,
 }
 
@@ -22,7 +21,6 @@ impl ReplyProjection {
             covered: false,
             active: false,
             previews: Vec::new(),
-            observed_terminal: None,
             history_terminal: false,
         }
     }
@@ -121,14 +119,7 @@ impl ReplyProjection {
         })?;
         // State is the real execution outcome. The immutable Turn receipt proves
         // that its completed content prefix has actually reached this consumer.
-        (self.history_terminal || self.observed_terminal.as_ref() == Some(&receipt))
-            .then_some(receipt)
-    }
-
-    pub(super) fn observe_terminal(&mut self, state: &TurnState) {
-        if state.is_terminal() {
-            self.observed_terminal = Some(state.clone());
-        }
+        self.history_terminal.then_some(receipt)
     }
 
     pub(super) fn mark_history_terminal(&mut self) {

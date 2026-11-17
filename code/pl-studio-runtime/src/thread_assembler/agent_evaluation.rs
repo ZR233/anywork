@@ -87,7 +87,7 @@ impl AgentServices {
             let turn = super::observation::latest_terminal_turn(&history).await?;
             (after, turn)
         } else {
-            let protocol: crate::Thread = record.clone().into();
+            let protocol: crate::Thread = record.clone();
             let current = crate::studio::thread_factory::recovery::load_current_read_only(
                 &self.store,
                 &protocol,

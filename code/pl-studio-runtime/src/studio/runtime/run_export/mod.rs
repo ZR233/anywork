@@ -531,11 +531,11 @@ impl RunExportCoordinator {
                 .shared_members
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(member) = guard.members.get_mut(thread_id) {
-                if effect_seq > member.latest_effect_seq {
-                    member.latest_effect_seq = effect_seq;
-                    member.latest_usage = latest_usage.clone();
-                }
+            if let Some(member) = guard.members.get_mut(thread_id)
+                && effect_seq > member.latest_effect_seq
+            {
+                member.latest_effect_seq = effect_seq;
+                member.latest_usage = latest_usage.clone();
             }
         }
 
@@ -543,7 +543,7 @@ impl RunExportCoordinator {
             .saturating_add(history_cut.token.len())
             .saturating_add(current_owner_id.len())
             .saturating_add(lifecycle_bytes);
-        let cmd = ExportCommand::LiveHandoff {
+        let cmd = ExportCommand::LiveHandoff(Box::new(writer::LiveHandoff {
             thread_id: thread_id.to_string(),
             effect_seq,
             accounting: accounting.clone(),
@@ -553,7 +553,7 @@ impl RunExportCoordinator {
             history_seq,
             current_owner_id,
             current_revision,
-        };
+        }));
         if self.queue.admit(cmd, metadata_bytes).await.is_ok() {
             // Admission may wait and be cancelled. Only accepted batches suppress a later
             // retained-handoff retry; the writer independently validates all redeliveries.

@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart' show AnyworkClient;
 import 'package:anywork_client/conversation.dart'
-    show CurrentQueryScope, decodeCurrentTodoState;
+    show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentTodoState;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart';
@@ -50,7 +50,6 @@ import '../conversation/timeline/connectors/timeline_connector.dart';
 import '../conversation/timeline/connectors/plan_detail_connector.dart';
 import '../conversation/timeline/connectors/file_reading_panel.dart';
 import '../conversation/timeline/view_models/timeline_view_model.dart';
-import '../../presentation/view_models/timeline_session_owner.dart';
 import '../todo/todo_panel.dart';
 import 'shell_view.dart';
 import 'sidebar/sidebar_views.dart';

@@ -157,7 +157,11 @@ fn project_invocation(
 ) -> Result<Vec<ExecutionItem>, ProjectionError> {
     let mut items = Vec::new();
     let id = invocation.tool_call_id().to_owned();
-    let task = snapshot.tasks.values().find(|task| task.call_id == id);
+    let task = snapshot
+        .tasks
+        .values()
+        .chain(snapshot.terminal_tasks.iter())
+        .find(|task| task.call_id == id);
     let delivery = snapshot
         .deliveries
         .iter()
@@ -168,23 +172,37 @@ fn project_invocation(
         }
         terminal(delivery, updated_at)?
     } else if let Some(task) = task {
-        if task.status != TaskStatus::Running {
-            return Err(ProjectionError::MissingToolResult(id));
-        }
-        let progress = snapshot
-            .tool_progress
-            .get(&task.id)
-            // The canonical item carries the completed preview as text; the live window shares its
-            // block and is materialized only here, at the projection boundary that has to encode it.
-            .map_or_else(String::new, |progress| progress.content().text());
-        if task.cancel_requested {
-            ThreadToolState::Cancelling(crate::CancellingThreadTool::new(progress))
-        } else if snapshot.permissions.values().any(|permission| {
-            permission.call_id == id && permission.state == PermissionState::Pending
-        }) {
-            ThreadToolState::AwaitingApproval(crate::AwaitingApprovalThreadTool)
-        } else {
-            ThreadToolState::Running(crate::RunningThreadTool::new(progress))
+        match task.status {
+            TaskStatus::Interrupted => {
+                ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(
+                    updated_at,
+                    "Tool execution was interrupted; no side effect was replayed.".into(),
+                ))
+            }
+            TaskStatus::Cancelled => ThreadToolState::Cancelled(crate::CancelledThreadTool::new(
+                updated_at,
+                "Tool execution was cancelled; observed facts remain in the journal.".into(),
+            )),
+            TaskStatus::Succeeded | TaskStatus::Failed => {
+                return Err(ProjectionError::MissingToolResult(id));
+            }
+            TaskStatus::Running => {
+                let progress = snapshot
+                    .tool_progress
+                    .get(&task.id)
+                    // The canonical item carries the completed preview as text; the live window shares its
+                    // block and is materialized only here, at the projection boundary that has to encode it.
+                    .map_or_else(String::new, |progress| progress.content().text());
+                if task.cancel_requested {
+                    ThreadToolState::Cancelling(crate::CancellingThreadTool::new(progress))
+                } else if snapshot.permissions.values().any(|permission| {
+                    permission.call_id == id && permission.state == PermissionState::Pending
+                }) {
+                    ThreadToolState::AwaitingApproval(crate::AwaitingApprovalThreadTool)
+                } else {
+                    ThreadToolState::Running(crate::RunningThreadTool::new(progress))
+                }
+            }
         }
     } else {
         ThreadToolState::Queued(crate::QueuedThreadTool)

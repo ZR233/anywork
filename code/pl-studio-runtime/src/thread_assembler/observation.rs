@@ -24,8 +24,6 @@ type Synchronize = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<
 pub(crate) enum DurableMessageIdentity {
     /// The accepted body digest and its original admission sequence.
     Proven { sequence: u64, digest: String },
-    /// The identity is recorded but its accepted body cannot be verified.
-    Unverifiable,
 }
 
 #[cfg(test)]
@@ -197,7 +195,6 @@ pub(crate) enum ParentMessageDelivery {
 pub(crate) enum ParentMessageSkip {
     Closing,
     TargetUnavailable,
-    UnverifiableHistory,
     ClosedDuringAdmission,
 }
 
@@ -226,8 +223,6 @@ pub(super) enum DeliveryDisposition {
     Receipt(u64),
     /// The same identity is accepted with a provably different body.
     Conflict,
-    /// The identity is recorded but its accepted body cannot be verified (migrated row).
-    Unverifiable,
     /// The Thread never accepted this identity: a normal admission may proceed.
     New,
 }
@@ -538,7 +533,6 @@ impl SessionRuntime {
                 Ok(DeliveryDisposition::Receipt(sequence))
             }
             Some(DurableMessageIdentity::Proven { .. }) => Ok(DeliveryDisposition::Conflict),
-            Some(DurableMessageIdentity::Unverifiable) => Ok(DeliveryDisposition::Unverifiable),
         }
     }
 
@@ -613,12 +607,6 @@ impl SessionRuntime {
                     message_id: message.id,
                     sequence,
                 });
-            }
-            // Older history proves acceptance without a receipt. Never admit a second copy.
-            Some(DurableMessageIdentity::Unverifiable) => {
-                return Ok(ParentMessageDelivery::Skipped(
-                    ParentMessageSkip::UnverifiableHistory,
-                ));
             }
             None => {}
         }

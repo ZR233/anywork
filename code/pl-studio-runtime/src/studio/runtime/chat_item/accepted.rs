@@ -225,7 +225,6 @@ fn freeze_accepted(
         database_id,
         descriptor,
         &mut bodies,
-        &ChatContents::new(),
         Some(metadata),
     )
     .map_err(|error| ProjectionError::History(error.to_string()))

@@ -359,14 +359,13 @@ fn seed_empty_thread(home: &Path, project: &Path) -> Result<String> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let studio = Box::pin(pl_studio_runtime::StudioRuntime::initialize(
-            pl_studio_runtime::StudioRuntimeOptions {
-                studio_home: Some(home.to_owned()),
-                host: pl_studio_runtime::StudioHostKind::Test,
-                ..pl_studio_runtime::StudioRuntimeOptions::desktop()
-            },
-        ))
-        .await?;
+        let mut options = pl_studio_runtime::StudioRuntimeOptions {
+            studio_home: Some(home.to_owned()),
+            host: pl_studio_runtime::StudioHostKind::Test,
+            ..pl_studio_runtime::StudioRuntimeOptions::desktop()
+        };
+        options.skill_search.include_default_user_dir = false;
+        let studio = Box::pin(pl_studio_runtime::StudioRuntime::initialize(options)).await?;
         let prepared = async {
             let workspace = Box::pin(studio.open_project(project)).await?;
             let thread = Box::pin(studio.create_thread(&workspace.id, "概念工况空会话")).await?;

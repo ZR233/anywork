@@ -62,7 +62,7 @@ final class LiveStatusViewModelProvider
 }
 
 String _$liveStatusViewModelHash() =>
-    r'd8f09286ae1e0eca4cdf0433dc818e20b06e7e98';
+    r'fb15c73cf7761cd98aa6e3405425acb33db7d689';
 
 /// 只保留两处局部分页意图；每次从当前规范尾部和业务状态计算实际展示。
 

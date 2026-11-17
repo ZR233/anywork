@@ -1,24 +1,15 @@
-//! Live projection of a Thread's admitted writes for realtime notifications.
+//! Current RAM projection and immutable History facts owned by the Thread observation worker.
 //!
-//! The Thread's observation worker owns the only instance of this projection. It consumes the
-//! **admitted** writes of the Thread's reliable handoff queue in admission order, projects each
-//! immutable `ThreadWrite` exactly once, freezes each item that reached its reliable completion
-//! boundary into an immutable completion batch (`Session::publish_batch`) and broadcasts the same
-//! typed changes. The history writer consumes that same prepared batch, so live and durable history
-//! stay one projection of the same fact (`design/15` §15.3, `design/26`).
+//! Current is derived directly from the latest Core snapshot and never reads History for previews.
+//! Each admitted HistoryExport supplies its original producer cut; the classifier freezes canonical
+//! originals and boundary observations from that cut, and the archive writer consumes the same
+//! prepared immutable batch. Current publication and JSON saving do not wait for its commit.
 //!
-//! Active canonical payloads, execution placement and report facts stay in bounded Runtime tables.
-//! A reliable fact referencing a retired identity resolves that exact identity from the explicitly
-//! bound execution history and completion collection; streaming never reads storage.
-//!
-//! Execution ordinals and content revisions are this projection's own facts: new identities draw
-//! their placement from the Runtime's shared execution-order index (seeded from `history_items`'s
-//! durable ceiling), streaming previews stay in the Runtime's bounded tables only — they are never
-//! published into the completion session — and an identity that already sealed a completion is
-//! never re-published, not even by a later execution revision of the same identity.
+//! Bounded Runtime tables retain active identities, report facts and original bodies still needed
+//! for reliable handoff. A late fact naming a retired identity resolves that exact History original;
+//! neither Current streaming nor restart replays the archive into a new runtime epoch.
 
 use crate::{ExecutionItem, ExecutionShape};
-use anyhow::Context as _;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -45,11 +36,11 @@ use pl_core::{
 
 use super::ProjectionError;
 use crate::history::{
-    HistoryBody, HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead,
-    HistoryTurnHead, HistoryTurnState,
+    HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead, HistoryTurnHead,
+    HistoryTurnState,
 };
 use crate::studio::runtime::chat_item::{
-    BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft_reusing, static_state,
+    BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
 };
 use crate::studio::storage::thread_writer::{ExecutionMaterialization, RuntimeOrderIndex};
 
@@ -338,7 +329,6 @@ pub(in crate::studio) struct PreparedEffect {
 fn prepared_turns(
     items: &[ExecutionItem],
     run: RuntimeEpoch,
-    effect: u64,
 ) -> Result<(Vec<HistoryTurnHead>, BTreeMap<String, crate::Turn>), ProjectionError> {
     fn millis(at: i64) -> Result<i64, ProjectionError> {
         crate::history::milliseconds_from_seconds(at)
@@ -527,6 +517,33 @@ fn review_delivery_facts(
         }
     }
     Ok(facts)
+}
+
+fn original_tool_result_body(
+    item: &ExecutionItem,
+    state: &ThreadSnapshot,
+) -> Option<(BodyKey, Arc<ContentBlock>)> {
+    let ExecutionShape::Tool(tool) = item.state() else {
+        return None;
+    };
+    if !matches!(
+        tool.state(),
+        ThreadToolState::Interrupted(_) | ThreadToolState::Cancelled(_)
+    ) || tool.terminal_output().is_some()
+    {
+        return None;
+    }
+    let call_id = tool.invocation().tool_call_id();
+    let task_id = tool.invocation().task_id().map(str::to_owned).or_else(|| {
+        state
+            .tasks
+            .values()
+            .chain(state.terminal_tasks.iter())
+            .find(|task| task.call_id == call_id)
+            .map(|task| task.id.clone())
+    })?;
+    let progress = state.tool_progress.get(&task_id)?;
+    (!progress.is_empty()).then(|| (BodyKey::host(TOOL_RESULT_FIELD), progress.content()))
 }
 
 impl PreparedEffect {
@@ -1300,6 +1317,7 @@ impl Fact {
 /// Folds admitted writes into the live product facts and yields the changes each one made.
 mod observations;
 pub(in crate::studio) use observations::Observation as HistoryObservationInput;
+mod current;
 mod provenance;
 
 pub(in crate::studio) struct LiveProjection {
@@ -1462,7 +1480,6 @@ impl LiveProjection {
         if self.current.owner_id().is_none() {
             let database_id = self
                 .run
-                .clone()
                 .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?
                 .to_string();
             self.current
@@ -1492,33 +1509,23 @@ impl LiveProjection {
         self.current.activity()
     }
 
-    fn current_texts(&self) -> Vec<super::current::ActiveText> {
-        self.previews
-            .iter()
-            .filter(|(id, _)| {
-                !self
-                    .order_index
-                    .as_ref()
-                    .is_some_and(|index| index.is_sealed(id))
-            })
-            .flat_map(|(id, preview)| {
-                let ordinal = self.facts.get(id).map_or(0, |fact| fact.ordinal);
-                let text_channel = match &preview.shape {
-                    ExecutionShape::Text(text) => Some(text.channel()),
-                    _ => None,
-                };
-                preview.fields.iter().map(move |(key, block)| {
-                    (
-                        id.clone(),
-                        key.clone(),
-                        block.clone(),
-                        ordinal,
-                        text_channel,
-                        preview.model_part,
-                    )
-                })
-            })
-            .collect()
+    fn observe_current(
+        &mut self,
+        thread: &crate::Thread,
+        state: &ThreadSnapshot,
+        sequence: u64,
+    ) -> Result<(), ProjectionError> {
+        let owner_id = self
+            .current
+            .owner_id()
+            .ok_or_else(|| ProjectionError::History("current owner is not bound".into()))?
+            .to_owned();
+        let current = current::project(thread, state, &owner_id)?;
+        self.current.provenance(current.sources, current.atoms);
+        self.current
+            .observe(thread, state, sequence, current.active)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
+        Ok(())
     }
 
     /// Installs the durable facts of work that started before this projection existed.
@@ -1667,11 +1674,13 @@ impl LiveProjection {
         self.ensure_current_owner().await?;
         let run = self
             .run
-            .clone()
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let before = self
             .observation_inputs(&thread.id, state)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        self.stage_history_model_previews(thread, state, effect.committed_at)
+            .await?;
+        self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
@@ -1697,11 +1706,11 @@ impl LiveProjection {
         let boundary_inputs = self
             .retain_boundary_inputs(&thread.id, state, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
+        let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
-            run_id: run.clone(),
+            run_id: run,
             accounting,
             boundary_inputs,
             history_changes: provenance
@@ -1762,11 +1771,13 @@ impl LiveProjection {
         self.ensure_current_owner().await?;
         let run = self
             .run
-            .clone()
             .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let before = self
             .observation_inputs(&thread.id, state)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
+        self.stage_history_model_previews(thread, state, effect.committed_at)
+            .await?;
+        self.stage_history_tool_previews(thread, state, effect.committed_at)?;
         let mut provenance = self.begin_provenance(effect)?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
@@ -1783,11 +1794,11 @@ impl LiveProjection {
         let boundary_inputs = self
             .retain_boundary_inputs(&thread.id, state, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
+        let (history_turns, history_turn_details) = prepared_turns(&items, run)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
-            run_id: run.clone(),
+            run_id: run,
             accounting,
             boundary_inputs,
             history_changes: provenance
@@ -1944,9 +1955,13 @@ impl LiveProjection {
         // response always carries its complete provider parts in its own receipt, so its committed
         // content never depends on what a subscriber happened to observe.
         if let Some(attempt) = &effect.attempt {
-            for (id, item) in
-                self.attempt_preview_items(&thread.id, &attempt.attempt_id, &attempt.turn_id)?
-            {
+            for (id, item) in self.attempt_preview_items(
+                &thread.id,
+                state,
+                &attempt.attempt_id,
+                &attempt.turn_id,
+                effect.committed_at,
+            )? {
                 // The provider part the window is showing is the body this commit must close. A
                 // placement fact alone resolves to a release placeholder, so it must never beat the
                 // preview that still holds the streamed text; a canonical committed payload (this
@@ -2264,13 +2279,13 @@ impl LiveProjection {
                 continue;
             }
             drafts.push(
-                completion_draft_reusing(
+                completion_draft(
                     item,
                     effect.sequence,
                     self.current.owner_id().ok_or_else(|| {
                         ProjectionError::History("missing database identity".into())
                     })?,
-                    &self.current.item_contents(),
+                    original_tool_result_body(item, state),
                 )
                 .map_err(|error| ProjectionError::History(error.to_string()))?,
             );
@@ -2309,62 +2324,43 @@ impl LiveProjection {
         Ok(sealed)
     }
 
-    /// Projects the ephemeral streaming preview the owner publishes between committed effects.
+    /// Publishes Current exclusively from the newest Core owner snapshot.
     ///
-    /// Streaming text, reasoning and tool output never appear in an effect batch, so the overlay is
-    /// the only projection of them. It consumes typed observations — a stable identity per provider
-    /// item part, or a whole channel before the adapter itemizes the response — so it never decodes a
-    /// producer payload again. The hot path writes the observation's **shared** `Arc<ContentBlock>`
-    /// straight into the window's fields: it never calls `part.text()`, never JSON-encodes the whole
-    /// item and never copies the full body again. An identity whose observation version did not
-    /// advance neither re-materializes its body nor re-emits a frame; its static execution shape
-    /// stays in this Runtime owner and is never encoded as terminal completion metadata.
-    ///
-    /// The preview stays a fact of this Runtime owner's bounded tables and emits no content frame
-    /// of its own; the runtime's activity projection reads it from here instead of a second mirror
-    /// published into the completion session. `applied` is the subscriber's committed-effect
-    /// watermark;
-    /// it is only the commit / reliable-save watermark and **not** the item content version, which
-    /// comes from this projection's own [`LiveProjection::revisions`] — the same counter the terminal
-    /// commit uses, so multi-token text is never dropped merely because the commit watermark did not
-    /// move.
+    /// The pure Current projector reads running model parts, running task invocations and progress,
+    /// pending inputs and unconsumed inbox messages. It never consults History placement, archive
+    /// completion, or a canonical final, so a History projection failure cannot hold Current behind.
     pub(in crate::studio) async fn stream(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
         self.ensure_current_owner().await?;
-        self.stream_model_progress(thread, state).await?;
-        self.stream_tool_progress(state)?;
-        let active = self.current_texts();
-        self.sync_provenance()?;
-        self.current
-            .observe(thread, state, state.commit_sequence, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Ok(())
+        self.observe_current(thread, state, state.commit_sequence)
     }
 
-    async fn stream_model_progress(
+    async fn stage_history_model_previews(
         &mut self,
         thread: &crate::Thread,
         state: &ThreadSnapshot,
+        committed_at: i64,
     ) -> Result<(), ProjectionError> {
         let Some(preview) = state.model_progress.as_ref() else {
             self.preview_attempt = None;
             self.clear_model_previews();
             return Ok(());
         };
-        let Some(attempt) = state.attempts.iter().find(|attempt| {
-            attempt.attempt_id == preview.attempt_id
-                && matches!(attempt.status, pl_core::thread::AttemptStatus::Running)
-        }) else {
+        let Some(attempt) = state
+            .attempts
+            .iter()
+            .find(|attempt| attempt.attempt_id == preview.attempt_id)
+        else {
             if self.preview_attempt.as_deref() == Some(preview.attempt_id.as_str()) {
                 self.preview_attempt = None;
                 self.clear_model_previews();
             }
             return Ok(());
         };
-        let at = crate::studio::unix_seconds();
+        let at = committed_at;
         // A new attempt uses entirely new observation identities, so the previous attempt's caches
         // no longer apply.
         if self.preview_attempt.as_deref() != Some(preview.attempt_id.as_str()) {
@@ -2397,20 +2393,22 @@ impl LiveProjection {
             }
         }
         for failed in &progress.observation().failed {
-            self.stream_observation_parts(
+            self.stage_history_observation_parts(
                 thread,
                 attempt,
                 failed.generation,
                 &failed.parts,
                 Some(&failed.message),
+                at,
             )?;
         }
-        self.stream_observation_parts(
+        self.stage_history_observation_parts(
             thread,
             attempt,
             progress.observation().generation,
             progress.parts(),
             None,
+            at,
         )?;
         for (id, message) in
             super::responses::recovery_notices(&attempt.attempt_id, progress.observation())
@@ -2456,15 +2454,15 @@ impl LiveProjection {
         Ok(())
     }
 
-    fn stream_observation_parts(
+    fn stage_history_observation_parts(
         &mut self,
         _thread: &crate::Thread,
         attempt: &pl_core::thread::RequestAttempt,
         generation: u32,
         parts: &pl_core::model::ModelParts,
         failure: Option<&Arc<str>>,
+        at: i64,
     ) -> Result<(), ProjectionError> {
-        let at = crate::studio::unix_seconds();
         let (prefix, prefix_end) = parts.stable_prefix();
         let mut retired = if failure.is_none() {
             self.retired_model_prefix
@@ -2599,7 +2597,12 @@ impl LiveProjection {
     /// block comparison), a changed one carries a new block, and a bounded window that rolled over
     /// arrives as a block the consumer's baseline no longer extends. No JSON is encoded and no
     /// canonical `ExecutionItem` is materialized per chunk.
-    fn stream_tool_progress(&mut self, state: &ThreadSnapshot) -> Result<(), ProjectionError> {
+    fn stage_history_tool_previews(
+        &mut self,
+        thread: &crate::Thread,
+        state: &ThreadSnapshot,
+        committed_at: i64,
+    ) -> Result<(), ProjectionError> {
         for (task_id, progress) in state.tool_progress.iter() {
             let Some(task) = state.tasks.get(task_id) else {
                 continue;
@@ -2612,10 +2615,9 @@ impl LiveProjection {
                 continue;
             }
             let id = super::order::tool_id(&task.call_id);
-            // The tool identity and its static structure come from the committed canonical fact: no
-            // identity is invented here that the commit does not have, and no coarser meta is
-            // hand-assembled.
-            let Some(committed) = self.items.get(&id).cloned() else {
+            // The original task invocation and the snapshot's shared progress block are sufficient;
+            // History archive progress cannot decide whether this live producer still exists.
+            let Some(committed) = current::task_tool_item(thread, state, task)? else {
                 continue;
             };
             // A terminal item is never pulled back by a late streaming observation.
@@ -2638,7 +2640,7 @@ impl LiveProjection {
             let block = progress.content();
             // The tool identity's content version advances here so the terminal commit and the
             // preview converge on one counter even though the preview no longer leaves this owner.
-            self.bump_content_revision(&id);
+            let revision = self.bump_content_revision(&id);
             let mut entry = match self.previews.get(&id).cloned() {
                 Some(known) => known,
                 None => {
@@ -2658,6 +2660,18 @@ impl LiveProjection {
                     }
                 }
             };
+            let ordinal = committed.ordinal;
+            if !self.facts.contains_key(&id) {
+                self.store_fact(
+                    id.clone(),
+                    Fact {
+                        ordinal,
+                        revision,
+                        created_at: committed_at,
+                        turn_id: task.turn_id.clone(),
+                    },
+                );
+            }
             entry.observed_version = progress.version();
             entry.fields.insert(result_field, block);
             self.store_preview(id, entry);
@@ -2866,8 +2880,8 @@ impl LiveProjection {
     /// A provider part's identity begins with its attempt's presentation prefix, and a `BTreeMap`
     /// keeps its keys in lexicographic order, so one attempt's identities are a single contiguous
     /// range: an effect that finalizes an attempt enumerates that attempt's parts instead of walking
-    /// every part the response ever streamed. Only one attempt is ever resident (`stream` clears the
-    /// table when the attempt changes), so the range is also bounded by the parts of that attempt.
+    /// every part the response ever streamed. Only one attempt is ever resident (History staging
+    /// clears the table when the attempt changes), so the range is bounded by that attempt.
     fn provider_previews<'a>(
         &'a self,
         attempt_id: &str,
@@ -2878,88 +2892,113 @@ impl LiveProjection {
             .take_while(move |(id, _)| id.starts_with(prefix.as_str()))
     }
 
-    /// Canonical items for one attempt's in-flight provider previews.
+    /// Canonical items for one attempt's original in-flight provider parts.
     ///
-    /// Read only for a **bounded** reception (see [`super::responses::keeps_bounded_preview`]): the
-    /// Runtime preview is the one representation of the in-flight body, so the terminal projection
-    /// materializes that received prefix only here instead of keeping a second body copy, and
+    /// Read only for a **bounded** reception (see [`super::responses::keeps_bounded_preview`]). The
+    /// effect's own `HistoryExport.state.model_progress` is the only source; a newer live preview or
+    /// a later canonical final cannot replace that original cut. The terminal projection materializes
+    /// the received prefix here, and
     /// [`super::responses::finalize_missing_presentation`] closes it
     /// on the same identity. A normally received response takes its body from its own receipt instead.
     /// Only provider-part identities qualify — an aggregate channel is not a provider part, and its own
     /// liveness is decided by [`LiveProjection::identity_is_started`].
     fn attempt_preview_items(
-        &self,
+        &mut self,
         thread_id: &str,
+        state: &ThreadSnapshot,
         attempt_id: &str,
         turn_id: &str,
+        committed_at: i64,
     ) -> Result<Vec<(String, ExecutionItem)>, ProjectionError> {
-        self.provider_previews(attempt_id)
-            .map(|(id, preview)| {
-                let fact = self.facts.get(id).ok_or_else(|| {
-                    ProjectionError::History(format!("preview {id} has no execution placement"))
-                })?;
-                // Only this bounded-interruption boundary materializes the received prefix.
-                // Execution placement and lifecycle come from the Runtime's own facts, never
-                // from terminal-only completion metadata or an invented append sequence.
-                let text = |field| {
-                    preview
-                        .fields
-                        .get(&field)
-                        .map(|block| block.text())
-                        .unwrap_or_default()
-                };
-                let state = match &preview.shape {
-                    ExecutionShape::Text(value) => ExecutionShape::Text(ThreadTextItem::new(
-                        value.channel(),
-                        text(BodyKey::Body),
-                        value.attachments().to_vec(),
-                        value.lifecycle().clone(),
-                    )),
-                    ExecutionShape::Thinking(value) => {
-                        ExecutionShape::Thinking(ThreadThinkingItem::new(
-                            preview
-                                .fields
-                                .iter()
-                                .filter(|(field, _)| {
-                                    matches!(field, BodyKey::Part(PresentationPart::SummaryText(_)))
-                                })
-                                .map(|(_, block)| block.text())
-                                .collect(),
-                            preview
-                                .fields
-                                .iter()
-                                .filter(|(field, _)| {
-                                    matches!(
-                                        field,
-                                        BodyKey::Part(PresentationPart::ReasoningText(_))
-                                    )
-                                })
-                                .map(|(_, block)| block.text())
-                                .collect(),
-                            value.lifecycle().clone(),
-                        ))
-                    }
-                    _ => {
-                        return Err(ProjectionError::UnsupportedOutput(
-                            "provider preview is neither text nor thinking".into(),
-                        ));
-                    }
-                };
-                Ok((
-                    id.clone(),
-                    ExecutionItem::new(
-                        id.clone(),
-                        thread_id.to_owned(),
-                        turn_id.to_owned(),
-                        fact.ordinal,
-                        fact.revision,
-                        fact.created_at,
-                        fact.created_at,
-                        state,
-                    ),
-                ))
-            })
-            .collect()
+        let Some(progress) = state
+            .model_progress
+            .as_ref()
+            .filter(|progress| progress.attempt_id == attempt_id)
+        else {
+            return Ok(Vec::new());
+        };
+        let generation = progress.progress.observation().generation;
+        let prefix = super::order::presentation_prefix(attempt_id);
+        let mut items = Vec::new();
+        for part in progress.progress.parts().iter() {
+            if part.is_empty() || !matches!(part.identity(), ObservedPartIdentity::Provider(_)) {
+                continue;
+            }
+            let Some((id, field, shape)) = observation_preview(
+                attempt_id,
+                generation,
+                part,
+                &ThreadContentLifecycle::streaming(),
+            ) else {
+                return Err(ProjectionError::UnsupportedOutput(
+                    "interrupted provider part does not match its item".into(),
+                ));
+            };
+            if !id.starts_with(&prefix) || self.identity_is_terminal(&id) {
+                continue;
+            }
+            let state = match shape {
+                ExecutionShape::Text(text) => ExecutionShape::Text(ThreadTextItem::new(
+                    text.channel(),
+                    part.text(),
+                    Vec::new(),
+                    ThreadContentLifecycle::streaming(),
+                )),
+                ExecutionShape::Thinking(_) => {
+                    let text = part.text();
+                    let (summary, reasoning) =
+                        if matches!(field, BodyKey::Part(PresentationPart::SummaryText(_))) {
+                            (vec![text], Vec::new())
+                        } else {
+                            (Vec::new(), vec![text])
+                        };
+                    ExecutionShape::Thinking(ThreadThinkingItem::new(
+                        summary,
+                        reasoning,
+                        ThreadContentLifecycle::streaming(),
+                    ))
+                }
+                _ => {
+                    return Err(ProjectionError::UnsupportedOutput(
+                        "interrupted provider part has invalid content state".into(),
+                    ));
+                }
+            };
+            let ordinal = self
+                .order_index_of()?
+                .reserve_observed(attempt_id, &id)
+                .map_err(|error| ProjectionError::History(error.to_string()))?;
+            let revision = self
+                .revisions
+                .get(&id)
+                .copied()
+                .unwrap_or(1)
+                .max(part.version().max(1));
+            self.raise_revision(&id, revision);
+            self.store_fact(
+                id.clone(),
+                Fact {
+                    ordinal,
+                    revision,
+                    created_at: committed_at,
+                    turn_id: turn_id.to_owned(),
+                },
+            );
+            items.push((
+                id.clone(),
+                ExecutionItem::new(
+                    id,
+                    thread_id.to_owned(),
+                    turn_id.to_owned(),
+                    ordinal,
+                    revision,
+                    committed_at,
+                    committed_at,
+                    state,
+                ),
+            ));
+        }
+        Ok(items)
     }
 
     /// Maintains lifecycle continuity and optionally emits this effect's Turn and interaction frames.

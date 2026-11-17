@@ -48,6 +48,7 @@ use payload::{
 const LEGACY_EVENT_PREFIX: &str = "legacy:v24:";
 const LEGACY_BODY_PREFIX: &str = "legacy:v24:body:";
 const BACKUP_ROOT: &str = "migration-backups/history-24-to-25";
+const PENDING_REPORT_FILE: &str = "pending-upgrade-report.json";
 #[cfg(test)]
 static FAIL_NEXT_IMPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
 #[cfg(test)]
@@ -147,22 +148,14 @@ pub async fn upgrade_history(
     if !history_path.is_file() {
         return Err(HistoryError::NotFound(history_path.display().to_string()));
     }
+    let pending_report = session_dir.join(BACKUP_ROOT).join(PENDING_REPORT_FILE);
     let read = schema::connect(&history_path, true, false).await?;
-    let format = classify_source(&read).await?;
-    if format == SourceFormat::Schema25 {
+    if classify_source(&read).await? == SourceFormat::Schema25 && !pending_report.try_exists()? {
+        // Normal history readers must coexist with the live writer. Only an unfinished
+        // migration needs maintenance ownership and may publish filesystem artifacts.
         let (database_id, _) = schema::identity(&read, thread_id).await?;
         read.close().await?;
-        return Ok(UpgradeReport {
-            operation_id: "already-schema-25".into(),
-            thread_id: thread_id.to_owned(),
-            database_id,
-            status: UpgradeStatus::AlreadySchema25,
-            backup: None,
-            current_original_backup: None,
-            source_table_rows: BTreeMap::new(),
-            imported_categories: BTreeMap::new(),
-            backup_only_categories: BTreeMap::new(),
-        });
+        return complete_schema25_entry(&pending_report, thread_id, database_id);
     }
     read.close().await?;
     let _lease = acquire_writer_lease(&history_path).await?;
@@ -171,21 +164,12 @@ pub async fn upgrade_history(
     if classify_source(&read).await? == SourceFormat::Schema25 {
         let (database_id, _) = schema::identity(&read, thread_id).await?;
         read.close().await?;
-        return Ok(UpgradeReport {
-            operation_id: "already-schema-25".into(),
-            thread_id: thread_id.into(),
-            database_id,
-            status: UpgradeStatus::AlreadySchema25,
-            backup: None,
-            current_original_backup: None,
-            source_table_rows: BTreeMap::new(),
-            imported_categories: BTreeMap::new(),
-            backup_only_categories: BTreeMap::new(),
-        });
+        return complete_schema25_entry(&pending_report, thread_id, database_id);
     }
     crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
     let identity = legacy_identity(&read, thread_id).await?;
     read.close().await?;
+    discard_rolled_back_pending_report(&pending_report, thread_id, &identity.0)?;
 
     let operation_id = uuid::Uuid::new_v4().to_string();
     let operation_dir = session_dir.join(BACKUP_ROOT).join(&operation_id);
@@ -211,38 +195,58 @@ pub async fn upgrade_history(
 
     let writer = schema::connect(&history_path, false, false).await?;
     crate::studio::storage::history::validate_layout_source(&writer, thread_id).await?;
-    let imported =
-        schema::run_upgrade(&writer, thread_id, &identity.0, identity.1, source.clone()).await?;
+    let database_id = identity.0.clone();
+    let report_thread_id = thread_id.to_owned();
+    let stage_path = pending_report.clone();
+    let stage_report: schema::StageUpgradeReport = Box::new(move |imported| {
+        let mut backup_only_categories = imported.backup_only;
+        let archived_rows = LEGACY_SOURCE_TABLES
+            .iter()
+            .filter(|table| table.starts_with("completion_boundary_archive_"))
+            .try_fold(0u64, |total, table| {
+                let rows = counts.get(*table).copied().ok_or_else(|| {
+                    HistoryError::Integrity(format!("source row count for {table} is missing"))
+                })?;
+                total
+                    .checked_add(rows)
+                    .ok_or_else(|| HistoryError::Integrity("archive row count overflow".into()))
+            })?;
+        backup_only_categories.insert("completion_boundary_archive_*".into(), archived_rows);
+        let report = UpgradeReport {
+            operation_id,
+            thread_id: report_thread_id,
+            database_id,
+            status: UpgradeStatus::Upgraded,
+            backup: Some(backup_path),
+            current_original_backup: current_backup,
+            source_table_rows: counts,
+            imported_categories: imported.imported,
+            backup_only_categories,
+        };
+        stage_pending_report(&stage_path, &report)
+    });
+    match schema::run_upgrade(
+        &writer,
+        thread_id,
+        &identity.0,
+        identity.1,
+        source.clone(),
+        stage_report,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(error) => {
+            // COMMIT may have succeeded even when its acknowledgement or subsequent read
+            // failed. Retain the staged report until a retry observes the committed schema
+            // under maintenance ownership; schema 24 proves rollback, schema 25 completes it.
+            return Err(error);
+        }
+    }
     let (database_id, _) = schema::identity(&writer, thread_id).await?;
     writer.close().await?;
     source.close().await?;
-
-    let mut backup_only_categories = imported.backup_only;
-    let archived_rows = LEGACY_SOURCE_TABLES
-        .iter()
-        .filter(|table| table.starts_with("completion_boundary_archive_"))
-        .try_fold(0u64, |total, table| {
-            let rows = counts.get(*table).copied().ok_or_else(|| {
-                HistoryError::Integrity(format!("source row count for {table} is missing"))
-            })?;
-            total
-                .checked_add(rows)
-                .ok_or_else(|| HistoryError::Integrity("archive row count overflow".into()))
-        })?;
-    backup_only_categories.insert("completion_boundary_archive_*".into(), archived_rows);
-    let report = UpgradeReport {
-        operation_id,
-        thread_id: thread_id.to_owned(),
-        database_id,
-        status: UpgradeStatus::Upgraded,
-        backup: Some(backup_path),
-        current_original_backup: current_backup,
-        source_table_rows: counts,
-        imported_categories: imported.imported,
-        backup_only_categories,
-    };
-    write_report(&operation_dir, &report)?;
-    Ok(report)
+    complete_pending_report(&pending_report, thread_id, &database_id)
 }
 
 async fn acquire_writer_lease(history_path: &Path) -> Result<WriterLease> {
@@ -359,9 +363,9 @@ async fn make_backup(
         ".history-v24-{}.sqlite",
         uuid::Uuid::new_v4().simple()
     ));
-    let temporary_sql = temporary.to_str().ok_or_else(|| {
-        HistoryError::Storage(anyhow::anyhow!("backup path is not valid UTF-8").into())
-    })?;
+    let temporary_sql = temporary
+        .to_str()
+        .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup path is not valid UTF-8")))?;
     db.execute_raw(statement(
         "VACUUM INTO ?",
         vec![temporary_sql.to_owned().into()],
@@ -500,17 +504,18 @@ async fn materialize_checkpoint_bodies(
     while let Some(entry) = checkpoint.pending_body().cloned() {
         let path = checkpoint_blob_path(session_dir, entry.reference.digest())?;
         let bytes = tokio::fs::read(&path).await.map_err(|error| {
-            HistoryError::Storage(
-                anyhow::anyhow!("read checkpoint body {}: {error}", path.display()).into(),
-            )
+            HistoryError::Storage(anyhow::anyhow!(
+                "read checkpoint body {}: {error}",
+                path.display()
+            ))
         })?;
         checkpoint
             .materialize_body(&entry.reference, &bytes)
             .map_err(|error| {
-                HistoryError::Storage(
-                    anyhow::anyhow!("materialize checkpoint body {}: {error}", path.display())
-                        .into(),
-                )
+                HistoryError::Storage(anyhow::anyhow!(
+                    "materialize checkpoint body {}: {error}",
+                    path.display()
+                ))
             })?;
     }
     Ok(())
@@ -661,7 +666,7 @@ async fn verify_pending_identities(
 fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
     let parent = target
         .parent()
-        .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup has no parent").into()))?;
+        .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup has no parent")))?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".upgrade-copy-")
         .tempfile_in(parent)?;
@@ -674,10 +679,170 @@ fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn write_report(operation_dir: &Path, report: &UpgradeReport) -> Result<()> {
-    fail_report_publish_once(&report.thread_id)?;
+fn stage_pending_report(pending_report: &Path, report: &UpgradeReport) -> Result<()> {
+    if pending_report.try_exists()? {
+        return Err(HistoryError::Conflict(
+            "another schema 24 upgrade report is already pending".into(),
+        ));
+    }
+    let target = report_operation_dir(pending_report, report)?.join("upgrade-report.json");
+    if target.try_exists()? {
+        return Err(HistoryError::Conflict(
+            "the schema 25 upgrade report already exists".into(),
+        ));
+    }
     let bytes = serde_json::to_vec_pretty(report)?;
-    backup_exact_bytes(&operation_dir.join("upgrade-report.json"), &bytes)
+    backup_exact_bytes(pending_report, &bytes)
+}
+
+fn complete_schema25_entry(
+    pending_report: &Path,
+    thread_id: &str,
+    database_id: String,
+) -> Result<UpgradeReport> {
+    if !pending_report.try_exists()? {
+        return Ok(UpgradeReport {
+            operation_id: "already-schema-25".into(),
+            thread_id: thread_id.to_owned(),
+            database_id,
+            status: UpgradeStatus::AlreadySchema25,
+            backup: None,
+            current_original_backup: None,
+            source_table_rows: BTreeMap::new(),
+            imported_categories: BTreeMap::new(),
+            backup_only_categories: BTreeMap::new(),
+        });
+    }
+    let mut report = complete_pending_report(pending_report, thread_id, &database_id)?;
+    report.status = UpgradeStatus::AlreadySchema25;
+    Ok(report)
+}
+
+fn report_operation_dir(pending_report: &Path, report: &UpgradeReport) -> Result<PathBuf> {
+    let operation_id = uuid::Uuid::parse_str(&report.operation_id).map_err(|error| {
+        HistoryError::Integrity(format!("pending upgrade operation is invalid: {error}"))
+    })?;
+    if operation_id.get_version_num() != 4 || operation_id.to_string() != report.operation_id {
+        return Err(HistoryError::Integrity(
+            "pending upgrade operation is not a canonical version 4 UUID".into(),
+        ));
+    }
+    Ok(pending_report
+        .parent()
+        .ok_or_else(|| HistoryError::Integrity("pending upgrade report has no parent".into()))?
+        .join(&report.operation_id))
+}
+
+fn preserved_file_exists(path: &Path) -> Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn complete_pending_report(
+    pending_report: &Path,
+    thread_id: &str,
+    database_id: &str,
+) -> Result<UpgradeReport> {
+    let bytes = std::fs::read(pending_report)?;
+    let report: UpgradeReport = serde_json::from_slice(&bytes)?;
+    let operation_dir = report_operation_dir(pending_report, &report)?;
+    let expected_backup = operation_dir.join("history.v24.sqlite");
+    let expected_current_backup = operation_dir.join("current.original.json");
+    let current_backup_matches = match &report.current_original_backup {
+        None => true,
+        Some(path) => path == &expected_current_backup,
+    };
+    if report.thread_id != thread_id
+        || report.database_id != database_id
+        || report.status != UpgradeStatus::Upgraded
+        || report.backup.as_ref() != Some(&expected_backup)
+        || !current_backup_matches
+    {
+        return Err(HistoryError::Conflict(
+            "pending schema 25 upgrade report does not match this history".into(),
+        ));
+    }
+    if !preserved_file_exists(&expected_backup)?
+        || match &report.current_original_backup {
+            Some(path) => !preserved_file_exists(path)?,
+            None => false,
+        }
+    {
+        return Err(HistoryError::Integrity(
+            "pending schema 25 upgrade report is missing its preserved inputs".into(),
+        ));
+    }
+    let target = operation_dir.join("upgrade-report.json");
+    if target.try_exists()? {
+        let existing = std::fs::read(&target)?;
+        if existing != bytes {
+            return Err(HistoryError::Conflict(
+                "the schema 25 upgrade report conflicts with its pending copy".into(),
+            ));
+        }
+    } else {
+        fail_report_publish_once(thread_id)?;
+        backup_exact_bytes(&target, &bytes)?;
+    }
+    std::fs::remove_file(pending_report)?;
+    sync_parent(pending_report)?;
+    Ok(report)
+}
+
+fn discard_rolled_back_pending_report(
+    pending_report: &Path,
+    thread_id: &str,
+    database_id: &str,
+) -> Result<()> {
+    if !pending_report.try_exists()? {
+        return Ok(());
+    }
+    let bytes = std::fs::read(pending_report)?;
+    let report: UpgradeReport = serde_json::from_slice(&bytes)?;
+    if report.thread_id != thread_id
+        || report.database_id != database_id
+        || report.status != UpgradeStatus::Upgraded
+    {
+        return Err(HistoryError::Conflict(
+            "rolled-back schema 24 upgrade report does not match this history".into(),
+        ));
+    }
+    let operation_dir = report_operation_dir(pending_report, &report)?;
+    let expected_backup = operation_dir.join("history.v24.sqlite");
+    let expected_current_backup = operation_dir.join("current.original.json");
+    let current_backup_matches = match &report.current_original_backup {
+        None => true,
+        Some(path) => path == &expected_current_backup,
+    };
+    if report.backup.as_ref() != Some(&expected_backup)
+        || !current_backup_matches
+        || !preserved_file_exists(&expected_backup)?
+        || match &report.current_original_backup {
+            Some(path) => !preserved_file_exists(path)?,
+            None => false,
+        }
+        || operation_dir.join("upgrade-report.json").try_exists()?
+    {
+        return Err(HistoryError::Conflict(
+            "rolled-back schema 24 upgrade report has conflicting artifacts".into(),
+        ));
+    }
+    let uncommitted = operation_dir.join("uncommitted-report.json");
+    if uncommitted.try_exists()? {
+        if std::fs::read(&uncommitted)? != bytes {
+            return Err(HistoryError::Conflict(
+                "rolled-back upgrade report conflicts with its preserved copy".into(),
+            ));
+        }
+    } else {
+        backup_exact_bytes(&uncommitted, &bytes)?;
+    }
+    std::fs::remove_file(pending_report)?;
+    sync_parent(pending_report)?;
+    Ok(())
 }
 
 fn sync_parent(path: &Path) -> Result<()> {
@@ -685,7 +850,7 @@ fn sync_parent(path: &Path) -> Result<()> {
     {
         let parent = path
             .parent()
-            .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("path has no parent").into()))?;
+            .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("path has no parent")))?;
         File::open(parent)?.sync_all()?;
     }
     #[cfg(not(unix))]
@@ -704,7 +869,7 @@ fn unix_milliseconds() -> Result<i64> {
 
 fn opaque_payload(format: &str, content: String) -> Result<OpaquePayload> {
     OpaquePayload::new(format, 1, content)
-        .map_err(|error| HistoryError::Storage(anyhow::anyhow!(error).into()))
+        .map_err(|error| HistoryError::Storage(anyhow::anyhow!(error)))
 }
 
 #[cfg(test)]
@@ -1306,6 +1471,8 @@ struct LifecycleRow {
     delivery: crate::ChatDeliveryKind,
     source_order: Option<u64>,
     execution_order: Option<u64>,
+    started: Option<crate::ChatFactPosition>,
+    ended: Option<crate::ChatFactPosition>,
     started_at: Option<i64>,
     finished_at: Option<i64>,
     outcome: Option<crate::ChatTerminalOutcome>,
@@ -1329,6 +1496,33 @@ struct SourceRow {
     ended_at: Option<i64>,
     active_observed: Option<u64>,
     outcome: Option<crate::ChatTerminalOutcome>,
+}
+
+/// The frozen schema-24 input identity receipt.
+///
+/// This deliberately mirrors the old writer's payload instead of accepting arbitrary fields: the
+/// row carries content identity and admission metadata, but never the accepted body itself.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputIdentityPayload {
+    digest: String,
+    #[serde(default, rename = "continuation")]
+    _continuation: Option<pl_core::thread::input::InputContinuation>,
+    #[serde(rename = "delivery")]
+    _delivery: pl_core::thread::input::InputDelivery,
+    id: String,
+    #[serde(default, rename = "purpose")]
+    _purpose: pl_core::thread::input::InputPurpose,
+    #[serde(default, rename = "expectedModelRouteRevision")]
+    _expected_model_route_revision: Option<u64>,
+    #[serde(default, rename = "continuationAdmissionRevision")]
+    _continuation_admission_revision: Option<u64>,
+    ordinal: u64,
+    revision: u64,
+    #[serde(rename = "state")]
+    _state: pl_core::thread::input::InputState,
+    #[serde(rename = "acceptedSequence")]
+    _accepted_sequence: u64,
 }
 
 async fn read_legacy_product_blob(
@@ -1457,7 +1651,7 @@ async fn import_lifecycle<C: ConnectionTrait>(
     loop {
         let rows = source
             .query_all(
-                "SELECT identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_at,finished_at,outcome,completion_item_id FROM execution_lifecycle WHERE identity>? ORDER BY identity LIMIT 128",
+                "SELECT identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_effect,started_suborder,ended_effect,ended_suborder,started_at,finished_at,outcome,completion_item_id FROM execution_lifecycle WHERE identity>? ORDER BY identity LIMIT 128",
                 vec![after.clone().into()],
             )
             .await?;
@@ -1466,10 +1660,25 @@ async fn import_lifecycle<C: ConnectionTrait>(
         }
         for row in rows {
             let optional_u64 = |name: &str| -> Result<Option<u64>> {
-                Ok(row
-                    .try_get::<Option<i64>>("", name)?
+                row.try_get::<Option<i64>>("", name)?
                     .map(|value| db_u64(value, name))
-                    .transpose()?)
+                    .transpose()
+            };
+            let position = |prefix: &str| -> Result<Option<crate::ChatFactPosition>> {
+                let effect = optional_u64(&format!("{prefix}_effect"))?;
+                let suborder = row.try_get::<Option<i64>>("", &format!("{prefix}_suborder"))?;
+                match (effect, suborder) {
+                    (Some(effect), Some(suborder)) => Ok(Some(crate::ChatFactPosition {
+                        effect_seq: effect,
+                        suborder: u32::try_from(suborder).map_err(|_| {
+                            HistoryError::Integrity("schema 24 lifecycle suborder overflows".into())
+                        })?,
+                    })),
+                    (None, None) => Ok(None),
+                    (Some(_), None) | (None, Some(_)) => Err(HistoryError::Integrity(
+                        "schema 24 lifecycle position is incomplete".into(),
+                    )),
+                }
             };
             let value = LifecycleRow {
                 identity: row.try_get("", "identity")?,
@@ -1487,6 +1696,8 @@ async fn import_lifecycle<C: ConnectionTrait>(
                 delivery: serde_json::from_str(&row.try_get::<String>("", "delivery")?)?,
                 source_order: optional_u64("source_order")?,
                 execution_order: optional_u64("execution_order")?,
+                started: position("started")?,
+                ended: position("ended")?,
                 started_at: row.try_get("", "started_at")?,
                 finished_at: row.try_get("", "finished_at")?,
                 outcome: row
@@ -1506,11 +1717,12 @@ async fn import_lifecycle<C: ConnectionTrait>(
                 &[value.identity.clone().into()],
                 "observation",
             );
-            let kind = if value.attempt_id.is_some() {
-                HistoryEventKind::LegacyObserved
-            } else if value.outcome.is_some() {
+            let kind = if value.ended.is_some()
+                || value.outcome.is_some()
+                || value.finished_at.is_some()
+            {
                 HistoryEventKind::EntityEnded
-            } else if value.started_at.is_some() {
+            } else if value.started.is_some() || value.started_at.is_some() {
                 HistoryEventKind::EntityStarted
             } else {
                 HistoryEventKind::BoundaryObserved
@@ -1640,10 +1852,12 @@ async fn import_turns<C: ConnectionTrait>(
             copy_column_body(
                 import,
                 source,
-                "history_turns",
-                &["turn_id"],
-                &[&turn.turn_id],
-                "payload",
+                ColumnBodyRead {
+                    table: "history_turns",
+                    key_columns: &["turn_id"],
+                    key_values: &[&turn.turn_id],
+                    column: "payload",
+                },
                 &id,
                 "canonical_payload",
                 HistoryBodyRole::CanonicalPayload,
@@ -1698,10 +1912,8 @@ async fn import_sources<C: ConnectionTrait>(
             };
             after = source_row.source_key.clone();
             let source_id: HistorySource = serde_json::from_str(&source_row.source_key)?;
-            let lifecycle = if source_row.outcome.is_some() {
-                ChatSourceLifecycle::Ended {
-                    outcome: source_row.outcome.expect("checked"),
-                }
+            let lifecycle = if let Some(outcome) = source_row.outcome {
+                ChatSourceLifecycle::Ended { outcome }
             } else if source_row.active_observed.is_some() {
                 ChatSourceLifecycle::Active
             } else {
@@ -1737,23 +1949,30 @@ async fn import_sources<C: ConnectionTrait>(
     Ok(())
 }
 
+struct ColumnBodyRead<'a> {
+    table: &'static str,
+    key_columns: &'static [&'static str],
+    key_values: &'a [&'a str],
+    column: &'static str,
+}
+
 async fn copy_column_body<C: ConnectionTrait>(
     import: &mut HistoryImport<'_, C>,
     source: &V24HistorySource,
-    table: &'static str,
-    key_columns: &'static [&'static str],
-    key_values: &[&str],
-    column: &'static str,
+    read: ColumnBodyRead<'_>,
     event_id: &str,
     body_key: &str,
     role: HistoryBodyRole,
 ) -> Result<()> {
     let reader = source
         .column_body(
-            table,
-            key_columns,
-            key_values.iter().map(|value| (*value).to_owned()).collect(),
-            column,
+            read.table,
+            read.key_columns,
+            read.key_values
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            read.column,
         )
         .await?;
     import
@@ -1872,10 +2091,12 @@ async fn import_tool_tasks<C: ConnectionTrait>(
                 copy_column_body(
                     import,
                     source,
-                    "history_tool_tasks",
-                    &["call_id"],
-                    &[&call_id],
-                    "delivery_payload",
+                    ColumnBodyRead {
+                        table: "history_tool_tasks",
+                        key_columns: &["call_id"],
+                        key_values: &[&call_id],
+                        column: "delivery_payload",
+                    },
                     &delivery_id,
                     "canonical_payload",
                     HistoryBodyRole::CanonicalPayload,
@@ -1948,7 +2169,7 @@ async fn import_input_identities(
     loop {
         let rows = source
             .query_all(
-                "SELECT item_id,presentation,request_digest,payload FROM history_input_identities WHERE item_id>? ORDER BY item_id LIMIT 128",
+                "SELECT item_id,ordinal,revision,digest,presentation,request_digest,payload FROM history_input_identities WHERE item_id>? ORDER BY item_id LIMIT 128",
                 vec![after.clone().into()],
             )
             .await?;
@@ -1958,13 +2179,31 @@ async fn import_input_identities(
         for row in rows {
             let item_id: String = row.try_get("", "item_id")?;
             after = item_id.clone();
+            let ordinal = db_u64(
+                row.try_get::<i64>("", "ordinal")?,
+                "history_input_identities.ordinal",
+            )?;
+            let revision = db_u64(
+                row.try_get::<i64>("", "revision")?,
+                "history_input_identities.revision",
+            )?;
+            let digest: String = row.try_get("", "digest")?;
             let presentation: Option<String> = row.try_get("", "presentation")?;
+            let payload: InputIdentityPayload =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            if payload.id != item_id
+                || payload.digest != digest
+                || payload.ordinal != ordinal
+                || payload.revision != revision
+            {
+                return Err(HistoryError::Integrity(
+                    "schema 24 input identity row conflicts with its payload".into(),
+                ));
+            }
             if presentation.as_deref() != Some("visible") {
                 counts.backup_only("history_input_identities_non_visible", 1);
                 continue;
             }
-            let _: crate::studio::storage::state::InputIdentityEntry =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
             if source
                 .query_one(
                     "SELECT 1 FROM conversation_items WHERE item_id=?",
@@ -1976,7 +2215,7 @@ async fn import_input_identities(
                 counts.backup_only("history_input_identities_covered_by_original", 1);
                 continue;
             }
-            counts.backup_only("history_input_identities_identity_only", 1);
+            counts.backup_only("history_input_identities_identity_receipt_only", 1);
         }
     }
     Ok(())
@@ -2190,10 +2429,12 @@ async fn import_fact_receipts<C: ConnectionTrait>(
             copy_column_body(
                 import,
                 source,
-                "history_fact_receipts",
-                &["item_id", "revision"],
-                &[&item_id, &revision.to_string()],
-                "payload",
+                ColumnBodyRead {
+                    table: "history_fact_receipts",
+                    key_columns: &["item_id", "revision"],
+                    key_values: &[&item_id, &revision.to_string()],
+                    column: "payload",
+                },
                 &id,
                 "canonical_payload",
                 HistoryBodyRole::CanonicalPayload,
@@ -2421,14 +2662,16 @@ async fn import_display<C: ConnectionTrait>(
                     import_entity_anchor(
                         connection,
                         import,
-                        source,
-                        database_id,
-                        &id,
-                        None,
-                        record.atom,
-                        Some(visibility),
-                        record.content_source,
-                        recorded_at,
+                        EntityAnchorImport {
+                            source,
+                            database_id,
+                            event_id: &id,
+                            group_id: None,
+                            atom: record.atom,
+                            visibility: Some(visibility),
+                            content_source: record.content_source,
+                            recorded_at,
+                        },
                         counts,
                     )
                     .await?;
@@ -2493,14 +2736,16 @@ async fn import_work_members<C: ConnectionTrait>(
             import_entity_anchor(
                 connection,
                 import,
-                source,
-                database_id,
-                &expected_id,
-                Some(block_id),
-                member.head.record.atom,
-                None,
-                member.head.record.content_source,
-                recorded_at,
+                EntityAnchorImport {
+                    source,
+                    database_id,
+                    event_id: &expected_id,
+                    group_id: Some(block_id),
+                    atom: member.head.record.atom,
+                    visibility: None,
+                    content_source: member.head.record.content_source,
+                    recorded_at,
+                },
                 counts,
             )
             .await?;
@@ -2509,19 +2754,33 @@ async fn import_work_members<C: ConnectionTrait>(
     Ok(())
 }
 
-async fn import_entity_anchor<C: ConnectionTrait>(
-    connection: &C,
-    import: &mut HistoryImport<'_, C>,
-    source: &V24HistorySource,
-    database_id: &str,
-    event_id: &str,
-    group_id: Option<&str>,
-    mut atom: ChatAtom,
+struct EntityAnchorImport<'a> {
+    source: &'a V24HistorySource,
+    database_id: &'a str,
+    event_id: &'a str,
+    group_id: Option<&'a str>,
+    atom: ChatAtom,
     visibility: Option<v24_display::SingleVisibility>,
     content_source: v24_display::DisplayContentSource,
     recorded_at: i64,
+}
+
+async fn import_entity_anchor<C: ConnectionTrait>(
+    connection: &C,
+    import: &mut HistoryImport<'_, C>,
+    import_plan: EntityAnchorImport<'_>,
     counts: &mut ImportCounts,
 ) -> Result<()> {
+    let EntityAnchorImport {
+        source,
+        database_id,
+        event_id,
+        group_id,
+        mut atom,
+        visibility,
+        content_source,
+        recorded_at,
+    } = import_plan;
     let observation = match &content_source {
         v24_display::DisplayContentSource::CompletedOriginal { .. } => HistoryObservation::Original,
         v24_display::DisplayContentSource::FrozenObservation {
@@ -2644,9 +2903,7 @@ async fn import_entity_anchor<C: ConnectionTrait>(
             serde_json::to_vec(&metadata)?,
         )
         .await?;
-    } else {
     }
-
     let completed = atom.completion_item_id.clone();
     let original_completion = match &content_source {
         v24_display::DisplayContentSource::CompletedOriginal { completion_id } => {
@@ -2879,7 +3136,7 @@ async fn canonical_event_page(
     after: u64,
     limit: u32,
 ) -> Result<Vec<(u64, String)>> {
-    Ok(tx
+    tx
         .query_all_raw(statement(
             "SELECT seq,event_id FROM history_events WHERE query_class IS NOT NULL AND seq>? ORDER BY seq LIMIT ?",
             vec![db::number(after)?.into(), i64::from(limit).into()],
@@ -2892,7 +3149,7 @@ async fn canonical_event_page(
                 row.try_get("", "event_id")?,
             ))
         })
-        .collect::<std::result::Result<Vec<_>, _>>()?)
+        .collect::<std::result::Result<Vec<_>, _>>()
 }
 
 async fn verify_display_order(tx: &impl ConnectionTrait, source: &V24HistorySource) -> Result<()> {

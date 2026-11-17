@@ -30,11 +30,11 @@ use pl_model::model::{
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_model::protocol::ProtocolEndpoint;
-use pl_studio_runtime::ThreadModeId;
 use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpFileV1, McpServerTransport, StudioConfig,
     StudioMcpServerEntry, canonical_mcp_filename,
 };
+use pl_studio_runtime::mode::ThreadModeId;
 use sea_orm::sqlx::{
     Connection as _, Row,
     sqlite::{SqliteConnectOptions, SqliteConnection},
@@ -3728,13 +3728,13 @@ fn seed_startup_fault(home: &Path, fault: &str) -> Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let studio =
-            pl_studio_runtime::StudioRuntime::initialize(pl_studio_runtime::StudioRuntimeOptions {
-                studio_home: Some(home.to_owned()),
-                host: pl_studio_runtime::StudioHostKind::Test,
-                ..pl_studio_runtime::StudioRuntimeOptions::desktop()
-            })
-            .await?;
+        let mut options = pl_studio_runtime::StudioRuntimeOptions {
+            studio_home: Some(home.to_owned()),
+            host: pl_studio_runtime::StudioHostKind::Test,
+            ..pl_studio_runtime::StudioRuntimeOptions::desktop()
+        };
+        options.skill_search.include_default_user_dir = false;
+        let studio = pl_studio_runtime::StudioRuntime::initialize(options).await?;
         studio.shutdown_runtime().await?;
         Ok::<_, anyhow::Error>(())
     })?;

@@ -416,15 +416,12 @@ bool _demoHasActivity(ChatScope scope) => scope.parentId == null;
 ChatAtom _demoCopy(
   ChatAtom atom, {
   PayloadData? payload,
-  int? completionSeq,
   ChatSourceState? sourceState,
   ChatAtomLifecycle? lifecycle,
   List<ChatAtomContent>? contents,
   bool frozen = false,
 }) => ChatAtom(
   id: atom.id,
-  completionItemId: atom.completionItemId,
-  completionSeq: completionSeq ?? atom.completionSeq,
   source: atom.source,
   sourceOrder: atom.sourceOrder,
   kind: atom.kind,
@@ -635,11 +632,7 @@ final class _DemoHistory {
     }
     final key = _demoScopeKey(scope);
     final old = byId[message.id];
-    message = _demoCopy(
-      message,
-      completionSeq: old?.order ?? head + 1,
-      frozen: true,
-    );
+    message = _demoCopy(message, frozen: true);
     if (old != null) {
       if (_demoScopeKey(old.scope) != key ||
           jsonEncode(chatAtomToJson(old.message)) !=
@@ -655,7 +648,7 @@ final class _DemoHistory {
     }
     final record = _DemoFrozen(message, head + 1, scope);
     if (message.payload case InlinePayload(:final bytes)) {
-      payloads[message.completionItemId ?? message.id] = _DemoBody()
+      payloads[message.id] = _DemoBody()
         ..append(bytes)
         ..sealed = true;
     }
@@ -792,8 +785,6 @@ final class _DemoHistory {
     };
     final message = ChatAtom(
       id: item.id,
-      completionItemId: item.id,
-      completionSeq: frozen?.completionSeq ?? head + 1,
       source: active.source,
       sourceOrder: active.sourceOrder,
       kind: active.kind,
@@ -928,9 +919,7 @@ final class _DemoReadSource {
       payload: DeferredPayload(
         reference: ContentRef(
           databaseId: _history.epoch,
-          target: ItemPayloadTarget(
-            itemId: message.completionItemId ?? message.id,
-          ),
+          target: ItemPayloadTarget(itemId: message.id),
         ),
         byteLength: length,
       ),
@@ -1003,7 +992,27 @@ final class _DemoReadSource {
         reference.revision != _history.interactionRevision) {
       throw _demoStale();
     }
-    final source = _collection(reference.collection);
+    final rows = _api._demoWorkspace(threadId).interactions.toList()
+      ..sort(
+        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
+          _history.positions[('interaction', b.id)]!,
+        ),
+      );
+    final source = <(String, int, Map<String, Object?>)>[
+      for (final row in rows)
+        (
+          row.id,
+          _history.positions[('interaction', row.id)]!,
+          {
+            'interactionId': row.id,
+            'scope': {'threadId': row.threadId, 'turnId': row.turnId},
+            'revision': row.revision,
+            'kind': row.kind.name,
+            'title': row.title,
+            'body': row.body,
+          },
+        ),
+    ];
     final start = continuation == null
         ? 0
         : boundary(continuation, reference.collection, reference.revision);

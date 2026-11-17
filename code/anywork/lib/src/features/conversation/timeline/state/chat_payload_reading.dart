@@ -115,7 +115,7 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
     if (argumentsBody == null) {
       throw const FormatException('缺少 tool.arguments 正文');
     }
-    if (argumentsBody.reference != null) {
+    if (argumentsBody.hasReference) {
       return const UnavailableToolCard(
         '参数按需读取，尚未取得完整业务内容',
         kind: ToolCardUnavailableKind.deferred,

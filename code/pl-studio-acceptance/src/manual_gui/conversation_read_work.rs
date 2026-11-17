@@ -21,6 +21,7 @@ use pl_studio_runtime::{
     CurrentReader, CurrentWatch, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore},
     history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead, HistoryTurnState},
+    mode::ThreadModeId,
 };
 use serde::Serialize;
 use std::fs;
@@ -177,10 +178,10 @@ async fn write_history(home: &Path, project: &Path) -> Result<Vec<String>> {
             Ok::<_, anyhow::Error>(thread_ids)
         }
         .await;
-        let stopped = runtime.shutdown_runtime().await;
+        let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
         match (seeded, stopped) {
-            (Ok(ids), Ok(())) => Ok(ids),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(ids), Ok(_)) => Ok(ids),
+            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
             (Err(error), Err(stop_error)) => {
                 Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
             }
@@ -211,12 +212,16 @@ async fn seed_thread(runtime: &StudioRuntime, workspace_id: &str, index: usize) 
     let mut watch = match current.watch(None, demand).await {
         Ok(watch) => watch,
         Err(error) => {
-            let _ = current.close().await;
-            return Err(error);
+            return match current.close().await {
+                Ok(()) => Err(error),
+                Err(close_error) => {
+                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                }
+            };
         }
     };
     let mut saw_baseline = false;
-    let outcome = async {
+    let outcome: Result<()> = async {
         let first_input = format!("read-input-{index}-00");
         let mut route_revision = Box::pin(wait_initial_turn(
             runtime,
@@ -342,16 +347,8 @@ pub(super) async fn wait_initial_turn(
             Ok(result) => result,
             Err(error) => Err(anyhow::Error::new(error).context("History completion timed out")),
         };
-        let closed = history.close().await;
-        let (completed, view) = match (observed, closed) {
-            (Ok(observed), Ok(())) => observed,
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
-            (Err(error), Err(close_error)) => {
-                return Err(
-                    error.context(format!("history reader close also failed: {close_error:#}"))
-                );
-            }
-        };
+        history.close().await;
+        let (completed, view) = observed?;
         ensure!(
             view.state.schema_version == pl_studio_runtime::THREAD_SCHEMA_VERSION
                 && view.state.thread.id == thread_id
@@ -440,7 +437,7 @@ async fn create_seed_thread(
                     text: format!("read-seed-{index}-00"),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::ThreadModeId::simple().label().into(),
+                mode: ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -471,10 +468,10 @@ async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<
         Ok::<_, anyhow::Error>(totals)
     }
     .await;
-    let stopped = runtime.shutdown_runtime().await;
+    let stopped = runtime.shutdown_runtime().await.and_then(require_stopped);
     match (counted, stopped) {
-        (Ok(totals), Ok(())) => Ok(totals),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Ok(totals), Ok(_)) => Ok(totals),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
         (Err(error), Err(stop_error)) => {
             Err(error.context(format!("runtime shutdown also failed: {stop_error:#}")))
         }
@@ -482,11 +479,24 @@ async fn count_closed_history(home: &Path, thread_ids: &[String]) -> Result<Vec<
 }
 
 fn runtime_options(home: &Path) -> StudioRuntimeOptions {
-    StudioRuntimeOptions {
+    let mut options = StudioRuntimeOptions {
         studio_home: Some(home.to_owned()),
         host: StudioHostKind::Test,
         ..StudioRuntimeOptions::desktop()
-    }
+    };
+    options.skill_search.include_default_user_dir = false;
+    options
+}
+
+pub(super) fn require_stopped(
+    snapshot: pl_studio_runtime::StudioRuntimeSnapshot,
+) -> Result<pl_studio_runtime::StudioRuntimeSnapshot> {
+    ensure!(
+        snapshot.state.is_stopped(),
+        "runtime shutdown returned {:?} instead of stopped",
+        snapshot.state.kind()
+    );
+    Ok(snapshot)
 }
 
 fn init_git_project(project: &Path) -> Result<()> {
@@ -605,14 +615,8 @@ async fn count_main_items(runtime: &StudioRuntime, thread_id: &str) -> Result<us
         Ok::<_, anyhow::Error>(total)
     }
     .await;
-    let closed = reader.close().await;
-    let total = match (counted, closed) {
-        (Ok(total), Ok(())) => total,
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
-        (Err(error), Err(close_error)) => {
-            return Err(error.context(format!("history reader close also failed: {close_error:#}")));
-        }
-    };
+    reader.close().await;
+    let total = counted?;
     ensure!(
         total > 40,
         "seeded conversation is too small for a bounded first page: {total}"

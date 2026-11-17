@@ -73,6 +73,7 @@ abstract interface class CurrentQueryScope {
   String get threadId;
   int get generation;
   CurrentReader get reader;
+  bool get isActive;
   Future<CurrentCollectionPage> pageCollection({
     required CurrentCollectionRef reference,
     String? continuation,

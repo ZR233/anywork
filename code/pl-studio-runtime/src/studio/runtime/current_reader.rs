@@ -15,6 +15,9 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use super::{StudioRuntime, conversation_state_feed::ConversationStateFeed};
 use crate::studio::thread_projection::{CurrentState, current_page};
 
+type CurrentPublicationChanges =
+    watch::Receiver<Option<Arc<super::thread_observation::ConversationSource>>>;
+
 #[derive(Clone)]
 pub struct CurrentReader {
     pub(super) inner: Arc<Inner>,
@@ -553,12 +556,7 @@ impl CurrentReader {
         Ok(window)
     }
 
-    fn changes(
-        &self,
-    ) -> (
-        watch::Receiver<u64>,
-        Option<watch::Receiver<Option<Arc<super::thread_observation::ConversationSource>>>>,
-    ) {
+    fn changes(&self) -> (watch::Receiver<u64>, Option<CurrentPublicationChanges>) {
         let slot = self
             .inner
             .runtime

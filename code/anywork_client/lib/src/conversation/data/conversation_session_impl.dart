@@ -62,7 +62,6 @@ final class ConversationSessionImpl implements ConversationSession {
   _RuntimeResync? _resync;
   bool _closed = false;
   Future<CloseReport>? _closing;
-  int _visibilityGeneration = 0;
 
   @override
   ThreadSessionState get state => _source.value;
@@ -77,7 +76,6 @@ final class ConversationSessionImpl implements ConversationSession {
   bool get isClosed => _closed;
 
   void setVisible(bool visible) {
-    _visibilityGeneration++;
     if (!visible) {
       _cancelResync();
       _state.setDemand(false);
@@ -125,7 +123,6 @@ final class ConversationSessionImpl implements ConversationSession {
     final id = switch (frame) {
       ThreadSnapshotFrame(:final workspace) => workspace.thread.id,
       ThreadNotificationFrame(:final threadId) => threadId,
-      ThreadResyncRequiredFrame(:final threadId) => threadId,
     };
     if (id != threadId)
       throw StateError('State frame thread identity mismatch');
@@ -148,12 +145,6 @@ final class ConversationSessionImpl implements ConversationSession {
             eligible.completer.complete(candidate.workspace!);
           }
         }
-      case ThreadResyncRequiredFrame(:final dropped, :final epoch):
-        throw ThreadStateLagged(
-          threadId: threadId,
-          dropped: dropped,
-          epoch: epoch,
-        );
       case ThreadNotificationFrame():
         switch (classifyThreadFrame(state.watermark, frame)) {
           case ThreadFrameDecision.drop:

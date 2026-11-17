@@ -23,7 +23,7 @@ class ModelRequestWaitPreview extends StatefulWidget {
 class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
   final _expansion = TimelineExpansionIntent();
   static final _now = DateTime.fromMillisecondsSinceEpoch(1428000);
-  static final _window = TailSnapshot(
+  static final _window = CurrentRunSnapshot(
     currentWorkId: 'model-request-wait',
     revision: 7,
     layoutRevision: 7,
@@ -38,9 +38,15 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
         body: WorkDisplayBlock(
           timing: WorkTiming(startedAt: 1000),
           members: DisplayBlockRef(
-            databaseId: 'preview',
             blockId: 'model-request-wait',
+            cut: HistoryCut('preview-cut'),
+            anchorSeq: 1,
+            headSeq: 1,
           ),
+          executionPresent: true,
+          memberCount: 1,
+          unfinishedCount: 1,
+          groupClosed: false,
         ),
       ),
     ],

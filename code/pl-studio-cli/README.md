@@ -41,4 +41,4 @@ anywk exec --studio-home /runs/profile --cwd /workspace/task \
 
 完整契约见 [命令行宿主与 Harbor 接入](../../design/29-cli-harbor.md)；所有参数见 `anywk exec --help`。
 
-真实账户的历史转换验证需要显式启用 `live-tests`，并指定 `ANYWK_HISTORY_LIVE_ACCOUNT`、`ANYWK_HISTORY_LIVE_MODEL`、`ANYWK_HISTORY_LIVE_PROJECT`、`ANYWK_HISTORY_LIVE_PROMPT` 和尚不存在的绝对输出目录 `ANYWK_HISTORY_LIVE_OUTPUT`；模型要求推理强度时另设 `ANYWK_HISTORY_LIVE_EFFORT`。随后运行 `cargo test --locked -p pl-studio-cli --features live-tests --test history_live -- --ignored --nocapture`。此入口通过产品配置接口读取现有账户的受保护凭据，仅在子进程环境中传递；独立配置与会话写入指定输出目录，并核对原配置未变。它验证真实执行、现役历史原件的分块复制及目标摘要，不启用 schema 25 生产写入，也不代替完整迁移验收。普通离线测试不调用该入口。
+真实账户的历史转换验证需要显式启用 `live-tests`，并指定 `ANYWK_HISTORY_LIVE_ACCOUNT`、`ANYWK_HISTORY_LIVE_MODEL`、`ANYWK_HISTORY_LIVE_PROJECT`、`ANYWK_HISTORY_LIVE_PROMPT` 和尚不存在的绝对输出目录 `ANYWK_HISTORY_LIVE_OUTPUT`；模型要求推理强度时另设 `ANYWK_HISTORY_LIVE_EFFORT`。随后运行 `cargo test --locked -p pl-studio-cli --features live-tests --test history_live -- --ignored --nocapture`。此入口通过产品配置接口读取现有账户的受保护凭据，仅在子进程环境中传递；独立配置与会话写入指定输出目录，并核对原配置未变。它验证真实执行、schema 25 历史原件的分块复制及目标摘要，不代替完整迁移验收。普通离线测试不调用该入口。

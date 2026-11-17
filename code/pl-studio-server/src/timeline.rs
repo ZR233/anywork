@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
+    future::Future,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -21,14 +22,13 @@ use axum::{
 };
 use futures::Stream;
 use pl_studio_runtime::{
-    ContentRange, CurrentCollectionPage, CurrentCollectionRef, CurrentContentRef, CurrentFrame,
-    CurrentRevision, ReadDemand,
+    ContentRange, CurrentCollectionPage, CurrentCollectionRef, CurrentContentRef, CurrentRevision,
+    ReadDemand, StudioError, StudioErrorCode, StudioErrorReason,
     history::{
         HistoryAccountingHead, HistoryBodyPage, HistoryBodyWindow, HistoryCut, HistoryDemand,
         HistoryEventBodyRef, HistoryEventDetail, HistoryEventsPage, HistoryEventsQuery,
         HistoryGroupPage, HistoryTimelinePage,
     },
-    studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
 use pl_studio_runtime::{CurrentReader, CurrentWatch, history::HistoryReader};
 use serde::{Deserialize, Serialize};
@@ -73,6 +73,7 @@ enum TimelineOwner {
         reads: Arc<Semaphore>,
         active_reads: AtomicUsize,
         cancel: CancellationToken,
+        admission: Mutex<()>,
         tasks: TaskTracker,
         close_gate: tokio::sync::Mutex<()>,
     },
@@ -85,6 +86,7 @@ enum TimelineOwner {
         reads: Arc<Semaphore>,
         active_reads: AtomicUsize,
         cancel: CancellationToken,
+        admission: Mutex<()>,
         tasks: TaskTracker,
         close_gate: tokio::sync::Mutex<()>,
     },
@@ -101,6 +103,7 @@ impl TimelineOwner {
             reads: Arc::new(Semaphore::new(MAX_READS)),
             active_reads: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            admission: Mutex::new(()),
             tasks: TaskTracker::new(),
             close_gate: tokio::sync::Mutex::new(()),
         }
@@ -116,6 +119,7 @@ impl TimelineOwner {
             reads: Arc::new(Semaphore::new(MAX_READS)),
             active_reads: AtomicUsize::new(0),
             cancel: CancellationToken::new(),
+            admission: Mutex::new(()),
             tasks: TaskTracker::new(),
             close_gate: tokio::sync::Mutex::new(()),
         }
@@ -153,6 +157,29 @@ impl TimelineOwner {
         }
     }
 
+    fn spawn_task(&self, task: impl Future<Output = ()> + Send + 'static) -> Result<(), ApiError> {
+        let (admission, cancel, tasks) = match self {
+            Self::History {
+                admission,
+                cancel,
+                tasks,
+                ..
+            }
+            | Self::Current {
+                admission,
+                cancel,
+                tasks,
+                ..
+            } => (admission, cancel, tasks),
+        };
+        let _gate = admission.lock().expect("timeline admission poisoned");
+        if cancel.is_cancelled() || tasks.is_closed() {
+            return Err(stale_scope());
+        }
+        tasks.spawn(task);
+        Ok(())
+    }
+
     fn touch(&self) {
         let (activity, changed) = match self {
             Self::History {
@@ -171,12 +198,27 @@ impl TimelineOwner {
     }
 
     fn request_close(&self) {
-        self.cancel().cancel();
+        let (admission, cancel, tasks) = match self {
+            Self::History {
+                admission,
+                cancel,
+                tasks,
+                ..
+            }
+            | Self::Current {
+                admission,
+                cancel,
+                tasks,
+                ..
+            } => (admission, cancel, tasks),
+        };
+        let _gate = admission.lock().expect("timeline admission poisoned");
+        cancel.cancel();
         match self {
             Self::History { reader, .. } => reader.request_close(),
             Self::Current { reader, .. } => reader.request_close(),
         }
-        self.tasks().close();
+        tasks.close();
     }
 
     async fn close(&self) -> Result<(), StudioError> {
@@ -415,7 +457,8 @@ impl Timelines {
         })
     }
 
-    pub(crate) async fn shutdown(&self) {
+    pub(crate) async fn shutdown(&self) -> anyhow::Result<()> {
+        let mut failure: Option<anyhow::Error> = None;
         let mut tasks = {
             let mut owners = self.inner.lock().expect("timeline owners poisoned");
             owners.closed = true;
@@ -426,13 +469,40 @@ impl Timelines {
         };
         while let Some(result) = tasks.join_next().await {
             if let Err(error) = result {
-                tracing::warn!(%error, "timeline owner task failed");
+                let error = anyhow::Error::new(error);
+                failure = Some(match failure {
+                    Some(previous) => {
+                        previous.context(format!("another timeline join failed: {error:#}"))
+                    }
+                    None => error,
+                });
             }
         }
-        let owners =
-            std::mem::take(&mut self.inner.lock().expect("timeline owners poisoned").owners);
-        for owner in owners.values() {
-            let _ = owner.close().await;
+        let owners = self
+            .inner
+            .lock()
+            .expect("timeline owners poisoned")
+            .owners
+            .iter()
+            .map(|(id, owner)| (id.clone(), owner.clone()))
+            .collect::<Vec<_>>();
+        for (id, owner) in owners {
+            match owner.close().await {
+                Ok(()) => self.forget(&id),
+                Err(error) => {
+                    let error = anyhow::Error::new(error);
+                    failure = Some(match failure {
+                        Some(previous) => {
+                            previous.context(format!("timeline {id} close also failed: {error:#}"))
+                        }
+                        None => error.context(format!("timeline {id} close failed")),
+                    });
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 }
@@ -884,24 +954,31 @@ pub(crate) async fn changed(
     let reader = lease.history()?.clone();
     let owner = Arc::clone(&lease.owner);
     let (sender, receiver) = mpsc::channel(1);
-    owner.tasks().spawn(async move {
+    Arc::clone(&owner).spawn_task(async move {
         let _lease = lease;
         let mut cut = request.cut;
         loop {
+            let capacity = tokio::select! { biased;
+                () = state.shutdown.cancelled() => break,
+                () = owner.cancel().cancelled() => break,
+                capacity = sender.reserve() => match capacity {
+                    Ok(capacity) => capacity,
+                    Err(_) => break,
+                },
+            };
             let changed = tokio::select! { biased;
-                _ = state.shutdown.cancelled() => break,
-                _ = owner.cancel().cancelled() => break,
-                capacity = sender.reserve() => match capacity { Ok(capacity) => capacity, Err(_) => break },
+                () = state.shutdown.cancelled() => break,
+                () = owner.cancel().cancelled() => break,
+                () = sender.closed() => break,
                 changed = reader.wait_changed(cut.clone()) => changed,
             };
             let changed = match changed {
                 Ok(changed) => changed,
                 Err(error) => {
-                    if let Ok(event) = Event::default()
-                        .event("error")
-                        .json_data(pl_studio_runtime::studio_error_from_anyhow(error))
-                    {
-                        let _ = sender.try_send(Ok(event));
+                    if let Ok(event) = Event::default().event("error").json_data(
+                        pl_studio_runtime::studio_error_from_anyhow(anyhow::Error::new(error)),
+                    ) {
+                        capacity.send(Ok(event));
                     }
                     break;
                 }
@@ -910,12 +987,10 @@ pub(crate) async fn changed(
             let Ok(event) = Event::default().event("changed").json_data(changed) else {
                 break;
             };
-            if capacity.send(Ok(event)).is_err() {
-                break;
-            }
+            capacity.send(Ok(event));
         }
         let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
-    });
+    })?;
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
@@ -983,10 +1058,11 @@ pub(crate) async fn watch(
     let owner = Arc::clone(&lease.owner);
     let watch = current.watch(request.after, request.demand).await?;
     let (sender, receiver) = mpsc::channel(1);
-    owner.tasks().spawn(async move {
+    let task_owner = Arc::clone(&owner);
+    owner.spawn_task(async move {
         let _lease = lease;
-        run_current_watch(&state, &owner, watch, sender).await;
-    });
+        run_current_watch(&state, task_owner.as_ref(), watch, sender).await;
+    })?;
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
@@ -998,10 +1074,18 @@ async fn run_current_watch(
     sender: mpsc::Sender<Result<Event, Infallible>>,
 ) {
     loop {
+        let capacity = tokio::select! { biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            capacity = sender.reserve() => match capacity {
+                Ok(capacity) => capacity,
+                Err(_) => break,
+            },
+        };
         let frame = tokio::select! { biased;
-            _ = state.shutdown.cancelled() => break,
-            _ = owner.cancel().cancelled() => break,
-            capacity = sender.reserve() => match capacity { Ok(capacity) => capacity, Err(_) => break },
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            () = sender.closed() => break,
             frame = watch.next() => frame,
         };
         match frame {
@@ -1009,9 +1093,7 @@ async fn run_current_watch(
                 let Ok(event) = Event::default().event("current").json_data(frame) else {
                     break;
                 };
-                if capacity.send(Ok(event)).is_err() {
-                    break;
-                }
+                capacity.send(Ok(event));
             }
             Ok(None) => break,
             Err(error) => {
@@ -1019,14 +1101,16 @@ async fn run_current_watch(
                     .event("error")
                     .json_data(pl_studio_runtime::studio_error_from_anyhow(error))
                 {
-                    let _ = sender.try_send(Ok(event));
+                    capacity.send(Ok(event));
                 }
                 break;
             }
         }
     }
     watch.request_close();
-    let _ = watch.close().await;
+    if let Err(error) = watch.close().await {
+        tracing::warn!(%error, "current SSE watch close failed");
+    }
     let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
 }
 
@@ -1094,10 +1178,11 @@ pub(crate) async fn body_watch(
         .await?;
     let owner = Arc::clone(&lease.owner);
     let (sender, receiver) = mpsc::channel(1);
-    owner.tasks().spawn(async move {
+    let task_owner = Arc::clone(&owner);
+    owner.spawn_task(async move {
         let _lease = lease;
-        run_body_watch(&state, &owner, watch, sender).await;
-    });
+        run_body_watch(&state, task_owner.as_ref(), watch, sender).await;
+    })?;
     Ok(Sse::new(ReceiverStream::new(receiver))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
 }
@@ -1109,10 +1194,18 @@ async fn run_body_watch(
     sender: mpsc::Sender<Result<Event, Infallible>>,
 ) {
     loop {
+        let capacity = tokio::select! { biased;
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            capacity = sender.reserve() => match capacity {
+                Ok(capacity) => capacity,
+                Err(_) => break,
+            },
+        };
         let window = tokio::select! { biased;
-            _ = state.shutdown.cancelled() => break,
-            _ = owner.cancel().cancelled() => break,
-            capacity = sender.reserve() => match capacity { Ok(capacity) => capacity, Err(_) => break },
+            () = state.shutdown.cancelled() => break,
+            () = owner.cancel().cancelled() => break,
+            () = sender.closed() => break,
             window = watch.next() => window,
         };
         match window {
@@ -1120,9 +1213,7 @@ async fn run_body_watch(
                 let Ok(event) = Event::default().event("body").json_data(window) else {
                     break;
                 };
-                if capacity.send(Ok(event)).is_err() {
-                    break;
-                }
+                capacity.send(Ok(event));
             }
             Ok(None) => break,
             Err(error) => {
@@ -1130,14 +1221,16 @@ async fn run_body_watch(
                     .event("error")
                     .json_data(pl_studio_runtime::studio_error_from_anyhow(error))
                 {
-                    let _ = sender.try_send(Ok(event));
+                    capacity.send(Ok(event));
                 }
                 break;
             }
         }
     }
     watch.request_close();
-    let _ = watch.close().await;
+    if let Err(error) = watch.close().await {
+        tracing::warn!(%error, "current body SSE watch close failed");
+    }
     let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
 }
 

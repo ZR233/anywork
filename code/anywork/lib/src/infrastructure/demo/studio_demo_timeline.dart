@@ -48,8 +48,12 @@ const _demoDisplayIdentityFailure = StudioFailure(
 );
 
 extension _DemoDisplayHistory on _DemoHistory {
-  DisplayBlockRef displayRef(String id) =>
-      DisplayBlockRef(databaseId: epoch, blockId: id);
+  DisplayBlockRef displayRef(String id) => DisplayBlockRef(
+    blockId: id,
+    cut: HistoryCut('demo-cut:$epoch'),
+    anchorSeq: 0,
+    headSeq: 0,
+  );
 
   void declareDisplay(
     String id,
@@ -86,8 +90,8 @@ extension _DemoDisplayHistory on _DemoHistory {
     if (id == null) return; // Explicitly hidden from this controlled story.
     final script = displayScripts[id]!;
     if (script.sealed) return;
-    final entry = completed[itemId];
-    final atom = entry?.atom ?? activeAtoms[itemId];
+    final entry = byId[itemId];
+    final atom = entry?.message ?? activeAtoms[itemId];
     if (atom == null) return;
     script.blockOrder ??= ++displayLastOrder;
     final heads = displayHeads.putIfAbsent(displayRef(id), () => []);
@@ -111,7 +115,7 @@ extension _DemoDisplayHistory on _DemoHistory {
         },
         contentSource: entry == null
             ? const CurrentAtomSource()
-            : CompletedOriginal(completionId: entry.recordId),
+            : CompletedOriginal(completionId: entry.message.id),
       ),
     );
     if (index >= 0 && identical(heads[index].record.atom, atom)) return;
@@ -141,6 +145,12 @@ extension _DemoDisplayHistory on _DemoHistory {
         startedAt: script.startedAt,
         finishedAt: script.sealed ? script.finishedAt : null,
       ),
+      executionPresent: displayExecutionPresent,
+      memberCount: script.memberIds.length,
+      unfinishedCount: script.memberIds
+          .where((id) => activeAtoms.containsKey(id))
+          .length,
+      groupClosed: script.sealed,
     );
   }
 
@@ -357,7 +367,8 @@ extension _DemoDisplayHistory on _DemoHistory {
       }
       validateIdentity(block.id, block.body, block.blockOrder);
       if (block.body case WorkDisplayBlock(:final members)) {
-        if (members.databaseId != epoch || members.blockId != block.id) {
+        if (members.cut != HistoryCut('demo-cut:$epoch') ||
+            members.blockId != block.id) {
           throw _demoStale();
         }
       }
@@ -379,7 +390,8 @@ extension _DemoDisplayHistory on _DemoHistory {
       }
       validateIdentity(block.id, block.body, block.blockOrder);
       if (block.body case WorkDisplayBlock(:final members)) {
-        if (members.databaseId != epoch || members.blockId != block.id) {
+        if (members.cut != HistoryCut('demo-cut:$epoch') ||
+            members.blockId != block.id) {
           throw _demoStale();
         }
       }
@@ -388,7 +400,7 @@ extension _DemoDisplayHistory on _DemoHistory {
     for (final entry
         in (members ?? const <DisplayBlockRef, List<DisplayMemberHead>>{})
             .entries) {
-      if (entry.key.databaseId != epoch) throw _demoStale();
+      if (entry.key.cut != HistoryCut('demo-cut:$epoch')) throw _demoStale();
       if (displayBlocks.any((block) => block.id == entry.key.blockId)) {
         throw _demoQueryFailure('Sealed display members cannot be replaced');
       }
@@ -521,11 +533,33 @@ Object _displayBodyJson(DisplayBlockBody body) => switch (body) {
     'record': _displayRecordJson(record),
     'visibility': visibility.name,
   },
-  WorkDisplayBlock(:final timing, :final members) => {
-    'kind': 'work',
-    'members': {'databaseId': members.databaseId, 'blockId': members.blockId},
-    'timing': {'startedAt': timing.startedAt, 'finishedAt': timing.finishedAt},
-  },
+  WorkDisplayBlock(
+    :final timing,
+    :final members,
+    :final executionPresent,
+    :final memberCount,
+    :final unfinishedCount,
+    :final groupClosed,
+    :final summary,
+  ) =>
+    {
+      'kind': 'work',
+      'members': {
+        'blockId': members.blockId,
+        'cut': members.cut.token,
+        'anchorSeq': members.anchorSeq,
+        'headSeq': members.headSeq,
+      },
+      'timing': {
+        'startedAt': timing.startedAt,
+        'finishedAt': timing.finishedAt,
+      },
+      'executionPresent': executionPresent,
+      'memberCount': memberCount,
+      'unfinishedCount': unfinishedCount,
+      'groupClosed': groupClosed,
+      'summary': summary,
+    },
 };
 Map<String, Object?> _liveJson(CurrentRunSnapshot live) => {
   'revision': live.revision,
@@ -686,8 +720,9 @@ extension _DemoPresentationQueries on _DemoReadSource {
           ],
           'before': value.before,
         });
-    if (encoded(page()) > demand.maxBytes)
+    if (encoded(page()) > demand.maxBytes) {
       throw _demoQueryFailure('InvalidDemand');
+    }
     for (var i = records.length - 1; i >= 0; i--) {
       final block = records[i];
       final candidate = DisplayBlock(

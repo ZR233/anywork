@@ -1,4 +1,5 @@
 //! A noninteractive adapter of the production Studio lifecycle, without a second agent loop.
+#![recursion_limit = "256"]
 mod args;
 mod signals;
 mod text;
@@ -6,7 +7,7 @@ mod text;
 pub use args::{Cli, Command, ExecArgs, PreparedExec, PreparedExport};
 pub use signals::SignalListener;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use pl_studio_runtime::history::{
     BODY_CHUNK_BYTES, HISTORY_PROTOCOL_VERSION, HistoryBodyPage, HistoryDemand,
     HistoryEventBodyRef, HistoryReader, HistoryRowHead, HistoryTurnState,

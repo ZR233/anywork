@@ -127,7 +127,7 @@ impl BotRuntime {
                     },
                 },
                 // 终局尚未持久或身份尚未可读：待定，不当取消或无 continuation。
-                BotInteractionRead::NotReady | BotInteractionRead::Absent => return Step::Wait,
+                BotInteractionRead::Absent => return Step::Wait,
             }
         }
         // 集合中没有可裁决的 UserInput 终局（全部 pending，或只有已决议权限）：
@@ -208,7 +208,7 @@ impl BotRuntime {
                     }
                     fact.status == InteractionStatus::Pending
                 }
-                Ok(BotInteractionRead::NotReady | BotInteractionRead::Absent) => {
+                Ok(BotInteractionRead::Absent) => {
                     waiting = true;
                     false
                 }

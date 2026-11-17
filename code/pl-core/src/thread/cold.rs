@@ -477,10 +477,20 @@ pub(crate) trait ErasedStorage: Send + Sync + fmt::Debug {
     fn idle_status(&self, thread_id: &str) -> StorageIdleStatus;
     fn subscribe_pressure(&self, thread_id: &str) -> Option<tokio::sync::watch::Receiver<()>>;
     fn admit(&self, thread_id: &str, write: ThreadWrite) -> Result<(), ColdStoreError>;
-    fn admit_history(&self, _thread_id: &str, _export: Arc<super::HistoryExport>) -> Result<(), ColdStoreError> {
-        Err(ColdStoreError { source: Box::new(std::io::Error::other("checkpoint backend cannot accept independent History exports")) })
+    fn admit_history(
+        &self,
+        _thread_id: &str,
+        _export: Arc<super::HistoryExport>,
+    ) -> Result<(), ColdStoreError> {
+        Err(ColdStoreError {
+            source: Box::new(std::io::Error::other(
+                "checkpoint backend cannot accept independent History exports",
+            )),
+        })
     }
-    fn is_history(&self) -> bool { false }
+    fn is_history(&self) -> bool {
+        false
+    }
     fn flush<'a>(
         &'a self,
         thread_id: &'a str,
@@ -555,14 +565,15 @@ impl<T: ColdStore> ErasedStorage for T {
 #[derive(Debug, Clone)]
 pub struct ColdStoreHandle(pub(super) StorageHandle);
 impl ColdStoreHandle {
-    pub fn new(store: impl ColdStore) -> Self { Self(StorageHandle(Arc::new(store))) }
+    pub fn new(store: impl ColdStore) -> Self {
+        Self(StorageHandle(Arc::new(store)))
+    }
 }
 
 /// Shared store handle; Thread ownership and mutable model/tool instances remain private.
 #[derive(Debug, Clone)]
 pub(crate) struct StorageHandle(pub(crate) Arc<dyn ErasedStorage>);
 impl StorageHandle {
-
     pub(crate) fn fold_usage(&self, summary: &mut UsageSummary, effect: &ThreadEffectBatch) {
         self.0.fold_usage(summary, effect);
     }
@@ -1424,7 +1435,9 @@ impl Owner {
                         None => {
                             // An unencodable batch keeps the pessimistic `u64::MAX` weight, exactly
                             // like the previous fold-based accounting did.
-                            let bytes = pending.write.effect()
+                            let bytes = pending
+                                .write
+                                .effect()
                                 .encode()
                                 .map_or(u64::MAX, |payload| payload.content().len() as u64);
                             pending.encoded_bytes = Some(bytes);
@@ -1608,8 +1621,12 @@ impl Owner {
             }
             let sequence = pending.write.effect().sequence;
             let accepted = match &pending.write {
-                super::owner::PendingWrite::Checkpoint(write) => store.0.admit(&self.id, write.clone()),
-                super::owner::PendingWrite::History(export) => store.0.admit_history(&self.id, export.clone()),
+                super::owner::PendingWrite::Checkpoint(write) => {
+                    store.0.admit(&self.id, write.as_ref().clone())
+                }
+                super::owner::PendingWrite::History(export) => {
+                    store.0.admit_history(&self.id, export.clone())
+                }
             };
             match accepted {
                 Ok(()) => {

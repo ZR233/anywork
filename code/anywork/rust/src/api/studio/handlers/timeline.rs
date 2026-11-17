@@ -5,7 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::api::studio::{
     bridge_runtime::active_bridge,
     convert::{chat, presentation},
-    subscription::{error::open_error, factory::BridgeObservationFactory},
+    subscription::{
+        error::{close_error, open_error},
+        factory::BridgeObservationFactory,
+    },
     types::*,
 };
 use pl_lifecycle::{Managed, ManagedResource};
@@ -288,7 +291,7 @@ impl BridgeHistoryReader {
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        Ok(self.managed.close().await?)
+        self.managed.close().await.map_err(close_error)
     }
 }
 
@@ -452,7 +455,7 @@ impl BridgeCurrentReader {
     }
 
     pub async fn close(&self) -> Result<(), BridgeError> {
-        Ok(self.managed.close().await?)
+        self.managed.close().await.map_err(close_error)
     }
 }
 

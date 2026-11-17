@@ -490,7 +490,7 @@ pub enum EventBodyV3 {
     },
     Completion {
         header: ChatItemHeaderExportV3,
-        atom: HistoryEntityHead,
+        atom: Box<HistoryEntityHead>,
         payload: ExportedBlobV3,
         contents_manifest: ExportedBlobV3,
     },
@@ -498,7 +498,7 @@ pub enum EventBodyV3 {
         thread_id: String,
         through_effect_seq: u64,
         history_cut: CompletionCursorV3,
-        summary: UsageSummary,
+        summary: Box<UsageSummary>,
         status: Option<String>,
         aborted: bool,
         error: Option<String>,

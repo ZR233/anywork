@@ -11,9 +11,8 @@ import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/settings_store.dart';
-import '../../presentation/view_models/timeline_session_owner.dart';
+import '../conversation/timeline/view_models/timeline_view_model.dart';
 
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../../domain/models/studio_models.dart';
@@ -134,7 +133,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
               bytes: await _readStatePayload(scope, reference, byteLength),
             ),
         };
-        final value = jsonDecode(utf8.decode(payload.bytes));
+        final value = jsonDecode(utf8.decode(_inlinePayloadBytes(payload)));
         if (value is! String) {
           throw const FormatException('activeSkills entry must be a string');
         }
@@ -255,7 +254,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
           bytes: await _readStatePayload(scope, reference, byteLength),
         ),
     };
-    final value = jsonDecode(utf8.decode(payload.bytes));
+    final value = jsonDecode(utf8.decode(_inlinePayloadBytes(payload)));
     if (value is! String) {
       throw const FormatException('State collection entry must be a string');
     }
@@ -618,6 +617,11 @@ bool _sameStrings(List<String> left, List<String> right) {
   }
   return true;
 }
+
+List<int> _inlinePayloadBytes(CurrentPayloadData payload) => switch (payload) {
+  InlineCurrentPayload(:final bytes) => bytes,
+  DeferredCurrentPayload() => throw const ConversationStateFieldDiscontinuity(),
+};
 
 T? _observeSession<T>(
   Ref ref,

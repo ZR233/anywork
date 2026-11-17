@@ -150,6 +150,30 @@ pub(crate) struct CurrentSaveState {
     pub(crate) last_successful_capture_at: Option<i64>,
 }
 
+impl CurrentSaveState {
+    pub(crate) fn persistence_snapshot(&self) -> crate::CurrentPersistenceSnapshot {
+        crate::CurrentPersistenceSnapshot {
+            runtime_epoch: self.runtime_epoch.map(|epoch| epoch.to_string()),
+            dirty: self.dirty,
+            in_flight: self.in_flight,
+            saved_runtime_epoch: self
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.runtime_epoch.to_string()),
+            saved_revision: self
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.snapshot_revision),
+            last_successful_save_at: self.last_successful_save_at,
+            last_successful_capture_at: self.last_successful_capture_at,
+            snapshot_age_millis: self
+                .last_successful_capture_at
+                .map(|captured| u64::try_from(utc_millis().saturating_sub(captured)).unwrap_or(0)),
+            last_error: self.error.as_ref().map(ToString::to_string),
+        }
+    }
+}
+
 struct State {
     view: CurrentSaveState,
     capture: Option<CancellationToken>,
@@ -163,19 +187,30 @@ struct Shared {
     state: Mutex<State>,
     changed: watch::Sender<CurrentSaveState>,
     close: Notify,
+    on_change: Box<dyn Fn() + Send + Sync>,
     #[cfg(test)]
     observer_tasks: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl Shared {
     fn update<T>(&self, update: impl FnOnce(&mut State) -> T) -> T {
+        self.update_notifying(|state| (update(state), true))
+    }
+
+    fn update_notifying<T>(&self, update: impl FnOnce(&mut State) -> (T, bool)) -> T {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = update(&mut state);
+        let (result, notify) = update(&mut state);
         // Publish under the same narrow lock so concurrent dirty/close updates cannot reorder views.
         self.changed.send_replace(state.view.clone());
+        drop(state);
+        // The coordinator reads this writer while holding its own registry lock. Never call it
+        // under the writer lock, and coalesce token-only changes while dirty is already true.
+        if notify {
+            (self.on_change)();
+        }
         result
     }
     fn read<T>(&self, read: impl FnOnce(&State) -> T) -> T {
@@ -188,15 +223,18 @@ impl Shared {
     }
 
     fn mark_dirty(&self, epoch: RuntimeEpoch, observed_revision: Option<u64>) {
-        self.update(|state| {
+        self.update_notifying(|state| {
+            let mut notify = false;
             if state.view.lifecycle == CurrentLifecycle::Open
                 && state.view.runtime_epoch == Some(epoch)
             {
+                notify = !state.view.dirty;
                 state.view.dirty = true;
                 if let Some(revision) = observed_revision {
                     state.view.observed_revision = Some(revision);
                 }
             }
+            ((), notify)
         });
     }
 }
@@ -205,7 +243,7 @@ enum Command {
     Activate {
         previous: Option<RuntimeEpoch>,
         epoch: RuntimeEpoch,
-        source: CurrentSource,
+        source: Box<CurrentSource>,
         reply: oneshot::Sender<Result<()>>,
     },
     Flush {
@@ -232,7 +270,10 @@ impl fmt::Debug for CurrentWriter {
 }
 
 impl CurrentWriter {
-    pub(super) fn new(file: CurrentFile) -> Arc<Self> {
+    pub(super) fn new(
+        file: CurrentFile,
+        on_change: impl Fn() + Send + Sync + 'static,
+    ) -> Arc<Self> {
         let view = CurrentSaveState {
             runtime_epoch: None,
             lifecycle: CurrentLifecycle::Unbound,
@@ -257,6 +298,7 @@ impl CurrentWriter {
             }),
             changed,
             close: Notify::new(),
+            on_change: Box::new(on_change),
             #[cfg(test)]
             observer_tasks: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         });
@@ -293,7 +335,7 @@ impl CurrentWriter {
             .send(Command::Activate {
                 previous,
                 epoch,
-                source,
+                source: Box::new(source),
                 reply,
             })
             .await
@@ -562,7 +604,7 @@ async fn run(file: CurrentFile, shared: Arc<Shared>, mut commands: mpsc::Receive
                 let Some(command) = command else { break; };
                 match command {
                     Command::Activate { previous, epoch, source, reply } => {
-                        let result = activate_source(&shared, &mut active, previous, epoch, source).await;
+                        let result = activate_source(&shared, &mut active, previous, epoch, *source).await;
                         let _ = reply.send(result);
                     }
                     Command::Flush { epoch, reply } => {
@@ -690,7 +732,9 @@ async fn publish(
                 || previous.snapshot_revision <= receipt.snapshot_revision)),
         "current capture regressed its saved revision"
     );
+    let thread_id = current.thread_id.clone();
     file.save(current).await?;
+    super::state::clear_checkpoint_recovery(&thread_id);
     shared.update(|state| {
         state.view.receipt = Some(receipt.clone());
         state.view.last_successful_capture_at = Some(captured_at);

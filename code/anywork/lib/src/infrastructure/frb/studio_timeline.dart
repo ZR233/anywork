@@ -277,7 +277,7 @@ final class FrbCurrentReader extends _FrbPortProxy<_FrbRawCurrentReader>
     required ContentRange range,
   }) => _raw.readBody(reference: reference, range: range);
   @override
-  CurrentBodyWatch watchBody({
+  Future<CurrentBodyWatch> watchBody({
     required CurrentContentRef reference,
     required ContentRange range,
   }) => _raw.watchBody(reference: reference, range: range);
@@ -341,7 +341,7 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
             );
           },
         );
-    return _FrbCurrentWatch(entry);
+    return Future.value(_FrbCurrentWatch(entry));
   }
 
   Future<CurrentCollectionPage> pageCollection({
@@ -372,7 +372,7 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
     return _contentWindowFromFrb(value);
   });
 
-  CurrentBodyWatch watchBody({
+  Future<CurrentBodyWatch> watchBody({
     required CurrentContentRef reference,
     required ContentRange range,
   }) {
@@ -401,7 +401,7 @@ final class _FrbRawCurrentReader extends _FrbRawResource {
             );
           },
         );
-    return _FrbCurrentBodyWatch(entry);
+    return Future.value(_FrbCurrentBodyWatch(entry));
   }
 
   @override
@@ -484,15 +484,14 @@ final class _FrbCurrentWatch implements CurrentWatch {
 }
 
 final class _FrbCurrentBodyWatch implements CurrentBodyWatch {
-  _FrbCurrentBodyWatch(this._entry);
+  _FrbCurrentBodyWatch(this._entry) {
+    _output = StreamController(onListen: _start, onCancel: requestClose);
+  }
   final ClientAcquisition<
     _FrbRawPull<frb_timeline.BridgeCurrentBodyWatch, ContentWindow>
   >
   _entry;
-  final StreamController<ContentWindow> _output = StreamController(
-    onListen: _start,
-    onCancel: requestClose,
-  );
+  late final StreamController<ContentWindow> _output;
   Future<void>? _pumping;
   bool _started = false;
   bool _closed = false;

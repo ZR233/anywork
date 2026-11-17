@@ -697,9 +697,15 @@ class _SealedToolWorkGroupPreviewState
       body: WorkDisplayBlock(
         timing: const WorkTiming(startedAt: 1735689600, finishedAt: 1735689725),
         members: const DisplayBlockRef(
-          databaseId: 'preview',
           blockId: 'sealed-tool-preview-group',
+          cut: HistoryCut('preview-cut'),
+          anchorSeq: 2,
+          headSeq: 2,
         ),
+        executionPresent: false,
+        memberCount: 1,
+        unfinishedCount: 0,
+        groupClosed: true,
       ),
     ),
   );

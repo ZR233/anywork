@@ -543,7 +543,7 @@ impl StudioThreadFactory {
         let export_history = self
             .services
             .store
-            .history(&id)
+            .history(id)
             .await
             .map_err(|error| resource_error("open export history", error))?
             .reader();

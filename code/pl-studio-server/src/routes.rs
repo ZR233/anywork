@@ -35,7 +35,6 @@ use utoipa::{IntoResponses, OpenApi};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 use crate::AppState;
-use crate::conversation;
 use crate::error::ApiError;
 use crate::sse;
 use crate::timeline;

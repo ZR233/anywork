@@ -1,10 +1,10 @@
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart' show ConversationActivityView;
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../live_status/live_status_state.dart';
+import '../state/timeline_display_models.dart';
 import 'timeline_activity_clock.dart';
 import 'timeline_activity_row.dart';
 import 'timeline_markdown.dart';

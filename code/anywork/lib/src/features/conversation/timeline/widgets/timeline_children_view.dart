@@ -1,7 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_chat_ui/flutter_chat_ui.dart';
-import 'package:anywork_client/conversation.dart';
 
 import '../state/chat_item_presentation.dart';
 import 'chat_item_view.dart';
@@ -19,6 +18,7 @@ class TimelineChildrenView extends StatefulWidget {
     required this.generation,
     required this.isDisplayActive,
     this.onLoadOlder,
+    this.onLoadNewer,
     this.attachmentBuilder,
     this.atomBuilder,
   });
@@ -26,6 +26,7 @@ class TimelineChildrenView extends StatefulWidget {
   final InMemoryChatController controller;
   final int generation;
   final Future<void> Function()? onLoadOlder;
+  final Future<void> Function()? onLoadNewer;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final Widget Function(ChatItemPresentation item)? atomBuilder;
   final bool Function() isDisplayActive;
@@ -35,14 +36,13 @@ class TimelineChildrenView extends StatefulWidget {
 }
 
 class _TimelineChildrenViewState extends State<TimelineChildrenView> {
-  Future<void>? _loadingOlder;
+  Future<void>? _loadingPage;
 
-  void _loadOlder() {
-    final action = widget.onLoadOlder;
-    if (action == null || _loadingOlder != null) return;
+  void _load(Future<void> Function()? action) {
+    if (action == null || _loadingPage != null) return;
     setState(() {
-      _loadingOlder = Future<void>.sync(action).whenComplete(() {
-        if (mounted) setState(() => _loadingOlder = null);
+      _loadingPage = Future<void>.sync(action).whenComplete(() {
+        if (mounted) setState(() => _loadingPage = null);
       });
     });
   }
@@ -92,6 +92,8 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
             builder: (context, _) {
               final messages = widget.controller.messages;
               final hasOlder = widget.onLoadOlder != null;
+              final hasNewer = widget.onLoadNewer != null;
+              final hasPageControl = hasOlder || hasNewer;
               return ListView.builder(
                 key: ValueKey(('timeline-children-list', widget.generation)),
                 shrinkWrap: true,
@@ -103,34 +105,55 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
                   final index = messages.indexWhere(
                     (message) => message.id == key.value,
                   );
-                  return index < 0 ? null : index + (hasOlder ? 1 : 0);
+                  return index < 0 ? null : index + (hasPageControl ? 1 : 0);
                 },
-                itemCount: messages.length + (hasOlder ? 1 : 0),
+                itemCount: messages.length + (hasPageControl ? 1 : 0),
                 itemBuilder: (context, index) {
-                  if (hasOlder && index == 0) {
+                  if (hasPageControl && index == 0) {
                     return FutureBuilder<void>(
-                      future: _loadingOlder,
+                      future: _loadingPage,
                       builder: (context, snapshot) => Align(
                         alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          key: const ValueKey('timeline-children-load-older'),
-                          onPressed: _loadingOlder == null ? _loadOlder : null,
-                          icon:
-                              snapshot.connectionState ==
-                                  ConnectionState.waiting
-                              ? const SizedBox.square(
-                                  dimension: 14,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.history, size: 15),
-                          label: const Text('加载更早记录'),
+                        child: Wrap(
+                          spacing: 8,
+                          children: [
+                            if (hasNewer)
+                              TextButton.icon(
+                                key: const ValueKey(
+                                  'timeline-children-load-newer',
+                                ),
+                                onPressed: _loadingPage == null
+                                    ? () => _load(widget.onLoadNewer)
+                                    : null,
+                                icon: const Icon(Icons.update, size: 15),
+                                label: const Text('加载较新记录'),
+                              ),
+                            if (hasOlder)
+                              TextButton.icon(
+                                key: const ValueKey(
+                                  'timeline-children-load-older',
+                                ),
+                                onPressed: _loadingPage == null
+                                    ? () => _load(widget.onLoadOlder)
+                                    : null,
+                                icon:
+                                    snapshot.connectionState ==
+                                        ConnectionState.waiting
+                                    ? const SizedBox.square(
+                                        dimension: 14,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.history, size: 15),
+                                label: const Text('加载更早记录'),
+                              ),
+                          ],
                         ),
                       ),
                     );
                   }
-                  final messageIndex = index - (hasOlder ? 1 : 0);
+                  final messageIndex = index - (hasPageControl ? 1 : 0);
                   final message = messages[messageIndex];
                   return KeyedSubtree(
                     key: ValueKey(message.id),

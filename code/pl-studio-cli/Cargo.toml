@@ -17,6 +17,7 @@ clap.workspace = true
 pl-studio-runtime.workspace = true
 pl-studio-update.workspace = true
 pl-tool.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -27,7 +28,6 @@ uuid.workspace = true
 pl-model.workspace = true
 pl-provider-fixture.workspace = true
 tempfile.workspace = true
-serde_json.workspace = true
 sea-orm.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]

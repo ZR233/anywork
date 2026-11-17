@@ -145,8 +145,6 @@ final class ChatAtomContent {
 final class ChatAtom {
   ChatAtom({
     required this.id,
-    this.completionItemId,
-    this.completionSeq,
     required this.source,
     this.sourceState,
     required this.sourceOrder,
@@ -165,8 +163,6 @@ final class ChatAtom {
     this.payload,
   }) : contents = List.unmodifiable(contents);
   final String id;
-  final String? completionItemId;
-  final int? completionSeq;
   final ChatSourceId source;
 
   /// Same-query-cut lifecycle evidence; not part of frozen completion metadata.

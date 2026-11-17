@@ -26,7 +26,7 @@ pub(super) struct NestedScope {
 }
 
 pub(super) enum PendingWrite {
-    Checkpoint(cold::ThreadWrite),
+    Checkpoint(Box<cold::ThreadWrite>),
     History(Arc<HistoryExport>),
 }
 impl PendingWrite {
@@ -1048,11 +1048,11 @@ impl Owner {
         // publish that commits no effect (handled above) drops the claim, so the operation's own
         // boundary releases its still-untransferred ceiling instead.
         self.pending_effects.push_back(PendingEffect {
-            write: PendingWrite::Checkpoint(cold::ThreadWrite {
+            write: PendingWrite::Checkpoint(Box::new(cold::ThreadWrite {
                 effect: effect.clone(),
                 checkpoint,
                 output_claim,
-            }),
+            })),
             encoded_bytes,
         });
         self.effect_window.push(effect);

@@ -65,8 +65,7 @@ class _MembersState extends State<CompletionRunConnector>
   @override
   bool get expanded => isCurrent && widget.unit.expansion.expanded == true;
   @override
-  String? get before =>
-      isCurrent ? _controller?.page?.before?.toString() : null;
+  String? get before => isCurrent ? _controller?.page?.nextCursor : null;
   @override
   bool get loading => isCurrent && (_controller?.loading ?? true);
   @override
@@ -91,8 +90,13 @@ class _MembersState extends State<CompletionRunConnector>
     _unregisterMember = widget.registerMemberDisplay?.call(this);
     final open = intent.openDisplayMembers;
     if (open != null) {
+      final groupClosed = switch (widget.unit.body) {
+        WorkDisplayBlock(:final groupClosed) => groupClosed,
+        SingleDisplayBlock() => true,
+      };
       intent.members ??= DisplayMemberController(
         reference: blockReference!,
+        groupClosed: groupClosed,
         demand: const ReadDemand(maxItems: 12, maxBytes: 32 * 1024),
         open: open,
       );
@@ -163,7 +167,7 @@ class _MembersState extends State<CompletionRunConnector>
     final older =
         delta < 0 &&
         position.pixels <= position.minScrollExtent &&
-        controller.page?.before != null;
+        controller.page?.nextCursor != null;
     final newer =
         delta > 0 &&
         position.pixels >= position.maxScrollExtent &&
@@ -201,7 +205,7 @@ class _MembersState extends State<CompletionRunConnector>
         delta < 0 &&
         first != null &&
         first.top >= top - 1 &&
-        controller.page?.before != null;
+        controller.page?.nextCursor != null;
     final newer =
         delta > 0 &&
         last != null &&
@@ -280,6 +284,15 @@ class _MembersState extends State<CompletionRunConnector>
   @override
   void didUpdateWidget(covariant CompletionRunConnector oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final reference = blockReference;
+    final controller = _controller;
+    if (reference != null && controller != null) {
+      final groupClosed = switch (widget.unit.body) {
+        WorkDisplayBlock(:final groupClosed) => groupClosed,
+        SingleDisplayBlock() => true,
+      };
+      controller.rebase(reference, groupClosed: groupClosed);
+    }
     if (widget.unit.state == DisplayBlockState.sealed) {
       _controller?.requireSealed();
     }

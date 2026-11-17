@@ -5,7 +5,7 @@ import 'conversation_activity_models.dart';
 import 'thread_activity_models.dart';
 import 'thread_directory_models.dart' show ThreadStatusView;
 import 'thread_models.dart' show ThreadTextChannel;
-import 'timeline_todo.dart';
+import 'timeline_models.dart';
 import 'thread_wait_models.dart';
 import 'runtime_models.dart';
 import '../studio/thread_frames.dart';

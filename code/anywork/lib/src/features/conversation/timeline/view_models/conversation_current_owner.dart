@@ -67,7 +67,7 @@ final class CurrentAtomBodyOwner extends ChangeNotifier {
       threadId: reader.threadId,
       generation: _generation,
       reader: reader,
-      isEligible: isCurrent,
+      isEligible: () => isCurrent,
     );
   }
 

@@ -446,7 +446,6 @@ impl BotRuntime {
             }
         };
         let input = match input {
-            BotInputRead::NotReady => return Step::Wait,
             BotInputRead::Ready { delivery, state } => (delivery, state),
             BotInputRead::Absent => {
                 if run.watching_original() {

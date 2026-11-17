@@ -692,7 +692,9 @@ v24 的 `conversation_items`、内容表与 typed metadata 只由迁移器读取
 
 Native 展示不再有独立 `conversation_display_blocks`／`conversation_display_members` 运行表、`history_meta` 展示水位或 `studio.display-delta` 写入链。Work、Single 与 member 由 schema 25 的 anchor 事件、`HistoryWorkHead`／`HistoryEntityHead` 和不可变 body 表达；展示时序与大小头规则归 [26](./26-timeline-content.md)。
 
-一次可靠 effect 可接纳多个 History 事件。首次实际可见的 Single 建立 Work anchor 和 Single anchor，并把当时未结束观察保存为 `BoundaryObserved` 与独立 body；后续 token 只更新 Current 正文 owner，不写历史。旧组和旧成员始终读取已接纳的历史 bytes 与引用，不从当前内容或后来终稿替换。
+一次可靠 effect 可产生多个 History 事件，但必须整体接纳：来源、Turn、分类器生成的组／成员／边界、正文及费用候选先在私有准备状态中完成，再一次性发布 accepted cut。准备失败、取消或容量不足时，不发布该 effect 的前缀，也不提前推进分类器与记账状态；重试保留同一身份、字节与候选。为释放容量可以先保存此前完整接纳的 effect。
+
+首次实际可见的 Single 建立 Work anchor 和 Single anchor，并把当时未结束观察保存为 `BoundaryObserved` 与独立 body；后续 token 只更新 Current 正文 owner，不写历史。旧组和旧成员始终读取已接纳的历史 bytes 与引用，不从当前内容或后来终稿替换。
 
 历史查询先捕获 cut 和 pending 根，再按 `row_key`、`group_id` 与 anchor 索引读取有界页面。展示行不依赖 GroupHead 的“最新状态”重写旧成员，也不为每个 token 建立事件。关闭、失败与背压由 HistoryStore 本身负责；这里不另设定时器、第二 writer 或 UI 确认协议。
 
@@ -722,4 +724,6 @@ Linux 监督进程将一次安装终态原子写入 `$XDG_STATE_HOME/anywork/upd
 
 完成文件准备后，由现有迁移框架在一个 SQLite Immediate 事务中导入追加历史并替换旧格式。先导入唯一 canonical 原件，再导入未被覆盖的业务事实，最后按旧显示位置与组内顺序建立主列表和成员锚点。保留原件身份、未知时间、独立边界观察、空终稿、Turn disposition 与累计费用；费用基线不再作为新增量。正文有界分块搬运，产品类型化引用改写为新不可变引用，producer opaque 字节不改写。全部引用和顺序验证成功后，显式删除已识别的旧业务表；目标结构、格式身份与迁移记账一起提交，失败完整回滚。
 
-提交结果不明时重新连接观察实际格式，不能重复追加或猜测恢复。文件准备完成而数据库事务失败时保留有效 current，下次只重试尚未完成的历史升级。完整旧库、升级前已有 current 的副本、报告和仍被引用的资源保留用于显式维护与回滚；正常 current、history 与 Timeline 不访问这些备份。升级后的两个存储分别加载、分别失败，不把一次性准备顺序推广成日常共同水位或提交栅栏。
+完整升级报告在数据库提交前，以同步过的 `migration-backups/history-24-to-25/pending-upgrade-report.json` 暂存，包含本次 operation、原库身份、备份路径及真实导入／仅备份分类。数据库提交成功后，将完全相同的字节发布到 operation 目录的 `upgrade-report.json`，再删除所属暂存文件。提交后报告发布失败时，下次在独占维护阶段验证 schema 25、身份与保留材料，补齐原报告，不能用空的“已升级”报告覆盖导入证据。正常 schema 25 且无待恢复报告的打开保持只读，不争用现役 writer lease。
+
+提交结果不明时重新连接观察实际格式，不能重复追加或猜测恢复，也不删除尚未确认归属与提交结果的报告。文件准备完成而数据库事务失败时保留有效 current；下次只有在独占维护阶段确认仍为 schema 24，才把所属暂存报告归档为 `uncommitted-report.json` 并重试历史升级。完整旧库、升级前已有 current 的副本、报告和仍被引用的资源保留用于显式维护与回滚；正常 current、history 与 Timeline 不访问这些备份。升级后的两个存储分别加载、分别失败，不把一次性准备顺序推广成日常共同水位或提交栅栏。

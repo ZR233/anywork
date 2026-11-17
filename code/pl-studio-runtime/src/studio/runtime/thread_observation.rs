@@ -32,8 +32,6 @@ use tokio::{
 use crate::studio::storage::thread_writer::{
     HistoryChannel, PendingProjectionRetention, ProjectionRetention, ProjectionTransfer,
 };
-// Read-only source types used with this owner's original report readability watch.
-pub(crate) use crate::studio::storage::thread_writer::HistoryStatus;
 use crate::studio::thread_projection::{LiveEvent, LiveProjection, storage_state};
 use crate::thread_assembler::agent_review::ReviewDeliverySource;
 
@@ -1311,10 +1309,6 @@ pub(in crate::studio) struct PendingHandoff {
 }
 
 impl PendingHandoff {
-    pub(in crate::studio) fn is_live(&self) -> bool {
-        self.mode == HandoffMode::Live
-    }
-
     /// Retained size of the prepared content while its owner still owes the handoff.
     ///
     /// The same measurement the reliable channel charges when it takes the batch over, so the
@@ -1461,39 +1455,20 @@ impl LiveOwner {
         feed.bind_conversation(&conversation, handle.runtime_epoch().to_string());
         let history = projector.store.history(id).await?;
         let history_reader = history.reader();
-        let database_id = history.database_id().to_owned();
         let usage = snapshot.usage_summary.clone();
-        // Seed the bounded active slice once. The channel owns allocation continuity; only a
-        // retired identity referenced by a late reliable fact needs an exact durable lookup.
-        let effects = handle.effects().await?;
         let runtime_epoch = handle.runtime_epoch();
         let initialized = conversation
             .initialize_projection(Arc::new({
-                let store = projector.store.clone();
                 let channel = channel.clone();
                 let thread = thread.clone();
                 let snapshot = snapshot.clone();
                 let usage = usage.clone();
-                let runtime_epoch = runtime_epoch.clone();
                 move || {
-                    let (
-                        store,
-                        channel,
-                        thread,
-                        snapshot,
-                        usage,
-                        effects,
-                        database_id,
-                        history,
-                        runtime_epoch,
-                    ) = (
-                        store.clone(),
+                    let (channel, thread, snapshot, usage, history, runtime_epoch) = (
                         channel.clone(),
                         thread.clone(),
                         snapshot.clone(),
                         usage.clone(),
-                        effects.clone(),
-                        database_id.clone(),
                         history.clone(),
                         runtime_epoch,
                     );
@@ -1506,8 +1481,6 @@ impl LiveOwner {
                         )?;
                         // Current starts a new runtime epoch; it must not replay R1 history into
                         // R2's live publication rights. Late facts query HistoryReader by owner.
-                        let _ = (&store, &channel, &effects, &database_id);
-                        projection.seed(Vec::new(), std::collections::BTreeSet::new());
                         projection.restore_current(&thread, &snapshot).await?;
                         let baseline = projection.current_state();
                         Ok(RetainedProjection {
@@ -1521,7 +1494,7 @@ impl LiveOwner {
             }))
             .await;
         if let Err(error) = initialized {
-            return match conversation.close_current(&handle).await {
+            return match conversation.close_current(handle).await {
                 Ok(()) => Err(error),
                 Err(close) => Err(error.context(format!(
                     "closing current after projection initialization failure: {close:#}"
@@ -1531,7 +1504,7 @@ impl LiveOwner {
         let retained = match ProjectionLease::claim(conversation.clone()) {
             Ok(retained) => retained,
             Err(error) => {
-                return match conversation.close_current(&handle).await {
+                return match conversation.close_current(handle).await {
                     Ok(()) => Err(error),
                     Err(close) => Err(error.context(format!(
                         "closing current after projection ownership failure: {close:#}"
@@ -1596,13 +1569,6 @@ impl LiveOwner {
         // The seeded facts are already resident, so the Thread's budget covers them from the moment
         // the owner is installed instead of only after its first commit.
         owner.publish_retained()?;
-        // A Thread re-activated after its last Turn finished has no live frame left for that fact:
-        // the authoritative snapshot carries only the active Turn and `turnCompleted` was broadcast
-        // once, to subscribers that may be long gone. This is the very cold-read path the owner is
-        // installed on, so the newest terminal Turn is read here once — bounded, without item bodies
-        // — and seeded into the same retained fact the live projection publishes. The live path can
-        // then only move it forward, so a seed can never hide a later finished Turn, and a late
-        // duplicate of a Turn already retained is dropped by the same identity/revision guard.
         // Terminal Turn history is served by the independent HistoryReader. Replaying it into the
         // new runtime epoch would recreate presentation restore and can publish an old run's fact.
         Ok(owner)
@@ -2702,7 +2668,7 @@ async fn restore_finish(
     if result.finish.is_some() {
         return Ok(());
     }
-    let Some(tool) = result
+    let Some(_) = result
         .last_tool()
         .filter(|tool| tool.invocation().name() == pl_tool::finish_turn::TOOL_FINISH_TURN)
     else {

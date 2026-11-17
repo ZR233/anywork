@@ -7,16 +7,12 @@
 use super::{
     SessionRuntime,
     agent_services::AgentServices,
-    observation::DurableMessageIdentity,
     review_delivery::{DeliveryObservation, ReviewDeliveryException},
 };
 use anyhow::{Context, Result, ensure};
 use pl_core::{
     context::{AgentMessageKind, ContextContent, OpaquePayload},
-    thread::{
-        ThreadError, ThreadHandle, ThreadLifecycle, ThreadSnapshot, extensions::ExtensionMutation,
-        inbox::ThreadMessage,
-    },
+    thread::{ThreadError, ThreadHandle, extensions::ExtensionMutation, inbox::ThreadMessage},
 };
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +57,8 @@ pub(super) struct PendingNativeDelivery {
     message_digest: String,
     source: PendingNativeDeliverySource,
     wake: bool,
+    #[serde(default)]
+    accepted: bool,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +144,7 @@ impl PendingNativeDelivery {
             message,
             source,
             wake,
+            accepted: false,
         };
         pending.validate()?;
         Ok(pending)
@@ -161,6 +160,24 @@ impl PendingNativeDelivery {
 
     pub(super) fn is_review_decision(&self) -> bool {
         self.kind == PendingNativeDeliveryKind::ReviewDecision
+    }
+
+    fn accepted(&self) -> bool {
+        self.accepted
+    }
+
+    fn with_accepted(&self, accepted: bool) -> Self {
+        let mut pending = self.clone();
+        pending.accepted = accepted;
+        pending
+    }
+
+    fn same_immutable(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.message == other.message
+            && self.message_digest == other.message_digest
+            && self.source == other.source
+            && self.wake == other.wake
     }
 
     pub(super) fn terminal_sequence(&self) -> Option<u64> {
@@ -216,6 +233,10 @@ impl PendingNativeDelivery {
         ensure!(
             self.message_digest == self.message.digest(),
             "pending Native delivery digest differs from its exact message"
+        );
+        ensure!(
+            !self.accepted || !self.is_review_decision(),
+            "source-owned review decision cannot enter the accepted phase"
         );
         match (&self.kind, &self.source) {
             (
@@ -437,7 +458,8 @@ pub(super) async fn complete_pending_native_delivery(
         "source-owned review decision is not a recipient delivery"
     );
     let extension_id = pending.extension_id();
-    let marker_revision = ensure_marker(thread, &extension_id, &pending).await?;
+    let (_, initial_revision) =
+        ensure_recipient_marker(services, recipient, thread, &pending).await?;
 
     // The marker must be durable before acceptance is allowed to begin.
     services
@@ -447,80 +469,189 @@ pub(super) async fn complete_pending_native_delivery(
         .flush_current(thread.runtime_epoch())
         .await?;
 
-    let sequence = match accepted_identity(&thread.snapshot(), pending.message()) {
-        AcceptedIdentity::Matching(sequence) => sequence,
-        AcceptedIdentity::Conflict => {
-            anyhow::bail!("pending Native delivery conflicts with the recipient inbox")
-        }
-        AcceptedIdentity::Absent => thread.send_message(pending.message().clone()).await?,
-    };
+    let (marker, marker_revision) = marker_from_snapshot(thread, &extension_id, &pending)?
+        .context("pending Native delivery marker disappeared before admission")?;
+    ensure!(
+        marker_revision == initial_revision,
+        "pending Native delivery marker changed before admission"
+    );
+    if !marker.accepted() {
+        let accepted = marker.with_accepted(true);
+        thread
+            .send_message_with_extensions(
+                pending.message().clone(),
+                vec![ExtensionMutation::Put {
+                    id: extension_id.clone(),
+                    expected_revision: Some(marker_revision),
+                    payload: accepted.encode()?,
+                }],
+            )
+            .await?;
+    }
 
-    // Admission is not the ACK. Make the exact inbox identity durable before removing its marker.
+    // The atomic Core command stages both the message and accepted marker. Once this marker says
+    // accepted, neither the bounded consumed ledger nor message replay is an admission authority.
     services
         .store
         .conversation_store(recipient)
         .await?
         .flush_current(thread.runtime_epoch())
         .await?;
-    match owner
-        .durable_message_identity(recipient, &pending.message().id)
+    let saved = read_saved_marker(services, recipient, thread, &extension_id, &pending, true)
         .await?
-    {
-        Some(DurableMessageIdentity::Proven {
-            sequence: saved,
-            digest,
-        }) if saved == sequence && digest == pending.message_digest.as_str() => {
-            // The marker was flushed before admission, so a crash before this cleanup leaves the
-            // obligation retryable. Current's inbox/consumed ledger proves the duplicate receipt;
-            // atomically combining acceptance with marker deletion still requires a Core owner
-            // command because the current handle API publishes them separately.
+        .context("accepted pending Native delivery is absent from saved Current")?;
+    ensure!(
+        saved.accepted(),
+        "saved pending Native delivery is not in the accepted phase"
+    );
+
+    if pending.wake && allow_wake {
+        let inbox = thread
+            .snapshot()
+            .inbox
+            .iter()
+            .find(|record| record.message.id == pending.message.id)
+            .cloned();
+        if let Some(record) = inbox {
+            ensure!(
+                record.message.digest() == pending.message_digest.as_str(),
+                "accepted pending Native delivery conflicts with its resident inbox identity"
+            );
+            let options = native_execution_options(owner, recipient)?;
+            thread
+                .wake_accepted_message(&pending.message.id, record.sequence, options)
+                .await?;
         }
-        Some(DurableMessageIdentity::Proven { .. }) => {
-            anyhow::bail!("pending Native delivery changed its admission identity")
-        }
-        Some(DurableMessageIdentity::Unverifiable) => {
-            anyhow::bail!("pending Native delivery has an unverifiable Current receipt")
-        }
-        None => anyhow::bail!("pending Native delivery is absent from saved Current"),
     }
 
-    let marker = thread.snapshot().extensions.get(&extension_id).cloned();
-    if let Some(record) = marker {
-        let saved = PendingNativeDelivery::decode(&extension_id, &record.payload)?;
+    let marker = marker_from_snapshot(thread, &extension_id, &pending)?;
+    if let Some((marker, revision)) = marker {
         ensure!(
-            saved == pending,
-            "pending Native delivery marker changed before cleanup"
+            marker.accepted(),
+            "pending Native delivery lost its accepted phase before cleanup"
         );
-        ensure!(
-            record.revision == marker_revision,
-            "pending Native delivery marker was concurrently replaced"
-        );
+        // Delete is the final fallible business action. The accepted marker may remain on disk until
+        // the Current writer's next save; recovery then performs cleanup without sending again.
         thread
             .mutate_extensions(vec![ExtensionMutation::Delete {
                 id: extension_id,
-                expected_revision: record.revision,
+                expected_revision: revision,
             }])
             .await?;
-        services
-            .store
-            .conversation_store(recipient)
-            .await?
-            .flush_current(thread.runtime_epoch())
-            .await?;
-    }
-
-    if pending.wake && allow_wake {
-        let options = native_execution_options(owner, recipient)?;
-        match thread
-            .wake_accepted_message(&pending.message.id, sequence, options)
-            .await
-        {
-            Ok(_) => {}
-            Err(ThreadError::Closed) if thread.snapshot().lifecycle != ThreadLifecycle::Open => {}
-            Err(error) => return Err(error.into()),
-        }
     }
     Ok(())
+}
+
+async fn ensure_recipient_marker(
+    services: &AgentServices,
+    recipient: &str,
+    thread: &ThreadHandle,
+    pending: &PendingNativeDelivery,
+) -> Result<(PendingNativeDelivery, u64)> {
+    let extension_id = pending.extension_id();
+    let resident = thread.snapshot().extensions.get(&extension_id).cloned();
+    if let Some(record) = &resident {
+        let saved = PendingNativeDelivery::decode(&extension_id, &record.payload)?;
+        ensure!(
+            saved.same_immutable(pending),
+            "pending Native delivery conflicts with its resident marker"
+        );
+    }
+    let durable =
+        read_saved_marker(services, recipient, thread, &extension_id, pending, false).await?;
+    let accepted = resident
+        .as_ref()
+        .map(|record| PendingNativeDelivery::decode(&extension_id, &record.payload))
+        .transpose()?
+        .is_some_and(|marker| marker.accepted())
+        || durable
+            .as_ref()
+            .is_some_and(PendingNativeDelivery::accepted);
+    let desired = pending.with_accepted(accepted);
+    let record = match resident {
+        Some(record)
+            if PendingNativeDelivery::decode(&extension_id, &record.payload)?.accepted()
+                == accepted =>
+        {
+            record
+        }
+        Some(record) => thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: extension_id.clone(),
+                expected_revision: Some(record.revision),
+                payload: desired.encode()?,
+            }])
+            .await?
+            .get(&extension_id)
+            .cloned()
+            .context("pending Native delivery marker was not committed")?,
+        None => thread
+            .mutate_extensions(vec![ExtensionMutation::Put {
+                id: extension_id.clone(),
+                expected_revision: None,
+                payload: desired.encode()?,
+            }])
+            .await?
+            .get(&extension_id)
+            .cloned()
+            .context("pending Native delivery marker was not committed")?,
+    };
+    let marker = PendingNativeDelivery::decode(&extension_id, &record.payload)?;
+    ensure!(
+        marker.same_immutable(pending),
+        "pending Native delivery differs from its committed marker"
+    );
+    Ok((marker, record.revision))
+}
+
+async fn read_saved_marker(
+    services: &AgentServices,
+    recipient: &str,
+    thread: &ThreadHandle,
+    extension_id: &str,
+    pending: &PendingNativeDelivery,
+    require_current_owner: bool,
+) -> Result<Option<PendingNativeDelivery>> {
+    let record = services.record(recipient).await?;
+    let Some(current) =
+        crate::studio::thread_factory::recovery::load_current_read_only(&services.store, &record)
+            .await?
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        current.thread_id == recipient,
+        "saved Current belongs to a different pending delivery recipient"
+    );
+    let Some(record) = current.state.extensions.get(extension_id) else {
+        return Ok(None);
+    };
+    ensure!(
+        !require_current_owner || current.saved_runtime_epoch == thread.runtime_epoch(),
+        "saved pending Native delivery belongs to a different owner epoch"
+    );
+    let saved = PendingNativeDelivery::decode(extension_id, &record.payload)?;
+    ensure!(
+        saved.same_immutable(pending),
+        "saved pending Native delivery conflicts with its immutable material"
+    );
+    Ok(Some(saved))
+}
+
+fn marker_from_snapshot(
+    thread: &ThreadHandle,
+    extension_id: &str,
+    pending: &PendingNativeDelivery,
+) -> Result<Option<(PendingNativeDelivery, u64)>> {
+    let Some(record) = thread.snapshot().extensions.get(extension_id).cloned() else {
+        return Ok(None);
+    };
+    let marker = PendingNativeDelivery::decode(extension_id, &record.payload)?;
+    ensure!(
+        marker.same_immutable(pending),
+        "resident pending Native delivery marker changed its immutable material"
+    );
+    Ok(Some((marker, record.revision)))
 }
 
 async fn ensure_marker(
@@ -531,7 +662,7 @@ async fn ensure_marker(
     if let Some(record) = thread.snapshot().extensions.get(extension_id) {
         let saved = PendingNativeDelivery::decode(extension_id, &record.payload)?;
         ensure!(
-            saved == *pending,
+            saved.same_immutable(pending),
             "pending Native delivery conflicts with its Current marker"
         );
         return Ok(record.revision);
@@ -554,7 +685,7 @@ async fn ensure_marker(
                 .context("pending Native delivery marker disappeared after conflict")?;
             let saved = PendingNativeDelivery::decode(extension_id, &record.payload)?;
             ensure!(
-                saved == *pending,
+                saved.same_immutable(pending),
                 "pending Native delivery conflicts with its Current marker"
             );
             return Ok(record.revision);
@@ -566,7 +697,7 @@ async fn ensure_marker(
         .context("pending Native delivery marker was not committed")?;
     let saved = PendingNativeDelivery::decode(extension_id, &record.payload)?;
     ensure!(
-        saved == *pending,
+        saved.same_immutable(pending),
         "pending Native delivery differs from its committed marker"
     );
     Ok(record.revision)
@@ -599,7 +730,7 @@ pub(super) async fn clear_pending_marker(
     };
     let saved = PendingNativeDelivery::decode(&extension_id, &record.payload)?;
     ensure!(
-        saved == *pending,
+        saved.same_immutable(pending),
         "pending Native delivery marker changed before cleanup"
     );
     thread
@@ -609,38 +740,6 @@ pub(super) async fn clear_pending_marker(
         }])
         .await?;
     Ok(true)
-}
-
-enum AcceptedIdentity {
-    Matching(u64),
-    Conflict,
-    Absent,
-}
-
-fn accepted_identity(snapshot: &ThreadSnapshot, message: &ThreadMessage) -> AcceptedIdentity {
-    if let Some(record) = snapshot
-        .inbox
-        .iter()
-        .find(|record| record.message.id == message.id)
-    {
-        return if record.message == *message {
-            AcceptedIdentity::Matching(record.sequence)
-        } else {
-            AcceptedIdentity::Conflict
-        };
-    }
-    if let Some(identity) = snapshot
-        .consumed_message_identities
-        .iter()
-        .find(|identity| identity.id == message.id)
-    {
-        return if identity.digest == message.digest() {
-            AcceptedIdentity::Matching(identity.sequence)
-        } else {
-            AcceptedIdentity::Conflict
-        };
-    }
-    AcceptedIdentity::Absent
 }
 
 fn native_execution_options(

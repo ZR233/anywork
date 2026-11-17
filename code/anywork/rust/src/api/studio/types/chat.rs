@@ -6,7 +6,7 @@ pub struct BridgeReadDemand {
     pub max_bytes: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatSourceId {
     ForegroundTurn {
         turn_id: String,
@@ -75,7 +75,7 @@ pub enum BridgeChatTerminalOutcome {
     Transferred,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatAtomLifecycle {
     Active {
         started: Option<BridgeChatFactPosition>,
@@ -102,14 +102,14 @@ pub enum BridgeChatContentRole {
     ToolOutput,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BridgeChatSourceLifecycle {
     Unknown,
     Active,
     Ended { outcome: BridgeChatTerminalOutcome },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeChatSourceState {
     pub source: BridgeChatSourceId,
     pub lifecycle: BridgeChatSourceLifecycle,

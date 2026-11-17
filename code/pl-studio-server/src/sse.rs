@@ -226,6 +226,75 @@ fn topic_token(topic: &pl_studio_runtime::StudioProductTopic) -> &'static str {
     }
 }
 
+/// Lossless send for baseline and non-coalescable frames.
+async fn send_json(
+    sender: &mpsc::Sender<Result<Event, Infallible>>,
+    shutdown: &CancellationToken,
+    event_name: &'static str,
+    event_id: Option<&str>,
+    value: &impl Serialize,
+) -> bool {
+    let Ok(event) = encode_event(event_name, event_id, value) else {
+        return false;
+    };
+    tokio::select! {
+        biased;
+        () = shutdown.cancelled() => false,
+        sent = sender.send(Ok(event)) => sent.is_ok(),
+    }
+}
+
+/// Best-effort send for coalescable product updates. A full buffer is reported so the
+/// caller can deliver one `stale` marker instead of silently treating the update as sent.
+fn try_send_json(
+    sender: &mpsc::Sender<Result<Event, Infallible>>,
+    event_name: &'static str,
+    event_id: Option<&str>,
+    value: &impl Serialize,
+) -> Delivery {
+    let Ok(event) = encode_event(event_name, event_id, value) else {
+        return Delivery::Closed;
+    };
+    match sender.try_send(Ok(event)) {
+        Ok(()) => Delivery::Sent,
+        Err(mpsc::error::TrySendError::Full(_)) => Delivery::Stalled,
+        Err(mpsc::error::TrySendError::Closed(_)) => Delivery::Closed,
+    }
+}
+
+/// Wait for room and deliver a `stale` marker without dropping the resynchronization signal.
+async fn flush_stale(
+    sender: &mpsc::Sender<Result<Event, Infallible>>,
+    shutdown: &CancellationToken,
+    stale: StaleEvent,
+) -> bool {
+    let permit = tokio::select! {
+        biased;
+        () = shutdown.cancelled() => return false,
+        permit = sender.reserve() => match permit {
+            Ok(permit) => permit,
+            Err(_) => return false,
+        },
+    };
+    let Ok(event) = encode_event("stale", None, &stale) else {
+        return false;
+    };
+    permit.send(Ok(event));
+    true
+}
+
+fn encode_event(
+    event_name: &'static str,
+    event_id: Option<&str>,
+    value: &impl Serialize,
+) -> Result<Event, axum::Error> {
+    let mut event = Event::default().event(event_name);
+    if let Some(event_id) = event_id {
+        event = event.id(event_id);
+    }
+    event.json_data(value)
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::Result;

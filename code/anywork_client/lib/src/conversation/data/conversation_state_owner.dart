@@ -195,22 +195,12 @@ final class ConversationStateOwner {
     if (frame == null || !_live(attempt)) return;
     final work = _enqueue(attempt, () async {
       if (!_live(attempt)) return;
-      if (frame case ThreadSnapshotFrame(
-        :final schemaVersion,
-        completedHistoryVersion: final historyVersion,
-      )) {
+      if (frame case ThreadSnapshotFrame(:final schemaVersion)) {
         if (schemaVersion != threadSchemaVersion) {
           throw ProtocolVersionMismatch(
             received: schemaVersion,
             supported: threadSchemaVersion,
             field: 'threadSchemaVersion',
-          );
-        }
-        if (historyVersion != completedHistoryVersion) {
-          throw ProtocolVersionMismatch(
-            received: historyVersion,
-            supported: completedHistoryVersion,
-            field: 'completedHistoryVersion',
           );
         }
       }

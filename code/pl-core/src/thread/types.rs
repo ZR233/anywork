@@ -108,9 +108,7 @@ impl EffectWindow {
     pub(super) fn push_current(&self, export: Arc<HistoryExport>) {
         let mut state = self.write();
         state.batches.push_back(export.effect.clone());
-        state
-            .current_exports
-            .insert(export.effect.sequence, export);
+        state.current_exports.insert(export.effect.sequence, export);
     }
 
     pub(super) fn current_page(
@@ -264,6 +262,18 @@ pub enum ModelExecutionPhase {
     Running,
 }
 
+/// One already-admitted context compaction visible to the current owner.
+///
+/// The identity is the exact `context-compaction:<thread>:<commit>` value carried by the matching
+/// pending operation. This record is ephemeral and only exists while that operation is in flight.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveContextCompaction {
+    pub operation_id: String,
+    pub turn_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
 /// Current owner state published after each accepted request or model-output commit.
 ///
 /// A snapshot holds only the facts that current logical execution and live observation still
@@ -292,6 +302,12 @@ pub struct ThreadSnapshot {
     /// first boundary and its completion. Never persisted: it describes live execution only.
     #[serde(skip)]
     pub model_execution: Option<ModelExecutionPhase>,
+    /// The original admitted compaction operation, if context preparation is compacting now.
+    ///
+    /// This is an ephemeral observation of the operation identity already allocated for the
+    /// pending `ContextCompactionEvent::Started`; it is never a second identity or persisted state.
+    #[serde(skip)]
+    pub active_context_compaction: Option<ActiveContextCompaction>,
     /// Ephemeral producer previews for running tasks; never persisted or used as model context.
     ///
     /// One entry per running call, each holding the producer's own opaque output identities and
@@ -573,6 +589,7 @@ impl ThreadSnapshot {
         self.observation_revision = 0;
         self.model_progress = None;
         self.model_execution = None;
+        self.active_context_compaction = None;
         self.tool_progress.clear();
         self.model_available = false;
         self.pending_tool_commits.clear();

@@ -164,7 +164,6 @@ windows = { version = "0.62.2", features = [
 pl-protocol = { path = "code/pl-protocol" }
 pl-agent-tool = { path = "code/pl-agent-tool", version = "0.1.0", default-features = false }
 pl-agent-tool-macros = { path = "code/pl-agent-tool-macros", version = "0.1.0" }
-pl-trace = { path = "code/pl-trace" }
 pl-lsp = { path = "code/pl-lsp" }
 pl-output = { path = "code/pl-output" }
 pl-patch = { path = "code/pl-patch" }

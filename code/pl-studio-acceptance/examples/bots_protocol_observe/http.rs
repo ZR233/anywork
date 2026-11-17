@@ -220,9 +220,6 @@ impl HistoryRead {
 }
 
 impl CurrentRead {
-    pub fn owner_id(&self) -> &str {
-        &self.owner_id
-    }
     pub async fn snapshot(&self, demand: ReadDemand) -> Result<CurrentView> {
         self.post("current/snapshot", &serde_json::json!({ "demand": demand }))
             .await
@@ -266,7 +263,6 @@ impl CurrentRead {
             "current watch response is not text/event-stream"
         );
         let mut bytes = 0usize;
-        let max_bytes = usize::try_from(demand.max_bytes)?;
         let stream = response
             .bytes_stream()
             .map(move |chunk| -> Result<_> {
@@ -394,8 +390,13 @@ impl CurrentWatchStream {
                     let frame: CurrentFrame = serde_json::from_str(&event.data)?;
                     let (owner_id, revision) = match &frame {
                         CurrentFrame::Reset { view } => {
-                            ensure!(!self.saw_reset, "current watch sent a second Reset");
+                            ensure!(
+                                !view.revision.owner_id.is_empty(),
+                                "current Reset has no owner"
+                            );
                             self.saw_reset = true;
+                            self.owner_id = view.revision.owner_id.clone();
+                            self.revision = None;
                             (&view.revision.owner_id, view.revision.revision)
                         }
                         CurrentFrame::Notification { revision, .. }

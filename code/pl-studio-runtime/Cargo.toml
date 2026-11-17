@@ -29,7 +29,6 @@ pl-model = { workspace = true }
 pl-core = { workspace = true, features = ["sqlite"] }
 pl-tool = { workspace = true }
 pl-protocol = { workspace = true }
-pl-trace = { workspace = true }
 pl-lsp = { workspace = true }
 pl-lifecycle = { workspace = true }
 anyhow = { workspace = true }

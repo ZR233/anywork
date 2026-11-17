@@ -120,8 +120,6 @@ class _TimelineCanonicalPayloadConnectorState
     value.item.id,
     value.item.atom?.id,
     value.item.atom?.source,
-    value.item.atom?.completionItemId,
-    value.item.atom?.completionSeq,
     value.item.historyEventId,
     value.item.historyDetailEventId,
     [

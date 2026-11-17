@@ -2,6 +2,7 @@ import 'package:anywork_client/models.dart';
 import 'package:flutter/foundation.dart' show immutable, listEquals;
 
 import '../widgets/timeline_activity_row.dart';
+import '../state/timeline_display_models.dart';
 
 /// 根据类型化活动阶段、前台活跃工具事实以及当前顶栏是否正在展示思考摘要解析指示器样式：
 /// - `responding` -> 分层书写动态图标；

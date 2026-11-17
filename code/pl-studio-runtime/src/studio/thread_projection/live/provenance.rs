@@ -52,6 +52,42 @@ fn turn_outcome(state: &pl_core::thread::TurnState) -> Option<ChatTerminalOutcom
     }
 }
 
+fn merge_item_contents(
+    atom: &mut ChatAtom,
+    item: &ExecutionItem,
+    database_id: &str,
+) -> Result<(), ProjectionError> {
+    let fields = crate::studio::runtime::chat_item::content_fields(item.state())
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+    for key in fields.keys() {
+        let Some(role) = crate::studio::runtime::chat_item::atom_content_role(key) else {
+            continue;
+        };
+        let key = key.as_key();
+        if atom.contents.iter().any(|content| {
+            matches!(
+                &content.reference.target,
+                crate::ContentTarget::Body { key: known, .. } if known == &key
+            )
+        }) {
+            continue;
+        }
+        atom.contents.push(crate::ChatAtomContent {
+            role,
+            reference: crate::ContentRef {
+                database_id: database_id.into(),
+                target: crate::ContentTarget::Body {
+                    owner: crate::ContentOwner::Item {
+                        item_id: item.id.clone(),
+                    },
+                    key,
+                },
+            },
+        });
+    }
+    Ok(())
+}
+
 impl LiveProjection {
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
@@ -70,49 +106,11 @@ impl LiveProjection {
         // reliable facts resolve their original identity through the bounded HistoryReader.
         let sequence = state.commit_sequence;
         self.provenance_restored = true;
-        self.sync_provenance()?;
-        let active = self.current_texts();
-        self.current
-            .observe(thread, state, sequence, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Ok(())
+        self.observe_current(thread, state, sequence)
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
         self.source_states
             .retain(|_, state| state.ended.is_none_or(|at| at.effect_seq > through));
-    }
-
-    pub(super) fn sync_provenance(&mut self) -> Result<(), ProjectionError> {
-        let database = self.current.owner_id().ok_or_else(|| {
-            ProjectionError::History("provenance has no database identity".into())
-        })?;
-        for atom in self.atom_starts.values_mut() {
-            if let Some(preview) = self.previews.get(&atom.id) {
-                atom.contents = preview
-                    .fields
-                    .keys()
-                    .filter_map(|key| {
-                        Some(crate::ChatAtomContent {
-                            role: crate::studio::runtime::chat_item::atom_content_role(key)?,
-                            reference: crate::ContentRef {
-                                database_id: database.into(),
-                                target: crate::ContentTarget::Body {
-                                    owner: crate::ContentOwner::Item {
-                                        item_id: atom.id.clone(),
-                                    },
-                                    key: key.as_key(),
-                                },
-                            },
-                        })
-                    })
-                    .collect();
-            }
-        }
-        self.current.provenance(
-            self.source_states.values().cloned().collect(),
-            self.atom_starts.values().cloned().collect(),
-        );
-        Ok(())
     }
 
     fn source_change(
@@ -401,6 +399,13 @@ impl LiveProjection {
             atom.source = old.map_or_else(|| atom.source.clone(), |old| old.source.clone());
             atom.attempt_id = old.and_then(|old| old.attempt_id.clone());
             atom.contents = old.map_or_else(Vec::new, |old| old.contents.clone());
+            merge_item_contents(
+                &mut atom,
+                item,
+                self.current.owner_id().ok_or_else(|| {
+                    ProjectionError::History("history atom has no runtime owner".into())
+                })?,
+            )?;
             let actual_start = match item.state() {
                 ExecutionShape::Tool(tool) => {
                     let call = tool.invocation().tool_call_id();

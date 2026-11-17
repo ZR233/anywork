@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter/widgets.dart';
 
@@ -19,6 +21,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     DisplayBlockRef,
     DisplayMemberWindow,
     ReadDemand,
+    bool,
   )?
   openDisplayMembers;
   DisplayMemberController? members;
@@ -43,7 +46,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     bodyGeneration = Object();
     retirement.value = true;
     retireBody?.call();
-    members?.retire();
+    final previousMembers = members;
+    members = null;
+    previousMembers?.retire();
+    if (previousMembers != null) {
+      unawaited(previousMembers.close());
+    }
     notifyListeners();
     retirement.value = !bodyActive;
   }
@@ -55,7 +63,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     _bodyDisplays.clear();
     bodyGeneration = Object();
     retireBody?.call();
-    members?.retire();
+    final previousMembers = members;
+    members = null;
+    previousMembers?.retire();
+    if (previousMembers != null) {
+      unawaited(previousMembers.close());
+    }
     current = null;
     notifyListeners();
   }
@@ -74,8 +87,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
     retirement.value = !bodyActive;
     if (!bodyActive && expanded != true) {
       retireBody?.call();
-      members?.retire();
+      final previousMembers = members;
       members = null;
+      previousMembers?.retire();
+      if (previousMembers != null) {
+        unawaited(previousMembers.close());
+      }
     }
     notifyListeners();
   }
@@ -104,10 +121,23 @@ final class TimelineDisplayUnit {
   }) : id = block.id,
        blockOrder = block.blockOrder,
        body = block.body,
-       state = DisplayBlockState.sealed,
-       executionPresent = false,
-       hasUnfinishedMembers = false,
-       thinkingSummary = null,
+       state = switch (block.body) {
+         WorkDisplayBlock(:final groupClosed) =>
+           groupClosed ? DisplayBlockState.sealed : DisplayBlockState.open,
+         SingleDisplayBlock() => DisplayBlockState.sealed,
+       },
+       executionPresent = switch (block.body) {
+         WorkDisplayBlock(:final executionPresent) => executionPresent,
+         SingleDisplayBlock() => false,
+       },
+       hasUnfinishedMembers = switch (block.body) {
+         WorkDisplayBlock(:final unfinishedCount) => unfinishedCount > 0,
+         SingleDisplayBlock() => false,
+       },
+       thinkingSummary = switch (block.body) {
+         WorkDisplayBlock(:final summary) => summary,
+         SingleDisplayBlock() => null,
+       },
        expansion = expansion ?? TimelineExpansionIntent();
 
   TimelineDisplayUnit.live({

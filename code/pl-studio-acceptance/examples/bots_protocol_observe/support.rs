@@ -77,7 +77,7 @@ pub(crate) struct HistoryMainScan {
     pub entities: Vec<HistoryEntityHead>,
 }
 
-pub(crate) async fn charge_history_page<T: Serialize>(
+pub(crate) fn charge_history_page<T: Serialize>(
     page: &T,
     demand: HistoryDemand,
     remaining: &mut usize,

@@ -52,18 +52,6 @@ ThreadRuntimeView _emptyRuntimeView() {
   );
 }
 
-Object _studioFailure(Object error) {
-  return switch (error) {
-    final StudioFailure failure => failure,
-    _ => StudioFailure(
-      code: StudioFailureCode.internal,
-      message: error.toString(),
-      retryable: false,
-      correlationId: newStudioCorrelationId(),
-    ),
-  };
-}
-
 const WorkflowDefinition _demoTaskWorkflow = WorkflowDefinition(
   title: '任务流程',
   goal: '完成任务并交付可验证结果',
@@ -7042,20 +7030,6 @@ class DemoStudioTransport extends StudioTransport
       // Completion and Activity are independent deliveries at the same cut;
       // the feed orders completion admission before publishing the live exit.
       _publishContent(threadId);
-    }
-    final receivers = _conversationStateFeeds[threadId];
-    if (receivers != null && receivers.isNotEmpty) {
-      for (final feed in receivers.toList()) {
-        feed._stateChanged();
-      }
-    }
-    // Activity-facing state facts (execution presence) also wake the content
-    // owner's live Activity snapshot, exactly like the former combined feed's
-    // pending-current duty; state frames themselves never flow through content.
-    if (update is ThreadRuntimeUpdate) {
-      for (final feed in [...?_conversationFeeds[threadId]]) {
-        feed._contentChanged();
-      }
     }
     // The stop target is an execution identity and the continue target is a
     // continuation point, so the runtime projection carries both: derive them

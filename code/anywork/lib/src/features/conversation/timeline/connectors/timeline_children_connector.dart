@@ -12,8 +12,11 @@ import '../state/timeline_image_resources.dart';
 import '../view_models/timeline_message_controller.dart';
 import 'timeline_member_atom.dart';
 import '../widgets/timeline_children_view.dart';
-import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
+
+const _maxChildrenWindowDescriptors = 16;
+
+enum _ChildrenPageDirection { older, newer }
 
 /// Expanded originals own an independent History reader, never a second Main.
 class TimelineChildrenConnector extends StatefulWidget {
@@ -53,12 +56,16 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   TimelineMessageController? _adapter;
   HistoryReader? _reader;
   HistoryCut? _cut;
+  String? _pageCursor;
   String? _before;
+  final List<({String? cursor, String? next})> _newer = [];
+  ({_ChildrenPageDirection direction, String? cursor, int generation})?
+  _failedPage;
   Object? _error;
   bool _ready = false;
   bool _retired = false;
   bool _opening = false;
-  Future<void>? _older;
+  Future<void>? _pageLoading;
   Future<void>? _closing;
   Future<void>? _retrying;
   late final Future<void> _opened;
@@ -66,13 +73,13 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   int _mutations = 0;
   int _displayGeneration = 0;
   int _appliedSets = 0;
-  int _appliedPrepends = 0;
-  int _appliedAppends = 0;
+  final int _appliedPrepends = 0;
+  final int _appliedAppends = 0;
   VoidCallback? _unregisterDisplay;
   final Set<TimelineMemberDisplay> _members = {};
 
   bool get _parentActive =>
-      !(_parentRetirement?.value ?? false) &&
+      !(widget.parentRetirement?.value ?? false) &&
       (widget.isParentActive?.call() ?? true) &&
       !_retired &&
       mounted;
@@ -88,7 +95,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   @override
   String? get olderCursor => _before;
   @override
-  bool get loadingOlder => _older != null;
+  bool get loadingOlder => _pageLoading != null;
   @override
   Object? get error => _error;
   @override
@@ -139,12 +146,15 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   }
 
   void _parentRetired() {
-    if (_parentRetirement?.value ?? false) _retireOwner();
+    if (widget.parentRetirement?.value ?? false) _retireOwner();
   }
 
   Future<void> _open() async {
+    HistoryReader? openingReader;
     try {
-      final reader = await widget.repository.openHistoryReader(widget.threadId);
+      final reader = openingReader = await widget.repository.openHistoryReader(
+        widget.threadId,
+      );
       if (!_parentActive) {
         reader.requestClose();
         await reader.close();
@@ -152,7 +162,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       }
       _reader = reader;
       _cut = await reader.capture();
-      await _load(reset: true);
+      await _loadPage(cursor: null);
       if (!_parentActive) return;
       setState(() {
         _ready = true;
@@ -160,45 +170,81 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       });
       _registerCurrent();
     } catch (error) {
+      if (identical(_reader, openingReader)) {
+        _reader = null;
+        _cut = null;
+      }
+      if (openingReader != null) {
+        openingReader.requestClose();
+        await openingReader.close();
+      }
       if (mounted && _parentActive) setState(() => _error = error);
     }
   }
 
-  Future<void> _load({required bool reset}) async {
+  Future<void> _loadPage({required String? cursor}) async {
     final reader = _reader;
     final cut = _cut;
     if (reader == null || cut == null) return;
+    final generation = _displayGeneration;
     final page = await reader.eventsPage(
       query: OriginalsHistoryEvents(
         queryClass: 'conversation',
         parentId: widget.parentId,
       ),
       cut: cut,
-      cursor: reset ? null : _before,
+      cursor: cursor,
       demand: HistoryDemand(maxRows: 50, maxBytes: 256 * 1024),
     );
-    if (!_parentActive || !identical(_reader, reader)) {
+    if (!_parentActive ||
+        !identical(_reader, reader) ||
+        generation != _displayGeneration) {
       throw const StaleConversationScope();
+    }
+    if (page.cut != cut) {
+      throw const ConversationContinuityError(
+        'Children page changed its fixed History cut',
+      );
+    }
+    final next = page.next;
+    if (next != null && next.isEmpty) {
+      throw const ConversationContinuityError(
+        'Children page returned an empty History cursor',
+      );
+    }
+    if (cursor != null &&
+        (page.next == cursor || (page.entries.isEmpty && page.next != null))) {
+      throw const ConversationContinuityError(
+        'Children page made no bounded cursor progress',
+      );
     }
     final blocks = [
       for (final detail in page.entries)
-        if (TimelineHistoryProjection.eventDetail(detail) case final block?)
-          block,
+        ?TimelineHistoryProjection.eventDetail(detail, cut: cut),
     ];
+    final ids = <String>{};
+    if (blocks.any((block) => block.id.isEmpty || !ids.add(block.id))) {
+      throw const ConversationContinuityError(
+        'Children page returned duplicate or empty row identities',
+      );
+    }
     final adapter = _adapter;
     if (adapter == null) throw const StaleConversationScope();
     _mutations++;
     try {
-      await adapter.applyBlocks(
-        blocks,
-        reset ? TimelineApplyPlacement.set : TimelineApplyPlacement.prepend,
-      );
-      if (reset) {
+      if (!_ready) {
+        await adapter.applyBlocks(blocks, TimelineApplyPlacement.set);
         _appliedSets++;
       } else {
-        _appliedPrepends++;
+        await adapter.reconcileBlocks(blocks);
       }
-      _before = page.next;
+      if (!_parentActive ||
+          !identical(_reader, reader) ||
+          generation != _displayGeneration) {
+        throw const StaleConversationScope();
+      }
+      _pageCursor = cursor;
+      _before = next;
     } finally {
       _mutations--;
       _releaseController();
@@ -206,24 +252,81 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   }
 
   Future<void> _loadOlder(HistoryReader reader, int generation) {
-    if (!_ready || _before == null || _error != null) return Future.value();
-    final existing = _older;
+    final cursor = _before;
+    if (!_ready ||
+        cursor == null ||
+        _error != null ||
+        !identical(_reader, reader) ||
+        generation != _displayGeneration) {
+      return Future.value();
+    }
+    return _loadWindow(
+      direction: _ChildrenPageDirection.older,
+      cursor: cursor,
+      generation: generation,
+    );
+  }
+
+  Future<void> _loadNewer(int generation) {
+    if (!_ready ||
+        _newer.isEmpty ||
+        _error != null ||
+        generation != _displayGeneration) {
+      return Future.value();
+    }
+    return _loadWindow(
+      direction: _ChildrenPageDirection.newer,
+      cursor: _newer.last.cursor,
+      generation: generation,
+    );
+  }
+
+  Future<void> _loadWindow({
+    required _ChildrenPageDirection direction,
+    required String? cursor,
+    required int generation,
+  }) {
+    final existing = _pageLoading;
     if (existing != null) return existing;
     final completion = Completer<void>();
-    _older = completion.future;
+    _pageLoading = completion.future;
+    _failedPage = null;
+    final previous = (cursor: _pageCursor, next: _before);
     completion.complete(
       Future<void>.sync(() async {
         try {
-          await _load(reset: false);
+          if (direction == _ChildrenPageDirection.newer &&
+              (_newer.isEmpty || _newer.last.cursor != cursor)) {
+            throw const ConversationContinuityError(
+              'Children newer window qualification changed',
+            );
+          }
+          await _loadPage(cursor: cursor);
           if (!isCurrent || generation != _displayGeneration) {
             throw const StaleConversationScope();
           }
+          switch (direction) {
+            case _ChildrenPageDirection.older:
+              _newer.add(previous);
+              if (_newer.length > _maxChildrenWindowDescriptors) {
+                _newer.removeAt(0);
+              }
+            case _ChildrenPageDirection.newer:
+              _newer.removeLast();
+          }
+          _error = null;
         } catch (error) {
           if (isCurrent && generation == _displayGeneration) {
+            _failedPage = (
+              direction: direction,
+              cursor: cursor,
+              generation: generation,
+            );
             setState(() => _error = error);
           }
         } finally {
-          if (identical(_older, completion.future)) _older = null;
+          if (identical(_pageLoading, completion.future)) _pageLoading = null;
+          if (mounted && !_retired) setState(() {});
         }
       }),
     );
@@ -279,6 +382,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       onLoadOlder: _before == null
           ? null
           : () => _loadOlder(reader, generation),
+      onLoadNewer: _newer.isEmpty ? null : () => _loadNewer(generation),
       attachmentBuilder: (item) => TimelineAttachmentsConnector(
         item: item,
         resources: _images,
@@ -311,7 +415,16 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   void _retry() {
     if (_retired || !_parentActive || _retrying != null) return;
     setState(() => _error = null);
-    final request = _ready ? _load(reset: false) : _open();
+    final failed = _failedPage;
+    final request = !_ready
+        ? _open()
+        : failed != null && failed.generation == _displayGeneration
+        ? _loadWindow(
+            direction: failed.direction,
+            cursor: failed.cursor,
+            generation: failed.generation,
+          )
+        : Future<void>.value();
     _retrying = request;
     unawaited(
       request.whenComplete(() {
@@ -354,6 +467,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
   Future<void> _close() async {
     await _opened;
     await _retrying;
+    await _pageLoading;
     final reader = _reader;
     _reader = null;
     await reader?.close();

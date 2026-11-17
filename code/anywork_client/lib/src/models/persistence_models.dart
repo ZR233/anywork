@@ -179,18 +179,65 @@ class PersistenceQueueSnapshot {
   );
 }
 
-/// 单个 Thread 的持久化水位与队列压力。
-///
-/// 水位为 `null` 表示没有 writer 报告过该值（未知），`0` 才是已观测到的零。UI 必须把两者
-/// 分开显示，不把未知折叠成零。
+/// 单个 Current writer 的保存事实。修订只在对应 runtime epoch 内有意义。
+class CurrentPersistenceSnapshot {
+  const CurrentPersistenceSnapshot({
+    this.runtimeEpoch,
+    required this.dirty,
+    required this.inFlight,
+    this.savedRuntimeEpoch,
+    this.savedRevision,
+    this.lastSuccessfulSaveAt,
+    this.lastSuccessfulCaptureAt,
+    this.snapshotAgeMillis,
+    this.lastError,
+  });
+
+  final String? runtimeEpoch;
+  final bool dirty;
+  final bool inFlight;
+  final String? savedRuntimeEpoch;
+  final int? savedRevision;
+  final int? lastSuccessfulSaveAt;
+  final int? lastSuccessfulCaptureAt;
+  final int? snapshotAgeMillis;
+  final String? lastError;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is CurrentPersistenceSnapshot &&
+          runtimeEpoch == other.runtimeEpoch &&
+          dirty == other.dirty &&
+          inFlight == other.inFlight &&
+          savedRuntimeEpoch == other.savedRuntimeEpoch &&
+          savedRevision == other.savedRevision &&
+          lastSuccessfulSaveAt == other.lastSuccessfulSaveAt &&
+          lastSuccessfulCaptureAt == other.lastSuccessfulCaptureAt &&
+          snapshotAgeMillis == other.snapshotAgeMillis &&
+          lastError == other.lastError;
+
+  @override
+  int get hashCode => Object.hash(
+    runtimeEpoch,
+    dirty,
+    inFlight,
+    savedRuntimeEpoch,
+    savedRevision,
+    lastSuccessfulSaveAt,
+    lastSuccessfulCaptureAt,
+    snapshotAgeMillis,
+    lastError,
+  );
+}
+
+/// Current 与 History 各自由实际 owner 提供；缺失的 owner 或水位表示未知。
 class ThreadPersistenceSnapshot {
   const ThreadPersistenceSnapshot({
     required this.threadId,
     this.faultGeneration = 0,
     this.fault,
-    this.stateDirtyRevision,
-    this.stateSavingRevision,
-    this.stateDurableRevision,
+    this.current,
     this.historyAdmittedSequence,
     this.historyDurableSequence,
     this.pendingOperations = 0,
@@ -205,14 +252,7 @@ class ThreadPersistenceSnapshot {
   final int faultGeneration;
   final String? fault;
 
-  /// 已受理待发布的 checkpoint 修订；未知为 null。
-  final int? stateDirtyRevision;
-
-  /// 正在序列化或同步的 checkpoint 修订；未知为 null。
-  final int? stateSavingRevision;
-
-  /// 已与 history 同事务提交的 checkpoint 修订；未知为 null。
-  final int? stateDurableRevision;
+  final CurrentPersistenceSnapshot? current;
   final int? historyAdmittedSequence;
   final int? historyDurableSequence;
   final int pendingOperations;
@@ -229,9 +269,7 @@ class ThreadPersistenceSnapshot {
           threadId == other.threadId &&
           faultGeneration == other.faultGeneration &&
           fault == other.fault &&
-          stateDirtyRevision == other.stateDirtyRevision &&
-          stateSavingRevision == other.stateSavingRevision &&
-          stateDurableRevision == other.stateDurableRevision &&
+          current == other.current &&
           historyAdmittedSequence == other.historyAdmittedSequence &&
           historyDurableSequence == other.historyDurableSequence &&
           pendingOperations == other.pendingOperations &&
@@ -246,9 +284,7 @@ class ThreadPersistenceSnapshot {
     threadId,
     faultGeneration,
     fault,
-    stateDirtyRevision,
-    stateSavingRevision,
-    stateDurableRevision,
+    current,
     historyAdmittedSequence,
     historyDurableSequence,
     pendingOperations,

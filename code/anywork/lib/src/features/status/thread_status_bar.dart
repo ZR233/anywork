@@ -8,11 +8,11 @@ import '../../domain/models/studio_models.dart';
 import '../../l10n/studio_l10n.dart';
 import '../../presentation/providers/mode_catalog_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
-import '../../presentation/view_models/timeline_session_owner.dart';
+import '../conversation/timeline/view_models/timeline_view_model.dart';
 import '../../shared/studio_driver_keys.dart';
 
 import 'package:anywork_client/conversation.dart'
-    show CurrentQueryScope, decodeCurrentWorkflowState;
+    show CurrentQueryScope, CurrentStateFieldReader, decodeCurrentWorkflowState;
 
 import 'context_usage_readout.dart';
 import 'session_selectors.dart';

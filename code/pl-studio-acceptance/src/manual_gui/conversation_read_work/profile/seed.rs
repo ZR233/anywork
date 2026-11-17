@@ -1,12 +1,12 @@
 use super::super::*;
-use super::{record, wait_initial_turn, wait_notified_turn};
+use super::{record, require_stopped, wait_initial_turn, wait_notified_turn};
 use pl_provider_fixture::{
     FixtureOptions, GUI_TIMELINE_HISTORY_20K_REQUEST_BODY_BYTES,
     GUI_TIMELINE_READ_PROFILE_MODEL_TEXT_ITEMS, GUI_TIMELINE_READ_PROFILE_SEED_BATCHES,
     gui_timeline_read_profile_seed_prompt, gui_timeline_read_profile_seed_script,
 };
 use pl_studio_runtime::history::{HISTORY_PROTOCOL_VERSION, HistoryDemand, HistoryRowHead};
-use pl_studio_runtime::{ChatAtomKind, ChatSourceId};
+use pl_studio_runtime::{ChatAtomKind, ChatSourceId, mode::ThreadModeId};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -36,7 +36,7 @@ struct BatchReceipt {
     snapshot_revision: Option<u64>,
     history_admitted_sequence: Option<u64>,
     history_durable_sequence: Option<u64>,
-    state_durable_revision: Option<u64>,
+    current_saved_revision: Option<u64>,
     completed: bool,
 }
 
@@ -104,7 +104,7 @@ pub(super) fn run(
         record(
             &mut errors,
             "audit runtime shutdown",
-            runtime.shutdown_runtime().await,
+            runtime.shutdown_runtime().await.and_then(require_stopped),
         );
         ensure!(errors.is_empty(), "{}", errors.join("\n"));
         Ok(())
@@ -142,7 +142,7 @@ async fn write_one(
         record(
             &mut runtime_errors,
             "seed runtime shutdown",
-            runtime.shutdown_runtime().await,
+            runtime.shutdown_runtime().await.and_then(require_stopped),
         );
         ensure!(runtime_errors.is_empty(), "{}", runtime_errors.join("\n"));
         id.context("seed produced no Thread")
@@ -203,7 +203,7 @@ async fn seed_batches(
                     text: gui_timeline_read_profile_seed_prompt(1),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_studio_runtime::ThreadModeId::simple().label().into(),
+                mode: ThreadModeId::simple().label().into(),
                 route: NewThreadModelRoute {
                     account_id: ACCOUNT.into(),
                     model_id: MODEL.into(),
@@ -225,13 +225,17 @@ async fn seed_batches(
     let mut watch = match current.watch(None, demand).await {
         Ok(watch) => watch,
         Err(error) => {
-            let _ = current.close().await;
-            return Err(error);
+            return match current.close().await {
+                Ok(()) => Err(error),
+                Err(close_error) => {
+                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                }
+            };
         }
     };
     let mut saw_baseline = false;
     let first_input = input_id(1);
-    let outcome = async {
+    let outcome: Result<()> = async {
         let first = Box::pin(wait_initial_turn(
             runtime,
             &current,
@@ -343,7 +347,7 @@ async fn persist_completed_batch(
             snapshot_revision: None,
             history_admitted_sequence: None,
             history_durable_sequence: None,
-            state_durable_revision: None,
+            current_saved_revision: None,
             completed: false,
         });
         let receipt = &mut batches[receipt_index];
@@ -359,17 +363,27 @@ async fn persist_completed_batch(
                     .with_context(|| format!("seed persistence has no Thread {thread_id}"))?;
                 receipt.history_admitted_sequence = thread.history_admitted_sequence;
                 receipt.history_durable_sequence = thread.history_durable_sequence;
-                receipt.state_durable_revision = thread.state_durable_revision;
+                receipt.current_saved_revision = thread
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.saved_revision);
                 ensure!(
                     thread.fault.is_none() && thread.last_error.is_none(),
                     "seed Thread persistence fault: {:?}; last error: {:?}",
                     thread.fault,
                     thread.last_error
                 );
-                persistence.state.pending_commits() == 0
-                    && thread.history_admitted_sequence.is_some()
-                    && thread.history_durable_sequence.is_some()
-                    && thread.state_durable_revision.is_some()
+                // This per-batch fence is History-only. The independent Current writer is joined
+                // and its complete final file is saved by shutdown before the subsequent audit.
+                persistence.pending_bytes == 0
+                    && persistence.in_flight_bytes == 0
+                    && persistence.last_error.is_none()
+                    && thread.pending_bytes == 0
+                    && thread.in_flight_bytes == 0
+                    && thread
+                        .history_admitted_sequence
+                        .zip(thread.history_durable_sequence)
+                        .is_some_and(|(admitted, durable)| durable >= admitted)
             };
             if saved {
                 receipt.completed = true;

@@ -9,7 +9,6 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/app/theme/studio_tokens.dart';
 import 'package:anywork/src/domain/models/timeline_commands.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_payload_reading.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
@@ -107,41 +106,22 @@ Widget timelineLongUserSubmissionPreview() => _timelinePreviewHost(
 );
 
 @Preview(
-  name: '用户长输入 / 正式 Input · 外层 Deferred',
+  name: '用户长输入 / 正式 Input',
   group: 'Timeline · 历史组件',
   size: Size(820, 720),
 )
 @Preview(
-  name: '用户长输入 / 正式 Input · 外层 Deferred · 窄窗口',
+  name: '用户长输入 / 正式 Input · 窄窗口',
   group: 'Timeline · 历史组件',
   size: Size(360, 720),
 )
-Widget timelineLongUserDeferredPreview() {
-  final bytes = utf8.encode(TimelinePreviewFixtures.longUserInput);
+Widget timelineLongUserInputPreview() {
   return _timelinePreviewHost(
     SelectionArea(
       child: SingleChildScrollView(
         child: ChatItemView(
-          item: TimelinePreviewFixtures.deferredUserInput,
+          item: TimelinePreviewFixtures.longUserInputItem,
           bodyBuilder: _previewMarkdown,
-          contentRangeBuilder: (id, key, label, reference, witness) =>
-              TimelineContentRangeConnector(
-                itemId: id,
-                contentKey: key,
-                label: label,
-                reference: reference,
-                witness: witness,
-                readContent: (_, range) async => ContentWindow(
-                  offset: range.offset,
-                  bytes: bytes.sublist(
-                    range.offset,
-                    (range.offset + range.maxBytes).clamp(0, bytes.length),
-                  ),
-                  generation: 'preview',
-                  availableThrough: bytes.length,
-                  sealed: true,
-                ),
-              ),
         ),
       ),
     ),
@@ -149,64 +129,32 @@ Widget timelineLongUserDeferredPreview() {
 }
 
 @Preview(
-  name: '正文 / 长中文 Deferred Markdown',
+  name: '正文 / 长中文 Markdown',
   group: 'Timeline · 历史组件',
   size: Size(820, 720),
 )
-Widget timelineLongDeferredBodyPreview() {
+Widget timelineLongBodyPreview() {
   final text =
       '# 长正文直接阅读\n\n'
       '**正文内容**与短消息使用相同的排版、选择和换行。\n\n'
       '- 标题、粗体和列表保持 Markdown 语义\n'
-      '- 原文只在有界窗口内呈现\n\n'
+      '- 原文可直接阅读\n\n'
       '| 内容 | 行为 |\n| --- | --- |\n| 长中文 | 自动换行 |\n| 普通文字 | 可选择复制 |\n\n'
       '${'这一行没有人为插入换行，窄窗口会按照实际宽度自然排列。' * 30}\n\n'
       '${'较长的中文正文仍然直接显示，不再出现额外的正文加载折叠。阅读时可以选择任意文字并复制，原文内容不会被插入额外字符。\n\n' * 30}';
   final bytes = utf8.encode(text);
   final item = TimelinePreviewFixtures.item(
-    'preview-long-deferred',
+    'preview-long-body',
     'text',
     const {'channel': 'final', 'attachments': []},
     bodies: [
-      {
-        'key': 'body',
-        'byteLength': bytes.length,
-        'reference': {
-          'databaseId': 'preview',
-          'target': {
-            'kind': 'body',
-            'owner': {'kind': 'item', 'itemId': 'preview-long-deferred'},
-            'key': 'body',
-          },
-        },
-      },
+      {'key': 'body', 'byteLength': bytes.length, 'inline': bytes},
     ],
   );
   return _timelinePreviewHost(
     SelectionArea(
       child: SingleChildScrollView(
-        child: ChatItemView(
-          item: item,
-          bodyBuilder: _previewMarkdown,
-          contentRangeBuilder: (id, key, label, reference, witness) =>
-              TimelineContentRangeConnector(
-                itemId: id,
-                contentKey: key,
-                label: label,
-                reference: reference,
-                witness: witness,
-                readContent: (_, range) async => ContentWindow(
-                  offset: range.offset,
-                  bytes: bytes.sublist(
-                    range.offset,
-                    (range.offset + range.maxBytes).clamp(0, bytes.length),
-                  ),
-                  generation: 'preview',
-                  availableThrough: bytes.length,
-                  sealed: true,
-                ),
-              ),
-        ),
+        child: ChatItemView(item: item, bodyBuilder: _previewMarkdown),
       ),
     ),
   );
@@ -514,17 +462,16 @@ class _OverlapCurrentPreview extends StatefulWidget {
 }
 
 class _OverlapCurrentPreviewState extends State<_OverlapCurrentPreview> {
-  final activity = TimelinePreviewFixtures.overlapActivity;
   late final units = [
     TimelineDisplayUnit(
       block: DisplayBlock(
         id: 'overlap-text',
         blockOrder: 1,
         body: SingleDisplayBlock(
-          visibility: SingleVisibility.content,
+          visibility: HistorySingleVisibility.content,
           record: DisplayRecord(
-            atom: TimelinePreviewFixtures.overlapText.atom,
-            contentSource: const CurrentAtom(),
+            atom: TimelinePreviewFixtures.overlapTextAtom,
+            contentSource: const CurrentAtomSource(),
           ),
         ),
       ),
@@ -796,20 +743,6 @@ class _TimelineChildrenPreviewState extends State<_TimelineChildrenPreview> {
     controller: controller,
     generation: 1,
     isDisplayActive: () => true,
-    contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
-        TimelineContentRangeView(
-          itemId: itemId,
-          contentKey: contentKey,
-          label: label,
-          loading: false,
-          active: true,
-          canRead: true,
-          window: TimelinePreviewFixtures.contentWindow,
-          onExpansionChanged: (_) {},
-          onNext: () {},
-          onCopy: () {},
-          witness: witness,
-        ),
   );
 }
 
@@ -915,23 +848,7 @@ class _TimelineCombinedPreviewState extends State<_TimelineCombinedPreview> {
       controller: members,
       generation: 1,
       isDisplayActive: () => true,
-      contentRangeBuilder: (_, _, label, _, _) => Text(label),
     ),
-    contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
-        TimelineContentRangeView(
-          itemId: itemId,
-          contentKey: contentKey,
-          label: label,
-          initiallyExpanded: true,
-          loading: false,
-          active: true,
-          canRead: true,
-          window: TimelinePreviewFixtures.contentWindow,
-          onExpansionChanged: (_) {},
-          onNext: () {},
-          onCopy: () {},
-          witness: witness,
-        ),
     attachmentBuilder: (item) => _previewAttachments(item.id, item.attachments),
   );
 

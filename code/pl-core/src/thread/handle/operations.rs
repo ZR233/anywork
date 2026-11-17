@@ -742,7 +742,33 @@ impl ThreadHandle {
         let (reply, response) = oneshot::channel();
         self.mailbox
             .send(super::mailbox::MailboxCommand::ContinueMessage(
-                message, options, reply,
+                message, options, None, reply,
+            ))
+            .await
+            .map_err(|_| ThreadError::Closed)?;
+        response.await.map_err(|_| ThreadError::Closed)?
+    }
+
+    /// Continues with a message while retaining its exact receipt in a caller-owned extension.
+    /// A repeat reads that receipt before checking new admission or interrupting current work.
+    /// The caller deletes the record after its original delivery obligation is settled.
+    ///
+    /// # Errors
+    /// Rejects changed receipt identities and the same admission failures as
+    /// [`Self::send_message_and_continue`].
+    pub async fn send_message_and_continue_with_receipt(
+        &self,
+        message: inbox::ThreadMessage,
+        options: input::InputDriverOptions,
+        receipt_extension_id: String,
+    ) -> Result<u64, ThreadError> {
+        let (reply, response) = oneshot::channel();
+        self.mailbox
+            .send(super::mailbox::MailboxCommand::ContinueMessage(
+                message,
+                options,
+                Some(receipt_extension_id),
+                reply,
             ))
             .await
             .map_err(|_| ThreadError::Closed)?;

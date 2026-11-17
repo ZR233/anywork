@@ -21,7 +21,7 @@ import 'updater.dart';
 part 'response.freezed.dart';
 
 // These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `AccountUsagesResponse`, `SkillsResponse`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class AccountUsageDto {
   final String accountId;
@@ -303,6 +303,57 @@ class BridgeAgentProfilesStateSnapshot {
       other is BridgeAgentProfilesStateSnapshot &&
           runtimeType == other.runtimeType &&
           state == other.state;
+}
+
+class BridgeCurrentPersistenceSnapshot {
+  final String? runtimeEpoch;
+  final bool dirty;
+  final bool inFlight;
+  final String? savedRuntimeEpoch;
+  final BigInt? savedRevision;
+  final PlatformInt64? lastSuccessfulSaveAt;
+  final PlatformInt64? lastSuccessfulCaptureAt;
+  final BigInt? snapshotAgeMillis;
+  final String? lastError;
+
+  const BridgeCurrentPersistenceSnapshot({
+    this.runtimeEpoch,
+    required this.dirty,
+    required this.inFlight,
+    this.savedRuntimeEpoch,
+    this.savedRevision,
+    this.lastSuccessfulSaveAt,
+    this.lastSuccessfulCaptureAt,
+    this.snapshotAgeMillis,
+    this.lastError,
+  });
+
+  @override
+  int get hashCode =>
+      runtimeEpoch.hashCode ^
+      dirty.hashCode ^
+      inFlight.hashCode ^
+      savedRuntimeEpoch.hashCode ^
+      savedRevision.hashCode ^
+      lastSuccessfulSaveAt.hashCode ^
+      lastSuccessfulCaptureAt.hashCode ^
+      snapshotAgeMillis.hashCode ^
+      lastError.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeCurrentPersistenceSnapshot &&
+          runtimeType == other.runtimeType &&
+          runtimeEpoch == other.runtimeEpoch &&
+          dirty == other.dirty &&
+          inFlight == other.inFlight &&
+          savedRuntimeEpoch == other.savedRuntimeEpoch &&
+          savedRevision == other.savedRevision &&
+          lastSuccessfulSaveAt == other.lastSuccessfulSaveAt &&
+          lastSuccessfulCaptureAt == other.lastSuccessfulCaptureAt &&
+          snapshotAgeMillis == other.snapshotAgeMillis &&
+          lastError == other.lastError;
 }
 
 class BridgeLspStateData {
@@ -1182,15 +1233,12 @@ class BridgeThreadModeDescriptor {
 
 /// 单个 Thread 的持久化水位与队列压力。
 ///
-/// 水位字段为 `Some` 表示该 Thread 有正在上报的 writer，值为已观测事实（含 0）；`None`
-/// 表示没有 writer 报告过该水位（例如仅通过 checkpoint 回退诊断出现），是未知而非零。
+/// Current 与 History 分别由实际 owner 提供，缺失的 owner 或水位表示未知。
 class BridgeThreadPersistenceSnapshot {
   final String threadId;
   final BigInt faultGeneration;
   final String? fault;
-  final BigInt? stateDirtyRevision;
-  final BigInt? stateSavingRevision;
-  final BigInt? stateDurableRevision;
+  final BridgeCurrentPersistenceSnapshot? current;
   final BigInt? historyAdmittedSequence;
   final BigInt? historyDurableSequence;
   final BigInt pendingOperations;
@@ -1204,9 +1252,7 @@ class BridgeThreadPersistenceSnapshot {
     required this.threadId,
     required this.faultGeneration,
     this.fault,
-    this.stateDirtyRevision,
-    this.stateSavingRevision,
-    this.stateDurableRevision,
+    this.current,
     this.historyAdmittedSequence,
     this.historyDurableSequence,
     required this.pendingOperations,
@@ -1222,9 +1268,7 @@ class BridgeThreadPersistenceSnapshot {
       threadId.hashCode ^
       faultGeneration.hashCode ^
       fault.hashCode ^
-      stateDirtyRevision.hashCode ^
-      stateSavingRevision.hashCode ^
-      stateDurableRevision.hashCode ^
+      current.hashCode ^
       historyAdmittedSequence.hashCode ^
       historyDurableSequence.hashCode ^
       pendingOperations.hashCode ^
@@ -1242,9 +1286,7 @@ class BridgeThreadPersistenceSnapshot {
           threadId == other.threadId &&
           faultGeneration == other.faultGeneration &&
           fault == other.fault &&
-          stateDirtyRevision == other.stateDirtyRevision &&
-          stateSavingRevision == other.stateSavingRevision &&
-          stateDurableRevision == other.stateDurableRevision &&
+          current == other.current &&
           historyAdmittedSequence == other.historyAdmittedSequence &&
           historyDurableSequence == other.historyDurableSequence &&
           pendingOperations == other.pendingOperations &&

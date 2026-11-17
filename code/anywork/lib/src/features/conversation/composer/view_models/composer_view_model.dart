@@ -13,6 +13,7 @@ import '../../../../presentation/providers/mode_catalog_store.dart';
 import '../../../../presentation/providers/observe_client.dart';
 import '../../../../presentation/providers/project_store.dart';
 import '../../../../presentation/providers/settings_store.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../../timeline/view_models/timeline_view_model.dart';
 import '../state/composer_input_state.dart';
 import '../state/composer_view_state.dart';

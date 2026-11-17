@@ -107,12 +107,6 @@ abstract class AppLocalizations {
   /// **'Conversation content needs to be synchronized again. Please retry.'**
   String get studioFailureConversationResyncRequired;
 
-  /// No description provided for @studioFailureStaleViewCursor.
-  ///
-  /// In en, this message translates to:
-  /// **'The current reading position has expired. Reopen the conversation.'**
-  String get studioFailureStaleViewCursor;
-
   /// No description provided for @studioFailureConcurrentNext.
   ///
   /// In en, this message translates to:
