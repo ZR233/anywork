@@ -29,6 +29,7 @@ class AcpToolCard extends StatefulWidget {
     super.key,
     required this.item,
     this.initiallyExpanded = false,
+    this.fullDetails = false,
     this.isSafeLink,
     this.onOpenLink,
     this.imageBuilder,
@@ -36,6 +37,7 @@ class AcpToolCard extends StatefulWidget {
 
   final AcpTimelineToolCallItem item;
   final bool initiallyExpanded;
+  final bool fullDetails;
   final bool Function(String url)? isSafeLink;
   final ValueChanged<String>? onOpenLink;
   final AcpImageWidgetBuilder? imageBuilder;
@@ -46,9 +48,7 @@ class AcpToolCard extends StatefulWidget {
 
 class _AcpToolCardState extends State<AcpToolCard> {
   late bool _expanded =
-      widget.initiallyExpanded ||
-      widget.item.diffs.isNotEmpty ||
-      widget.item.status == AcpToolStatusKind.failed;
+      widget.initiallyExpanded || widget.item.diffs.isNotEmpty;
 
   bool get _hasExpandableDetails {
     final item = widget.item;
@@ -66,7 +66,6 @@ class _AcpToolCardState extends State<AcpToolCard> {
     final active =
         item.status == AcpToolStatusKind.pending ||
         item.status == AcpToolStatusKind.inProgress;
-    final isIssue = item.status == AcpToolStatusKind.failed;
     final expandable = _hasExpandableDetails;
     final locationSummary = item.locations.isEmpty
         ? null
@@ -78,9 +77,8 @@ class _AcpToolCardState extends State<AcpToolCard> {
       label: item.tool.name,
       meta: item.kindLabel,
       active: active,
-      isIssue: isIssue,
-      expanded: expandable && _expanded,
-      expandable: expandable,
+      expanded: expandable && (_expanded || widget.fullDetails),
+      expandable: expandable && !widget.fullDetails,
       tooltip: [item.tool.name, ?locationSummary].join('\n'),
     );
 
@@ -88,7 +86,7 @@ class _AcpToolCardState extends State<AcpToolCard> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (expandable)
+        if (expandable && !widget.fullDetails)
           InkWell(
             borderRadius: BorderRadius.circular(StudioRadii.xs),
             onTap: () => setState(() => _expanded = !_expanded),
@@ -99,7 +97,7 @@ class _AcpToolCardState extends State<AcpToolCard> {
           )
         else
           Padding(padding: const EdgeInsets.symmetric(vertical: 3), child: row),
-        if (expandable && _expanded)
+        if (expandable && (_expanded || widget.fullDetails))
           Padding(
             padding: const EdgeInsets.only(
               left: TimelineActivityRow.contentIndent,
@@ -111,23 +109,15 @@ class _AcpToolCardState extends State<AcpToolCard> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (item.locations.isNotEmpty || item.terminals.isNotEmpty) ...[
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       for (final location in item.locations)
-                        StudioCompactChip(
-                          icon: Icons.place_outlined,
-                          label: location,
-                          tooltip: location,
-                          maxWidth: 320,
-                        ),
+                        Text(location, style: context.text.bodySmall),
                       for (final terminal in item.terminals)
-                        StudioCompactChip(
-                          icon: Icons.terminal_rounded,
-                          label: context.l10n.acpToolTerminalPrefix(terminal),
-                          tooltip: terminal,
-                          maxWidth: 240,
+                        Text(
+                          context.l10n.acpToolTerminalPrefix(terminal),
+                          style: context.text.bodySmall,
                         ),
                     ],
                   ),
@@ -143,7 +133,10 @@ class _AcpToolCardState extends State<AcpToolCard> {
                     ),
                     child: Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: TimelinePatchDiffView(document: item.diffs[i]),
+                      child: TimelinePatchDiffView(
+                        document: item.diffs[i],
+                        softWrap: widget.fullDetails,
+                      ),
                     ),
                   ),
                 ],
@@ -155,15 +148,15 @@ class _AcpToolCardState extends State<AcpToolCard> {
                     isSafeLink: widget.isSafeLink ?? _fallbackSafeLink,
                     onOpenLink: widget.onOpenLink,
                     imageBuilder: widget.imageBuilder,
+                    fullDetails: widget.fullDetails,
                   ),
                 ],
-                if (item.diffs.isEmpty &&
-                    item.tool.arguments.trim().isNotEmpty) ...[
+                if (item.tool.arguments.trim().isNotEmpty) ...[
                   if (item.contentBlocks.isNotEmpty) const SizedBox(height: 8),
                   StudioCodeBlock(
                     text: item.tool.arguments,
                     language: context.l10n.timelineToolArguments,
-                    maxHeight: 200,
+                    horizontalScroll: false,
                   ),
                 ],
                 if (item.tool.output.trim().isNotEmpty) ...[
@@ -171,7 +164,7 @@ class _AcpToolCardState extends State<AcpToolCard> {
                   StudioCodeBlock(
                     text: item.tool.output,
                     language: context.l10n.timelineToolOutput,
-                    maxHeight: 220,
+                    horizontalScroll: false,
                   ),
                 ],
               ],

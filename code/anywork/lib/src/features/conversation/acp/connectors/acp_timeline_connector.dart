@@ -7,6 +7,8 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/external_url_launcher.dart';
 import '../../timeline/widgets/timeline_image_view.dart';
 import '../state/acp_view_state.dart';
+import '../state/acp_timeline_row.dart';
+import '../widgets/acp_timeline_process_group_view.dart';
 import '../view_models/acp_content_view_model.dart';
 import '../view_models/acp_timeline_view_model.dart';
 import '../views/acp_conversation_content_view.dart';
@@ -25,6 +27,7 @@ class AcpTimelineConnector extends ConsumerWidget {
     return AcpConversationContentView(
       threadId: threadId,
       header: header,
+      contentIdentity: ref.watch(acpTimelineRowsViewModelProvider(threadId)),
       planCard: header.hasPlan
           ? AcpPlanCardConnector(threadId: threadId)
           : null,
@@ -45,15 +48,28 @@ class _AcpTimelineItemConnector extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final item = ref.watch(acpTimelineItemViewModelProvider(threadId, index));
-    if (item == null) return const SizedBox.shrink();
-    return AcpTimelineEntryView(
-      item: item,
-      isSafeLink: (url) => safeExternalWebUrl(url) != null,
-      onOpenLink: (url) => _openSafeExternalLink(context, ref, url),
-      imageBuilder: (itemId, image) =>
-          _AcpDecodedImageConnector(itemId: itemId, image: image),
-    );
+    final row = ref.watch(acpTimelineItemViewModelProvider(threadId, index));
+    bool isSafeLink(String url) => safeExternalWebUrl(url) != null;
+    void onOpenLink(String url) => _openSafeExternalLink(context, ref, url);
+    Widget imageBuilder(String itemId, AcpImageBlockPresentation image) =>
+        _AcpDecodedImageConnector(itemId: itemId, image: image);
+    return switch (row) {
+      null => const SizedBox.shrink(),
+      AcpTimelineMessageRow(:final item) => AcpTimelineEntryView(
+        key: ValueKey(row.id),
+        item: item,
+        isSafeLink: isSafeLink,
+        onOpenLink: onOpenLink,
+        imageBuilder: imageBuilder,
+      ),
+      final AcpTimelineProcessRow process => AcpTimelineProcessGroupView(
+        key: ValueKey(process.id),
+        row: process,
+        isSafeLink: isSafeLink,
+        onOpenLink: onOpenLink,
+        imageBuilder: imageBuilder,
+      ),
+    };
   }
 
   void _openSafeExternalLink(

@@ -117,7 +117,17 @@ fn instruction_base(
 ) -> String {
     let mut text = format!(
         "You are an agent managed by anywork. ACP host protocol cwd: {cwd}\nAgent: {}\nRole: {}\n\
-         Report progress and actual outcomes. Host tool receipts describe acceptance, not success.\n",
+         Both root and child agents must proactively send concise progress updates as ordinary \
+         user-visible ACP messages while working. For a nontrivial task, send an update before \
+         the first tool call and at important findings, phase changes, blockers, and before and \
+         after long operations. Do not leave ongoing work without an informative update for \
+         more than one minute. Each update should use 1-3 natural sentences to explain what is \
+         complete, the important result or blocker, and what comes next; avoid repetitive status \
+         messages or a tool-by-tool transcript. Hidden thoughts do not replace visible progress. \
+         Never reveal hidden reasoning, drafts, or chain of thought. Use normal visible messages, \
+         not Native phase tags or invented commentary/final markers. End with a self-contained \
+         report of actual outcomes, verification, limitations, and unfinished work. \
+         Host tool receipts describe acceptance, not success.\n",
         identity.agent_id,
         if identity.parent_agent_id.is_some() {
             "child"

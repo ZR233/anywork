@@ -39,9 +39,14 @@ class TimelinePatchUnavailableHint extends StatelessWidget {
 /// 上下文中性底；行背景铺满代码面板并在长行横滚时跟随内容宽度，正文
 /// 保持可选择复制，片段之间用中性省略分隔，不虚构原文件行号。
 class TimelinePatchDiffView extends StatelessWidget {
-  const TimelinePatchDiffView({required this.document, super.key});
+  const TimelinePatchDiffView({
+    required this.document,
+    this.softWrap = false,
+    super.key,
+  });
 
   final TimelinePatchDocument document;
+  final bool softWrap;
 
   @override
   Widget build(BuildContext context) {
@@ -108,6 +113,15 @@ class TimelinePatchDiffView extends StatelessWidget {
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
+          if (softWrap) {
+            final content = Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: sections,
+            );
+            return SelectionContainer.maybeOf(context) == null
+                ? SelectionArea(child: content)
+                : content;
+          }
           // 行背景至少铺满可见面板；内容更长时随横滚一起延展。
           final content = IntrinsicWidth(
             child: ConstrainedBox(
@@ -157,8 +171,8 @@ class TimelinePatchDiffView extends StatelessWidget {
         Flexible(
           child: Text(
             file.moveTo == null ? file.path : '${file.path} → ${file.moveTo}',
-            overflow: TextOverflow.ellipsis,
-            maxLines: 1,
+            overflow: softWrap ? null : TextOverflow.ellipsis,
+            maxLines: softWrap ? null : 1,
             style: context.text.labelSmall?.copyWith(
               color: context.colors.onSurface,
               fontWeight: FontWeight.w600,
