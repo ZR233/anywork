@@ -46,15 +46,15 @@ impl StudioRuntime {
             if !member.is_native() {
                 // Parentage requires its real product identity, not a Native handle,
                 // model route, history or a newly opened ACP connection.
-                let identity = pl_protocol::AgentThreadIdentity {
-                    session_id: pl_protocol::SessionId::new(member.session.session_id)?,
-                    agent_id: pl_protocol::AgentId::new(member.agent.agent_id)?,
+                let identity = crate::AgentThreadIdentity {
+                    session_id: crate::SessionId::new(member.session.session_id)?,
+                    agent_id: crate::AgentId::new(member.agent.agent_id)?,
                     parent_agent_id: member
                         .agent
                         .parent_agent_id
-                        .map(pl_protocol::AgentId::new)
+                        .map(crate::AgentId::new)
                         .transpose()?,
-                    thread_id: pl_protocol::ThreadId::new(member.agent.thread_id)?,
+                    thread_id: crate::ThreadId::new(member.agent.thread_id)?,
                 };
                 self.sessions
                     .materialize(&identity.session_id)?
@@ -78,12 +78,12 @@ impl StudioRuntime {
             // Only additional cold ancestors need their own physical workspace check.
             if cursor != id {
                 self.verify_thread_execution_preparation(
-                    &pl_protocol::Thread::from(record.clone()),
+                    &crate::Thread::from(record.clone()),
                     None,
                 )
                 .await?;
             }
-            self.check_thread_execution_access(&pl_protocol::Thread::from(record.clone()))?;
+            self.check_thread_execution_access(&crate::Thread::from(record.clone()))?;
             anyhow::ensure!(
                 record.visibility == crate::studio::ThreadVisibility::Active,
                 "archived Thread cannot be activated for execution"
@@ -112,13 +112,10 @@ impl StudioRuntime {
             {
                 // `worktree` 会话激活失败必须显式发布该 Thread 的 Recovery，
                 // 不允许静默回落到主工作区。
-                if record.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+                if record.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
                     let failure = anyhow::Error::from(error);
-                    self.publish_session_workspace_issue(
-                        &pl_protocol::Thread::from(record),
-                        &failure,
-                    )
-                    .await;
+                    self.publish_session_workspace_issue(&crate::Thread::from(record), &failure)
+                        .await;
                     return Err(failure);
                 }
                 return Err(error.into());
@@ -190,19 +187,19 @@ mod future_sizes {
             "workspace failure",
             |(runtime, thread, error): (
                 &'static StudioRuntime,
-                &'static pl_protocol::Thread,
+                &'static crate::Thread,
                 &'static anyhow::Error,
             )| { runtime.publish_session_workspace_issue(thread, error) },
         );
         check(
             "workspace preflight",
-            |(runtime, thread): (&'static StudioRuntime, &'static pl_protocol::Thread)| {
+            |(runtime, thread): (&'static StudioRuntime, &'static crate::Thread)| {
                 runtime.verify_thread_execution_preparation(thread, None)
             },
         );
         check(
             "workspace verification",
-            |(runtime, thread): (&'static StudioRuntime, &'static pl_protocol::Thread)| {
+            |(runtime, thread): (&'static StudioRuntime, &'static crate::Thread)| {
                 runtime.thread_factory.verify_execution_workspace(
                     thread,
                     None,
@@ -239,11 +236,9 @@ mod future_sizes {
                     "size".into(),
                     0,
                     "size".into(),
-                    pl_protocol::InteractionResolution::UserInput(
-                        pl_protocol::UserInputResolution {
-                            answers: Default::default(),
-                        },
-                    ),
+                    crate::InteractionResolution::UserInput(crate::UserInputResolution {
+                        answers: Default::default(),
+                    }),
                 )
             },
         );

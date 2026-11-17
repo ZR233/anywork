@@ -1,5 +1,5 @@
-use pl_protocol::studio::HistoryFault;
-use pl_protocol::{
+use pl_studio_runtime::HistoryFault;
+use pl_studio_runtime::{
     ThreadActivity, ThreadActivityArguments, ThreadActivityKind, ThreadActivityToolState,
     ThreadStorageExecution, ThreadStorageState,
 };
@@ -68,7 +68,9 @@ pub(crate) fn tool_state(value: ThreadActivityToolState) -> BridgeThreadActivity
     }
 }
 
-fn activity_tool(value: pl_protocol::ThreadActivityToolEntry) -> BridgeThreadActivityToolEntry {
+fn activity_tool(
+    value: pl_studio_runtime::ThreadActivityToolEntry,
+) -> BridgeThreadActivityToolEntry {
     BridgeThreadActivityToolEntry {
         call_id: value.call_id,
         task_id: value.task_id,

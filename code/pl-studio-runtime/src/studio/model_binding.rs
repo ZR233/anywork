@@ -28,8 +28,8 @@ pub(crate) fn deferred_update(
         "effort": route.effort, "pricing": route.pricing_mode, "contextPolicy": route.context,
         "modelDefinition": route.model, "compaction": config.runtime.openai_compaction_mode,
         "hosted": hosted.iter().map(|tool| match tool {
-            pl_model::runtime::HostedTool::WebSearch(options) => pl_protocol::ToolSpec::WebSearch { options: options.clone() },
-            pl_model::runtime::HostedTool::ProgrammaticToolCalling => pl_protocol::ToolSpec::ProgrammaticToolCalling,
+            pl_model::runtime::HostedTool::WebSearch(options) => crate::ToolSpec::WebSearch { options: options.clone() },
+            pl_model::runtime::HostedTool::ProgrammaticToolCalling => crate::ToolSpec::ProgrammaticToolCalling,
         }).collect::<Vec<_>>(),
     }));
     let model = ThreadModel::new(ModelRuntime::from_route(route)?, route.reasoning_config())

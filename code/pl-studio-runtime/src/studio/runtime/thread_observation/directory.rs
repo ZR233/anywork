@@ -1,8 +1,8 @@
 //! Product ancestry and state projections; notifications never replay old child execution.
 use super::ObservationServices;
+use crate::Thread;
 use anyhow::Result;
 use pl_core::thread::ThreadSnapshot;
-use pl_protocol::Thread;
 
 pub(super) async fn publish(
     projector: &ObservationServices,
@@ -36,7 +36,7 @@ pub(super) async fn publish(
 /// crashed Turn is never presented as running here.
 pub(super) async fn publish_cold_scheduling_state(
     projector: &ObservationServices,
-    thread: &pl_protocol::Thread,
+    thread: &crate::Thread,
     agent: &crate::studio::records::AgentDirectoryRecord,
     snapshot: &ThreadSnapshot,
 ) -> Result<()> {

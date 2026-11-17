@@ -1,5 +1,5 @@
+use crate::Result;
 use pl_model::model::ModelInfo;
-use pl_protocol::Result;
 
 use crate::config::InstructionsConfig;
 use pl_tool::environment::{ExecutionEnvironment, ExecutionTransport, ShellDialect};

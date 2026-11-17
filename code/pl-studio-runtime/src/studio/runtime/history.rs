@@ -13,7 +13,7 @@ impl StudioRuntime {
         thread_id: &str,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<pl_protocol::ThreadTurnPage> {
+    ) -> Result<crate::ThreadTurnPage> {
         self.prepare_timeline_history(thread_id)
             .await?
             .turn_page(cursor, limit)

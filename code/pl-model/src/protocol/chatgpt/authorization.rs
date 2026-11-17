@@ -2,12 +2,12 @@ use super::{
     CHATGPT_ISSUER, CODEX_CLIENT_ID, ChatGptAuthError, exchange, now, oauth_client,
     session::ChatGptCredentialRecord,
 };
+use crate::config::{ChatGptAccountInfo, CodexAccountInfo};
 use oauth2::TokenResponse as _;
 use oauth2::{
     AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope,
 };
 use openidconnect::{AccessTokenHash, ClientId, IssuerUrl, Nonce};
-use pl_protocol::studio::ChatGptAccountInfo;
 use std::collections::BTreeMap;
 use tokio::net::TcpListener;
 use url::Url;
@@ -179,7 +179,7 @@ impl ChatGptAuthorization {
                 client_id,
                 email: claims.email().map(|email| email.as_str().into()),
                 plan_usage_enabled: true,
-                codex: Some(pl_protocol::studio::CodexAccountInfo {
+                codex: Some(CodexAccountInfo {
                     account_id: claims
                         .additional_claims()
                         .auth

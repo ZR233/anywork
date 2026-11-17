@@ -4048,7 +4048,6 @@ dependencies = [
  "pretty_assertions",
  "reqwest",
  "schemars 1.2.3",
- "secrecy",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -4060,6 +4059,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+ "utoipa",
 ]
 
 [[package]]
@@ -4084,12 +4084,10 @@ dependencies = [
 name = "pl-protocol"
 version = "0.1.0"
 dependencies = [
- "agent-client-protocol-schema",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
- "tokio",
  "utoipa",
 ]
 
@@ -4159,7 +4157,6 @@ dependencies = [
  "futures",
  "pl-dev-support",
  "pl-model",
- "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
  "pl-tool",
@@ -4183,7 +4180,6 @@ dependencies = [
  "futures",
  "pl-lifecycle",
  "pl-model",
- "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
  "pl-studio-statistics",
@@ -4209,7 +4205,6 @@ dependencies = [
  "clap",
  "libc",
  "pl-model",
- "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
  "pl-studio-update",
@@ -4248,6 +4243,7 @@ dependencies = [
 name = "pl-studio-runtime"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol-schema",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -4301,6 +4297,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "utoipa",
  "uuid",
  "version-migrate",
  "which",
@@ -4318,7 +4315,6 @@ dependencies = [
  "clap",
  "futures",
  "pl-model",
- "pl-protocol",
  "pl-provider-fixture",
  "pl-studio-runtime",
  "pl-studio-update",

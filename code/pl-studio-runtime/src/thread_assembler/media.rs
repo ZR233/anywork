@@ -27,11 +27,8 @@ impl ToolMediaHost for MediaHost {
                     .map_err(ToolError::new)?
             };
             vec![
-                pl_model::runtime::attachment_content(
-                    projected,
-                    pl_protocol::AttachmentModality::Image,
-                )
-                .map_err(ToolError::new)?,
+                pl_model::runtime::attachment_content(projected, crate::AttachmentModality::Image)
+                    .map_err(ToolError::new)?,
             ]
         } else {
             let mut context = vec![ContextContent::Resource {
@@ -107,10 +104,10 @@ mod tests {
                 .into_iter()
                 .collect();
             let projection = OpaquePayload::new(
-                pl_protocol::tool_projection::FORMAT,
-                pl_protocol::tool_projection::VERSION,
-                serde_json::to_string(&pl_protocol::tool_projection::ToolProjection {
-                    image: Some(pl_protocol::tool_projection::ImageProjection {
+                pl_model::completion::tool_projection::FORMAT,
+                pl_model::completion::tool_projection::VERSION,
+                serde_json::to_string(&pl_model::completion::tool_projection::ToolProjection {
+                    image: Some(pl_model::completion::tool_projection::ImageProjection {
                         max_width: Some(4),
                         max_height: Some(4),
                         media_types: vec!["image/png".into(), "image/jpeg".into()],
@@ -259,7 +256,7 @@ mod tests {
         assert_eq!(display.files.len(), 1);
         assert!(
             matches!(&display.files[0], pl_tool::file_display::FileDisplayResult::Ready {
-            resource, modality: pl_protocol::AttachmentModality::Image,
+            resource, modality: crate::AttachmentModality::Image,
             origin: pl_tool::file_display::FileDisplayOrigin::Archive, ..
         } if resource == &attachment.reference)
         );

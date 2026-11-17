@@ -420,6 +420,6 @@ pub(super) fn failure(
     }
 }
 
-fn usage(report: &pl_protocol::UsageReport) -> ModelUsage {
+fn usage(report: &crate::model::UsageReport) -> ModelUsage {
     crate::model::usage::model_usage(report)
 }

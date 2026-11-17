@@ -541,13 +541,9 @@ mod tests {
             1,
             1,
             1,
-            crate::ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
-                pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                    Some(1),
-                    1,
-                    pl_protocol::TurnCompletion::Normal,
-                )),
-            )),
+            crate::ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
+                crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
+            ))),
         );
         crate::studio::storage::history::persist_completed(&history, 12, &[item])
             .await

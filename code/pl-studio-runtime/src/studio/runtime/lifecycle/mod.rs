@@ -236,7 +236,7 @@ mod startup_fault_tests {
             .store
             .persist_directory_summaries(&DirectoryDelta::upsert_project(ProjectDirectoryRecord {
                 id: "project-published".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Published".into(),
                 path: workspace.to_string_lossy().into_owned(),
                 ssh_alias: None,
@@ -456,7 +456,7 @@ mod startup_fault_tests {
         let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
             crate::studio::store::directory::ProjectDirectoryRecord {
                 id: "project-cold".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Cold".into(),
                 path: "/tmp/project-cold".into(),
                 ssh_alias: None,
@@ -471,8 +471,8 @@ mod startup_fault_tests {
                 "cold".into(),
                 "project-cold",
                 "cold",
-                pl_protocol::ThreadModeId::simple(),
-                pl_protocol::ThreadWorkspaceMode::Local,
+                crate::mode::ThreadModeId::simple(),
+                crate::ThreadWorkspaceMode::Local,
                 "/tmp/project-cold".into(),
                 crate::config::ROOT_AGENT_ROUTE_KEY,
             );
@@ -531,7 +531,7 @@ mod startup_fault_tests {
         assert_eq!(session.root_agent_id, "cold");
         assert_eq!(
             session.native_mode,
-            Some(pl_protocol::ThreadModeId::simple())
+            Some(crate::mode::ThreadModeId::simple())
         );
         let child = catalog
             .get_agent("synthetic-child")
@@ -765,7 +765,7 @@ mod startup_fault_tests {
         let temp = tempfile::tempdir()?;
         let home = temp.path();
         let paths = seed(home).await?;
-        let frozen_cost = pl_protocol::RuntimeCostAmount {
+        let frozen_cost = crate::RuntimeCostAmount {
             currency: "USD".into(),
             amount: 3.25,
         };
@@ -1143,12 +1143,12 @@ mod startup_fault_tests {
                 .and_then(|session| session.observed_thread("cold"))
                 .is_none()
         );
-        let demand = pl_protocol::ReadDemand {
+        let demand = crate::ReadDemand {
             max_items: 1,
             max_bytes: 64 * 1024,
         };
         let mut feed = runtime
-            .open_conversation_feed("cold", pl_protocol::ChatScope::conversation(None), demand)
+            .open_conversation_feed("cold", crate::ChatScope::conversation(None), demand)
             .await?;
         let reader = feed.reader().clone();
         let manifest = reader.list_contents(&item.id, None, demand).await?;
@@ -1160,7 +1160,7 @@ mod startup_fault_tests {
         let detail = reader
             .read_content(
                 reference,
-                pl_protocol::ContentRange {
+                crate::ContentRange {
                     offset: 0,
                     max_bytes: 128,
                 },

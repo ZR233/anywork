@@ -4,11 +4,11 @@ use pl_model::{
     model::{ModelInfo, ModelTransportProfile},
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::{
-    AgentWorkspaceMode, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
-    studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput},
-};
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
+use pl_studio_runtime::{
+    AgentWorkspaceMode, CreateThreadRequest, NewThreadModelRoute, StudioPromptInput,
+    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+};
 use pl_studio_runtime::{
     StudioHostKind, StudioRuntime, StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore, StudioConfig, UserAgentProfile, save_user_agent_profile},
@@ -109,7 +109,7 @@ pub async fn completed_prompt(
     runtime: &StudioRuntime,
     id: &str,
     prompt: &str,
-) -> Result<pl_protocol::Turn> {
+) -> Result<pl_studio_runtime::Turn> {
     terminal(runtime, id, Some(&format!("input-{prompt}"))).await
 }
 
@@ -117,7 +117,7 @@ async fn terminal(
     runtime: &StudioRuntime,
     id: &str,
     input: Option<&str>,
-) -> Result<pl_protocol::Turn> {
+) -> Result<pl_studio_runtime::Turn> {
     // The prompt already activated the owner. Reopen on slot replacement; never activate here.
     let mut feed = runtime.open_conversation_state_feed(id).await?;
     tokio::time::timeout(integration_test_deadline()?, async {
@@ -148,7 +148,7 @@ async fn terminal(
 
 fn is_resync(error: &anyhow::Error) -> bool {
     error
-        .downcast_ref::<pl_protocol::studio::StudioError>()
+        .downcast_ref::<pl_studio_runtime::StudioError>()
         .is_some_and(|error| error.reason() == Some("conversationResyncRequired"))
 }
 
@@ -233,14 +233,16 @@ impl Environment {
                 display_name: EXECUTOR.into(),
                 description: "Identity integration".into(),
                 when_to_use: "Identity integration".into(),
-                binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                    route: Some(pl_protocol::studio::NewThreadModelRoute {
-                        account_id: "child-fixture".into(),
-                        model_id: MODEL.into(),
-                        effort: None,
-                    }),
-                    system_instructions: Some("Follow the finite fixture script.".into()),
-                }),
+                binding: pl_studio_runtime::AgentBinding::Native(
+                    pl_studio_runtime::NativeAgentConfig {
+                        route: Some(pl_studio_runtime::NewThreadModelRoute {
+                            account_id: "child-fixture".into(),
+                            model_id: MODEL.into(),
+                            effort: None,
+                        }),
+                        system_instructions: Some("Follow the finite fixture script.".into()),
+                    },
+                ),
                 workspace_mode: AgentWorkspaceMode::Worktree,
             },
             &config,
@@ -263,6 +265,10 @@ impl Environment {
         StudioRuntimeOptions {
             studio_home: Some(home.into()),
             host: StudioHostKind::Test,
+            skill_search: pl_studio_runtime::SkillSearchOptions {
+                include_default_user_dir: false,
+                additional_dirs: Vec::new(),
+            },
             ..StudioRuntimeOptions::desktop()
         }
     }
@@ -281,13 +287,13 @@ impl Environment {
                     text: prompt.into(),
                     attachment_draft_ids: Vec::new(),
                 },
-                mode: pl_protocol::ThreadModeId::simple().to_string(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                 route: NewThreadModelRoute {
                     account_id: "root-fixture".into(),
                     model_id: MODEL.into(),
                     effort: None,
                 },
-                delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                 delegation_preference: None,
                 workspace_mode: mode,
             },

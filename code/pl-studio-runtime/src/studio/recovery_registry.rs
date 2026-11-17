@@ -1,7 +1,7 @@
 //! Recovery issues and scan lifecycle share one owner and revision.
 use crate::studio::agent_host::worktree_lease::{WorktreeLease, WorktreeLeaseOwnerKind};
 use crate::studio::{StudioRecoveryIssue, StudioRecoveryWorktreeOwner, ids::unix_seconds};
-use pl_protocol::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
+use crate::{ObservedResource, ObservedResourceCommand, StateError, StateOperation};
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
@@ -117,23 +117,20 @@ enum ThreadAccess {
 }
 
 impl StudioRecoveryRegistry {
-    pub(crate) fn ensure_thread_read_access(
-        &self,
-        thread: &pl_protocol::Thread,
-    ) -> anyhow::Result<()> {
+    pub(crate) fn ensure_thread_read_access(&self, thread: &crate::Thread) -> anyhow::Result<()> {
         self.ensure_thread_access(thread, ThreadAccess::Read)
     }
 
     pub(crate) fn ensure_thread_execution_access(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
     ) -> anyhow::Result<()> {
         self.ensure_thread_access(thread, ThreadAccess::Execute)
     }
 
     fn ensure_thread_access(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         access: ThreadAccess,
     ) -> anyhow::Result<()> {
         use crate::{StudioRecoveryImpact as Impact, StudioRecoveryIssueScope as Scope};
@@ -163,8 +160,8 @@ impl StudioRecoveryRegistry {
         if issues.is_empty() {
             return Ok(());
         }
-        Err(pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Unavailable,
+        Err(crate::StudioError::new(
+            crate::StudioErrorCode::Unavailable,
             match access {
                 ThreadAccess::Execute => "Thread execution is blocked by recovery",
                 ThreadAccess::Read => "Thread access is blocked by recovery",
@@ -190,8 +187,8 @@ impl StudioRecoveryRegistry {
         if issues.is_empty() {
             return Ok(());
         }
-        Err(pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Unavailable,
+        Err(crate::StudioError::new(
+            crate::StudioErrorCode::Unavailable,
             "Project execution preparation is blocked by recovery",
             true,
         )
@@ -201,7 +198,7 @@ impl StudioRecoveryRegistry {
 
     pub(crate) fn apply_execution_workspace_check(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         error: Option<&anyhow::Error>,
     ) -> ObservedResource<Vec<StudioRecoveryIssue>> {
         let id = format!("execution-workspace:{}", thread.id);
@@ -211,7 +208,7 @@ impl StudioRecoveryRegistry {
     }
 
     pub(crate) fn execution_workspace_issue(
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         error: &anyhow::Error,
     ) -> StudioRecoveryIssue {
         StudioRecoveryIssue {

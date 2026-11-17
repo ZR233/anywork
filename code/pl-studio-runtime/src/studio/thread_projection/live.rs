@@ -24,15 +24,7 @@ use std::{
     sync::Arc,
 };
 
-use pl_core::{
-    chat::{ChatDraft, ChatItem, PresentationPart, Session},
-    model::{
-        AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
-        ObservedPartIdentity, ObservedPartKind,
-    },
-    thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
-};
-use pl_protocol::{
+use crate::{
     InteractionContent, InteractionContinuationMessage, InteractionPurpose, InteractionRequest,
     SkillActivationCause, SkillActivationResourceBase, ThreadAgentItem, ThreadAgentState,
     ThreadAttachment, ThreadContentLifecycle, ThreadInferenceItem, ThreadInferenceState,
@@ -40,6 +32,14 @@ use pl_protocol::{
     ThreadToolItem, ThreadToolOutput, ThreadToolState, ToolApprovalState, Turn,
     TurnCancellationCause, TurnPhase, TurnRolloverOutcome, UserInputAnswer, UserInputState,
     UserQuestion, UserQuestionOption,
+};
+use pl_core::{
+    chat::{ChatDraft, ChatItem, PresentationPart, Session},
+    model::{
+        AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
+        ObservedPartIdentity, ObservedPartKind,
+    },
+    thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
 };
 
 use super::ProjectionError;
@@ -59,7 +59,7 @@ fn completion_ready(item: &ExecutionItem) -> bool {
         && !matches!(
             item.state(),
             ExecutionShape::Tool(tool) if tool.user_input().is_some_and(|input| matches!(
-                input.state(), pl_protocol::ThreadToolUserInputState::Pending
+                input.state(), crate::ThreadToolUserInputState::Pending
             ))
         )
 }
@@ -319,9 +319,9 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) display: Option<Arc<super::presentation::PreparedDisplayDelta>>,
     /// Reliable effect-local changes of already admitted members, not new immutable phases.
     /// Publication consumes these into the original frozen display delta.
-    display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
+    display_atom_updates: Arc<[crate::ChatAtom]>,
     /// 仅待发布的展示事实，发布后立即释放；不交给可靠 writer。
-    display_facts: Arc<[pl_protocol::ChatAtom]>,
+    display_facts: Arc<[crate::ChatAtom]>,
     display_text_visible: Arc<[super::presentation::TextVisible]>,
     display_observation_plan: Arc<super::presentation::ObservationPlan>,
     /// Only requested boundary cuts survive retirement; publication never consults newer live data.
@@ -365,7 +365,7 @@ fn prepared_turns(
                     .source_changes
                     .iter()
                     .find_map(|source| match &source.source {
-                        pl_protocol::ChatSourceId::ForegroundTurn { turn_id }
+                        crate::ChatSourceId::ForegroundTurn { turn_id }
                             if *turn_id == item.turn_id =>
                         {
                             source.started.map(|at| at.effect_seq)
@@ -373,7 +373,7 @@ fn prepared_turns(
                         _ => None,
                     });
             Some(Ok(crate::studio::storage::history::turns::TurnWrite {
-                turn: pl_protocol::Turn {
+                turn: crate::Turn {
                     id: item.turn_id.clone(),
                     thread_id: item.thread_id.clone(),
                     input_id: turn.input_id().map(str::to_owned),
@@ -385,7 +385,7 @@ fn prepared_turns(
                 admitted_effect,
                 updated_effect: Some(effect),
                 terminal_effect: turn.state().is_terminal().then_some(effect),
-                context_disposition: pl_protocol::ThreadContextDisposition::Active,
+                context_disposition: crate::ThreadContextDisposition::Active,
             }))
         })
         .collect()
@@ -678,9 +678,9 @@ fn tool_bytes(tool: &ThreadToolItem) -> u64 {
     bytes
 }
 
-fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
+fn wait_bytes(wait: &crate::ThreadWaitPresentation) -> u64 {
     match wait.intent() {
-        pl_protocol::ThreadWaitIntent::Events { targets, .. } => {
+        crate::ThreadWaitIntent::Events { targets, .. } => {
             targets
                 .iter()
                 .fold(RETAINED_ENTRY_OVERHEAD, |total, target| {
@@ -691,7 +691,7 @@ fn wait_bytes(wait: &pl_protocol::ThreadWaitPresentation) -> u64 {
                         .saturating_add(RETAINED_ENTRY_OVERHEAD)
                 })
         }
-        pl_protocol::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
+        crate::ThreadWaitIntent::Timer { .. } => RETAINED_ENTRY_OVERHEAD,
     }
 }
 
@@ -723,7 +723,7 @@ fn user_questions_bytes(questions: &[UserQuestion]) -> u64 {
 ///
 /// The question bodies and the answer values are resident here and in the content fields the window
 /// delivers, so the residency estimate charges every one of them exactly once per item.
-fn user_input_bytes(user_input: &pl_protocol::ThreadToolUserInput) -> u64 {
+fn user_input_bytes(user_input: &crate::ThreadToolUserInput) -> u64 {
     let questions = user_questions_bytes(user_input.questions()).saturating_add(
         user_input.plan_document().map_or(0, |identity| {
             (identity.content_hash.len() as u64).saturating_add(RETAINED_ENTRY_OVERHEAD)
@@ -850,11 +850,11 @@ fn skill_bytes(skill: &ThreadSkillItem) -> u64 {
 /// The state's scalar shell is already part of `Turn`'s inline layout, so only owned strings are
 /// charged: a failed Turn's structured failure, a coalesced cancellation's target identity and a
 /// budget rollover's error. Every other variant carries only timestamps and copied discriminants.
-fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
+fn turn_state_bytes(state: &crate::TurnState) -> u64 {
     match state {
-        pl_protocol::TurnState::Queued(_) | pl_protocol::TurnState::Running(_) => 0,
-        pl_protocol::TurnState::Completed(_) => 0,
-        pl_protocol::TurnState::Cancelled(state) => match state.cause() {
+        crate::TurnState::Queued(_) | crate::TurnState::Running(_) => 0,
+        crate::TurnState::Completed(_) => 0,
+        crate::TurnState::Cancelled(state) => match state.cause() {
             TurnCancellationCause::Coalesced { target_turn_id } => target_turn_id.len() as u64,
             TurnCancellationCause::Unspecified
             | TurnCancellationCause::UserRequested
@@ -863,11 +863,11 @@ fn turn_state_bytes(state: &pl_protocol::TurnState) -> u64 {
             | TurnCancellationCause::Interrupted
             | TurnCancellationCause::Recovery => 0,
         },
-        pl_protocol::TurnState::Failed(state) => {
+        crate::TurnState::Failed(state) => {
             let failure = state.failure();
             optional_bytes(failure.code.as_deref()).saturating_add(failure.message.len() as u64)
         }
-        pl_protocol::TurnState::BudgetLimited(state) => match state.rollover() {
+        crate::TurnState::BudgetLimited(state) => match state.rollover() {
             TurnRolloverOutcome::Failed { error } => error.len() as u64,
             TurnRolloverOutcome::NotAttempted | TurnRolloverOutcome::Succeeded => 0,
         },
@@ -1192,11 +1192,11 @@ impl TurnResult {
         record: &ChatItem,
         thread_id: &str,
     ) -> anyhow::Result<()> {
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
+        let atom: crate::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
         self.observe_identity(&atom.id);
         if matches!(
             atom.kind,
-            pl_protocol::ChatAtomKind::Text | pl_protocol::ChatAtomKind::ToolCall
+            crate::ChatAtomKind::Text | crate::ChatAtomKind::ToolCall
         ) {
             let order = atom
                 .source_order
@@ -1286,8 +1286,8 @@ mod provenance;
 pub(in crate::studio) struct LiveProjection {
     #[cfg(test)]
     pub(in crate::studio) fail_after_project: bool,
-    atom_starts: BTreeMap<String, pl_protocol::ChatAtom>,
-    source_states: BTreeMap<pl_protocol::ChatSourceId, pl_protocol::ChatSourceState>,
+    atom_starts: BTreeMap<String, crate::ChatAtom>,
+    source_states: BTreeMap<crate::ChatSourceId, crate::ChatSourceState>,
     provenance_restored: bool,
     /// Canonical payloads of identities that can still change.
     ///
@@ -1311,7 +1311,7 @@ pub(in crate::studio) struct LiveProjection {
     /// the projection emit a `turnUpdated` frame for each real phase transition instead of leaving
     /// the activity row at the phase captured when the Turn started.
     turn_phases: BTreeMap<String, TurnPhase>,
-    turn_failures: BTreeMap<String, pl_protocol::TurnFailure>,
+    turn_failures: BTreeMap<String, crate::TurnFailure>,
     /// Identity of the attempt the resident streaming previews belong to.
     ///
     /// A new attempt uses entirely new observation identities, so the caches of the previous one no
@@ -1519,7 +1519,7 @@ impl LiveProjection {
     #[cfg(test)]
     pub(in crate::studio) fn observe_test_current(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         active: Vec<super::current::ActiveText>,
     ) -> Result<(), ProjectionError> {
         self.current
@@ -1527,13 +1527,13 @@ impl LiveProjection {
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         Ok(())
     }
-    pub(in crate::studio) fn current_activity(&self) -> Option<pl_protocol::ThreadActivity> {
+    pub(in crate::studio) fn current_activity(&self) -> Option<crate::ThreadActivity> {
         self.current.activity()
     }
 
     fn freeze_current(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
     ) -> Result<
@@ -1557,7 +1557,7 @@ impl LiveProjection {
         {
             Arc::make_mut(&mut prepared).recovery_interruption = Some((
                 attempt.attempt_id.clone(),
-                pl_protocol::ChatFactPosition {
+                crate::ChatFactPosition {
                     effect_seq: effect.sequence,
                     suborder: 0,
                 },
@@ -1750,7 +1750,7 @@ impl LiveProjection {
     /// instead of writing a timeline with a hole.
     pub(in crate::studio) async fn prepare(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
@@ -1869,7 +1869,7 @@ impl LiveProjection {
     /// Same as [`LiveProjection::prepare`].
     pub(in crate::studio) async fn prepare_committed(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
@@ -1971,7 +1971,7 @@ impl LiveProjection {
     /// the same Turn resolves them without a second projection or a storage lookup.
     async fn project(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<
@@ -1996,7 +1996,7 @@ impl LiveProjection {
         let mut hidden_inputs = self.hidden_inputs.clone();
         for change in effect.inputs.iter() {
             if let pl_core::thread::input::InputChange::Accepted(record) = change
-                && super::input_presentation(record) == pl_protocol::MessagePresentation::Hidden
+                && super::input_presentation(record) == crate::MessagePresentation::Hidden
             {
                 hidden_inputs.insert(record.input.id.clone());
             }
@@ -2127,15 +2127,15 @@ impl LiveProjection {
         });
         for item in &mut items {
             if let crate::ExecutionShape::Turn(turn) = item.state()
-                && let pl_protocol::TurnState::Failed(failed) = turn.state()
+                && let crate::TurnState::Failed(failed) = turn.state()
                 && let Some(failure) = turn_failures.get(&item.turn_id)
             {
-                let state = pl_protocol::TurnState::Failed(pl_protocol::FailedTurnState::new(
+                let state = crate::TurnState::Failed(crate::FailedTurnState::new(
                     failed.started_at(),
                     failed.completed_at(),
                     failure.clone(),
                 ));
-                let turn = pl_protocol::ThreadTurnItem::new(state)
+                let turn = crate::ThreadTurnItem::new(state)
                     .with_input_id(turn.input_id().map(str::to_owned));
                 *item = item.clone().with_state(crate::ExecutionShape::Turn(turn));
             }
@@ -2272,7 +2272,7 @@ impl LiveProjection {
     /// published.
     async fn prepare_completion_drafts(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
         items: &[ExecutionItem],
@@ -2290,7 +2290,7 @@ impl LiveProjection {
                 && let Some(draft) = crate::studio::runtime::chat_item::accepted_input_draft(
                     thread,
                     record,
-                    pl_protocol::ChatFactPosition {
+                    crate::ChatFactPosition {
                         effect_seq: effect.sequence,
                         suborder: u32::try_from(
                             index.checked_add(1).ok_or(ProjectionError::Count)?,
@@ -2317,7 +2317,7 @@ impl LiveProjection {
             if let Some(draft) = crate::studio::runtime::chat_item::accepted_inbox_draft(
                 thread,
                 record,
-                pl_protocol::ChatFactPosition {
+                crate::ChatFactPosition {
                     effect_seq: effect.sequence,
                     suborder: u32::try_from(
                         effect
@@ -2368,8 +2368,7 @@ impl LiveProjection {
             drafts.push(draft);
         }
         for item in items {
-            if crate::studio::runtime::chat_item::atom(item).kind
-                == pl_protocol::ChatAtomKind::Input
+            if crate::studio::runtime::chat_item::atom(item).kind == crate::ChatAtomKind::Input
                 || state.inputs.iter().any(|record| record.input.id == item.id)
                 || effect.inputs.iter().any(|change| match change {
                     pl_core::thread::input::InputChange::Accepted(record) => {
@@ -2592,7 +2591,7 @@ impl LiveProjection {
     pub(in crate::studio) async fn stream(
         &mut self,
         _chat: &Session,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
         _applied: u64,
     ) -> Result<(), ProjectionError> {
@@ -2605,7 +2604,7 @@ impl LiveProjection {
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         if let Some(activity) = self.current.activity()
-            && activity.kind == pl_protocol::ThreadActivityKind::Thinking
+            && activity.kind == crate::ThreadActivityKind::Thinking
             && let Some(summary) = activity.thinking_summary.as_deref()
         {
             self.presentation
@@ -2619,7 +2618,7 @@ impl LiveProjection {
 
     async fn stream_model_progress(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
         let Some(preview) = state.model_progress.as_ref() else {
@@ -2731,7 +2730,7 @@ impl LiveProjection {
 
     fn stream_observation_parts(
         &mut self,
-        _thread: &pl_protocol::Thread,
+        _thread: &crate::Thread,
         attempt: &pl_core::thread::RequestAttempt,
         generation: u32,
         parts: &pl_core::model::ModelParts,
@@ -3034,7 +3033,7 @@ impl LiveProjection {
     /// Reads canonical identities without assigning placement or changing the index.
     async fn resolve(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         ids: impl IntoIterator<Item = String>,
         terminal_turns: &BTreeSet<String>,
         effect: u64,
@@ -3245,7 +3244,7 @@ impl LiveProjection {
     /// a live subscriber and durable history describe one commit rather than two drifting views.
     fn prepare_turn_frames(
         &self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         deliver: bool,
@@ -3277,7 +3276,7 @@ impl LiveProjection {
 
     fn emit_frames(
         &mut self,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
         mut turns: BTreeMap<String, Turn>,
@@ -3985,6 +3984,7 @@ mod completion_boundary_tests {
     //! Producer ports → original projection → Session → real HistoryStore transaction.
     use super::*;
     use crate::studio::storage::{history::HistoryStore, thread_writer::HistoryChannel};
+    use crate::{ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
     use anyhow::{Context, Result};
     use pl_core::{
         chat::{ChatHistory, ContentReadRequest, TimelineEpoch},
@@ -4002,7 +4002,6 @@ mod completion_boundary_tests {
         },
         runtime::{ModelMemberReceipt, ModelMemberState},
     };
-    use pl_protocol::{ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
     use sea_orm::{ConnectionTrait, Database};
 
     fn started(id: &str) -> ModelStartedMember {
@@ -4035,7 +4034,7 @@ mod completion_boundary_tests {
         projection: &mut LiveProjection,
         history: &HistoryStore,
         chat: &Session,
-        thread: &pl_protocol::Thread,
+        thread: &crate::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
     ) -> Result<Arc<PreparedEffect>> {
@@ -4049,7 +4048,7 @@ mod completion_boundary_tests {
     async fn v364_reliable_empty_text_start_preserves_work_and_atomic_started() -> Result<()> {
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "v364 empty Text")
                     .await?,
@@ -4128,7 +4127,7 @@ mod completion_boundary_tests {
             assert_eq!(cut.open.len(), 1, "no empty Single shell");
             assert!(matches!(
                 cut.open[0].body,
-                pl_protocol::DisplayBlockBody::Work { .. }
+                crate::DisplayBlockBody::Work { .. }
             ));
             Ok(())
         }
@@ -4139,16 +4138,16 @@ mod completion_boundary_tests {
     async fn read_frozen_payload(
         history: &HistoryStore,
         chat: &Session,
-        record: &pl_protocol::DisplayRecord,
+        record: &crate::DisplayRecord,
     ) -> Result<(serde_json::Value, Vec<String>)> {
-        use pl_protocol::{ContentOwner, ContentTarget, PayloadData};
+        use crate::{ContentOwner, ContentTarget, PayloadData};
         assert!(matches!(
             record.atom.lifecycle,
             ChatAtomLifecycle::Active { .. }
         ));
         assert!(record.atom.completion_item_id.is_none());
         assert!(record.atom.finished_at.is_none());
-        let read = |reference: &pl_protocol::ContentRef| {
+        let read = |reference: &crate::ContentRef| {
             let ContentTarget::Body { owner, key } = &reference.target else {
                 panic!("owned body")
             };
@@ -4176,8 +4175,7 @@ mod completion_boundary_tests {
         );
         let mut texts = Vec::new();
         for body in value["bodies"].as_array().context("body manifest")? {
-            let reference: pl_protocol::ContentRef =
-                serde_json::from_value(body["reference"].clone())?;
+            let reference: crate::ContentRef = serde_json::from_value(body["reference"].clone())?;
             assert!(
                 record
                     .atom
@@ -4204,7 +4202,7 @@ mod completion_boundary_tests {
         assert_eq!(prefix.len(), 51);
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "A07 observation payload")
                     .await?,
@@ -4311,7 +4309,7 @@ mod completion_boundary_tests {
             assert_eq!(expected.0["data"]["outcome"]["kind"], "streaming");
             assert_eq!(expected.1, [prefix]);
             assert_eq!(record.end_fact, None);
-            let pl_protocol::ContentTarget::Body { owner, key } =
+            let crate::ContentTarget::Body { owner, key } =
                 &record.atom.contents[0].reference.target
             else {
                 unreachable!()
@@ -4419,14 +4417,14 @@ mod completion_boundary_tests {
 
     #[tokio::test]
     async fn activity_token_cost_visits_only_active_parts_without_summary() -> Result<()> {
+        use crate::{ThreadActivityKind, ThreadContentLifecycle};
         use pl_core::model::ModelProgressSender;
-        use pl_protocol::{ThreadActivityKind, ThreadContentLifecycle};
 
         const COMPLETED: usize = 4096;
         const UPDATES: usize = 3;
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-        let thread = pl_protocol::Thread::from(
+        let thread = crate::Thread::from(
             env.runtime.create_thread(&env.project.id, "activity part cost").await?,
         );
         let history = HistoryStore::open(&env._temp.path().join("activity-parts.sqlite"), &thread.id).await?;
@@ -4585,7 +4583,7 @@ mod completion_boundary_tests {
         prepared: &PreparedEffect,
         kind: ChatAtomKind,
         database: &str,
-    ) -> Result<pl_protocol::ChatAtomContent> {
+    ) -> Result<crate::ChatAtomContent> {
         let fact = prepared
             .current
             .lifecycle
@@ -4610,12 +4608,12 @@ mod completion_boundary_tests {
         );
         let content = &atom.contents[0];
         assert_eq!(content.reference.database_id, database);
-        let pl_protocol::ContentTarget::Body { owner, key } = &content.reference.target else {
+        let crate::ContentTarget::Body { owner, key } = &content.reference.target else {
             anyhow::bail!("start content is not a canonical body");
         };
         assert_eq!(
             owner,
-            &pl_protocol::ContentOwner::Item {
+            &crate::ContentOwner::Item {
                 item_id: atom.id.clone()
             }
         );
@@ -4652,6 +4650,7 @@ mod completion_boundary_tests {
     #[tokio::test]
     async fn reliable_permission_status_changes_update_display_without_rewriting_start()
     -> Result<()> {
+        use crate::ChatActiveStatus;
         use pl_core::{
             context::{ContextRecord, ContextSource},
             model::ModelToolCall,
@@ -4661,11 +4660,10 @@ mod completion_boundary_tests {
                 task::{TaskRecord, TaskStatus},
             },
         };
-        use pl_protocol::ChatActiveStatus;
 
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-        let thread = pl_protocol::Thread::from(
+        let thread = crate::Thread::from(
             env.runtime
                 .create_thread(&env.project.id, "display permission changes")
                 .await?,
@@ -4930,7 +4928,7 @@ mod completion_boundary_tests {
     {
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-        let thread = pl_protocol::Thread::from(
+        let thread = crate::Thread::from(
             env.runtime
                 .create_thread(&env.project.id, "display boundary")
                 .await?,
@@ -4973,7 +4971,7 @@ mod completion_boundary_tests {
         first.model_member_starts = vec![started("R")].into();
         let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
         assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
-            pl_protocol::DisplayBlockBody::Work { timing, .. }
+            crate::DisplayBlockBody::Work { timing, .. }
             if timing.started_at == Some(first.committed_at) && timing.finished_at.is_none()));
         started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
         let mut second = effect(2);
@@ -5011,7 +5009,7 @@ mod completion_boundary_tests {
             let cut = owner.capture(None, 8, Some(0), 8);
             assert_eq!(cut.published, 0);
             assert!(
-                matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
+                matches!(&cut.open[0].body, crate::DisplayBlockBody::Work { timing, .. }
                 if cut.open[0].next_member == 1 && cut.open[0].unfinished == 0
                     && timing.started_at == Some(first.committed_at)
                     && timing.finished_at.is_none())
@@ -5032,7 +5030,7 @@ mod completion_boundary_tests {
         let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
             .find(|block| block.header.sealed).context("published Work")?;
         assert!(matches!(&frozen_work.header.body,
-            pl_protocol::DisplayBlockBody::Work { timing, .. }
+            crate::DisplayBlockBody::Work { timing, .. }
             if timing.started_at == Some(first.committed_at) && timing.finished_at == Some(third.committed_at)));
         let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
         assert_eq!(cold_work[0].body, frozen_work.header.body);
@@ -5092,7 +5090,7 @@ mod completion_boundary_tests {
             });
             projection.stream(&chat,&thread,&state,3).await?;
         }
-        let pl_protocol::ContentTarget::Body { owner, key } = &text_body.reference.target else {
+        let crate::ContentTarget::Body { owner, key } = &text_body.reference.target else {
             unreachable!("started_body checked the target");
         };
         let current_key = pl_core::chat::ChatContentKey {
@@ -5128,7 +5126,7 @@ mod completion_boundary_tests {
     -> Result<()> {
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "completion boundary")
                     .await?,
@@ -5409,7 +5407,7 @@ mod completion_boundary_tests {
     -> Result<()> {
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "same effect cut")
                     .await?,
@@ -5548,7 +5546,7 @@ mod completion_boundary_tests {
                     member.head.record.atom.id == a_id
                         && matches!(
                             member.head.record.content_source,
-                            pl_protocol::DisplayContentSource::FrozenObservation { .. }
+                            crate::DisplayContentSource::FrozenObservation { .. }
                         )
                 })
                 .unwrap();
@@ -5561,7 +5559,7 @@ mod completion_boundary_tests {
             assert_eq!(frozen.head.record.end_fact, None);
             assert_eq!(terminal.head.record.start_fact, None);
             let reference = &frozen.head.record.atom.contents[0].reference;
-            let pl_protocol::ContentTarget::Body { owner, key } = &reference.target else {
+            let crate::ContentTarget::Body { owner, key } = &reference.target else {
                 panic!()
             };
             let read = ChatHistory::read_content(
@@ -5608,7 +5606,7 @@ mod completion_boundary_tests {
         };
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "nested projection regression")
                     .await?,
@@ -5781,18 +5779,18 @@ mod restore_tests {
     #[tokio::test]
     async fn compaction_current_restores_without_an_item_and_settles_each_real_outcome()
     -> anyhow::Result<()> {
+        use crate::{
+            ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
+            ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
+        };
         use anyhow::Context as _;
         use pl_core::thread::{
             ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome,
         };
-        use pl_protocol::{
-            ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
-            ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
-        };
 
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-            let thread = pl_protocol::Thread::from(
+            let thread = crate::Thread::from(
                 env.runtime
                     .create_thread(&env.project.id, "compaction restore")
                     .await?,
@@ -6033,7 +6031,7 @@ mod restore_tests {
 
         let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
         let result = async {
-        let thread = pl_protocol::Thread::from(
+        let thread = crate::Thread::from(
             env.runtime
                 .create_thread(&env.project.id, "restore immediate completion")
                 .await?,
@@ -6138,7 +6136,7 @@ mod restore_tests {
                 provider_item_id: "restore-text".into(),
                 output_index: None,
                 kind: CompletionPresentationItemKind::Text(
-                    pl_protocol::trace::TraceTextChannel::Final,
+                    pl_model::trace::TraceTextChannel::Final,
                 ),
                 parts: vec![CompletionPresentationPart {
                     content_index: 0,
@@ -6168,7 +6166,7 @@ mod restore_tests {
             ..Default::default()
         };
         let expected_outcome = match settlement {
-            Settlement::Completed => pl_protocol::ChatTerminalOutcome::Completed,
+            Settlement::Completed => crate::ChatTerminalOutcome::Completed,
             Settlement::Failed | Settlement::Cancelled => {
                 // A terminal attempt may have no member receipt: its admitted preview is finalized
                 // through the original attempt path, preserving the same saved body and refs.
@@ -6185,12 +6183,12 @@ mod restore_tests {
                     Settlement::Failed => (
                         AttemptStatus::Failed,
                         AttemptOutcome::Failed(error),
-                        pl_protocol::ChatTerminalOutcome::Failed,
+                        crate::ChatTerminalOutcome::Failed,
                     ),
                     Settlement::Cancelled => (
                         AttemptStatus::Cancelled,
                         AttemptOutcome::Cancelled { result: Err(error) },
-                        pl_protocol::ChatTerminalOutcome::Cancelled,
+                        crate::ChatTerminalOutcome::Cancelled,
                     ),
                     Settlement::Completed => unreachable!(),
                 };
@@ -6259,12 +6257,12 @@ mod restore_tests {
         assert_eq!(content.descriptor.generation, expected_generation);
         assert_eq!(content.data.range(0, 150_000)?.as_bytes(), body.as_bytes());
         let completed_atom = completed.completions.iter()
-            .map(|record| serde_json::from_slice::<pl_protocol::ChatAtom>(&record.header.metadata))
+            .map(|record| serde_json::from_slice::<crate::ChatAtom>(&record.header.metadata))
             .collect::<Result<Vec<_>, _>>()?.into_iter()
             .find(|atom| atom.id == saved_atom.id).context("settled atom")?;
         assert_eq!(completed_atom.source, saved_atom.source);
         assert_eq!(completed_atom.source_order, saved_atom.source_order);
-        assert!(matches!(completed_atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {outcome,..}
+        assert!(matches!(completed_atom.lifecycle, crate::ChatAtomLifecycle::Terminal {outcome,..}
             if outcome == expected_outcome));
         assert!(completed_atom.source_state.is_none());
         if matches!(settlement, Settlement::Completed) {
@@ -6647,16 +6645,13 @@ mod completion_tests {
     #[test]
     fn terminal_tool_with_pending_interaction_does_not_seed_a_sealed_completion() {
         let tool = ThreadToolItem::new(
-            pl_protocol::ThreadToolInvocation::new("call".into(), "ask".into(), "{}".into()),
-            ThreadToolState::Interrupted(pl_protocol::InterruptedThreadTool::new(
-                10,
-                "waiting".into(),
-            )),
+            crate::ThreadToolInvocation::new("call".into(), "ask".into(), "{}".into()),
+            ThreadToolState::Interrupted(crate::InterruptedThreadTool::new(10, "waiting".into())),
         )
-        .with_user_input(Some(pl_protocol::ThreadToolUserInput::new(
+        .with_user_input(Some(crate::ThreadToolUserInput::new(
             "interaction".into(),
             Vec::new(),
-            pl_protocol::ThreadToolUserInputState::Pending,
+            crate::ThreadToolUserInputState::Pending,
         )));
         let item = ExecutionItem::new(
             "tool:4:call".into(),
@@ -6682,10 +6677,10 @@ mod completion_tests {
         };
         let answered = item.clone().with_state(ExecutionShape::Tool(
             ThreadToolItem::new(tool.invocation().clone(), tool.state().clone()).with_user_input(
-                Some(pl_protocol::ThreadToolUserInput::new(
+                Some(crate::ThreadToolUserInput::new(
                     "interaction".into(),
                     Vec::new(),
-                    pl_protocol::ThreadToolUserInputState::Cancelled,
+                    crate::ThreadToolUserInputState::Cancelled,
                 )),
             ),
         ));

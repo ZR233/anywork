@@ -1,15 +1,15 @@
 //! Read-only candidate projections over the config, performance and evaluation owners.
 
-use anyhow::{Context, Result};
-use pl_model::{
-    config::{AccountId, AccountModelEntry, AccountModelKey, ModelRouteConfig, ReasoningEffort},
-    model::ModelType,
-};
-use pl_protocol::{
+use crate::{
     DelegationModelCapability as Capability, DelegationModelDetail, DelegationModelDetails,
     DelegationModelList, DelegationModelListItem, DelegationModelResult, GetDelegationModelRequest,
     GetDelegationModelsRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
     ModelCapabilitiesDto, ModelModalityDto,
+};
+use anyhow::{Context, Result};
+use pl_model::{
+    config::{AccountId, AccountModelEntry, AccountModelKey, ModelRouteConfig, ReasoningEffort},
+    model::ModelType,
 };
 
 #[derive(Clone)]
@@ -116,9 +116,9 @@ impl DelegationModels {
         &self,
         request: GetDelegationModelsRequest,
     ) -> Result<DelegationModelDetails> {
-        request.validate().map_err(|error| {
-            pl_protocol::studio::StudioError::invalid_argument(error.to_string())
-        })?;
+        request
+            .validate()
+            .map_err(|error| crate::StudioError::invalid_argument(error.to_string()))?;
         let (snapshot, catalog) = self.config.read_with_catalog()?;
         let mut results = Vec::with_capacity(request.models.len());
         for model in request.models {
@@ -149,14 +149,16 @@ impl DelegationModels {
         request: GetDelegationModelRequest,
     ) -> Result<DelegationModelDetail> {
         let account_id = AccountId::new(request.account_id.clone())?;
-        let account = config.models.accounts.get(&account_id).ok_or_else(|| {
-            pl_protocol::studio::StudioError::not_found("Delegation model account")
-        })?;
+        let account = config
+            .models
+            .accounts
+            .get(&account_id)
+            .ok_or_else(|| crate::StudioError::not_found("Delegation model account"))?;
         let entry = account
             .effective_catalog(None)?
             .into_iter()
             .find(|entry| entry.model.model_id == request.model_id)
-            .ok_or_else(|| pl_protocol::studio::StudioError::not_found("Current account model"))?;
+            .ok_or_else(|| crate::StudioError::not_found("Current account model"))?;
         let availability = admission(config, &account_id, &entry);
         let key = AccountModelKey {
             account_id: request.account_id,

@@ -1,7 +1,8 @@
 //! Studio mode selection and initial workflow creation.
 use super::{CompiledWorkflowDefinition, RegisteredThreadMode};
+use crate::PureError;
 use crate::mode::state::{archive_run, lifecycle_for_state, validate_session_state_size};
-use pl_protocol::{PureError, WorkflowRun, WorkflowRunLifecycle, WorkflowSessionState};
+use crate::workflow_tool::{WorkflowRun, WorkflowRunLifecycle, WorkflowSessionState};
 /// 在 root Turn 第一次 provider 请求前，把持久状态与冻结 Mode 快照对齐。
 pub fn reconcile_workflow_for_turn(
     existing: Option<WorkflowSessionState>,

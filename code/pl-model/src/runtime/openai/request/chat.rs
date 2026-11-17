@@ -1,6 +1,7 @@
-use pl_protocol::{
-    ContentPart, MessageContent, MessageRole, Result, ToolCallKind, ToolCallRecord, ToolSpec,
+use crate::completion::{
+    ContentPart, MessageContent, MessageRole, ToolCallKind, ToolCallRecord, ToolSpec,
 };
+use pl_protocol::Result;
 use serde::Serialize;
 
 use crate::completion::CompletionRequest;
@@ -60,7 +61,7 @@ impl ChatRequestBody {
         let mut messages = Vec::new();
         let media_plan = MediaRepresentationPlan::for_request(request, model)?;
         let reasoning_fields =
-            |message: &pl_protocol::Message| -> Result<(Option<String>, Option<String>)> {
+            |message: &crate::completion::Message| -> Result<(Option<String>, Option<String>)> {
                 use crate::model::ReasoningInterleavedField;
                 let Some(content) = message
                     .reasoning_content
@@ -93,7 +94,7 @@ impl ChatRequestBody {
         }
 
         for item in &request.input {
-            if let pl_protocol::ModelContextItem::ToolMedia { items } = item {
+            if let crate::completion::ModelContextItem::ToolMedia { items } = item {
                 let content = tool_media_content(items);
                 messages.push(ChatMessage::User {
                     content: chat_content_for_user(
@@ -105,15 +106,15 @@ impl ChatRequestBody {
                 continue;
             }
             let msg = match item {
-                pl_protocol::ModelContextItem::Message { message }
-                | pl_protocol::ModelContextItem::ToolResult { message, .. } => message,
-                pl_protocol::ModelContextItem::ToolMedia { .. } => unreachable!(),
-                pl_protocol::ModelContextItem::Compaction { .. } => {
+                crate::completion::ModelContextItem::Message { message }
+                | crate::completion::ModelContextItem::ToolResult { message, .. } => message,
+                crate::completion::ModelContextItem::ToolMedia { .. } => unreachable!(),
+                crate::completion::ModelContextItem::Compaction { .. } => {
                     return Err(protocol_error(
                         "Chat Completions cannot consume remote compaction items",
                     ));
                 }
-                pl_protocol::ModelContextItem::Responses { .. } => {
+                crate::completion::ModelContextItem::Responses { .. } => {
                     return Err(protocol_error(
                         "Chat Completions cannot consume Responses native items",
                     ));

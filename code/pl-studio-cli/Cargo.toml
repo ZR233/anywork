@@ -14,7 +14,6 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
-pl-protocol.workspace = true
 pl-studio-runtime.workspace = true
 pl-studio-update.workspace = true
 pl-tool.workspace = true

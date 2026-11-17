@@ -10,7 +10,7 @@ use super::{
     BridgeDelegationMode, BridgeDelegationPreference, BridgeNewThreadModelRoute, BridgeThreadStatus,
 };
 
-/// 成员后端绑定的 FRB 镜像；与 `pl_protocol::AgentBinding` 的 tagged 形状一致。
+/// 成员后端绑定的 FRB 镜像；与 `pl_studio_runtime::AgentBinding` 的 tagged 形状一致。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum BridgeAgentBinding {
@@ -25,32 +25,32 @@ pub enum BridgeAgentBinding {
     },
 }
 
-impl From<pl_protocol::AgentBinding> for BridgeAgentBinding {
-    fn from(binding: pl_protocol::AgentBinding) -> Self {
+impl From<pl_studio_runtime::AgentBinding> for BridgeAgentBinding {
+    fn from(binding: pl_studio_runtime::AgentBinding) -> Self {
         match binding {
-            pl_protocol::AgentBinding::Native(config) => Self::Native {
+            pl_studio_runtime::AgentBinding::Native(config) => Self::Native {
                 route: config.route.map(Into::into),
                 system_instructions: config.system_instructions,
             },
-            pl_protocol::AgentBinding::Acp(config) => Self::Acp {
+            pl_studio_runtime::AgentBinding::Acp(config) => Self::Acp {
                 account_id: config.account_id,
             },
         }
     }
 }
 
-impl From<BridgeAgentBinding> for pl_protocol::AgentBinding {
+impl From<BridgeAgentBinding> for pl_studio_runtime::AgentBinding {
     fn from(binding: BridgeAgentBinding) -> Self {
         match binding {
             BridgeAgentBinding::Native {
                 route,
                 system_instructions,
-            } => Self::Native(pl_protocol::NativeAgentConfig {
+            } => Self::Native(pl_studio_runtime::NativeAgentConfig {
                 route: route.map(Into::into),
                 system_instructions,
             }),
             BridgeAgentBinding::Acp { account_id } => {
-                Self::Acp(pl_protocol::AcpAgentConfig { account_id })
+                Self::Acp(pl_studio_runtime::AcpAgentConfig { account_id })
             }
         }
     }

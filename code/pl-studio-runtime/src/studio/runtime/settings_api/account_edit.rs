@@ -1,12 +1,12 @@
 //! Account 设置编辑：把 wire 层的 account/model/role 更新解析为配置编辑对象。
 
-use anyhow::Result;
-use pl_model::protocol::{ConnectionMode, WireApi};
-use pl_protocol::studio::{
+use crate::{
     AccountAuthenticationIntent, AccountAuthenticationMethod, AccountModelAutoCompactUpdate,
     AccountModelConnectionUpdate, AccountModelUpdate, AccountSecretUpdate, AccountSettingsUpdate,
     StudioError,
 };
+use anyhow::Result;
+use pl_model::protocol::{ConnectionMode, WireApi};
 
 use crate::{AccountEdit, AccountModelEdit};
 use pl_model::config::AccountTemplateId;
@@ -49,11 +49,10 @@ pub(super) fn account_configuration(
     if matches!(intent, AccountAuthenticationIntent::ChatGpt { .. }) {
         let claim =
             credential.ok_or_else(|| invalid_settings_argument("ChatGPT login is not eligible"))?;
-        let current_revision = runtime.account_configuration_revision(
-            &pl_protocol::studio::AccountIdentity::Native {
+        let current_revision =
+            runtime.account_configuration_revision(&crate::AccountIdentity::Native {
                 account_id: id.to_string(),
-            },
-        )?;
+            })?;
         if claim.account_revision != current_revision {
             return Err(invalid_settings_argument(
                 "Account changed since ChatGPT login started",

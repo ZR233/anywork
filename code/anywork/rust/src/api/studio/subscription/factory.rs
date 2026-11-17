@@ -133,11 +133,11 @@ mod tests {
 
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
-        use pl_protocol::{
+        use pl_provider_fixture::{ReplyStage, responses_text_chunks};
+        use pl_studio_runtime::{
             ChatAtomKind, ChatScope, ReadDemand, ThreadNotification, ThreadSubscriptionUpdate,
             TurnState,
         };
-        use pl_provider_fixture::{ReplyStage, responses_text_chunks};
         use pl_studio_runtime::{
             ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
         };

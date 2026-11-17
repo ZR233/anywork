@@ -139,7 +139,7 @@ impl ChannelOutputPort for FeishuOutputPort {
             .await
         {
             Ok(result) => match result.status {
-                pl_protocol::studio::BotSendStatus::Succeeded => ChannelDeliveryResult::Confirmed {
+                crate::BotSendStatus::Succeeded => ChannelDeliveryResult::Confirmed {
                     message_ids: result
                         .segments
                         .into_iter()
@@ -147,14 +147,16 @@ impl ChannelOutputPort for FeishuOutputPort {
                         .map(PlatformMessageId)
                         .collect(),
                 },
-                pl_protocol::studio::BotSendStatus::Unknown => ChannelDeliveryResult::Unknown {
+                crate::BotSendStatus::Unknown => ChannelDeliveryResult::Unknown {
                     diagnostic: "caption message acceptance is unknown".into(),
                 },
-                pl_protocol::studio::BotSendStatus::Rejected
-                | pl_protocol::studio::BotSendStatus::Partial => ChannelDeliveryResult::Rejected {
-                    diagnostic: "caption delivery was rejected or only partially confirmed".into(),
-                    retryable: false,
-                },
+                crate::BotSendStatus::Rejected | crate::BotSendStatus::Partial => {
+                    ChannelDeliveryResult::Rejected {
+                        diagnostic: "caption delivery was rejected or only partially confirmed"
+                            .into(),
+                        retryable: false,
+                    }
+                }
             },
             Err(error) => self.failed_send(operation, error).await,
         }
@@ -417,12 +419,12 @@ pub(crate) fn local_error(message: impl Into<String>) -> FeishuError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AttachmentModality;
     use crate::bots::protocol::{
         endpoint::EndpointPolicy, files::FeishuFileAdapter, http::FeishuHttp,
     };
     use crate::channel_output::{ChannelAdapter, FileCapabilities, PlatformMessageId};
     use pl_core::context::ResourceReference;
-    use pl_protocol::AttachmentModality;
     use pl_provider_fixture::feishu::{
         CallKind, DIRECT_CHAT_ID, FeishuPeer, SendDisposition, TENANT_ACCESS_TOKEN,
     };
@@ -523,7 +525,7 @@ mod tests {
     impl BindingFixture {
         async fn new() -> anyhow::Result<Self> {
             use crate::bots::storage::{InboundAdmit, InboundClaim};
-            use pl_protocol::studio::{BotSecretUpdate, SaveBotRequest};
+            use crate::{BotSecretUpdate, SaveBotRequest};
             use pl_provider_fixture::feishu::{
                 DEFAULT_APP_ID, DEFAULT_APP_SECRET, TRUSTED_USER_OPEN_ID,
             };

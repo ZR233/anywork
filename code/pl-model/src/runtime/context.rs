@@ -141,8 +141,8 @@ pub(super) fn project_request(
                     output_schema,
                     ..
                 } => {
-                    if allowed_callers.contains(&pl_protocol::ToolCallerMode::Programmatic) {
-                        if !allowed_callers.contains(&pl_protocol::ToolCallerMode::Direct) {
+                    if allowed_callers.contains(&crate::completion::ToolCallerMode::Programmatic) {
+                        if !allowed_callers.contains(&crate::completion::ToolCallerMode::Direct) {
                             return Err(PureError::ConfigError(
                                 "programmatic-only tool requires the selected hosted coordinator"
                                     .into(),

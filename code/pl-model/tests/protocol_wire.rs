@@ -3,6 +3,9 @@ use pl_core::{
     model::ModelFactory,
     thread::{AttemptOutcome, ModelStepLimit, ThreadHandle, TurnInput, TurnOutcome, TurnState},
 };
+use pl_model::completion::{ToolCallCaller, ToolResultRecord};
+use pl_model::model::PricingOutcome;
+use pl_model::trace::{InMemoryTraceEventSink, TraceEventKind, TracePartKind, TraceTextChannel};
 use pl_model::{
     completion::{
         AttachmentInput, AttachmentModality, AttachmentSource, CompletionPresentationItemKind,
@@ -21,8 +24,6 @@ use pl_model::{
         CancellationToken, ModelInvocationContext, ModelRuntime, ModelSession, PromptCacheScope,
     },
 };
-use pl_protocol::trace::{InMemoryTraceEventSink, TraceEventKind, TracePartKind, TraceTextChannel};
-use pl_protocol::{PricingOutcome, ToolCallCaller, ToolResultRecord};
 use pl_provider_fixture::{
     FixtureServer, GUI_PROMPT, Protocol, Reply, RequestMatch, Step, gui_script, responses_text,
 };
@@ -1325,7 +1326,7 @@ async fn direct_tool_schema_is_omitted_and_replayed_without_reexecution() {
 #[tokio::test]
 async fn responses_schema_projection_preserves_content_and_program_caller() {
     use pl_model::completion::ToolCallPolicy;
-    use pl_protocol::ToolCallRecord;
+    use pl_model::completion::ToolCallRecord;
 
     let fixture = FixtureServer::start(vec![Step::prompt(
         Protocol::ResponsesHttp,
@@ -2052,7 +2053,7 @@ async fn tool_replay_survives_checkpoint_without_reexecuting_tools_or_failed_out
             PromptCacheDialect::OpenAiPromptCacheKey;
         let runtime = ModelRuntime::new_with_account_id("fixture", endpoint, fixture_model)
             .unwrap()
-            .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
+            .with_pricing_mode(pl_model::model::PricingMode::NoCharge);
         let factory = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None));
         let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let contract = pl_core::model::ToolPresentationContract::new(match label {
@@ -2893,7 +2894,7 @@ async fn buffered_first_output_never_reports_the_tail_receive_rate() {
 
 #[tokio::test]
 async fn throughput_timing_excludes_terminal_trace_publication() {
-    use pl_protocol::trace::{
+    use pl_model::trace::{
         TraceEvent, TraceEventDraft, TraceEventSink, TraceEventSinkError, TraceOperation,
         TracePartAction,
     };
@@ -3360,7 +3361,7 @@ async fn responses_message_parts_retain_distinct_provider_identity_and_trace_row
             .iter()
             .filter_map(|event| match &event.kind {
                 TraceEventKind::TracePartDelta { event } => match &event.delta {
-                    pl_protocol::trace::TraceDelta::Text { delta, .. } => Some(delta.as_str()),
+                    pl_model::trace::TraceDelta::Text { delta, .. } => Some(delta.as_str()),
                     _ => None,
                 },
                 _ => None,
@@ -6401,8 +6402,8 @@ async fn chat_reasoning_replay_uses_target_capability_and_rejects_untyped_detail
 async fn stable_cache_hint_keeps_diagnostics_separate_from_changed_instructions() {
     use pl_core::context::{ContextRecord, ContextSnapshot};
     use pl_core::model::{ModelRequest, ToolCallMode};
+    use pl_model::runtime::PromptPrefixChangedReason;
     use pl_model::runtime::{ThreadModel, model_request_receipt};
-    use pl_protocol::PromptPrefixChangedReason;
     let fixture = FixtureServer::start(vec![
         Step::prompt(
             Protocol::ResponsesHttp,
@@ -6672,7 +6673,7 @@ async fn provider_context_overflow_is_typed_and_keeps_the_original_receipt() {
             model("capacity-model", transport),
         )
         .unwrap()
-        .with_pricing_mode(pl_protocol::PricingMode::NoCharge);
+        .with_pricing_mode(pl_model::model::PricingMode::NoCharge);
         let session = ModelFactory::new(pl_model::runtime::ThreadModel::new(runtime, None))
             .open_session()
             .await

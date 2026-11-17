@@ -1,8 +1,8 @@
 //! 拥有所有权与静态内置 Thread Mode 注册描述。
 
-use pl_protocol::{
-    ThreadModeDefinition, ThreadModeId, WorkflowDefinition, WorkflowState, WorkflowStateKind,
-    WorkflowTransition,
+use crate::mode::{ThreadModeDefinition, ThreadModeId};
+use crate::workflow_tool::{
+    WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition,
 };
 
 /// 可在 Rust 数据段中保存的内置 Mode 描述。
@@ -22,7 +22,7 @@ impl StaticThreadModeRegistration {
     /// # Errors
     ///
     /// 内置 ID 不符合 `ThreadModeId` wire 约束时返回错误。
-    pub fn to_registration(self) -> Result<ThreadModeDefinition, pl_protocol::UnknownLabelError> {
+    pub fn to_registration(self) -> Result<ThreadModeDefinition, crate::UnknownLabelError> {
         Ok(ThreadModeDefinition {
             id: ThreadModeId::new(self.id)?,
             display_name: self.display_name.to_string(),

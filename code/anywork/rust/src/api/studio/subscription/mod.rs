@@ -332,8 +332,8 @@ mod tests {
     async fn terminal_sink_failure_survives_cleanup_retry() {
         let scope = ScopeOwner::new("test", tokio::runtime::Handle::current());
         let managed = subscription(&scope).await;
-        let failure: BridgeError = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Internal,
+        let failure: BridgeError = pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::Internal,
             "sink failed",
             false,
         )

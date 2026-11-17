@@ -10,9 +10,7 @@ use crate::config::{
     try_decode_current_payload,
 };
 use crate::studio::new_id;
-use pl_protocol::studio::{
-    BotCredentialAvailability, BotCredentialOperation, BotDiagnostic, BotSecretUpdate,
-};
+use crate::{BotCredentialAvailability, BotCredentialOperation, BotDiagnostic, BotSecretUpdate};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 

@@ -9,13 +9,13 @@ pub enum BridgeAgentWorkspaceMode {
     Review,
 }
 
-impl From<pl_protocol::AgentWorkspaceMode> for BridgeAgentWorkspaceMode {
-    fn from(value: pl_protocol::AgentWorkspaceMode) -> Self {
+impl From<pl_studio_runtime::AgentWorkspaceMode> for BridgeAgentWorkspaceMode {
+    fn from(value: pl_studio_runtime::AgentWorkspaceMode) -> Self {
         match value {
-            pl_protocol::AgentWorkspaceMode::Unrestricted => Self::Unrestricted,
-            pl_protocol::AgentWorkspaceMode::Directory => Self::Directory,
-            pl_protocol::AgentWorkspaceMode::Worktree => Self::Worktree,
-            pl_protocol::AgentWorkspaceMode::Review => Self::Review,
+            pl_studio_runtime::AgentWorkspaceMode::Unrestricted => Self::Unrestricted,
+            pl_studio_runtime::AgentWorkspaceMode::Directory => Self::Directory,
+            pl_studio_runtime::AgentWorkspaceMode::Worktree => Self::Worktree,
+            pl_studio_runtime::AgentWorkspaceMode::Review => Self::Review,
         }
     }
 }
@@ -43,8 +43,8 @@ pub struct BridgeAgentDefinitionSnapshot {
     pub content_hash: String,
 }
 
-impl From<pl_protocol::AgentDefinitionSnapshot> for BridgeAgentDefinitionSnapshot {
-    fn from(profile: pl_protocol::AgentDefinitionSnapshot) -> Self {
+impl From<pl_studio_runtime::AgentDefinitionSnapshot> for BridgeAgentDefinitionSnapshot {
+    fn from(profile: pl_studio_runtime::AgentDefinitionSnapshot) -> Self {
         Self {
             definition_id: profile.definition_id,
             display_name: profile.display_name,
@@ -57,7 +57,7 @@ impl From<pl_protocol::AgentDefinitionSnapshot> for BridgeAgentDefinitionSnapsho
     }
 }
 
-impl From<BridgeAgentDefinitionSnapshot> for pl_protocol::AgentDefinitionSnapshot {
+impl From<BridgeAgentDefinitionSnapshot> for pl_studio_runtime::AgentDefinitionSnapshot {
     fn from(profile: BridgeAgentDefinitionSnapshot) -> Self {
         Self {
             definition_id: profile.definition_id,
@@ -71,8 +71,8 @@ impl From<BridgeAgentDefinitionSnapshot> for pl_protocol::AgentDefinitionSnapsho
     }
 }
 
-impl From<pl_protocol::AgentProfile> for BridgeAgentProfileDto {
-    fn from(profile: pl_protocol::AgentProfile) -> Self {
+impl From<pl_studio_runtime::AgentProfile> for BridgeAgentProfileDto {
+    fn from(profile: pl_studio_runtime::AgentProfile) -> Self {
         Self {
             definition: profile.definition.into(),
             binding: profile.binding.into(),
@@ -83,7 +83,7 @@ impl From<pl_protocol::AgentProfile> for BridgeAgentProfileDto {
     }
 }
 
-impl From<BridgeAgentWorkspaceMode> for pl_protocol::AgentWorkspaceMode {
+impl From<BridgeAgentWorkspaceMode> for pl_studio_runtime::AgentWorkspaceMode {
     fn from(value: BridgeAgentWorkspaceMode) -> Self {
         match value {
             BridgeAgentWorkspaceMode::Unrestricted => Self::Unrestricted,
@@ -94,7 +94,7 @@ impl From<BridgeAgentWorkspaceMode> for pl_protocol::AgentWorkspaceMode {
     }
 }
 
-impl From<BridgeAgentProfileDto> for pl_protocol::AgentProfile {
+impl From<BridgeAgentProfileDto> for pl_studio_runtime::AgentProfile {
     fn from(profile: BridgeAgentProfileDto) -> Self {
         Self {
             definition: profile.definition.into(),

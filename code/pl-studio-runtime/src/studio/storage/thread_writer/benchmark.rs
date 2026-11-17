@@ -33,7 +33,7 @@ impl WriterFixture {
             tokio::fs::create_dir_all(&project_root).await?;
             let mut delta = DirectoryDelta::upsert_project(ProjectDirectoryRecord {
                 id: "bench-project".into(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
+                kind: crate::WorkspaceKind::Project,
                 name: "Statistics benchmark".into(),
                 path: project_root.to_string_lossy().into_owned(),
                 ssh_alias: None,
@@ -45,7 +45,7 @@ impl WriterFixture {
             let threads: Vec<_> = (0..active_threads)
                 .map(|index| {
                     let id = format!("bench-thread-{index:04}");
-                    let mut thread = pl_protocol::Thread::placeholder(&id);
+                    let mut thread = crate::Thread::placeholder(&id);
                     thread.workspace_id = "bench-project".into();
                     thread.agent_path = id.clone();
                     thread.root_thread_id = id;

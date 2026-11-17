@@ -4,12 +4,10 @@ use pl_model::{
     model::ModelInfo,
     protocol::ProtocolEndpoint,
 };
-use pl_protocol::{
-    DelegationModelResult, GetDelegationModelRequest, GetDelegationModelsRequest,
-    ListDelegationModelsRequest, studio::StudioErrorCode,
-};
 use pl_studio_runtime::{
-    StudioHostKind, StudioRuntime, StudioRuntimeOptions,
+    DelegationModelResult, GetDelegationModelRequest, GetDelegationModelsRequest,
+    ListDelegationModelsRequest, StudioErrorCode, StudioHostKind, StudioRuntime,
+    StudioRuntimeOptions,
     config::{ConfigPaths, ConfigStore, StudioConfig},
 };
 
@@ -61,6 +59,10 @@ async fn environment() -> Result<(tempfile::TempDir, StudioRuntime)> {
     let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
         studio_home: Some(home.path().to_path_buf()),
         host: StudioHostKind::Test,
+        skill_search: pl_studio_runtime::SkillSearchOptions {
+            include_default_user_dir: false,
+            additional_dirs: Vec::new(),
+        },
         ..StudioRuntimeOptions::desktop()
     })
     .await?;
@@ -184,7 +186,7 @@ async fn batch_details_reject_invalid_whole_requests() -> Result<()> {
             .unwrap_err();
         assert_eq!(
             error
-                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .downcast_ref::<pl_studio_runtime::StudioError>()
                 .unwrap()
                 .code,
             StudioErrorCode::InvalidArgument
@@ -208,9 +210,9 @@ mod support;
 
 #[tokio::test]
 async fn profile_tool_reports_frozen_mode_without_automatic_preset_routes() -> Result<()> {
-    use pl_protocol::{
-        DelegationMode, ThreadWorkspaceMode,
-        studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput},
+    use pl_studio_runtime::{
+        CreateThreadRequest, DelegationMode, NewThreadModelRoute, StudioPromptInput,
+        ThreadWorkspaceMode,
     };
     use serde_json::json;
     use support::{Environment, completed_prompt, prompt_step, receipt, text_reply, tool_reply};

@@ -9,10 +9,7 @@ impl StudioThreadFactory {
     fn validate_acp_close(&self, id: &str, record: &AgentCloseRecord) -> anyhow::Result<()> {
         let member = self.directory_member(id)?;
         ensure!(
-            matches!(
-                member.agent.backend,
-                pl_protocol::session::AgentBackend::Acp { .. }
-            ),
+            matches!(member.agent.backend, crate::AgentBackend::Acp { .. }),
             "ACP close requires an ACP member"
         );
         ensure!(
@@ -66,7 +63,7 @@ impl StudioThreadFactory {
             return Ok(record.result());
         }
         let member = self.directory_member(id)?;
-        let pl_protocol::session::AgentBackend::Acp { .. } = &member.agent.backend else {
+        let crate::AgentBackend::Acp { .. } = &member.agent.backend else {
             anyhow::bail!("ACP close requires an ACP member");
         };
         let parent = member
@@ -115,7 +112,7 @@ impl StudioThreadFactory {
     pub(crate) async fn finish_acp_child_close(
         &self,
         id: &str,
-    ) -> anyhow::Result<(AgentCloseResult, Option<pl_protocol::StateError>)> {
+    ) -> anyhow::Result<(AgentCloseResult, Option<crate::StateError>)> {
         let mut record = self
             .services
             .store
@@ -155,7 +152,7 @@ impl StudioThreadFactory {
     pub(crate) async fn directory_rows_for_root(
         &self,
         caller: &str,
-    ) -> anyhow::Result<Vec<(pl_protocol::SessionDirectoryRow, bool)>> {
+    ) -> anyhow::Result<Vec<(crate::SessionDirectoryRow, bool)>> {
         let caller = self.directory_member(caller)?;
         let members = self
             .services
@@ -197,7 +194,7 @@ impl StudioThreadFactory {
     pub(in crate::studio) async fn prepare_acp_child_workspace(
         &self,
         request: &ChildThreadRequest,
-        mode: pl_protocol::AgentWorkspaceMode,
+        mode: crate::AgentWorkspaceMode,
     ) -> Result<PreparedChildWorkspace, ThreadAssemblyError> {
         let prepared = self.prepare_child_workspace(request, mode).await?;
         if let Some(worktree) = &prepared.worktree {

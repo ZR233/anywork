@@ -5,10 +5,10 @@ use std::{
     sync::{Arc, Mutex as SyncMutex},
 };
 
-use pl_protocol::studio::{StudioError, StudioErrorCode};
 use pl_studio_runtime::{
     ConversationFeed, ConversationReader, ConversationStateFeed, TimelineReader,
 };
+use pl_studio_runtime::{StudioError, StudioErrorCode};
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -583,8 +583,8 @@ mod tests {
         env.finish(result).await
     }
 
-    fn chat_demand() -> pl_protocol::ReadDemand {
-        pl_protocol::ReadDemand {
+    fn chat_demand() -> pl_studio_runtime::ReadDemand {
+        pl_studio_runtime::ReadDemand {
             max_items: 2,
             max_bytes: 64 * 1024,
         }
@@ -1098,11 +1098,11 @@ mod tests {
         use std::{collections::HashSet, time::Duration};
 
         use anyhow::{Context, Result, ensure};
-        use pl_protocol::{AgentExecutionPhase, ThreadSnapshot, TurnState};
         use pl_provider_fixture::{
             GUI_STREAMING_OUTPUT_REFERENCE_TOKENS, gui_streaming_output_reply,
         };
         use pl_studio_runtime::StudioRuntime;
+        use pl_studio_runtime::{AgentExecutionPhase, ThreadSnapshot, TurnState};
 
         use super::*;
         use crate::api::studio::types::{
@@ -2016,7 +2016,7 @@ mod tests {
                         &env.thread_id,
                         6,
                         1,
-                        pl_protocol::ReadDemand {
+                        pl_studio_runtime::ReadDemand {
                             max_items: 2,
                             max_bytes: 64 * 1024,
                         },
@@ -2028,7 +2028,7 @@ mod tests {
                 ));
                 let reader = owner.timeline.as_ref().context("timeline capability")?;
                 let first = reader.next(reader.metadata().initial_cursor).await?;
-                ensure!(first.history.placement == pl_protocol::HistoryPlacement::Set);
+                ensure!(first.history.placement == pl_studio_runtime::HistoryPlacement::Set);
                 ensure!(first == reader.next(first.after.clone()).await?);
                 ensure!(owner.native.lock().await.is_none());
                 owner.content()?.reader.read_business_refs().await?;

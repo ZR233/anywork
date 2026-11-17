@@ -1,7 +1,7 @@
 //! Host-owned `/alpha/search` request and configuration adaptation.
 
-use pl_protocol::search::{WebSearchConfig, WebSearchMode};
-use pl_protocol::{WebSearchContextSize, WebSearchFilters, WebSearchUserLocation};
+use crate::search::{WebSearchConfig, WebSearchMode};
+use pl_model::completion::{WebSearchContextSize, WebSearchFilters, WebSearchUserLocation};
 use pl_tool_search::tools::web_search::SearchCommands;
 use serde::{Deserialize, Serialize};
 

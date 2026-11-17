@@ -11,7 +11,7 @@ use pl_core::{
 use std::collections::{BTreeMap, HashMap};
 
 pub(super) fn tool_projection(model: &ModelInfo) -> Result<OpaquePayload, ModelError> {
-    use pl_protocol::tool_projection::{ImageProjection, ToolProjection};
+    use crate::completion::tool_projection::{ImageProjection, ToolProjection};
     let image = model
         .capabilities
         .input_capability(ModelModality::Image)
@@ -33,8 +33,8 @@ pub(super) fn tool_projection(model: &ModelInfo) -> Result<OpaquePayload, ModelE
     let content = serde_json::to_string(&ToolProjection { image })
         .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))?;
     OpaquePayload::new(
-        pl_protocol::tool_projection::FORMAT,
-        pl_protocol::tool_projection::VERSION,
+        crate::completion::tool_projection::FORMAT,
+        crate::completion::tool_projection::VERSION,
         content,
     )
     .map_err(|source| failure(ModelFailureKind::UnsupportedContent, source))

@@ -143,7 +143,7 @@ pub(super) async fn append_records_at_head<'a>(
                 "immutable completion payload conflict"
             );
             let owner = crate::studio::conversation_identity::content_owner_key(
-                &pl_protocol::ContentOwner::Item {
+                &crate::ContentOwner::Item {
                     item_id: h.item_id.clone(),
                 },
             )?;
@@ -376,8 +376,8 @@ async fn materialize(
 #[cfg(test)]
 pub(in crate::studio) mod record_read_tests {
     use super::*;
+    use crate::{ChatAtom, ChatAtomKind, ChatSourceId};
     use pl_core::chat::{ChatDraft, ChatQuery, ReadDemand};
-    use pl_protocol::{ChatAtom, ChatAtomKind, ChatSourceId};
     use sea_orm::TransactionTrait;
 
     fn atom(id: &str, kind: ChatAtomKind, source: &str) -> ChatAtom {
@@ -386,7 +386,7 @@ pub(in crate::studio) mod record_read_tests {
         atom.source = ChatSourceId::ForegroundTurn {
             turn_id: source.into(),
         };
-        atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
+        atom.delivery = crate::ChatDeliveryKind::Foreground;
         atom
     }
 
@@ -624,9 +624,7 @@ pub(in crate::studio) mod record_read_tests {
     #[tokio::test]
     async fn execution_recovery_pages_real_unfinished_starts_including_independent_compaction()
     -> Result<()> {
-        use pl_protocol::{
-            ChatActiveStatus, ChatAtomLifecycle, ChatDeliveryKind, ChatTerminalOutcome,
-        };
+        use crate::{ChatActiveStatus, ChatAtomLifecycle, ChatDeliveryKind, ChatTerminalOutcome};
         let dir = tempfile::tempdir()?;
         let store =
             super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "recovery-starts")
@@ -1255,22 +1253,22 @@ pub(in crate::studio::storage::history) mod tests {
     }
 
     pub(in crate::studio::storage::history) fn metadata(id: &str) -> Arc<[u8]> {
-        serde_json::to_vec(&pl_protocol::ChatAtom {
+        serde_json::to_vec(&crate::ChatAtom {
             id: id.into(),
             completion_item_id: Some(id.into()),
             content_present: None,
             completion_seq: None,
             source_state: None,
-            source: pl_protocol::ChatSourceId::Receipt {
+            source: crate::ChatSourceId::Receipt {
                 receipt_id: id.into(),
             },
             source_order: None,
-            kind: pl_protocol::ChatAtomKind::Unknown,
-            delivery: pl_protocol::ChatDeliveryKind::Independent,
-            lifecycle: pl_protocol::ChatAtomLifecycle::Terminal {
+            kind: crate::ChatAtomKind::Unknown,
+            delivery: crate::ChatDeliveryKind::Independent,
+            lifecycle: crate::ChatAtomLifecycle::Terminal {
                 started: None,
                 ended: None,
-                outcome: pl_protocol::ChatTerminalOutcome::Completed,
+                outcome: crate::ChatTerminalOutcome::Completed,
             },
             turn_id: None,
             attempt_id: None,

@@ -1,4 +1,4 @@
-use pl_protocol::StateError;
+use crate::StateError;
 use serde::{Deserialize, Serialize};
 
 use pl_studio_update::StudioUpdate;

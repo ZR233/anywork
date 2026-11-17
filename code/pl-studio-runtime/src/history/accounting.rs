@@ -14,7 +14,7 @@ pub struct HistoryUsageFact {
     pub runtime_epoch: RuntimeEpoch,
     pub turn_id: Option<String>,
     pub outcome: UsageOutcome,
-    pub record: pl_protocol::InferenceBillingRecord,
+    pub record: crate::InferenceBillingRecord,
 }
 
 impl HistoryStore {

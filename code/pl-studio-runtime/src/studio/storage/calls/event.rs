@@ -38,8 +38,8 @@ pub(super) struct CallUsageRecord {
 }
 
 impl CallUsageRecord {
-    pub(super) fn report(&self) -> pl_protocol::UsageReport {
-        pl_protocol::UsageReport {
+    pub(super) fn report(&self) -> crate::UsageReport {
+        crate::UsageReport {
             input_tokens: self.input_tokens,
             output_tokens: self.output_tokens,
             cache_read_tokens: self.cache_read_tokens,
@@ -61,7 +61,7 @@ pub(super) const THROUGHPUT_EPOCH: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub(super) struct CallTimingRecord {
     #[serde(default = "legacy_output_source")]
-    pub(super) first_output_source: pl_protocol::FirstOutputSource,
+    pub(super) first_output_source: crate::FirstOutputSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) ttft_millis: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,7 +72,7 @@ pub(super) struct CallTimingRecord {
 
 impl CallTimingRecord {
     /// 投影一次计时的原始事实。
-    pub(super) fn measured(timing: pl_protocol::InferenceTiming) -> Self {
+    pub(super) fn measured(timing: crate::InferenceTiming) -> Self {
         Self {
             first_output_source: timing.first_output_source,
             ttft_millis: timing.ttft_millis,
@@ -88,15 +88,15 @@ impl CallTimingRecord {
         response_millis: Option<u64>,
     ) -> Self {
         Self {
-            first_output_source: pl_protocol::FirstOutputSource::LegacyUnknown,
+            first_output_source: crate::FirstOutputSource::LegacyUnknown,
             ttft_millis,
             decode_millis,
             response_millis,
         }
     }
 
-    fn protocol_timing(self) -> pl_protocol::InferenceTiming {
-        pl_protocol::InferenceTiming {
+    fn protocol_timing(self) -> crate::InferenceTiming {
+        crate::InferenceTiming {
             first_output_source: self.first_output_source,
             ttft_millis: self.ttft_millis,
             decode_millis: self.decode_millis,
@@ -105,8 +105,8 @@ impl CallTimingRecord {
     }
 }
 
-fn legacy_output_source() -> pl_protocol::FirstOutputSource {
-    pl_protocol::FirstOutputSource::LegacyUnknown
+fn legacy_output_source() -> crate::FirstOutputSource {
+    crate::FirstOutputSource::LegacyUnknown
 }
 
 /// 一行版本化 JSONL 日志记录；也是队列事件的载荷。
@@ -174,7 +174,7 @@ impl CallLogRecord {
 
     /// Speed is a derived, paired fact. Raw counters and timings remain in the log even when this
     /// validation rejects them for performance statistics.
-    pub(super) fn throughput_sample(&self) -> Option<(u64, pl_protocol::InferenceTiming)> {
+    pub(super) fn throughput_sample(&self) -> Option<(u64, crate::InferenceTiming)> {
         if self.version != CALL_LOG_RECORD_VERSION
             || !self.is_current_throughput_epoch()
             || self.status != CallStatus::Committed.as_str()
@@ -191,7 +191,7 @@ impl CallLogRecord {
     pub(super) fn throughput_sample_with_analysis(
         &self,
         analysis: &pl_core::usage::UsageAnalysis,
-    ) -> Option<(u64, pl_protocol::InferenceTiming)> {
+    ) -> Option<(u64, crate::InferenceTiming)> {
         if self.status != CallStatus::Committed.as_str() || !self.is_current_throughput_epoch() {
             return None;
         }

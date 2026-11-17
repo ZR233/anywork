@@ -4,9 +4,10 @@
 //! 放在模型边界，Studio、其它宿主和历史查询都能复用同一套语义，而无需复制 provider
 //! receipt 解析或读取存储表。
 
+use crate::completion::InferenceBillingRecord;
+use crate::model::InferenceAccounting;
 use pl_core::model::ModelUsage;
 use pl_core::thread::{AttemptOutcome, journal::AttemptUpdate};
-use pl_protocol::{InferenceAccounting, InferenceBillingRecord};
 
 use super::ModelCallBinding;
 use pl_core::context::{ContextContent, OpaquePayload};
@@ -29,10 +30,10 @@ struct BillingRequest {
 struct BillingFacts {
     content: Option<String>,
     accounting: InferenceAccounting,
-    model_observation: Option<pl_protocol::InferenceModelObservation>,
-    timing: Option<pl_protocol::InferenceTiming>,
+    model_observation: Option<crate::completion::InferenceModelObservation>,
+    timing: Option<crate::completion::InferenceTiming>,
     #[serde(default)]
-    orchestration: pl_protocol::InferenceOrchestrationMetrics,
+    orchestration: crate::completion::InferenceOrchestrationMetrics,
 }
 
 #[derive(Deserialize)]
@@ -40,10 +41,10 @@ struct BillingFacts {
 struct BillingFailure {
     binding: ModelCallBinding,
     accounting: InferenceAccounting,
-    model_observation: Option<pl_protocol::InferenceModelObservation>,
-    timing: Option<pl_protocol::InferenceTiming>,
+    model_observation: Option<crate::completion::InferenceModelObservation>,
+    timing: Option<crate::completion::InferenceTiming>,
     #[serde(default)]
-    orchestration: pl_protocol::InferenceOrchestrationMetrics,
+    orchestration: crate::completion::InferenceOrchestrationMetrics,
 }
 
 #[derive(Deserialize)]
@@ -411,7 +412,7 @@ mod tests {
                                 "binding": binding,
                                 "response": {
                                     "content": "answer",
-                                    "accounting": pl_protocol::InferenceAccounting::default(),
+                                    "accounting": crate::model::InferenceAccounting::default(),
                                     "modelObservation": {
                                         "configuredModel":"frozen-model",
                                         "sentModel":"wire-alias",
@@ -443,7 +444,7 @@ mod tests {
                     super::super::thread_model::FAILURE_RECEIPT_VERSION,
                     json!({
                         "binding": binding,
-                        "accounting": pl_protocol::InferenceAccounting::default()
+                        "accounting": crate::model::InferenceAccounting::default()
                     })
                     .to_string(),
                 )
@@ -640,14 +641,14 @@ mod tests {
 
     #[test]
     fn lightweight_receipts_keep_terminal_accounting_and_timing() {
-        let accounting = pl_protocol::InferenceAccounting {
-            usage: pl_protocol::UsageReport {
+        let accounting = crate::model::InferenceAccounting {
+            usage: crate::model::UsageReport {
                 total_tokens: Some(47),
                 ..Default::default()
             },
             ..Default::default()
         };
-        let timing = pl_protocol::InferenceTiming {
+        let timing = crate::completion::InferenceTiming {
             first_output_source: pl_protocol::FirstOutputSource::CompletedToolInput,
             ttft_millis: Some(12),
             decode_millis: Some(0),

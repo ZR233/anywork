@@ -1,4 +1,4 @@
-use pl_protocol::ThreadModeId;
+use pl_studio_runtime::mode::ThreadModeId;
 
 use crate::api::studio::bridge_runtime::{active_bridge, installed_bridge};
 use crate::api::studio::convert::mode_editor::{
@@ -13,7 +13,7 @@ use crate::api::studio::types::{
 
 fn thread_mode_id(value: String) -> Result<ThreadModeId, BridgeError> {
     let id = ThreadModeId::new(value).map_err(|error| {
-        anyhow::Error::from(pl_protocol::studio::StudioError::invalid_argument(
+        anyhow::Error::from(pl_studio_runtime::StudioError::invalid_argument(
             error.to_string(),
         ))
     })?;

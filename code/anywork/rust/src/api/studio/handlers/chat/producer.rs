@@ -1,14 +1,14 @@
 //! Single managed task owns both native receive and the sole StreamSink (no secondary sink task).
 use std::sync::Arc;
 
-use pl_protocol::studio::StudioErrorCode;
+use pl_studio_runtime::StudioErrorCode;
 
 use super::owner::{ConversationOwner, error};
 use crate::api::studio::types::{BridgeConversationEvent, BridgeConversationFrame, BridgeError};
 use crate::frb_generated::{SseEncode, StreamSink};
 
 // Includes the generated SSE encoding, envelope identities, collection overhead and action byte.
-const MAX_FRAME_BYTES: usize = pl_protocol::CHAT_BATCH_MAX_BYTES as usize;
+const MAX_FRAME_BYTES: usize = pl_studio_runtime::CHAT_BATCH_MAX_BYTES as usize;
 const MAX_TERMINAL_BYTES: usize = 16 * 1024;
 
 pub(super) async fn run(

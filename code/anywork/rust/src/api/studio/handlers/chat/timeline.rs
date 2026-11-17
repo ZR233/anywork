@@ -220,7 +220,7 @@ impl BridgeTimelineReader {
             .timeline
             .as_ref()
             .ok_or_else(closed)?
-            .next(pl_protocol::ViewCursor(after))
+            .next(pl_studio_runtime::ViewCursor(after))
             .await?;
         owner.ensure_read_open()?;
         Ok(presentation::view_update(value))

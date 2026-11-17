@@ -1,10 +1,10 @@
 //! Usage and product state are decoded by their producers, never inferred from tool text.
 use super::ProjectionError;
-use pl_core::thread::ThreadSnapshot;
-use pl_protocol::{
+use crate::{
     CacheUsageSummary, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
     ThreadRuntimeUsageState,
 };
+use pl_core::thread::ThreadSnapshot;
 
 pub(in crate::studio) fn project_runtime(
     thread_id: &str,
@@ -132,7 +132,7 @@ fn project_with_mode(
         .get(crate::workflow_tool::WORKFLOW_EXTENSION)
         .map(|record| {
             crate::workflow_tool::decode_workflow_state(&record.payload)
-                .map(|state| pl_protocol::WorkflowRuntimeSnapshot::from(&state))
+                .map(|state| crate::workflow_tool::WorkflowRuntimeSnapshot::from(&state))
         })
         .transpose()?;
     if let Some(run) = workflow
@@ -157,7 +157,7 @@ fn project_with_mode(
         .get(crate::plan_tool::PLAN_EXTENSION)
         .map(|record| {
             crate::plan_tool::decode_plan_state(&record.payload)
-                .map(|state| pl_protocol::AgentSessionPlanRuntimeSnapshot::from(&state))
+                .map(|state| crate::plan_tool::AgentSessionPlanRuntimeSnapshot::from(&state))
         })
         .transpose()?;
     let active_skills = state
@@ -173,23 +173,21 @@ fn project_with_mode(
         // The execution identity is a fact of this Thread's own state, so the same per-Thread
         // projection that publishes usage also publishes what a precise stop would target.
         execution: state.execution.as_ref().map(|execution| {
-            pl_protocol::AgentExecution::new(
+            crate::AgentExecution::new(
                 execution.id.clone(),
                 match execution.phase {
                     pl_core::thread::ExecutionPhase::Preparing => {
-                        pl_protocol::AgentExecutionPhase::Preparing
+                        crate::AgentExecutionPhase::Preparing
                     }
                     pl_core::thread::ExecutionPhase::AwaitingStorage => {
-                        pl_protocol::AgentExecutionPhase::AwaitingStorage
+                        crate::AgentExecutionPhase::AwaitingStorage
                     }
                     pl_core::thread::ExecutionPhase::AwaitingAdmission => {
-                        pl_protocol::AgentExecutionPhase::AwaitingAdmission
+                        crate::AgentExecutionPhase::AwaitingAdmission
                     }
-                    pl_core::thread::ExecutionPhase::Running => {
-                        pl_protocol::AgentExecutionPhase::Running
-                    }
+                    pl_core::thread::ExecutionPhase::Running => crate::AgentExecutionPhase::Running,
                     pl_core::thread::ExecutionPhase::Stopping => {
-                        pl_protocol::AgentExecutionPhase::Stopping
+                        crate::AgentExecutionPhase::Stopping
                     }
                 },
                 execution.turn_id.clone(),
@@ -199,24 +197,24 @@ fn project_with_mode(
         // identity, and only the owner can publish it. It is never derived from history or guessed
         // locally, and `claimed` separates "can continue" from "continue already accepted".
         continuation: state.continuation.as_ref().map(|point| {
-            pl_protocol::ContinuationView::new(
+            crate::ContinuationView::new(
                 point.id.clone(),
                 point.source_turn_id.clone(),
                 point.reason.map(|reason| match reason {
                     pl_core::thread::ContinuationReason::UserStop => {
-                        pl_protocol::ContinuationReason::UserStop
+                        crate::ContinuationReason::UserStop
                     }
                     pl_core::thread::ContinuationReason::HostShutdown => {
-                        pl_protocol::ContinuationReason::HostShutdown
+                        crate::ContinuationReason::HostShutdown
                     }
                     pl_core::thread::ContinuationReason::ProcessInterrupted => {
-                        pl_protocol::ContinuationReason::ProcessInterrupted
+                        crate::ContinuationReason::ProcessInterrupted
                     }
                     pl_core::thread::ContinuationReason::StepLimit => {
-                        pl_protocol::ContinuationReason::StepLimit
+                        crate::ContinuationReason::StepLimit
                     }
                     pl_core::thread::ContinuationReason::ExecutionFailed => {
-                        pl_protocol::ContinuationReason::ExecutionFailed
+                        crate::ContinuationReason::ExecutionFailed
                     }
                 }),
                 point.created_at,
@@ -239,10 +237,10 @@ fn project_with_mode(
     })
 }
 
-fn protocol_costs(costs: &[pl_core::thread::UsageCost]) -> Vec<pl_protocol::RuntimeCostAmount> {
+fn protocol_costs(costs: &[pl_core::thread::UsageCost]) -> Vec<crate::RuntimeCostAmount> {
     costs
         .iter()
-        .map(|cost| pl_protocol::RuntimeCostAmount {
+        .map(|cost| crate::RuntimeCostAmount {
             currency: cost.currency.clone(),
             amount: cost.amount,
         })

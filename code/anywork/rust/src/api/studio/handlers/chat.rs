@@ -415,16 +415,14 @@ pub(crate) mod tests {
         model::{ModelInfo, ModelTransportProfile},
         protocol::ProtocolEndpoint,
     };
-    use pl_protocol::{
-        ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
-        studio::{
-            CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
-        },
-    };
     use pl_provider_fixture::{FixtureServer, Protocol, Reply, Step};
     use pl_studio_runtime::{
         ConversationFeed, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
         config::{ConfigPaths, ConfigStore, StudioConfig},
+    };
+    use pl_studio_runtime::{
+        CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
+        ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
     };
 
     pub(crate) const MODEL: &str = "bridge-chat-fixture";
@@ -529,13 +527,13 @@ pub(crate) mod tests {
                             text: PROMPT.into(),
                             attachment_draft_ids: Vec::new(),
                         },
-                        mode: pl_protocol::ThreadModeId::simple().to_string(),
+                        mode: pl_studio_runtime::mode::ThreadModeId::simple().to_string(),
                         route: NewThreadModelRoute {
                             account_id: ACCOUNT.into(),
                             model_id: MODEL.into(),
                             effort: None,
                         },
-                        delegation_mode: Some(pl_protocol::DelegationMode::Profile),
+                        delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
                         delegation_preference: None,
                         workspace_mode: ThreadWorkspaceMode::Local,
                     },
@@ -552,7 +550,8 @@ pub(crate) mod tests {
                             snapshot,
                         } => {
                             ensure!(
-                                completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
+                                completed_history_version
+                                    == pl_studio_runtime::COMPLETED_HISTORY_VERSION,
                                 "snapshot advertised an unsupported completed-history version"
                             );
                             snapshot.active_turn
@@ -612,8 +611,8 @@ pub(crate) mod tests {
             self.runtime
                 .open_conversation_feed(
                     &self.thread_id,
-                    pl_protocol::ChatScope::conversation(None),
-                    pl_protocol::ReadDemand {
+                    pl_studio_runtime::ChatScope::conversation(None),
+                    pl_studio_runtime::ReadDemand {
                         max_items: 1,
                         max_bytes: 64 * 1024,
                     },

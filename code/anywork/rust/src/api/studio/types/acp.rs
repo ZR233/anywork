@@ -1,6 +1,6 @@
 //! ACP 接入与认证的 Bridge DTO。
 //!
-//! 这里是 FRB 侧的镜像类型，字段与 `pl_protocol::studio::acp` 一一对应；不含认证凭据、原始进程
+//! 这里是 FRB 侧的镜像类型，字段与 `pl_studio_runtime::acp` 一一对应；不含认证凭据、原始进程
 //! 输出或 SDK 类型。编辑投影保留调用方配置的 env，不能作为诊断输出。
 //!
 //! 通用接入保留独立的 command、args 与 env；受管接入通过可选 template 标识。

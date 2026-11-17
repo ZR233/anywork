@@ -23,7 +23,7 @@ pub(crate) enum CloseStorage {
         joined: bool,
     },
     Pending {
-        record: Box<pl_protocol::Thread>,
+        record: Box<crate::Thread>,
         checkpoint: Box<ThreadCheckpoint>,
     },
     Initialized(Arc<ThreadStorageBinding>),
@@ -115,7 +115,7 @@ impl SessionRuntime {
     /// Cold archive repair is storage-only and retains the normal close binding/ACK owner.
     pub(crate) async fn ensure_archive_storage_owner(
         &self,
-        record: &pl_protocol::Thread,
+        record: &crate::Thread,
     ) -> Result<(), ThreadAssemblyError> {
         let _operation = self.agent_operation(&record.id).await;
         if self.observed_thread(&record.id).is_some() {

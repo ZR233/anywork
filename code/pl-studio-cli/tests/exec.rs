@@ -435,15 +435,17 @@ async fn root_and_child_share_the_explicit_readonly_skill_policy() -> Result<()>
             display_name: "CLI Child".into(),
             description: "CLI child test".into(),
             when_to_use: "CLI child test".into(),
-            binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                route: Some(pl_studio_runtime::NewThreadModelRoute {
-                    account_id: "child".into(),
-                    model_id: MODEL.into(),
-                    effort: None,
-                }),
-                system_instructions: Some("Use the configured skill".into()),
-            }),
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+            binding: pl_studio_runtime::AgentBinding::Native(
+                pl_studio_runtime::NativeAgentConfig {
+                    route: Some(pl_studio_runtime::NewThreadModelRoute {
+                        account_id: "child".into(),
+                        model_id: MODEL.into(),
+                        effort: None,
+                    }),
+                    system_instructions: Some("Use the configured skill".into()),
+                },
+            ),
+            workspace_mode: pl_studio_runtime::AgentWorkspaceMode::Directory,
         },
         &config,
         &Default::default(),
@@ -664,15 +666,17 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
             display_name: "CLI Child".into(),
             description: "CLI child test".into(),
             when_to_use: "CLI child test".into(),
-            binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
-                route: Some(pl_studio_runtime::NewThreadModelRoute {
-                    account_id: "child".into(),
-                    model_id: MODEL.into(),
-                    effort: None,
-                }),
-                system_instructions: Some("Use the configured skill".into()),
-            }),
-            workspace_mode: pl_protocol::AgentWorkspaceMode::Directory,
+            binding: pl_studio_runtime::AgentBinding::Native(
+                pl_studio_runtime::NativeAgentConfig {
+                    route: Some(pl_studio_runtime::NewThreadModelRoute {
+                        account_id: "child".into(),
+                        model_id: MODEL.into(),
+                        effort: None,
+                    }),
+                    system_instructions: Some("Use the configured skill".into()),
+                },
+            ),
+            workspace_mode: pl_studio_runtime::AgentWorkspaceMode::Directory,
         },
         &config,
         &Default::default(),
@@ -813,16 +817,21 @@ async fn export_dir_captures_root_child_skills_and_large_content_blobs() -> Resu
                 ..
             } => {
                 if ev.thread_id.as_ref() == Some(child_thread)
-                    && matches!(atom.source, pl_protocol::ChatSourceId::InboxMessage { .. })
+                    && matches!(
+                        atom.source,
+                        pl_studio_runtime::ChatSourceId::InboxMessage { .. }
+                    )
                 {
-                    assert_eq!(atom.kind, pl_protocol::ChatAtomKind::Text);
+                    assert_eq!(atom.kind, pl_studio_runtime::ChatAtomKind::Text);
                     assert_eq!(
                         atom.text_channel,
-                        Some(pl_protocol::ThreadTextChannel::ParentAgent)
+                        Some(pl_studio_runtime::ThreadTextChannel::ParentAgent)
                     );
                     let body = contents
                         .iter()
-                        .find(|content| content.role == Some(pl_protocol::ChatContentRole::Body))
+                        .find(|content| {
+                            content.role == Some(pl_studio_runtime::ChatContentRole::Body)
+                        })
                         .context(
                             "child task body must be exported as an input, not model output",
                         )?;

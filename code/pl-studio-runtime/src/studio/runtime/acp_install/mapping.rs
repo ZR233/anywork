@@ -3,10 +3,10 @@
 //! 这里不持有状态、不发事件。输入是内部阶段结果，输出只有稳定 code/stage/安全摘要；原始 URL、
 //! 代理凭据、完整本地路径与库错误链都不进入输出（见 design/28 §28.6、§28.7）。
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallStage, StudioError, StudioErrorCode,
 };
+use anyhow::Result;
 
 pub(super) fn ensure_operation_id(operation_id: &str) -> Result<()> {
     if operation_id.trim().is_empty() {

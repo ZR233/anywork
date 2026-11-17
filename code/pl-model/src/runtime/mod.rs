@@ -7,7 +7,7 @@ mod compaction;
 mod context;
 mod host_call;
 mod hosted;
-pub use hosted::{HostedTool, HostedWebSearchOptions};
+pub use hosted::HostedTool;
 mod attachments;
 mod billing;
 mod invocation;
@@ -29,7 +29,6 @@ pub use invocation::ModelInvocationContext;
 pub(crate) use provider_error::provider_stream_failure;
 pub use session::ModelSession;
 
-pub use pl_protocol::trace::{AgentEvent, AgentEventSender, TraceEventSink};
 pub use tokio_util::sync::CancellationToken;
 
 pub use host_call::{ModelTurnClient, ModelTurnOptions, ModelTurnRequest};
@@ -39,9 +38,10 @@ pub(crate) mod current;
 pub use cache_key::{PromptCacheScope, binding_cache_namespace, derive_prompt_cache_key};
 
 mod prompt_diagnostics;
-pub use prompt_diagnostics::{PromptCacheInput, prompt_diagnostics};
-
-pub use pl_protocol::{PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPromptSnapshot};
+pub use prompt_diagnostics::{
+    PromptCacheInput, PromptPrefixChangedReason, ThreadPromptMetadata, ThreadPromptSnapshot,
+    prompt_diagnostics,
+};
 
 mod thread_model;
 pub use thread_model::migration;

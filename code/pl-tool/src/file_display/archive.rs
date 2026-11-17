@@ -6,7 +6,7 @@ use pl_core::{
     context::{ContextContent, ContextSource, OpaquePayload},
     tool::opaque::{CallContext, ToolError},
 };
-use pl_protocol::AttachmentModality;
+use pl_model::completion::AttachmentModality;
 
 pub(super) async fn archived_file(
     context: &CallContext,

@@ -96,7 +96,7 @@ pub(super) fn select(
         let deadline = head.admitted_at + WINDOW;
         let pressure = resident_pressure
             || progress.pressure_paused
-            || progress.fault == Some(pl_protocol::studio::HistoryFault::QueueFull)
+            || progress.fault == Some(crate::HistoryFault::QueueFull)
             || progress.effects.len() >= MAX_HISTORY_BATCHES
             || progress.effect_bytes >= MAX_HISTORY_THREAD_BYTES
             || process_bytes >= MAX_HISTORY_PROCESS_BYTES;
@@ -217,7 +217,7 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
             .store
             .blob_fence(&inner.thread.id, &referenced)
             .await
-            .map_err(|error| classified(pl_protocol::studio::HistoryFault::BlobFailed, error))?;
+            .map_err(|error| classified(crate::HistoryFault::BlobFailed, error))?;
     }
     let history = history_store(inner).await?;
     let database_id = history
@@ -285,7 +285,7 @@ pub(super) async fn persist(inner: &Inner, effects: &[Effect]) -> Result<()> {
                 &progress,
                 Instant::now(),
                 "history_store",
-                pl_protocol::studio::HistoryFault::WriteFailed,
+                crate::HistoryFault::WriteFailed,
                 &safe_error_reasons(error),
             );
         }

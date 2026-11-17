@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use pl_protocol::ToolCallCaller;
+use crate::completion::ToolCallCaller;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
@@ -39,8 +39,8 @@ pub struct InvalidToolArguments {
 
 impl ToolCall {
     /// Projects a normalized provider call into immutable history while preserving argument bytes.
-    pub fn history_record(&self) -> pl_protocol::ToolCallRecord {
-        pl_protocol::ToolCallRecord {
+    pub fn history_record(&self) -> crate::completion::ToolCallRecord {
+        crate::completion::ToolCallRecord {
             item_id: self.id.clone(),
             call_id: self.call_id.clone(),
             name: self.name.clone(),
@@ -137,10 +137,10 @@ impl ToolCall {
         self
     }
 
-    pub fn kind(&self) -> pl_protocol::ToolCallKind {
+    pub fn kind(&self) -> crate::completion::ToolCallKind {
         match self.payload {
-            ToolCallPayload::Function { .. } => pl_protocol::ToolCallKind::Function,
-            ToolCallPayload::Custom { .. } => pl_protocol::ToolCallKind::Custom,
+            ToolCallPayload::Function { .. } => crate::completion::ToolCallKind::Function,
+            ToolCallPayload::Custom { .. } => crate::completion::ToolCallKind::Custom,
         }
     }
 

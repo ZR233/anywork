@@ -22,7 +22,7 @@ impl StudioThreadFactory {
         project: &crate::studio::WorkspaceRecord,
     ) -> Result<crate::studio::agent_host::worktree_lease::WorktreeLease> {
         ensure!(
-            project.kind != pl_protocol::studio::WorkspaceKind::Standalone,
+            project.kind != crate::WorkspaceKind::Standalone,
             "standalone sessions only support local workspaces"
         );
         self.services.worktrees.mark_creating(id);
@@ -141,7 +141,7 @@ impl StudioThreadFactory {
         project: &crate::studio::WorkspaceRecord,
         business_root: &str,
         usage: &crate::studio::WorkspaceUsageLease,
-        session_mode: pl_protocol::ThreadWorkspaceMode,
+        session_mode: crate::ThreadWorkspaceMode,
         cancellation: &tokio_util::sync::CancellationToken,
     ) -> Result<PreparedAcpWorkspace> {
         let remote = self
@@ -170,7 +170,7 @@ impl StudioThreadFactory {
             .worktrees
             .preserve_workspace_resources(id, identity);
         let workspace = if self.services.worktrees.get(id).is_some()
-            || session_mode == pl_protocol::ThreadWorkspaceMode::Worktree
+            || session_mode == crate::ThreadWorkspaceMode::Worktree
         {
             AgentWorkspace::worktree(&project.path, business_root)
         } else {

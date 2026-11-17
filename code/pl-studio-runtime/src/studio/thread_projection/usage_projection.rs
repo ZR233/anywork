@@ -2,9 +2,9 @@
 
 pub(in crate::studio) fn usage_status(
     status: pl_core::usage::UsageStatus,
-) -> pl_protocol::UsageReportStatus {
+) -> crate::UsageReportStatus {
+    use crate::UsageReportStatus as Wire;
     use pl_core::usage::UsageStatus as Core;
-    use pl_protocol::UsageReportStatus as Wire;
     match status {
         Core::LegacyUnknown => Wire::LegacyUnknown,
         Core::Missing => Wire::Missing,
@@ -14,9 +14,9 @@ pub(in crate::studio) fn usage_status(
     }
 }
 
-fn outcome(status: pl_core::usage::UsageOutcome) -> pl_protocol::UsageTerminalStatus {
+fn outcome(status: pl_core::usage::UsageOutcome) -> crate::UsageTerminalStatus {
+    use crate::UsageTerminalStatus as Wire;
     use pl_core::usage::UsageOutcome as Core;
-    use pl_protocol::UsageTerminalStatus as Wire;
     match status {
         Core::Succeeded => Wire::Succeeded,
         Core::Rejected => Wire::Rejected,
@@ -26,10 +26,10 @@ fn outcome(status: pl_core::usage::UsageOutcome) -> pl_protocol::UsageTerminalSt
     }
 }
 
-fn issue(issue: &pl_core::usage::UsageIssue) -> pl_protocol::UsageGapIssue {
+fn issue(issue: &pl_core::usage::UsageIssue) -> crate::UsageGapIssue {
+    use crate::{UsageCounterField as Field, UsageGapReason as Reason};
     use pl_core::usage::{UsageField, UsageIssueReason};
-    use pl_protocol::{UsageCounterField as Field, UsageGapReason as Reason};
-    pl_protocol::UsageGapIssue {
+    crate::UsageGapIssue {
         field: match issue.field {
             UsageField::Input => Field::Input,
             UsageField::Output => Field::Output,
@@ -49,9 +49,9 @@ fn issue(issue: &pl_core::usage::UsageIssue) -> pl_protocol::UsageGapIssue {
     }
 }
 
-fn observation(value: &pl_core::usage::UsageObservation) -> pl_protocol::UsageCallSnapshot {
+fn observation(value: &pl_core::usage::UsageObservation) -> crate::UsageCallSnapshot {
     let source = &value.source;
-    pl_protocol::UsageCallSnapshot {
+    crate::UsageCallSnapshot {
         thread_id: source.thread_id.clone(),
         call_id: source.call_id.clone(),
         turn_id: source.turn_id.clone(),
@@ -67,9 +67,9 @@ fn observation(value: &pl_core::usage::UsageObservation) -> pl_protocol::UsageCa
 
 pub(super) fn diagnostics(
     summary: &pl_core::thread::UsageSummary,
-) -> pl_protocol::ThreadUsageDiagnostics {
+) -> crate::ThreadUsageDiagnostics {
     let value = &summary.diagnostics;
-    pl_protocol::ThreadUsageDiagnostics {
+    crate::ThreadUsageDiagnostics {
         incomplete_calls: value.incomplete_calls,
         missing_calls: value.missing_calls,
         partial_calls: value.partial_calls,
@@ -78,7 +78,7 @@ pub(super) fn diagnostics(
         by_outcome: value
             .by_outcome
             .iter()
-            .map(|row| pl_protocol::UsageOutcomeCountSnapshot {
+            .map(|row| crate::UsageOutcomeCountSnapshot {
                 outcome: outcome(row.outcome),
                 calls: row.calls,
                 incomplete_calls: row.incomplete_calls,
@@ -87,7 +87,7 @@ pub(super) fn diagnostics(
         by_purpose: value
             .by_purpose
             .iter()
-            .map(|row| pl_protocol::UsagePurposeCountSnapshot {
+            .map(|row| crate::UsagePurposeCountSnapshot {
                 purpose: row.purpose.clone(),
                 calls: row.calls,
                 incomplete_calls: row.incomplete_calls,
@@ -97,7 +97,7 @@ pub(super) fn diagnostics(
         by_issue: value
             .by_issue
             .iter()
-            .map(|row| pl_protocol::UsageIssueCountSnapshot {
+            .map(|row| crate::UsageIssueCountSnapshot {
                 issue: issue(&row.issue),
                 calls: row.calls,
             })

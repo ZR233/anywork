@@ -6,16 +6,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{Context, Result, ensure};
-use pl_core::chat::{ChatContent, ChatContentKey, ChatItem};
 #[cfg(test)]
-use pl_protocol::{ChatActiveStatus, ChatSourceState};
-use pl_protocol::{
+use crate::{ChatActiveStatus, ChatSourceState};
+use crate::{
     ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatDeliveryKind, ChatFactPosition,
     ChatSourceId, ChatTerminalOutcome, ContentRef, ContentTarget, DisplayBlock, DisplayBlockBody,
     DisplayBlockRef, DisplayContentSource, DisplayMemberHead, DisplayRecord, PayloadData,
     SingleVisibility,
 };
+use anyhow::{Context, Result, ensure};
+use pl_core::chat::{ChatContent, ChatContentKey, ChatItem};
 use serde::{Deserialize, Serialize};
 mod observations;
 
@@ -125,7 +125,7 @@ pub(in crate::studio) struct ObservationInput {
 #[cfg(test)]
 impl ObservationInput {
     pub fn for_test(atom: ChatAtom, contents: Vec<Arc<ChatContent>>) -> Self {
-        use pl_protocol::*;
+        use crate::protocol::*;
         let state = if atom.kind == ChatAtomKind::ToolCall {
             ExecutionShape::Tool(ThreadToolItem::new(
                 ThreadToolInvocation::new(atom.id.clone(), "test".into(), String::new()),
@@ -1776,7 +1776,7 @@ impl PresentationState {
             thinking_summary: None,
             body: if is_work {
                 DisplayBlockBody::Work {
-                    timing: pl_protocol::WorkTiming {
+                    timing: crate::WorkTiming {
                         started_at: Some(committed_at),
                         finished_at: None,
                     },
@@ -2160,7 +2160,7 @@ mod cost {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{ChatSourceLifecycle, WorkTiming};
+    use crate::{ChatSourceLifecycle, WorkTiming};
 
     #[test]
     fn work_lifetime_is_frozen_at_the_first_visible_boundary() -> Result<()> {
@@ -2215,7 +2215,7 @@ mod tests {
             },
             turn_id: Some("turn".into()),
             attempt_id: None,
-            tool: (kind == ChatAtomKind::ToolCall).then(|| pl_protocol::ChatToolIdentity {
+            tool: (kind == ChatAtomKind::ToolCall).then(|| crate::ChatToolIdentity {
                 call_id: id.into(),
                 name: "exec".into(),
             }),
@@ -2321,12 +2321,12 @@ mod tests {
     fn terminal_without_original_cannot_authorize_a_dynamic_body() -> Result<()> {
         let mut s = state();
         let mut terminal = atom("interrupted", ChatAtomKind::Reasoning, true);
-        terminal.contents.push(pl_protocol::ChatAtomContent {
+        terminal.contents.push(crate::ChatAtomContent {
             role: ChatContentRole::Body,
             reference: ContentRef {
                 database_id: "db".into(),
                 target: ContentTarget::Body {
-                    owner: pl_protocol::ContentOwner::Item {
+                    owner: crate::ContentOwner::Item {
                         item_id: "interrupted".into(),
                     },
                     key: "body".into(),
@@ -2341,11 +2341,11 @@ mod tests {
 
     #[test]
     fn boundary_freezes_content_state_time_and_late_end_gets_a_new_key() -> Result<()> {
+        use crate::{ChatAtomContent, ContentOwner};
         use pl_core::{
             chat::{ChatContentKey, ContentData, ContentDescriptor},
             model::ContentBlock,
         };
-        use pl_protocol::{ChatAtomContent, ContentOwner};
         let mut s = state();
         let mut start = atom("call", ChatAtomKind::ToolCall, false);
         let owner = ContentOwner::Item {
@@ -2506,12 +2506,11 @@ mod tests {
                 |member| {
                     let mut input =
                         ObservationInput::for_test(member.head.record.atom.clone(), Vec::new());
-                    input.state =
-                        crate::ExecutionShape::Thinking(pl_protocol::ThreadThinkingItem::new(
-                            Vec::new(),
-                            Vec::new(),
-                            pl_protocol::ThreadContentLifecycle::completed(20),
-                        ));
+                    input.state = crate::ExecutionShape::Thinking(crate::ThreadThinkingItem::new(
+                        Vec::new(),
+                        Vec::new(),
+                        crate::ThreadContentLifecycle::completed(20),
+                    ));
                     Ok(input)
                 },
             )
@@ -3409,8 +3408,8 @@ mod tests {
     #[test]
     fn completed_reasoning_updates_open_work_thinking_summary_without_leaking_across_boundary()
     -> Result<()> {
+        use crate::{ThreadContentLifecycle, ThreadThinkingItem};
         use pl_core::chat::{ChatDraft, ChatItem};
-        use pl_protocol::{ThreadContentLifecycle, ThreadThinkingItem};
 
         fn completed_reasoning(
             id: &str,

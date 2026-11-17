@@ -37,7 +37,7 @@ impl ToolMediaHost for Media {
         let context = vec![
             pl_model::runtime::attachment_content(
                 reference.clone(),
-                pl_protocol::AttachmentModality::Image,
+                pl_model::completion::AttachmentModality::Image,
             )
             .unwrap(),
         ];
@@ -318,14 +318,14 @@ async fn remote_source_never_exposes_a_local_path_and_valid_image_is_exact() {
         .unwrap()
         .unwrap();
     assert!(
-        matches!(&receipt.files[0], FileDisplayResult::Ready { modality:pl_protocol::AttachmentModality::Image, resource, .. } if resource.media_type() == "image/png")
+        matches!(&receipt.files[0], FileDisplayResult::Ready { modality:pl_model::completion::AttachmentModality::Image, resource, .. } if resource.media_type() == "image/png")
     );
     assert_eq!(media.0.lock().unwrap()[1], *encoded.get_ref());
     assert!(
         matches!(
             &receipt.files[1],
             FileDisplayResult::Ready {
-                modality: pl_protocol::AttachmentModality::File,
+                modality: pl_model::completion::AttachmentModality::File,
                 ..
             }
         ),

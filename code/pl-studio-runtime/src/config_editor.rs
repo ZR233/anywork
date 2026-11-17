@@ -32,7 +32,7 @@ pub struct AccountEdit {
     pub base_url: Option<String>,
     pub bearer_token: Option<String>,
     /// 只用于新账号；已有账号的计费类别由独立窄命令修改。
-    pub initial_billing_kind: Option<pl_protocol::BillingKind>,
+    pub initial_billing_kind: Option<crate::BillingKind>,
     pub custom_models: Vec<AccountModelEdit>,
     pub model_connection_modes: BTreeMap<String, ConnectionMode>,
     /// 该 account 实例完整的上下文压缩阈值用户覆盖集合；未列出模型使用默认值。

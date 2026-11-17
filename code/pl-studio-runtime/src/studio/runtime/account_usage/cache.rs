@@ -9,9 +9,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::{AccountUsageFailure, AccountUsageFailureCode, AccountUsagePhase};
 use anyhow::{Result, anyhow, bail};
 use pl_model::config::{AccountConfig, AccountId};
-use pl_protocol::studio::{AccountUsageFailure, AccountUsageFailureCode, AccountUsagePhase};
 use sha2::{Digest, Sha256};
 
 use super::{UsageState, unchecked};
@@ -135,16 +135,14 @@ fn parse(raw: &str) -> Result<AccountUsageSettingPayload> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::AccountUsageObservation;
+    use crate::AccountUsageObservation;
 
     #[test]
     fn chatgpt_cache_follows_the_saved_registration_without_reading_or_hashing_tokens() {
+        use crate::{AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo};
         use pl_model::protocol::chatgpt::{
             CODEX_CLIENT_ID, CODEX_RESOURCE, ChatGptAuthError, ChatGptCredentialRecord,
             ChatGptCredentialStorage, ChatGptSession,
-        };
-        use pl_protocol::studio::{
-            AccountAuthenticationMethod, ChatGptAccountInfo, CodexAccountInfo,
         };
         struct NoCredentialIo;
         impl ChatGptCredentialStorage for NoCredentialIo {

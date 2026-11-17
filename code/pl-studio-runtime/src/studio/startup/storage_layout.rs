@@ -1274,7 +1274,7 @@ mod tests {
         assert!(runtime.runtime_snapshot().await?.startup_recovery.is_none());
         let root = runtime.read_thread(THREAD).await?;
         assert_eq!(root.workspace_id, OWNER);
-        assert_eq!(root.mode, Some(pl_protocol::ThreadModeId::simple()));
+        assert_eq!(root.mode, Some(crate::mode::ThreadModeId::simple()));
         let child = runtime.read_thread("synthetic-child").await?;
         assert_eq!(child.root_thread_id, THREAD);
         assert_eq!(child.parent_thread_id.as_deref(), Some(THREAD));
@@ -1484,7 +1484,7 @@ mod tests {
                 &tokio::fs::read_to_string(paths.workspace_manifest(OWNER)?).await?,
             )?;
             assert_eq!(
-                manifest.kind == pl_protocol::studio::WorkspaceKind::Standalone,
+                manifest.kind == crate::WorkspaceKind::Standalone,
                 standalone
             );
             let store = StudioStore::prepare_database(&paths.database()).await?;
@@ -1980,7 +1980,7 @@ mod tests {
         let hash = hex::encode(Sha256::digest(BODY));
         let draft = attachment::AttachmentDraftObject {
             draft_id: "new-draft".into(),
-            modality: pl_protocol::studio::StudioAttachmentModality::File,
+            modality: crate::StudioAttachmentModality::File,
             media_type: "text/plain".into(),
             filename: "same.txt".into(),
             storage_path: session.resources_dir().join(&hash),
@@ -2117,7 +2117,7 @@ mod tests {
                         1,
                         serde_json::to_string(&crate::studio::WorkspaceRecord {
                             id: OWNER.into(),
-                            kind: pl_protocol::studio::WorkspaceKind::Project,
+                            kind: crate::WorkspaceKind::Project,
                             name: "Frozen effective owner".into(),
                             path: root.into(),
                             ssh_alias: None,
@@ -2144,8 +2144,8 @@ mod tests {
                 ExtensionRecord {
                     revision: 9,
                     payload: crate::studio::workspace_receipt::to_payload(
-                        &pl_protocol::AgentWorkspaceAssignmentSnapshot {
-                            mode: pl_protocol::AgentWorkspaceMode::Directory,
+                        &crate::AgentWorkspaceAssignmentSnapshot {
+                            mode: crate::AgentWorkspaceMode::Directory,
                             project_root: root.into(),
                             root: root.into(),
                             writable_paths: Some(Vec::new()),

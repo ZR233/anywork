@@ -1,7 +1,7 @@
 //! `ObservedResource<T>` 到各 FRB concrete union 的穷尽转换。
 
 use crate::api::studio::convert::thread_stream::bridge_session_row;
-use pl_protocol::ObservedResource;
+use pl_studio_runtime::ObservedResource;
 use pl_studio_runtime::*;
 
 use crate::api::studio::convert::settings::{
@@ -97,7 +97,7 @@ macro_rules! concrete_observed {
 }
 
 pub(crate) fn bridge_child_interactions_resource(
-    state: ObservedResource<Vec<pl_protocol::ChildInteractionSummary>>,
+    state: ObservedResource<Vec<pl_studio_runtime::ChildInteractionSummary>>,
 ) -> anyhow::Result<BridgeChildInteractionsResource> {
     Ok(concrete_observed!(
         state,
@@ -176,7 +176,7 @@ pub(crate) fn bridge_agent_directory(
 }
 
 pub(crate) fn bridge_settings_config_state(
-    state: ObservedResource<pl_protocol::studio::SettingsConfigSnapshot>,
+    state: ObservedResource<pl_studio_runtime::SettingsConfigSnapshot>,
 ) -> BridgeSettingsConfigStateSnapshot {
     concrete_observed!(
         state,
@@ -188,7 +188,7 @@ pub(crate) fn bridge_settings_config_state(
 }
 
 pub(crate) fn bridge_model_catalog_state(
-    state: ObservedResource<pl_protocol::studio::ModelCatalogSnapshot>,
+    state: ObservedResource<pl_studio_runtime::ModelCatalogSnapshot>,
 ) -> BridgeModelCatalogStateSnapshot {
     concrete_observed!(
         state,
@@ -259,7 +259,7 @@ pub(crate) fn bridge_skill_search_result(
 }
 
 pub(crate) fn bridge_thread_mode_catalog(
-    catalog: pl_protocol::ThreadModeCatalogSnapshot,
+    catalog: pl_studio_runtime::mode::ThreadModeCatalogSnapshot,
 ) -> BridgeThreadModeCatalogSnapshot {
     BridgeThreadModeCatalogSnapshot {
         revision: catalog.revision,

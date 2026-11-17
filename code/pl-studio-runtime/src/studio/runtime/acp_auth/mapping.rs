@@ -5,11 +5,11 @@
 
 use std::path::PathBuf;
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpAuthAction, AcpAuthFailure, AcpAuthFailureCode, AcpAuthMethod, AcpAuthMethodKind,
     AcpAuthStage, AcpAuthState, AcpServerInfo, StudioError, StudioErrorCode,
 };
+use anyhow::Result;
 
 use super::super::acp_install::PrepareFailure;
 use super::registry::AcpAuthInner;
@@ -55,7 +55,7 @@ pub(super) fn acp_error(code: StudioErrorCode, message: &str, retryable: bool) -
 
 /// 忙碌拒绝：code/message/retryable 语义与既有 `Busy` 完全一致，只额外携带
 /// 拒绝准入同一锁内捕获的结构化切面（design/28 §28.9）。
-pub(super) fn acp_busy_error(details: pl_protocol::studio::AcpAuthBusyRejection) -> anyhow::Error {
+pub(super) fn acp_busy_error(details: crate::AcpAuthBusyRejection) -> anyhow::Error {
     let details = serde_json::to_value(details).expect("busy rejection details serialize");
     anyhow::Error::new(
         StudioError::new(StudioErrorCode::Busy, "该接入已有进行中的认证操作", true)

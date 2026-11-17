@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use pl_core::usage::UsageStatus;
-pub use pl_protocol::{
+use super::{
     InferenceAccounting, ModelPriceTierDto, ModelPricingDto, ModelPricingSnapshot, PricingMode,
     PricingOutcome, RuntimeCostAmount, UnpricedReason, UsageReport,
 };
+pub use pl_core::usage::UsageStatus;
 
 /// One rate table selected by the complete request's input and output lengths.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

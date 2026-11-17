@@ -1,5 +1,5 @@
 //! Deterministic encoding for supported typed tool declarations.
-use pl_protocol::ToolSpec;
+use crate::completion::ToolSpec;
 use std::collections::BTreeMap;
 
 /// Orders declarations by stable tool identity and recursively sorts JSON object keys.

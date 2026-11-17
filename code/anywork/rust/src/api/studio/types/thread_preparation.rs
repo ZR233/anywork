@@ -47,9 +47,9 @@ pub enum BridgeNewThreadStartEvent {
     Failed(BridgeError),
 }
 
-impl From<pl_protocol::studio::ThreadPreparationProgress> for BridgeThreadPreparationProgress {
-    fn from(progress: pl_protocol::studio::ThreadPreparationProgress) -> Self {
-        use pl_protocol::studio::ThreadPreparationStage;
+impl From<pl_studio_runtime::ThreadPreparationProgress> for BridgeThreadPreparationProgress {
+    fn from(progress: pl_studio_runtime::ThreadPreparationProgress) -> Self {
+        use pl_studio_runtime::ThreadPreparationStage;
         Self {
             workspace_id: progress.workspace_id,
             input_id: progress.input_id,

@@ -12,8 +12,8 @@ use super::send::plan_text;
 use super::storage::{
     FrozenInbound, InboundAdmit, InboundClaim, SendRecord, SendRecordStatus, SendSegmentFact,
 };
+use crate::protocol::*;
 use crate::studio::new_id;
-use pl_protocol::studio::*;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 

@@ -45,7 +45,7 @@ pub(crate) struct TerminalIntegrityError(pub(crate) &'static str);
 
 #[derive(Clone)]
 pub(crate) struct TerminalDelivery {
-    pub thread: pl_protocol::Thread,
+    pub thread: crate::Thread,
     pub sequence: u64,
     pub authority: Arc<TerminalAuthority>,
     pub original: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
@@ -60,7 +60,7 @@ pub(crate) struct TerminalDelivery {
 /// is its validated workspace mode. Context, inbox, inputs and unrelated extensions never enter.
 pub(crate) struct TerminalAuthority {
     workspace: Option<pl_core::thread::extensions::ExtensionRecord>,
-    profile_mode: Option<pl_protocol::AgentWorkspaceMode>,
+    profile_mode: Option<crate::AgentWorkspaceMode>,
 }
 impl TerminalAuthority {
     pub(crate) fn capture(snapshot: &ThreadSnapshot) -> Result<Self> {
@@ -85,7 +85,7 @@ impl TerminalAuthority {
         ))
     }
 
-    fn assignment(&self) -> Result<Option<pl_protocol::AgentWorkspaceAssignmentSnapshot>> {
+    fn assignment(&self) -> Result<Option<crate::AgentWorkspaceAssignmentSnapshot>> {
         self.workspace
             .as_ref()
             .map(|record| crate::studio::workspace_receipt::from_payload(&record.payload))
@@ -94,7 +94,7 @@ impl TerminalAuthority {
 }
 
 pub(crate) struct ReviewDispatch {
-    pub reviewer: pl_protocol::Thread,
+    pub reviewer: crate::Thread,
     pub turn: TurnRecord,
     pub terminal_sequence: u64,
     pub authority: Arc<TerminalAuthority>,
@@ -119,7 +119,7 @@ struct OriginalReport {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OriginalReview {
-    target: Option<pl_protocol::AgentReviewTargetSnapshot>,
+    target: Option<crate::AgentReviewTargetSnapshot>,
     disposition: ReviewDisposition,
     reason: Option<String>,
 }
@@ -434,7 +434,7 @@ impl SessionRuntime {
     /// Bounded history pages keep all old terminal obligations visible during close/restart.
     pub(crate) async fn recover_saved_review_deliveries(
         &self,
-        reviewer: &pl_protocol::Thread,
+        reviewer: &crate::Thread,
     ) -> Result<()> {
         if reviewer
             .parent_thread_id
@@ -589,8 +589,8 @@ impl SessionRuntime {
             let Some(assignment) = request.authority.assignment()? else {
                 return Ok(());
             };
-            if assignment.mode != pl_protocol::AgentWorkspaceMode::Review
-                || request.authority.profile_mode != Some(pl_protocol::AgentWorkspaceMode::Review)
+            if assignment.mode != crate::AgentWorkspaceMode::Review
+                || request.authority.profile_mode != Some(crate::AgentWorkspaceMode::Review)
             {
                 return Ok(());
             }
@@ -604,7 +604,7 @@ impl SessionRuntime {
                 TerminalIntegrityError("saved review target differs from frozen authority")
             );
             if conclusion.disposition == ReviewDisposition::NeedsChanges
-                && target.feedback != Some(pl_protocol::AgentReviewFeedback::ToExecutor)
+                && target.feedback != Some(crate::AgentReviewFeedback::ToExecutor)
             {
                 return Ok(());
             }
@@ -809,7 +809,7 @@ impl SessionRuntime {
                 .list_threads_for_root(id)
                 .await?
                 .into_iter()
-                .map(pl_protocol::Thread::from)
+                .map(crate::Thread::from)
                 .collect()
         } else {
             vec![record]

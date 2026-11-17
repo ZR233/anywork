@@ -30,15 +30,11 @@ impl StudioRuntime {
         self.agent_facility
             .product_events
             .emit_settings_config_state(crate::StudioSettingsConfigStateSnapshot {
-                state: pl_protocol::ObservedResource::ready(
-                    config.revision,
-                    config.updated_at,
-                    config,
-                ),
+                state: crate::ObservedResource::ready(config.revision, config.updated_at, config),
             });
         self.agent_facility.product_events.emit_model_catalog_state(
             crate::StudioModelCatalogStateSnapshot {
-                state: pl_protocol::ObservedResource::ready(
+                state: crate::ObservedResource::ready(
                     catalog.revision,
                     catalog.updated_at,
                     catalog,
@@ -59,7 +55,7 @@ impl StudioRuntime {
             super::super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
         self.agent_facility.product_events.emit_model_catalog_state(
             crate::StudioModelCatalogStateSnapshot {
-                state: pl_protocol::ObservedResource::ready(
+                state: crate::ObservedResource::ready(
                     catalog.revision,
                     catalog.updated_at,
                     catalog,

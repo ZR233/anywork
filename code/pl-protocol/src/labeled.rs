@@ -1,8 +1,7 @@
 //! 枚举与稳定字符串标签之间的双向转换。
 //!
 //! 协议枚举需要持久化进数据库、序列化到 wire 格式、在投影层比对。
-//! 同一套 enum↔label 映射此前在多个 crate 各写一份（`PureError` 版与 `anyhow` 版），
-//! 产生字面重复。这里用统一的 trait 收敛映射定义，枚举只需 impl 一次。
+//! 这里用统一的 trait 收敛映射定义，枚举只需 impl 一次。
 
 use thiserror::Error;
 
@@ -48,17 +47,17 @@ impl UnknownLabelError {
 #[macro_export]
 macro_rules! impl_labeled_enum {
     ($enum_ty:ty, $enum_name:literal, [$($variant_path:path => $label:literal),+ $(,)?]) => {
-        impl $crate::labeled::LabeledEnum for $enum_ty {
+        impl $crate::LabeledEnum for $enum_ty {
             fn label(&self) -> &'static str {
                 match self {
                     $($variant_path => $label,)+
                 }
             }
 
-            fn from_label(label: &str) -> Result<Self, $crate::labeled::UnknownLabelError> {
+            fn from_label(label: &str) -> ::std::result::Result<Self, $crate::UnknownLabelError> {
                 match label {
                     $($label => Ok($variant_path),)+
-                    other => Err($crate::labeled::UnknownLabelError::new($enum_name, other)),
+                    other => Err($crate::UnknownLabelError::new($enum_name, other)),
                 }
             }
         }

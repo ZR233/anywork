@@ -19,7 +19,7 @@ pub struct ThreadLspResetInput {
     pub server_id: String,
 }
 
-impl From<ThreadLspResetInput> for pl_protocol::studio::ThreadLspResetRequest {
+impl From<ThreadLspResetInput> for pl_studio_runtime::ThreadLspResetRequest {
     fn from(value: ThreadLspResetInput) -> Self {
         Self {
             thread_id: value.thread_id,

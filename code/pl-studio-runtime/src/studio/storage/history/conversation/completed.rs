@@ -130,10 +130,10 @@ pub(in super::super) async fn cold_from_state(
 /// Chunks remain range-read responsibilities; no completed body is reconstructed here.
 async fn validate_business_refs(
     db: &impl ConnectionTrait,
-    projection: &pl_protocol::CurrentProjection,
+    projection: &crate::CurrentProjection,
     database: &str,
 ) -> Result<()> {
-    use pl_protocol::{ContentOwner, ContentTarget};
+    use crate::{ContentOwner, ContentTarget};
     let refs = crate::studio::thread_projection::project_business_refs(projection);
     if let Some(reference) = &refs.interactions {
         ensure!(

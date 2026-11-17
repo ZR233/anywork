@@ -1,7 +1,7 @@
 //! Billing uses producer receipts and committed timestamps, never current pricing.
+use crate::InferenceBillingRecord;
 use anyhow::Result;
 use pl_core::thread::{AttemptOutcome, ThreadEffectBatch, journal::AttemptUpdate};
-use pl_protocol::InferenceBillingRecord;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,7 +223,7 @@ mod tests {
         assert_eq!(record.prompt_generation, Some(3));
         assert_eq!(
             record.prefix_changed_reason,
-            Some(pl_protocol::PromptPrefixChangedReason::AccountChanged)
+            Some(crate::PromptPrefixChangedReason::AccountChanged)
         );
         assert_eq!(record.accounting.usage.output_tokens, Some(20));
         let cost = record

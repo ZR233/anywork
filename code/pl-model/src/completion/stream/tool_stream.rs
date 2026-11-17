@@ -230,10 +230,10 @@ impl ToolStream {
             .map(|acc| {
                 let (kind, input) = match &acc.payload {
                     ToolCallPayloadAccumulator::FunctionArguments(text) => {
-                        (pl_protocol::ToolCallKind::Function, text)
+                        (crate::completion::ToolCallKind::Function, text)
                     }
                     ToolCallPayloadAccumulator::CustomInput(text) => {
-                        (pl_protocol::ToolCallKind::Custom, text)
+                        (crate::completion::ToolCallKind::Custom, text)
                     }
                 };
                 ModelStreamToolInput {

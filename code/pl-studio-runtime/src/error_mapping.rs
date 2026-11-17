@@ -1,5 +1,5 @@
-use pl_protocol::PureError;
-use pl_protocol::studio::{StudioError, StudioErrorCode};
+use crate::PureError;
+use crate::{StudioError, StudioErrorCode};
 use pl_studio_update::{StudioUpdateError, StudioUpdateErrorCode};
 use std::sync::Arc;
 
@@ -206,7 +206,7 @@ fn studio_error_from_ref(error: &anyhow::Error) -> StudioError {
             }
             ConfigRuntimeError::ModelDiscoveryUnsupported => {
                 StudioError::invalid_argument("Model discovery is unsupported").with_reason(
-                    pl_protocol::studio::StudioErrorReason::AccountModelDiscoveryUnsupported,
+                    crate::StudioErrorReason::AccountModelDiscoveryUnsupported,
                     serde_json::json!({}),
                 )
             }
@@ -361,7 +361,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::InvalidDemand,
+            crate::StudioErrorReason::InvalidDemand,
             serde_json::Value::Null,
         ),
         Chat::StaleContent => StudioError::new(
@@ -370,7 +370,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleContent,
+            crate::StudioErrorReason::StaleContent,
             serde_json::Value::Null,
         ),
         Chat::NotFound(identity) => StudioError::new(
@@ -385,7 +385,7 @@ fn chat_error(error: &pl_core::chat::ChatError) -> StudioError {
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            crate::StudioErrorReason::StaleReadScope,
             serde_json::json!({
                 "requestedEpoch": cursor.as_str(),
                 "timelineEpoch": session.as_str(),
@@ -542,7 +542,7 @@ mod conversation_read_tests {
             false,
         )
         .with_reason(
-            pl_protocol::studio::StudioErrorReason::StaleReadScope,
+            crate::StudioErrorReason::StaleReadScope,
             serde_json::json!({"owner": "original"}),
         );
         let expected = serde_json::to_value(&original).unwrap();

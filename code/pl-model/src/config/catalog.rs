@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use pl_protocol::{
+use crate::config::{
     ACCOUNT_CATALOG_SCHEMA_VERSION, AccountCatalogSnapshot, AccountServiceCapabilitiesDescriptor,
     AccountTemplateDescriptor, ConnectionModeDescriptor, CredentialDescriptorDto,
     ModelCapabilitiesDto, ModelCatalogDescriptor, ModelInputCapabilityDto, ModelInputSourceDto,
-    ModelModalityDto, ModelReasoningDescriptor, ModelTransportDescriptor, PureError, Result,
+    ModelModalityDto, ModelReasoningDescriptor, ModelTransportDescriptor,
     WebSearchServiceCapabilitiesDescriptor,
 };
+use pl_protocol::{PureError, Result};
 
 use super::{AccountConfig, AccountTemplateId, ModelCatalogId, ModelDescriptor};
 use super::{AccountModelEntry, AccountModelOrigin};
@@ -497,9 +498,9 @@ pub fn model_descriptor(entry: &AccountModelEntry) -> ModelDescriptor {
         model_id: model.model_id.clone(),
         type_support: vec![entry.type_support(crate::model::ModelType::Text)],
         origin: match entry.origin {
-            AccountModelOrigin::Bundled => pl_protocol::ModelOriginDto::Bundled,
-            AccountModelOrigin::Online => pl_protocol::ModelOriginDto::Online,
-            AccountModelOrigin::Manual => pl_protocol::ModelOriginDto::Manual,
+            AccountModelOrigin::Bundled => crate::config::ModelOriginDto::Bundled,
+            AccountModelOrigin::Online => crate::config::ModelOriginDto::Online,
+            AccountModelOrigin::Manual => crate::config::ModelOriginDto::Manual,
         },
         enabled: entry.enabled,
         display_name: model.display_name.clone(),
@@ -560,8 +561,8 @@ fn protocol_label(protocol: WireApi) -> &'static str {
 /// 中校验，调用方不得静默截断简介或伪造分数。
 pub fn selection_guide_descriptor(
     guide: &crate::model::ModelSelectionGuide,
-) -> pl_protocol::ModelSelectionGuideDto {
-    pl_protocol::ModelSelectionGuideDto {
+) -> crate::config::ModelSelectionGuideDto {
+    crate::config::ModelSelectionGuideDto {
         summary: guide.summary.to_string(),
         task_suitability: guide.task_suitability.to_vec(),
         limitations: guide
@@ -572,22 +573,22 @@ pub fn selection_guide_descriptor(
         sources: guide
             .sources
             .iter()
-            .map(|source| pl_protocol::ModelSelectionSourceDto {
+            .map(|source| crate::config::ModelSelectionSourceDto {
                 kind: match source.kind {
                     crate::model::ModelSelectionSourceKind::Official => {
-                        pl_protocol::ModelSelectionSourceKindDto::Official
+                        crate::config::ModelSelectionSourceKindDto::Official
                     }
                     crate::model::ModelSelectionSourceKind::Benchmark => {
-                        pl_protocol::ModelSelectionSourceKindDto::Benchmark
+                        crate::config::ModelSelectionSourceKindDto::Benchmark
                     }
                     crate::model::ModelSelectionSourceKind::Community => {
-                        pl_protocol::ModelSelectionSourceKindDto::Community
+                        crate::config::ModelSelectionSourceKindDto::Community
                     }
                 },
                 url: source.url.to_string(),
                 verified_at: source.verified_at,
                 measurement: source.measurement.as_ref().map(|measurement| {
-                    pl_protocol::ModelSelectionMeasurementDto {
+                    crate::config::ModelSelectionMeasurementDto {
                         model: measurement.model.to_string(),
                         effort: measurement.effort.map(ToString::to_string),
                         metric: measurement.metric.to_string(),

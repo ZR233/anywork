@@ -16,8 +16,8 @@ impl OwnedTaskSlot {
         if let Some(task) = self.task.as_mut() {
             let result = match task.await {
                 Ok(result) => result,
-                Err(_) => Err(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Internal,
+                Err(_) => Err(pl_studio_runtime::StudioError::new(
+                    pl_studio_runtime::StudioErrorCode::Internal,
                     message,
                     false,
                 )
@@ -40,8 +40,8 @@ mod tests {
     #[tokio::test]
     async fn abandoned_wait_keeps_original_task_and_its_terminal_failure() {
         let (release, waiting) = oneshot::channel();
-        let original: BridgeError = pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Storage,
+        let original: BridgeError = pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::Storage,
             "original task failure",
             false,
         )

@@ -1,6 +1,6 @@
 //! 工具调用与 web search 流的 trace part 投影。
 
-use pl_protocol::trace::{
+use crate::trace::{
     AgentEvent, TraceDelta, TracePart, TracePartAction, TracePartCompletion, TraceToolInvocation,
     TraceToolOutput,
 };
@@ -25,9 +25,9 @@ impl TraceProjection {
                 );
         self.start_item(
             item_id,
-            pl_protocol::trace::TracePartState::Tool(pl_protocol::trace::TraceToolPart::streaming(
+            crate::trace::TracePartState::Tool(Box::new(crate::trace::TraceToolPart::streaming(
                 invocation,
-            )),
+            ))),
         )
     }
 
@@ -52,9 +52,9 @@ impl TraceProjection {
         }
         self.start_item(
             item_id,
-            pl_protocol::trace::TracePartState::Tool(pl_protocol::trace::TraceToolPart::streaming(
+            crate::trace::TracePartState::Tool(Box::new(crate::trace::TraceToolPart::streaming(
                 invocation,
-            )),
+            ))),
         )
     }
 
@@ -164,9 +164,9 @@ impl TraceProjection {
         }
         self.start_item(
             item_id,
-            pl_protocol::trace::TracePartState::Tool(pl_protocol::trace::TraceToolPart::started(
+            crate::trace::TracePartState::Tool(Box::new(crate::trace::TraceToolPart::started(
                 invocation,
-            )),
+            ))),
         )
     }
 }

@@ -92,7 +92,7 @@ impl AgentProfilesResource {
 impl From<AgentProfilesSnapshot> for StudioAgentProfilesStateSnapshot {
     fn from(snapshot: AgentProfilesSnapshot) -> Self {
         Self {
-            state: pl_protocol::ObservedResource::ready(
+            state: crate::ObservedResource::ready(
                 snapshot.revision,
                 snapshot.updated_at,
                 StudioAgentProfilesData {

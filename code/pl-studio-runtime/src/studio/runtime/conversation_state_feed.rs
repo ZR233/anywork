@@ -8,12 +8,12 @@ use super::{
     thread_observation::{StateReceiver, ThreadLiveEvent},
 };
 use crate::studio::thread_projection::{LiveEvent, TurnEvent};
-use anyhow::{Result, ensure};
-use pl_core::chat as core;
-use pl_protocol::{
+use crate::{
     COMPLETED_HISTORY_VERSION, THREAD_SCHEMA_VERSION, ThreadActivity, ThreadBusinessRefs,
     ThreadNotification, ThreadNotificationEnvelope, ThreadStorageState, ThreadSubscriptionUpdate,
 };
+use anyhow::{Result, ensure};
+use pl_core::chat as core;
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 use tokio::{
     sync::{broadcast, watch},
@@ -34,7 +34,7 @@ pub struct ConversationStateFeed {
     observation_due: Option<Instant>,
     state: Option<StateReceiver>,
     storage: Option<watch::Receiver<Option<ThreadStorageState>>>,
-    last_turn: Option<watch::Receiver<Option<Arc<pl_protocol::Turn>>>>,
+    last_turn: Option<watch::Receiver<Option<Arc<crate::Turn>>>>,
     slot_changed: watch::Receiver<u64>,
     slot_epoch: u64,
     applied: u64,
@@ -45,8 +45,8 @@ pub struct ConversationStateFeed {
     runtime_floor: (u64, u64),
     activity_floor: u64,
     activity: Option<ThreadActivity>,
-    runtime: Option<pl_protocol::ThreadRuntimeSnapshot>,
-    model_route: Option<pl_protocol::ThreadModelRouteSnapshot>,
+    runtime: Option<crate::ThreadRuntimeSnapshot>,
+    model_route: Option<crate::ThreadModelRouteSnapshot>,
     storage_state: Option<ThreadStorageState>,
     active_turn: Option<String>,
     delivered_terminal: Option<(String, u64)>,
@@ -219,7 +219,7 @@ impl StudioRuntime {
         let storage_state = storage
             .as_mut()
             .and_then(|storage| storage.borrow_and_update().clone());
-        let snapshot = pl_protocol::ThreadSnapshot {
+        let snapshot = crate::ThreadSnapshot {
             schema_version: THREAD_SCHEMA_VERSION,
             revision: effect_cut,
             thread,
@@ -302,7 +302,7 @@ impl ConversationStateFeed {
         self.ended = true;
     }
 
-    fn terminal_delivered(&self, turn: &pl_protocol::Turn) -> bool {
+    fn terminal_delivered(&self, turn: &crate::Turn) -> bool {
         self.delivered_terminal
             .as_ref()
             .is_some_and(|(id, revision)| id == &turn.id && *revision >= turn.revision)
@@ -318,7 +318,7 @@ impl ConversationStateFeed {
         self.reflect_terminal((*turn).clone())
     }
 
-    fn reflect_terminal(&mut self, turn: pl_protocol::Turn) -> Result<()> {
+    fn reflect_terminal(&mut self, turn: crate::Turn) -> Result<()> {
         if turn.revision > self.applied
             || self.active_turn.is_some()
             || self.terminal_delivered(&turn)
@@ -428,7 +428,7 @@ impl ConversationStateFeed {
                 if self.terminal_delivered(&turn) {
                     return Ok(());
                 }
-                if matches!(&turn.state, pl_protocol::TurnState::Running(_)) {
+                if matches!(&turn.state, crate::TurnState::Running(_)) {
                     self.active_turn = Some(turn.id.clone());
                 } else if turn.state.is_terminal() {
                     self.delivered_terminal = Some((turn.id.clone(), turn.revision));
@@ -548,7 +548,7 @@ impl ConversationStateFeed {
                     notification.notification,
                     ThreadNotification::ThreadRuntimeUpdated { ref runtime, .. }
                         if runtime.live_usage.as_ref().is_some_and(|usage| {
-                            usage.state == pl_protocol::ThreadRuntimeUsageState::Live
+                            usage.state == crate::ThreadRuntimeUsageState::Live
                         })
                 ))
             })
@@ -746,10 +746,7 @@ enum Wake {
     Closed,
 }
 
-fn annotate_runtime_mode(
-    runtime: &StudioRuntime,
-    snapshot: &mut pl_protocol::ThreadRuntimeSnapshot,
-) {
+fn annotate_runtime_mode(runtime: &StudioRuntime, snapshot: &mut crate::ThreadRuntimeSnapshot) {
     if let Some(run) = snapshot
         .workflow
         .as_mut()
@@ -761,8 +758,8 @@ fn annotate_runtime_mode(
 
 /// Live runtime observations may replace only an observation for the same model attempt.
 pub(in crate::studio::runtime) fn same_live_runtime_identity(
-    incoming: &pl_protocol::ThreadRuntimeSnapshot,
-    previous: &pl_protocol::ThreadRuntimeSnapshot,
+    incoming: &crate::ThreadRuntimeSnapshot,
+    previous: &crate::ThreadRuntimeSnapshot,
 ) -> bool {
     let Some(incoming_usage) = incoming.live_usage.as_ref() else {
         return false;
@@ -770,8 +767,8 @@ pub(in crate::studio::runtime) fn same_live_runtime_identity(
     let Some(previous_usage) = previous.live_usage.as_ref() else {
         return false;
     };
-    incoming_usage.state == pl_protocol::ThreadRuntimeUsageState::Live
-        && previous_usage.state == pl_protocol::ThreadRuntimeUsageState::Live
+    incoming_usage.state == crate::ThreadRuntimeUsageState::Live
+        && previous_usage.state == crate::ThreadRuntimeUsageState::Live
         && incoming_usage.turn_id == previous_usage.turn_id
         && incoming_usage.attempt_id == previous_usage.attempt_id
 }
@@ -785,8 +782,10 @@ mod storage_fault_tests {
 
     #[test]
     fn state_baseline_carries_qualified_plan_and_rejects_mixed_business_slice() -> Result<()> {
+        use crate::plan_tool::{
+            AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
+        };
         use crate::studio::thread_projection::CurrentState;
-        use pl_protocol::{AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState};
 
         let text = "# The saved Plan\n\nKeep the business references consistent.";
         let mut plan = AgentSessionPlanState {
@@ -807,7 +806,7 @@ mod storage_fault_tests {
                 payload: crate::plan_tool::encode_plan_state(&plan)?,
             },
         );
-        let thread = pl_protocol::Thread::placeholder("state-baseline");
+        let thread = crate::Thread::placeholder("state-baseline");
         let current = CurrentState::cold("state-db".into(), thread.id.clone(), 7, &state)?;
         let references = current.business_refs_at(&thread.id, &state)?;
         let snapshot = crate::studio::thread_projection::project_snapshot(
@@ -1047,7 +1046,7 @@ mod storage_fault_tests {
             };
             assert_eq!(
                 error
-                    .downcast_ref::<pl_protocol::studio::StudioError>()
+                    .downcast_ref::<crate::StudioError>()
                     .and_then(|error| error.reason()),
                 Some("conversationResyncRequired"),
                 "{error:#}"
@@ -1151,7 +1150,7 @@ mod storage_fault_tests {
         })?;
         events.send(ThreadLiveEvent::Activity {
             observation_revision: baseline_revision,
-            activity: Some(Arc::new(pl_protocol::ThreadActivity {
+            activity: Some(Arc::new(crate::ThreadActivity {
                 thread_id: thread.id.clone(),
                 identity: "old-activity".into(),
                 revision: 9,
@@ -1159,7 +1158,7 @@ mod storage_fault_tests {
                 execution_id: None,
                 input_id: None,
                 attempt_id: None,
-                kind: pl_protocol::ThreadActivityKind::Thinking,
+                kind: crate::ThreadActivityKind::Thinking,
                 summary: "obsolete before baseline".into(),
                 summary_truncated: false,
                 thinking_summary: None,
@@ -1361,7 +1360,7 @@ mod storage_fault_tests {
         assert!(snapshot.model_route.context("saved route")?.available);
         assert_eq!(handle.snapshot().observation_revision, owner_revision);
         let configured = runtime.config_runtime.read()?;
-        runtime.set_account_model_enabled(pl_protocol::studio::SetAccountModelEnabledRequest {
+        runtime.set_account_model_enabled(crate::SetAccountModelEnabledRequest {
             operation_id: "observation-disable-model".into(),
             expected_revision: configured.revision,
             account_id: route.account_id.to_string(),
@@ -1434,20 +1433,20 @@ mod tests {
                 .extensions
                 .get_mut("studio.mode")
                 .context("saved Mode")?;
-            let legacy_id = ThreadModeId::new("mode.retired-original")?;
+            let legacy_id = crate::mode::ThreadModeId::new("mode.retired-original")?;
             mode.payload = pl_core::context::OpaquePayload::new(
                 "pl.studio.mode",
                 1,
                 serde_json::to_string(&legacy_id)?,
             )?;
-            let workflow = WorkflowSessionState {
-                current_run: Some(WorkflowRun {
+            let workflow = crate::workflow_tool::WorkflowSessionState {
+                current_run: Some(crate::workflow_tool::WorkflowRun {
                     lineage_id: "saved-lineage".into(),
                     run_id: "saved-run".into(),
                     mode_id: legacy_id,
                     graph_revision: 1,
                     graph_hash: "retired-original-graph".into(),
-                    lifecycle: WorkflowRunLifecycle::Active,
+                    lifecycle: crate::workflow_tool::WorkflowRunLifecycle::Active,
                     current_state_id: "saved-state".into(),
                     started_at: 1,
                     updated_at: 2,
@@ -1545,10 +1544,11 @@ mod tests {
     }
 
     use super::*;
+    use crate::SessionId;
+    use crate::protocol::*;
     use crate::runtime_test_support as support;
     use crate::studio::runtime::conversation_feed::tests::{completed_runs, state_snapshot};
     use anyhow::{Context, Result, bail};
-    use pl_protocol::*;
     use std::time::Duration;
 
     #[tokio::test]
@@ -2402,7 +2402,7 @@ mod tests {
                 match case {
                     "replacement-bytes" => {
                         let error = feed.recv().await.expect_err(case);
-                        assert_eq!(error.downcast_ref::<pl_protocol::studio::StudioError>().and_then(|error| error.reason()), Some("conversationResyncRequired"));
+                        assert_eq!(error.downcast_ref::<crate::StudioError>().and_then(|error| error.reason()), Some("conversationResyncRequired"));
                         assert!(feed.cancellation_token().is_cancelled());
                         assert_eq!(feed.revision, revision + 1, "replacement spent a revision");
                     }

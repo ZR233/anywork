@@ -341,7 +341,7 @@ fn update_issue(code: &str, message: &str) -> BridgeShutdownIssue {
         code: code.into(),
         message: message.into(),
         retryable: code == "timeout",
-        correlation_id: pl_protocol::studio::StudioError::internal().correlation_id,
+        correlation_id: pl_studio_runtime::StudioError::internal().correlation_id,
     }
 }
 

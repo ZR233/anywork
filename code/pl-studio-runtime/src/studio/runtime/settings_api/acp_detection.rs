@@ -1,10 +1,10 @@
 //! Explicit local CLI probe commands. Reads never discover or start a process.
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpLocalDetectionCommandReply, AcpLocalDetectionSnapshot, CancelAcpLocalDetectionRequest,
     CommandEffectPoint, StartAcpLocalDetectionRequest,
 };
+use anyhow::Result;
 
 use super::StudioRuntime;
 

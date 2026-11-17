@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pl_protocol::studio::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallStage};
+use crate::{AcpInstallFailure, AcpInstallFailureCode, AcpInstallStage};
 use pl_tool::workspace::path_safety;
 
 use super::mapping::failure;

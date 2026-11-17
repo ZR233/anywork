@@ -7,14 +7,14 @@ use super::{
     ConversationReader,
     conversation_reader::{PresentationTokens, ReadObservation, cancelled, resync},
 };
+use crate::DisplayBlockState;
 use crate::studio::thread_projection::presentation::{BlockOrder, DisplayHeader, display_upper};
-use anyhow::{Result, ensure};
-use pl_core::chat::ChatError;
-use pl_protocol::DisplayBlockState;
-use pl_protocol::{
+use crate::{
     DisplayBlock, DisplayBlockRef, DisplayMemberHead, DisplayMemberPage, DisplayMemberWindow,
     LiveDisplayBlock, ReadDemand, TailSnapshot, TimelinePage,
 };
+use anyhow::{Result, ensure};
+use pl_core::chat::ChatError;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -286,7 +286,7 @@ impl ConversationReader {
                 .map(|h| tokens.before(ceiling, h.block_order))
                 .transpose()?;
             let mut page = TimelinePage {
-                presentation_version: pl_protocol::PRESENTATION_VERSION,
+                presentation_version: crate::PRESENTATION_VERSION,
                 database_id: database_id.clone(),
                 ceiling,
                 blocks: Vec::new(),
@@ -708,7 +708,7 @@ pub(super) fn live_window<'a>(
             .is_none_or(|id| result.blocks.iter().any(|block| {
                 &block.id == id
                     && block.state == DisplayBlockState::Open
-                    && matches!(block.body, pl_protocol::DisplayBlockBody::Work { .. })
+                    && matches!(block.body, crate::DisplayBlockBody::Work { .. })
             })),
         too_small()
     );
@@ -820,12 +820,12 @@ pub(super) fn member_page<'a>(
 mod tests {
     use super::*;
     use crate::studio::runtime::conversation_reader::ReadObservation;
-    use anyhow::Context as _;
-    use futures::poll;
-    use pl_protocol::{
+    use crate::{
         ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatScope, ChatSourceId,
         ChatTerminalOutcome, DisplayBlockBody,
     };
+    use anyhow::Context as _;
+    use futures::poll;
     use std::task::Poll;
     use tokio::sync::watch;
 
@@ -856,7 +856,7 @@ mod tests {
                 timing: Default::default(),
                 members: reference(),
             },
-            state: pl_protocol::DisplayBlockState::Open,
+            state: crate::DisplayBlockState::Open,
         }
     }
 
@@ -865,7 +865,7 @@ mod tests {
         DisplayMemberHead {
             member_key: id.clone(),
             member_order: order,
-            record: pl_protocol::DisplayRecord {
+            record: crate::DisplayRecord {
                 atom: ChatAtom {
                     id,
                     completion_item_id: None,
@@ -895,7 +895,7 @@ mod tests {
                 },
                 start_fact: None,
                 end_fact: None,
-                content_source: pl_protocol::DisplayContentSource::FrozenObservation {
+                content_source: crate::DisplayContentSource::FrozenObservation {
                     captured_at: None,
                     available: true,
                 },
@@ -1218,7 +1218,7 @@ mod tests {
             database_id: h.history.conversation_database_id().await?.context("database")?,
             block_id: delta.blocks[0].header.id.clone(),
         };
-        let feed = env.runtime.open_timeline_reader(&h.thread.id, pl_protocol::PRESENTATION_VERSION, pl_protocol::TIMELINE_READER_PROTOCOL_VERSION, demand(1)).await?;
+        let feed = env.runtime.open_timeline_reader(&h.thread.id, crate::PRESENTATION_VERSION, crate::TIMELINE_READER_PROTOCOL_VERSION, demand(1)).await?;
         let reader = feed.reader().clone();
         let cut = reader.capture_display(None, 1, None, 0).await?;
         assert_eq!((cut.published, cut.last_order), (0, 1));
@@ -1437,10 +1437,10 @@ mod tests {
                 .await
                 .expect_err("a hot watch cannot end as a successful fixed EOF");
             assert_eq!(
-                lost.downcast_ref::<pl_protocol::studio::StudioError>()
+                lost.downcast_ref::<crate::StudioError>()
                     .context("typed watch discontinuity")?
                     .reason(),
-                Some(pl_protocol::studio::StudioErrorReason::ConversationResyncRequired.label())
+                Some(crate::StudioErrorReason::ConversationResyncRequired.label())
             );
             assert!(!interrupted.is_fixed_snapshot());
 

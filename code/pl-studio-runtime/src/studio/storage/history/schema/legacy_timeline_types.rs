@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use pl_protocol::{
+use crate::{
     ChatAtomContent, ChatAtomKind, ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, PayloadData,
 };
 
@@ -106,7 +106,7 @@ pub struct TimelineItem {
     pub atom_kind: Option<ChatAtomKind>,
     pub delivery: ChatDeliveryKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
+    pub text_channel: Option<crate::ThreadTextChannel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     pub started_at: Option<i64>,
@@ -147,7 +147,7 @@ impl TimelineItem {
     }
 }
 
-use pl_protocol::{
+use crate::{
     ChatAtom, ChatSourceState, CurrentActivityHead, CurrentCollectionRef, CurrentContentPreview,
     CurrentPlanHead, CurrentTurnHead, ThreadStatus,
 };

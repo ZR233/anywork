@@ -4,6 +4,7 @@ use super::receipt::{
     FAILURE_RECEIPT_VERSION, ModelCallBinding, ModelFailureReceipt, ModelRequestReceipt,
     ModelResponseReceipt, REQUEST_RECEIPT_VERSION, presentation_item_kind, presentation_part_kind,
 };
+use crate::runtime::PromptPrefixChangedReason;
 use crate::{
     completion::CompletionResponse,
     protocol::{ProtocolKind, WireApi},
@@ -16,7 +17,6 @@ use pl_core::{
     },
 };
 pub use pl_core::{context::OpaquePayload, model::ModelError};
-use pl_protocol::PromptPrefixChangedReason;
 use serde::Deserialize;
 use std::sync::Arc;
 const LEGACY_FAILURE_RECEIPT_VERSION_V3: u32 = 3;
@@ -469,7 +469,7 @@ struct FailureReceiptV2 {
     #[serde(default)]
     message: String,
     binding: LegacyModelCallBinding,
-    accounting: crate::completion::InferenceAccounting,
+    accounting: crate::model::InferenceAccounting,
     #[serde(default)]
     model_observation: Option<crate::completion::InferenceModelObservation>,
     #[serde(default)]
@@ -567,8 +567,8 @@ impl From<LegacyPromptPrefixChangedReason> for PromptPrefixChangedReason {
 
 impl LegacyThreadPromptSnapshot {
     /// `account_id` is the frozen binding fact, never the old display name.
-    fn migrate(self, account_id: &str) -> pl_protocol::ThreadPromptSnapshot {
-        pl_protocol::ThreadPromptSnapshot {
+    fn migrate(self, account_id: &str) -> crate::runtime::ThreadPromptSnapshot {
+        crate::runtime::ThreadPromptSnapshot {
             scope: self.scope,
             generation: self.generation,
             account_id: account_id.to_owned(),
@@ -631,7 +631,7 @@ struct FailureReceiptV1 {
     #[serde(default)]
     message: String,
     binding: LegacyModelCallBinding,
-    accounting: crate::completion::InferenceAccounting,
+    accounting: crate::model::InferenceAccounting,
     #[serde(default)]
     model_observation: Option<crate::completion::InferenceModelObservation>,
     #[serde(default)]
@@ -760,7 +760,7 @@ fn decode_failure(payload: &OpaquePayload) -> Result<ModelFailureReceipt, ModelE
             std::io::Error::other("unsupported model failure receipt"),
         )),
     }?;
-    if payload.version() < 4 && receipt.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+    if payload.version() < 4 && receipt.accounting.pricing == crate::model::PricingOutcome::NoCharge
     {
         return Err(super::failure(
             ModelFailureKind::UnsupportedContent,
@@ -825,7 +825,7 @@ fn decode_frame_legacy(payload: &OpaquePayload) -> Result<AssistantFrame, ModelE
     // v3 has the same field layout, but its Disabled outcome remains historical "not estimated".
     // A new no-charge declaration must never be smuggled into an older producer version.
     if payload.version() < 4
-        && frame.receipt.response.accounting.pricing == pl_protocol::PricingOutcome::NoCharge
+        && frame.receipt.response.accounting.pricing == crate::model::PricingOutcome::NoCharge
     {
         return Err(invalid(
             "no-charge accounting requires model response receipt version 4",

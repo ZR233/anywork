@@ -18,7 +18,7 @@ use crate::api::studio::types::{
     BridgeStartNewThreadRequest, BridgeThreadModeCommandReply, BridgeThreadModelRouteCommandReply,
     StartNewThreadResponse, SubmitPromptResponse,
 };
-use pl_studio_runtime::ThreadModeId;
+use pl_studio_runtime::mode::ThreadModeId;
 
 fn thread_mode(mode: String) -> Result<ThreadModeId, BridgeError> {
     ThreadModeId::new(mode).map_err(|error| anyhow::anyhow!(error).into())
@@ -50,8 +50,8 @@ pub async fn start_new_thread(
     let response: Result<StartNewThreadResponse, BridgeError> = async {
         let mode = thread_mode(mode)?;
         let workspace_mode = match workspace_mode.as_deref().map(str::trim) {
-            None | Some("") | Some("local") => pl_protocol::ThreadWorkspaceMode::Local,
-            Some("worktree") => pl_protocol::ThreadWorkspaceMode::Worktree,
+            None | Some("") | Some("local") => pl_studio_runtime::ThreadWorkspaceMode::Local,
+            Some("worktree") => pl_studio_runtime::ThreadWorkspaceMode::Worktree,
             Some(other) => {
                 return Err(anyhow::anyhow!(
                     "workspaceMode must be local or worktree, received {other:?}"
@@ -64,11 +64,11 @@ pub async fn start_new_thread(
             .studio
             .create_thread_command(
                 workspace_id,
-                pl_protocol::studio::CreateThreadRequest {
+                pl_studio_runtime::CreateThreadRequest {
                     title: None,
                     input: input.into(),
                     mode: mode.label().to_string(),
-                    route: pl_protocol::studio::NewThreadModelRoute {
+                    route: pl_studio_runtime::NewThreadModelRoute {
                         account_id,
                         model_id,
                         effort,
@@ -205,7 +205,7 @@ pub async fn set_thread_model_route(
         .studio
         .save_thread_model_route(
             &thread_id,
-            pl_protocol::studio::SetThreadModelRouteRequest {
+            pl_studio_runtime::SetThreadModelRouteRequest {
                 operation_id,
                 expected_model_route_revision,
                 expected_settings_revision,

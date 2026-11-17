@@ -25,8 +25,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use tracing::Instrument;
 
+use crate::trace::{AgentEventSender, TraceEventSink};
 use pl_protocol::PureError;
-use pl_protocol::trace::{AgentEventSender, TraceEventSink};
 
 use crate::completion::CompletionTraceContext;
 
@@ -50,7 +50,7 @@ pub(crate) struct StreamCollectContext<'a> {
     pub(crate) trace: Option<CompletionTraceContext>,
     pub(crate) trace_sink: Option<Arc<dyn TraceEventSink>>,
     pub(crate) cancellation: Option<tokio_util::sync::CancellationToken>,
-    pub(crate) model_observation: Option<pl_protocol::InferenceModelObservation>,
+    pub(crate) model_observation: Option<crate::completion::InferenceModelObservation>,
     pub(crate) on_stream_end: &'a (dyn Fn() + Send + Sync),
     pub(crate) members: Option<pl_core::model::ModelMemberSender>,
     pub(crate) generation: u32,
@@ -291,8 +291,9 @@ mod admission_tests {
     use super::*;
     use crate::completion::{
         CompletionFailure, CompletionPresentationItem, CompletionPresentationItemKind,
-        CompletionPresentationPart, CompletionPresentationPartKind, UsageReport,
+        CompletionPresentationPart, CompletionPresentationPartKind,
     };
+    use crate::model::UsageReport;
     use crate::runtime::ModelMemberState;
     use pl_core::{
         context::ContextContent,

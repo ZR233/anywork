@@ -1,9 +1,9 @@
 //! Effect-owned immutable inputs, borrowed before a terminal can retire its live owner.
 use super::*;
 use crate::ExecutionShape;
+use crate::{ChatAtom, ChatAtomLifecycle, ContentTarget};
 use anyhow::{Context, Result, ensure};
 use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
-use pl_protocol::{ChatAtom, ChatAtomLifecycle, ContentTarget};
 
 #[derive(Debug, Clone)]
 enum CapturedBody {

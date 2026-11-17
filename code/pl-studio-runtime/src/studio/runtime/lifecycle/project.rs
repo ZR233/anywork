@@ -41,8 +41,8 @@ impl StudioRuntime {
             })
             .collect::<Vec<_>>();
         if !issues.is_empty() {
-            return Err(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Unavailable,
+            return Err(crate::StudioError::new(
+                crate::StudioErrorCode::Unavailable,
                 "Project execution preparation is blocked by recovery",
                 true,
             )
@@ -189,7 +189,7 @@ impl StudioRuntime {
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
-            .begin(pl_protocol::StateOperation::Probe)
+            .begin(crate::StateOperation::Probe)
             .await?;
         let result = async {
             let lease = lsp
@@ -220,7 +220,7 @@ impl StudioRuntime {
         let _command = self.external_runtimes.lsp_state.command().await;
         self.external_runtimes
             .lsp_state
-            .begin(pl_protocol::StateOperation::Reset)
+            .begin(crate::StateOperation::Reset)
             .await?;
         let result = lsp.reset_lsp(scope).await.map_err(anyhow::Error::from);
         match result {
@@ -240,16 +240,11 @@ impl StudioRuntime {
     }
 
     /// Resolves transport-neutral Project identities into an internal LSP reset scope.
-    pub async fn reset_lsp_request(
-        &self,
-        request: pl_protocol::studio::LspResetRequest,
-    ) -> Result<()> {
+    pub async fn reset_lsp_request(&self, request: crate::LspResetRequest) -> Result<()> {
         let workspace_id = match &request {
-            pl_protocol::studio::LspResetRequest::Server { workspace_id, .. }
-            | pl_protocol::studio::LspResetRequest::Workspace { workspace_id } => {
-                Some(workspace_id)
-            }
-            pl_protocol::studio::LspResetRequest::All => None,
+            crate::LspResetRequest::Server { workspace_id, .. }
+            | crate::LspResetRequest::Workspace { workspace_id } => Some(workspace_id),
+            crate::LspResetRequest::All => None,
         };
         let lsp = if let Some(id) = workspace_id {
             let project = self.project_record(id).await?;
@@ -260,19 +255,19 @@ impl StudioRuntime {
             self.external_runtimes.lsp.clone()
         };
         let scope = match request {
-            pl_protocol::studio::LspResetRequest::Server {
+            crate::LspResetRequest::Server {
                 workspace_id,
                 server_id,
             } => pl_lsp::runtime::LspScope::Server {
                 workspace_root: self.project_workspace_root(&workspace_id).await?,
                 server_id,
             },
-            pl_protocol::studio::LspResetRequest::Workspace { workspace_id } => {
+            crate::LspResetRequest::Workspace { workspace_id } => {
                 pl_lsp::runtime::LspScope::Workspace {
                     workspace_root: self.project_workspace_root(&workspace_id).await?,
                 }
             }
-            pl_protocol::studio::LspResetRequest::All => pl_lsp::runtime::LspScope::All,
+            crate::LspResetRequest::All => pl_lsp::runtime::LspScope::All,
         };
         self.reset_lsp(lsp, scope).await
     }

@@ -8,12 +8,12 @@ pub use state::*;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use crate::StateError;
 use anyhow::{Context, Result};
 use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
-use pl_protocol::StateError;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
 

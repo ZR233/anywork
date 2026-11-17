@@ -3,9 +3,7 @@
 //! 这里只接受官方发行已确认的 Markdown 形态，并且只读取 `### Quota Limits` 段。任何未知、
 //! 畸形、越界或混合特殊状态都整体失败，不发布部分额度。
 
-use pl_protocol::studio::{
-    AcpQuotaGroup, AcpQuotaLimit, AcpQuotaRemaining, AcpUsageFailureCode, AcpUsageState,
-};
+use crate::{AcpQuotaGroup, AcpQuotaLimit, AcpQuotaRemaining, AcpUsageFailureCode, AcpUsageState};
 
 const SECTION: &str = "### Quota Limits";
 const MAX_GROUPS: usize = 64;

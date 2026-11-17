@@ -48,10 +48,10 @@ mod tests {
     use super::legacy_timeline_types::*;
     use super::legacy_timeline_types::{ChatScope, CurrentProjection};
     use super::*;
+    use crate::protocol::*;
     use crate::studio::storage::history::{connect, conversation};
     use anyhow::Result;
     use pl_core::chat::ChatItem;
-    use pl_protocol::*;
 
     const THREAD: &str = "thinking-summary-migration";
 

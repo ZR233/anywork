@@ -232,7 +232,7 @@ fn initialize_once() {
     tracing::info!(
         application = "anywork",
         app_version = env!("CARGO_PKG_VERSION"),
-        protocol_version = pl_protocol::THREAD_SCHEMA_VERSION,
+        protocol_version = pl_studio_runtime::THREAD_SCHEMA_VERSION,
         "Studio diagnostics initialized"
     );
 }
@@ -271,7 +271,7 @@ fn install_panic_hook(crash_dir: PathBuf) {
         persist_panic(&crash_dir, info);
         tracing::error!(
             app_version = env!("CARGO_PKG_VERSION"),
-            protocol_version = pl_protocol::THREAD_SCHEMA_VERSION,
+            protocol_version = pl_studio_runtime::THREAD_SCHEMA_VERSION,
             panic = %info,
             "Rust panic"
         );
@@ -298,7 +298,7 @@ fn persist_panic(crash_dir: &Path, info: &std::panic::PanicHookInfo<'_>) {
             file,
             "appVersion={}\nprotocolVersion={}\nthread={:?}\npanic={info}\nbacktrace={}",
             env!("CARGO_PKG_VERSION"),
-            pl_protocol::THREAD_SCHEMA_VERSION,
+            pl_studio_runtime::THREAD_SCHEMA_VERSION,
             std::thread::current().name(),
             Backtrace::force_capture()
         )?;

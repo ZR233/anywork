@@ -4,7 +4,7 @@
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
-use pl_protocol::studio::StudioErrorCode;
+use pl_studio_runtime::StudioErrorCode;
 use pl_studio_runtime::{
     HostMcpSource, RemoteHelperSource, StudioInstance, StudioInstanceLease, StudioRuntimeOptions,
 };

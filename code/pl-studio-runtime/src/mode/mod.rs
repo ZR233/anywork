@@ -7,6 +7,7 @@ mod manager;
 mod registration;
 mod runtime;
 pub mod state;
+mod types;
 
 pub use compiler::{
     CompiledWorkflowDefinition, MAX_WORKFLOW_DEFINITION_BYTES, MAX_WORKFLOW_STATES,
@@ -20,12 +21,12 @@ pub use manager::{
     RegisteredThreadMode, ThreadModeManager, ThreadModeManagerError, ThreadModeRegistrySnapshot,
     ThreadModeSource, ThreadModeSourceId, ThreadModeSourceKind,
 };
-pub use pl_protocol::ThreadModeDefinition;
 pub use registration::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
     StaticWorkflowTransition,
 };
 pub use runtime::{new_run, reconcile_workflow_for_turn};
+pub use types::*;
 
 /// 工作流上下文段的稳定标识符。
 pub const WORKFLOW_CONTEXT_SECTION_ID: &str = "pl.workflow";

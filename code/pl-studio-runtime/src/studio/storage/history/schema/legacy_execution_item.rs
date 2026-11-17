@@ -31,9 +31,9 @@ pub(in crate::studio::storage::history) fn decode(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LegacyTurn {
-    pub turn: pl_protocol::Turn,
+    pub turn: crate::Turn,
     pub last_item_id: String,
-    pub context_disposition: pl_protocol::ThreadContextDisposition,
+    pub context_disposition: crate::ThreadContextDisposition,
 }
 
 /// 旧迁移测试从正式只读导出读取证据，不让正常恢复重新启用旧解码器。
@@ -60,7 +60,7 @@ pub(in crate::studio::storage::history) async fn fixture_seeds(
                 .read_legacy_evidence(
                     &owner,
                     revision,
-                    pl_protocol::ContentRange {
+                    crate::ContentRange {
                         offset: bytes.len() as u64,
                         max_bytes: 32768,
                     },

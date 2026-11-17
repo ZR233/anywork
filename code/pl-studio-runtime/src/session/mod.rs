@@ -28,11 +28,11 @@ pub struct SessionRuntime(pub(crate) Arc<Registry>);
 
 impl SessionRuntime {
     /// 创建一个 Open 代次。安装服务与观察由 [`SessionTable`] 的 installer 完成。
-    pub(crate) fn open(id: pl_protocol::SessionId) -> Self {
+    pub(crate) fn open(id: crate::SessionId) -> Self {
         Self(Arc::new(Registry::open(id)))
     }
 
-    pub(crate) fn id(&self) -> &pl_protocol::SessionId {
+    pub(crate) fn id(&self) -> &crate::SessionId {
         &self.0.session_id
     }
 
@@ -44,7 +44,7 @@ impl SessionRuntime {
 #[cfg(test)]
 impl Default for SessionRuntime {
     fn default() -> Self {
-        Self::open(pl_protocol::SessionId::new("test-session").expect("valid test session"))
+        Self::open(crate::SessionId::new("test-session").expect("valid test session"))
     }
 }
 
@@ -141,20 +141,20 @@ pub(crate) mod session_close_tests {
     /// Parentage names the parent member, mirroring the production `AgentThreadIdentity` checks.
     fn explicit_activation(session: &str, id: &str, parent: Option<&str>) -> ThreadActivation {
         ThreadActivation {
-            agent: pl_protocol::AgentThreadIdentity {
-                session_id: pl_protocol::SessionId::new(session).expect("valid fixture session"),
-                agent_id: pl_protocol::AgentId::new(id).expect("valid fixture agent"),
+            agent: crate::AgentThreadIdentity {
+                session_id: crate::SessionId::new(session).expect("valid fixture session"),
+                agent_id: crate::AgentId::new(id).expect("valid fixture agent"),
                 parent_agent_id: parent
-                    .map(pl_protocol::AgentId::new)
+                    .map(crate::AgentId::new)
                     .transpose()
                     .expect("valid fixture parent agent"),
-                thread_id: pl_protocol::ThreadId::new(id).expect("valid fixture thread"),
+                thread_id: crate::ThreadId::new(id).expect("valid fixture thread"),
             },
             parent_thread_id: parent
-                .map(pl_protocol::ThreadId::new)
+                .map(crate::ThreadId::new)
                 .transpose()
                 .expect("valid fixture parent thread"),
-            binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+            binding: crate::AgentBinding::Native(crate::NativeAgentConfig {
                 route: None,
                 system_instructions: None,
             }),
@@ -183,10 +183,10 @@ pub(crate) mod session_close_tests {
     async fn closing_one_session_keeps_the_other_generation_open_for_assembly_and_admission() {
         let table = SessionTable::new();
         let a = table
-            .materialize(&pl_protocol::SessionId::new("session-a").unwrap())
+            .materialize(&crate::SessionId::new("session-a").unwrap())
             .unwrap();
         let b = table
-            .materialize(&pl_protocol::SessionId::new("session-b").unwrap())
+            .materialize(&crate::SessionId::new("session-b").unwrap())
             .unwrap();
         let (store_a, _) = ProbeStore::open(false);
         let (store_b, _) = ProbeStore::open(false);
@@ -384,7 +384,7 @@ pub(crate) mod session_close_tests {
     #[tokio::test]
     async fn foreign_session_identity_is_rejected_by_the_owning_generation() {
         let session = SessionRuntime::open(
-            pl_protocol::SessionId::new("session-a").expect("valid fixture session"),
+            crate::SessionId::new("session-a").expect("valid fixture session"),
         );
         session.install_explicit_activation(explicit_activation("session-b", "thread-x", None));
         let temp = tempfile::tempdir().unwrap();

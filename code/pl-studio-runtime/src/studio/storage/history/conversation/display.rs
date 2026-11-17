@@ -1,13 +1,13 @@
 //! Display row IO. The caller owns the original history transaction.
 use super::*;
 #[cfg(test)]
+use crate::DisplayBlock;
+#[cfg(test)]
 use crate::studio::thread_projection::presentation::BlockOrder;
 use crate::studio::thread_projection::presentation::{
     DisplayHeader, DisplayMemberWrite, PreparedDisplayDelta, display_upper,
 };
-#[cfg(test)]
-use pl_protocol::DisplayBlock;
-use pl_protocol::{DisplayBlockBody, DisplayContentSource, PayloadData};
+use crate::{DisplayBlockBody, DisplayContentSource, PayloadData};
 use sea_orm::TransactionTrait;
 
 pub(in crate::studio) struct DisplayRecovery {
@@ -153,14 +153,14 @@ pub(in crate::studio::storage::history) fn decode_member(
     Ok(member)
 }
 
-fn completion_id(record: &pl_protocol::DisplayRecord) -> Option<&str> {
+fn completion_id(record: &crate::DisplayRecord) -> Option<&str> {
     match &record.content_source {
         DisplayContentSource::CompletedOriginal { completion_id } => Some(completion_id),
         _ => None,
     }
 }
 
-fn validate_original(atom: &pl_protocol::ChatAtom, original: &pl_protocol::ChatAtom) -> Result<()> {
+fn validate_original(atom: &crate::ChatAtom, original: &crate::ChatAtom) -> Result<()> {
     ensure!(
         atom.id == original.id
             && atom.source == original.source
@@ -194,7 +194,7 @@ pub(in crate::studio::storage::history) async fn validate_original_references(
         .await?;
     let mut originals = std::collections::HashMap::new();
     for row in rows {
-        let atom: pl_protocol::ChatAtom =
+        let atom: crate::ChatAtom =
             serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
         originals.insert(row.try_get::<String>("", "item_id")?, atom);
     }
@@ -317,7 +317,7 @@ pub(in crate::studio) async fn apply(
                 && member.terminal
                     == matches!(
                         member.head.record.atom.lifecycle,
-                        pl_protocol::ChatAtomLifecycle::Terminal { .. }
+                        crate::ChatAtomLifecycle::Terminal { .. }
                     )
                 && completion_id(&member.head.record)
                     == member.head.record.atom.completion_item_id.as_deref()
@@ -357,7 +357,7 @@ pub(in crate::studio) async fn apply(
                     ))
                     .await?
                     .context("display member references missing original completion")?;
-                let original: pl_protocol::ChatAtom =
+                let original: crate::ChatAtom =
                     serde_json::from_slice(&row.try_get::<Vec<u8>>("", "metadata")?)?;
                 originals.insert(completion.to_owned(), original);
             }
@@ -416,11 +416,11 @@ pub(in crate::studio) async fn apply(
                     _ => None,
                 }),
             ) {
-                let pl_protocol::ContentTarget::Body { owner, key } = &reference.target else {
+                let crate::ContentTarget::Body { owner, key } = &reference.target else {
                     anyhow::bail!("frozen observation does not reference a Body");
                 };
                 ensure!(
-                    matches!(owner, pl_protocol::ContentOwner::DisplayObservation { block_id, member_key }
+                    matches!(owner, crate::ContentOwner::DisplayObservation { block_id, member_key }
                     if block_id == &member.block_id && member_key == &member.head.member_key),
                     "frozen observation content escaped its display owner"
                 );
@@ -726,7 +726,7 @@ mod cost_tests {
     use super::super::record_read_tests::sqlite_work::{Sampler, Work};
     use super::*;
     use crate::studio::thread_projection::presentation::PresentationState;
-    use pl_protocol::{
+    use crate::{
         ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition, ChatSourceId,
         ChatTerminalOutcome, DisplayMemberHead, LiveDisplayBlock,
     };
@@ -822,7 +822,7 @@ mod cost_tests {
             .try_get("", "database_id")?;
         let mut owner = PresentationState::default();
         owner.bind(&database)?;
-        let mut atom: pl_protocol::ChatAtom =
+        let mut atom: crate::ChatAtom =
             serde_json::from_slice(&super::super::tests::metadata("cost-seed"))?;
         atom.completion_item_id = None;
         atom.source = ChatSourceId::ForegroundTurn {
@@ -955,9 +955,9 @@ mod cost_tests {
                     source: Some(header.source.clone()),
                     body: header.body.clone(),
                     state: if header.sealed {
-                        pl_protocol::DisplayBlockState::Sealed
+                        crate::DisplayBlockState::Sealed
                     } else {
-                        pl_protocol::DisplayBlockState::Open
+                        crate::DisplayBlockState::Open
                     },
                 })
                 .collect::<Vec<_>>();
@@ -1049,11 +1049,11 @@ mod cost_tests {
             let mut facts = Vec::new();
             for offset in 0..250u32 {
                 let index = batch * 250 + u64::from(offset) + 1;
-                let mut atom: pl_protocol::ChatAtom = serde_json::from_slice(
+                let mut atom: crate::ChatAtom = serde_json::from_slice(
                     &super::super::tests::metadata(&format!("long-tail-{index}")),
                 )?;
                 atom.kind = ChatAtomKind::ToolCall;
-                atom.tool = Some(pl_protocol::ChatToolIdentity {
+                atom.tool = Some(crate::ChatToolIdentity {
                     call_id: format!("call-{index}"),
                     name: "exec".into(),
                 });
@@ -1207,7 +1207,7 @@ mod cost_tests {
         next.source = ChatSourceId::BackgroundResult {
             message_id: "after-cold".into(),
         };
-        next.tool = Some(pl_protocol::ChatToolIdentity {
+        next.tool = Some(crate::ChatToolIdentity {
             call_id: "after-cold".into(),
             name: "exec".into(),
         });
@@ -1234,11 +1234,11 @@ mod tests {
     #[tokio::test]
     async fn observation_chunks_rollback_and_replay_with_the_original_display_transaction()
     -> Result<()> {
+        use crate::protocol::*;
         use pl_core::{
             chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor},
             model::ContentBlock,
         };
-        use pl_protocol::*;
         let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
         crate::studio::storage::history::schema::work_snapshots::tests::initialize_current(&db)
             .await?;
@@ -1400,7 +1400,7 @@ mod tests {
     #[tokio::test]
     async fn visible_text_final_empty_is_atomic_and_keeps_the_frozen_boundary_on_cold_read()
     -> Result<()> {
-        use pl_protocol::{
+        use crate::{
             ChatAtomKind, ChatAtomLifecycle, ChatFactPosition, ChatSourceId, ChatTerminalOutcome,
         };
         let (_dir, db) = super::super::super::schema::work_snapshots::tests::fixture().await?;
@@ -1417,7 +1417,7 @@ mod tests {
             .try_get("", "database_id")?;
         let mut owner = PresentationState::default();
         owner.bind(&database)?;
-        let mut started: pl_protocol::ChatAtom =
+        let mut started: crate::ChatAtom =
             serde_json::from_slice(&super::super::tests::metadata("empty-text"))?;
         started.kind = ChatAtomKind::Text;
         started.source = ChatSourceId::ForegroundTurn {
@@ -1431,7 +1431,7 @@ mod tests {
                 effect_seq: 1,
                 suborder: 0,
             }),
-            status: pl_protocol::ChatActiveStatus::Running,
+            status: crate::ChatActiveStatus::Running,
         };
         let begin = owner.prepare(1, 10, &[started.clone()], &[], &[])?;
         let tx = db.begin().await?;
@@ -1494,7 +1494,7 @@ mod tests {
         assert!(matches!(
             heads[0].body,
             DisplayBlockBody::Single {
-                visibility: pl_protocol::SingleVisibility::FinalEmptyAfterContent,
+                visibility: crate::SingleVisibility::FinalEmptyAfterContent,
                 ..
             }
         ));
@@ -1521,20 +1521,20 @@ mod tests {
             .try_get("", "database_id")?;
         let mut owner = PresentationState::default();
         owner.bind(&database)?;
-        let mut atom: pl_protocol::ChatAtom =
+        let mut atom: crate::ChatAtom =
             serde_json::from_slice(&super::super::tests::metadata("original"))?;
-        atom.kind = pl_protocol::ChatAtomKind::ToolCall;
-        atom.source = pl_protocol::ChatSourceId::ForegroundTurn {
+        atom.kind = crate::ChatAtomKind::ToolCall;
+        atom.source = crate::ChatSourceId::ForegroundTurn {
             turn_id: "turn".into(),
         };
-        atom.delivery = pl_protocol::ChatDeliveryKind::Foreground;
-        atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
+        atom.delivery = crate::ChatDeliveryKind::Foreground;
+        atom.lifecycle = crate::ChatAtomLifecycle::Terminal {
             started: None,
-            ended: Some(pl_protocol::ChatFactPosition {
+            ended: Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 0,
             }),
-            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+            outcome: crate::ChatTerminalOutcome::Completed,
         };
         let mut draft = pl_core::chat::ChatDraft::new(
             "original",
@@ -1544,13 +1544,13 @@ mod tests {
         draft.metadata = serde_json::to_vec(&atom)?.into();
 
         let item = Arc::new(ChatItem::complete(draft, 1));
-        let ended = pl_protocol::ChatSourceState {
+        let ended = crate::ChatSourceState {
             source: atom.source.clone(),
-            lifecycle: pl_protocol::ChatSourceLifecycle::Ended {
-                outcome: pl_protocol::ChatTerminalOutcome::Completed,
+            lifecycle: crate::ChatSourceLifecycle::Ended {
+                outcome: crate::ChatTerminalOutcome::Completed,
             },
             started: None,
-            ended: Some(pl_protocol::ChatFactPosition {
+            ended: Some(crate::ChatFactPosition {
                 effect_seq: 1,
                 suborder: 1,
             }),

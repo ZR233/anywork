@@ -23,7 +23,7 @@ pub async fn get_delegation_model(
     Ok(active_bridge()
         .await?
         .studio
-        .get_delegation_model(pl_protocol::GetDelegationModelRequest {
+        .get_delegation_model(pl_studio_runtime::GetDelegationModelRequest {
             account_id: request.account_id,
             model_id: request.model_id,
         })

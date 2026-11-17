@@ -10,9 +10,9 @@ pl-studio-runtime → pl-core / pl-model / pl-acp / pl-tool / pl-protocol / pl-t
 pl-studio-runtime → pl-studio-update / pl-studio-statistics / pl-lifecycle
 pl-studio-bridge → pl-studio-update / pl-studio-statistics / pl-lifecycle
 pl-studio-server / pl-studio-cli → pl-studio-update
-pl-studio-cli → pl-tool / pl-protocol
+pl-studio-cli → pl-tool
 pl-studio-update → pl-remote-helper
-pl-studio-statistics → pl-protocol
+pl-model / pl-tool / pl-studio-statistics → pl-protocol
 pl-model → pl-core
 pl-tool → pl-core / pl-model
 pl-tool → 独立工具 crate → pl-agent-tool / 最小领域支持
@@ -31,8 +31,8 @@ pl-trace → pl-core
 - `pl-core` 不依赖 `pl-protocol`、`pl-model`、`pl-tool`、`pl-trace`、`pl-output` 或 Studio 层组件（含测试依赖）。新增概念须先甄别是否属于通用的会话线程编排；账号、工具和产品专属概念分别归入对应适配层，不得通过 `pl-core` 门面镜像导出。
 - 工作区完整成员清单以根目录 `Cargo.toml` 为准；Flutter 应用目录本身不是 Cargo 工作区成员，其 Rust 桥接库 `pl-studio-bridge` 单独纳入工作区。
 - 厂商协议的 HTTP 客户端（模型目录发现、文件上传与图像生成）归属 `pl-model`，与账号配置、协议端点、模型目录及凭据解析保持同源，并由 `pl-model` 公开 API 的集成测试覆盖；`pl-tool` 仅负责参数校验、结果编排与媒体文件归档，不维护第二套协议或凭据逻辑。
-- 原生账号的 OAuth/OIDC 协议、身份校验与请求凭据刷新归属 `pl-model`；Studio 装配受保护存储并持有登录操作、编辑意图绑定、配置提交及关闭责任。认证不会引入第二个模型执行器，公共状态继续通过 `pl-protocol` 向 HTTP、FRB 和 Client 发布，具体认证契约见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。
-- ACP 是外部智能体接入协议，不属于原生模型的 HTTP 协议族。`pl-acp` 消费宿主提供的受监督字节流，负责 ACP 握手协商、认证及业务会话的类型化请求与有序更新；它不依赖 Studio、`pl-model` 或 `pl-tool`，不读取产品配置与凭据，也不直接创建操作系统进程。Studio 层负责装配进程监督器，管理接入配置、固定 1.4.5 版本的官方服务端准备、启动资格与认证流程；固定厂商版本策略不下沉到通用 `pl-acp` 协议库，协议库仅校验宿主显式传入的期望服务端版本，并在版本不匹配时拦截后续认证与会话请求（详见 [28](./28-acp.md)）。`pl-protocol` 可精确依赖同次锁定的官方 `agent-client-protocol-schema` 纯数据类型，承载 ACP 内容块、会话更新、权限及配置载荷；不依赖 ACP 连接或驱动实现。HTTP 使用该官方序列化形状，FRB 与 Client 在各自边界做薄类型转换，不用 JSON 字符串或另写协议解析器替代类型契约。
+- 原生账号的 OAuth/OIDC 协议、身份校验与请求凭据刷新归属 `pl-model`；Studio 装配受保护存储并持有登录操作、编辑意图绑定、配置提交及关闭责任。认证不会引入第二个模型执行器，公共状态由 `pl-studio-runtime` 向 HTTP、FRB 和 Client 发布，具体认证契约见 [20.18](./20-config.md#2018-openai-api-与-chatgpt-订阅认证)。
+- ACP 是外部智能体接入协议，不属于原生模型的 HTTP 协议族。`pl-acp` 消费宿主提供的受监督字节流，负责 ACP 握手协商、认证及业务会话的类型化请求与有序更新；它不依赖 Studio、`pl-model` 或 `pl-tool`，不读取产品配置与凭据，也不直接创建操作系统进程。Studio 层负责装配进程监督器，管理接入配置、固定 1.4.5 版本的官方服务端准备、启动资格与认证流程；固定厂商版本策略不下沉到通用 `pl-acp` 协议库，协议库仅校验宿主显式传入的期望服务端版本，并在版本不匹配时拦截后续认证与会话请求（详见 [28](./28-acp.md)）。`pl-studio-runtime` 可精确依赖同次锁定的官方 `agent-client-protocol-schema` 纯数据类型，承载 ACP 内容块、会话更新、权限及配置载荷；协议 DTO 不耦合 ACP 连接实现。HTTP 使用该官方序列化形状，FRB 与 Client 在各自边界做薄类型转换，不用 JSON 字符串或另写协议解析器替代类型契约。
 
 ## 2.2 稳定职责
 
@@ -49,7 +49,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-provider-fixture` | 独立的本地环回（loopback）模拟模型与外部平台协议对端（peer）、严格请求校验、场景控制与环境证据采集；不实现被测产品业务逻辑 |
 | 独立工具家族 crate | 文件、命令、Git、LSP、MCP、搜索、媒体与文件展示、技能、机器人各自聚合相关工具，以模块保存各工具的声明、校验、领域编排、结果与错误；通过 `pl-agent-tool` 被独立宿主消费，跨家族只共享必要的窄领域支持 |
 | `pl-tool` | Anywork 工具宿主适配、统一执行器的工作区/工具策略、容器窄后端与共享服务所有权、内核结果及控制映射；保留用户交互、笔记、待办、轮次完成、任务治理和多智能体等宿主控制工具 |
-| `pl-protocol` | 多个 crate 或产品适配边界实际共享的产品线协议（wire）、DTO、错误信封与业务状态类型；`session` 模块定义 `SessionId`/`SessionDescriptor`/目录行 `SessionDirectoryRow`，`agent` 模块定义 `AgentId`/`AgentDescriptor`/`AgentDefinitionSnapshot` 与封闭后端绑定 `AgentBinding`（`Native`/`Acp`） |
+| `pl-protocol` | 多个同级 crate 直接同时依赖的最小跨层基础原语：统一错误与供应商失败分类（`PureError`/`Result`/`ProviderFailure*`/`RetryDisposition`/`StateError`）、稳定标签枚举契约（`LabeledEnum`）、跨层身份标识（`SessionId`/`AgentId`/`ThreadId`）、首包观测来源（`FirstOutputSource`）以及 `pl-tool` 与 Studio 同时直接依赖的协作工作区/派发路由原语；单归属 crate 或细分领域协议直接归属对应 owner crate 与领域子模块 |
 | `pl-trace` | 核心效果与调用记录的只读诊断及用量投影 |
 | `pl-lsp` | 语言服务器连接、二进制探测与协议通信；通过 `pl-remote-helper` 复用原生进程树所有权与异步管道驱动 |
 | `pl-output` / `pl-patch` / `pl-skill-core` | 终端输出截断算法、补丁（patch）解析规则、技能元数据解析与路径规范化规则 |
@@ -57,7 +57,7 @@ Rust 库 crate 统一使用 `pl-` 前缀；Flutter 桌面应用的 Dart 包名�
 | `pl-studio-mcp` | 传输无关的 Host MCP 服务、工具消费投影与领域调用端口、本地 IPC 契约及客户端，以及宿主原生 stdio 服务程序；不依赖 Studio runtime、Flutter/FRB、`pl-core`、`pl-model` 或 `pl-tool`，不拥有产品存储、成员目录或业务调度。Studio 实现该端口并持有原实例 IPC 服务 |
 | `pl-studio-update` | 稳定更新清单与来源校验、可信下载、安装缓存锁、长度/摘要/签名流式验证、只读安装包租约和安装器交接；不依赖 Studio runtime、模型、工具、配置或数据库，不持有产品更新状态机，也不决定应用退出 |
 | `pl-studio-statistics` | 模型性能快照与分页契约、同源不可变统计材料的发布、读取信用及关闭生命周期；不依赖 Studio runtime、模型、工具或数据库，不聚合计费事实，也不读取调用库。Runtime 原统计所有者串行提交单调版本并发布材料 |
-| `pl-studio-runtime` | TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式/工作流/计划状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)） |
+| `pl-studio-runtime` | Studio 传输无关产品协议与目录/成员描述（`SessionDescriptor`/`SessionDirectoryRow`/`AgentDescriptor`/`AgentDefinitionSnapshot`/`AgentBinding`）、TOML/SQLite 持久化与完成历史存储适配、产品完成事实及真实来源生命周期、唯一 Native 读取分类与活动快照、项目管理、智能体预设、工作模式（`mode`）/工作流（`workflow_tool`）/计划（`plan_tool`）状态机、子智能体协调、机器人接入与会话映射，以及会话作用域内的成员资源所有权、Native 统一装配和关闭（见 [14](./14-runtime-host.md)）；精确重导出其公开签名引用的下层类型供上层适配器直接消费 |
 | `pl-studio-bridge` / `pl-studio-server` | 同一 Studio 运行时的 FRB 桌面桥接适配与本地 HTTP 服务端适配 |
 | `pl-studio-cli` | `anywk` 非交互式生产宿主；命令参数、输入预检、原生任务终态观察与退出编排，不拥有第二套智能体循环，见 [29](./29-cli-harbor.md) |
 | `pl-xtask` | 轻量工程命令编排（含 `test-project` 桌面/原生套件）；仅在执行验收命令时按需通过子进程调用独立验收工具，自身不链接 Studio 运行时、模型层或数据库 |
@@ -68,7 +68,7 @@ Native 完成记录的读取分类由 Runtime 唯一确定，Core 只比较不�
 
 ### 共享类型与实现类型
 
-类型按领域所有者和实际消费边界归属，不以 `pub`、可序列化或包含“协议”字样作为进入 `pl-protocol` 的依据。仅供一个业务 crate 使用的请求、内部事件、分页游标布局和控制协议由该 crate 维护；同一 package 的库、二进制及测试共享的定义也留在该 package。产品对外只传递不透明游标时，编解码和游标内部结构归分页服务所有者。
+类型按领域所有者和实际消费边界归属，不以 `pub`、可序列化或包含“协议”字样作为进入 `pl-protocol` 的依据。只有多个无直接隶属关系的 crate 同时直接依赖的基础原语才进入 `pl-protocol`；若某定义仅由单一根 crate 直接拥有或生产，再经其公开接口交付给下游消费者（如 `pl-studio-bridge`、`pl-studio-server`、`pl-studio-cli`），则直接定义在该拥有者 crate 的对应细分领域模块中，并在拥有者公开签名边界按需重导出，避免下游额外依赖 `pl-protocol`。仅供单个适配层使用的传输请求体（如纯 HTTP 路由查询/命令封装）、内部事件、分页游标布局和控制协议直接留在该适配层或拥有者 crate 维护；同一 package 的库、二进制及测试共享的定义也留在该 package。产品对外只传递不透明游标时，编解码和游标内部结构归分页服务所有者。
 
 共享关系包括公共字段、枚举载荷、函数签名和序列化结构的传递使用。HTTP、FRB 等产品适配边界发布的契约及其成员，不因只有一个直接构造者而视为私有实现；迁移成员必须与父契约和依赖方向一起核对。
 
@@ -78,7 +78,7 @@ Native 完成记录的读取分类由 Runtime 唯一确定，Core 只比较不�
 
 工程工具间的依赖方向固定为：
 - `pl-xtask → pl-dev-support`
-- `pl-studio-acceptance → pl-dev-support / pl-studio-runtime / pl-model / pl-provider-fixture`
+- `pl-studio-acceptance → pl-dev-support / pl-studio-runtime / pl-model / pl-tool / pl-provider-fixture`
 
 `pl-xtask` 与 `pl-studio-acceptance` 仅通过命令行子进程调用交互，不建立 Cargo 编译期依赖。验收所需的数据库依赖归属 `pl-studio-acceptance`，日常工程命令不会触发 Studio 运行时编译；GUI 构建、人工验收与全工作区检查各自按需编译目标组件。模拟平台服务 `pl-provider-fixture` 独立于被测 Studio 及其私有协议模块，仅提供受控网络环境与请求证据，不代替被测产品执行授权校验、幂等去重、线程映射或发送结果判定（详见 [24](./24-testing.md) 与 [27](./27-bots.md)）。
 
@@ -93,7 +93,7 @@ SSH 远程开发场景中，技能发现与目录选择的过滤、排序由宿�
 活动线程的内存状态是执行期的唯一事实源：
 - **`pl-core` 存储契约**：默认纯内存运行，导出检查点与不可变效果；`Session` 统一读取尚未提交的不可变完成项与持久历史，完成时分配发布序号，提交后回收 pending。它不拥有活动预览、产品封口语义或展示分组，也不依赖产品协议；通用 SQLite 会话存储及检查点/效果查询保持独立职责。
 - **Studio 产品层投影与持久化**：拥有业务完成语义、可变执行事实与实时活动，一次准备完成项后原子发布，并将同一批次交既有 writer 与 checkpoint 同事务保存。历史统一读模型与实时事件见 [26](./26-timeline-content.md)，不另建 GUI 历史缓存；冷读不激活模型、工具或执行所有者。
-- **统计与跨层类型导入**：可丢弃的调用统计由全局 `calls.sqlite` 独立写入。Studio 通过通用的扩展 CAS 接口保存业务状态并提交模型上下文投影，桌面界面仅消费规范的产品 DTO。账号配置、工具配置与业务协议分别从 `pl-model`、`pl-tool` 与 `pl-protocol` 直接导入，不经由 `pl-core` 镜像中转。
+- **统计与跨层类型导入**：可丢弃的调用统计由全局 `calls.sqlite` 独立写入。Studio 通过通用的扩展 CAS 接口保存业务状态并提交模型上下文投影，桌面界面仅消费规范的产品 DTO。账号模型契约、工具契约与 Studio 产品协议分别归属 `pl-model`、`pl-tool` 与 `pl-studio-runtime`（跨层共享基础原语归属 `pl-protocol`），不经由 `pl-core` 镜像中转。
 
 存储与内核契约详见 [15](./15-session-storage.md) 与 [16](./16-core-contracts.md)。
 

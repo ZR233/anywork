@@ -1,6 +1,6 @@
 //! PersistenceState 的计算与发布。
 
-use pl_protocol::StateError;
+use crate::StateError;
 
 use crate::PureError;
 use crate::studio::{

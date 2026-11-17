@@ -72,9 +72,9 @@ fn unfinished_text_prefix(text: &str) -> Vec<serde_json::Value> {
 #[tokio::test]
 async fn declared_remote_tools_with_response_events_are_not_replayed() {
     for tool in [
-        pl_protocol::ToolSpec::ProgrammaticToolCalling,
-        pl_protocol::ToolSpec::WebSearch {
-            options: pl_protocol::HostedWebSearchOptions::OpenAi {
+        pl_model::completion::ToolSpec::ProgrammaticToolCalling,
+        pl_model::completion::ToolSpec::WebSearch {
+            options: pl_model::completion::HostedWebSearchOptions::OpenAi {
                 external_web_access: false,
                 indexed_web_access: None,
                 filters: None,

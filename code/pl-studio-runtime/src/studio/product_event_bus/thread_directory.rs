@@ -5,12 +5,12 @@
 //! 成员归属。会话级事实（标题、排序时间、归档、Mode、工作区、分发设置）唯一归属
 //! 会话记录；成员关系唯一归属成员记录的 `parent_agent_id`。
 
-use anyhow::{Context, Result};
-use pl_protocol::studio::{
+use crate::{
     ResourceStamp, StudioError, StudioErrorCode, ThreadDirectoryFrame, ThreadDirectoryQuery,
     ThreadDirectoryWindow, ThreadMetadataFrame,
 };
-use pl_protocol::{SessionDirectoryRow, ThreadStatus};
+use crate::{SessionDirectoryRow, ThreadStatus};
+use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
@@ -102,13 +102,9 @@ struct NativeAgentProjection {
 
 fn cold_native_activity(agent: &AgentDirectoryRecord) -> StudioAgentActivity {
     let state = match agent.projected_backend().native_status() {
-        Some(ThreadStatus::Closed) => {
-            pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
-        }
-        Some(ThreadStatus::Closing) => {
-            pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
-        }
-        _ => pl_protocol::AgentState::idle(),
+        Some(ThreadStatus::Closed) => crate::AgentState::Closed(crate::ClosedAgentState::new()),
+        Some(ThreadStatus::Closing) => crate::AgentState::Closing(crate::ClosingAgentState::new()),
+        _ => crate::AgentState::idle(),
     };
     StudioAgentActivity::Native {
         state,
@@ -231,10 +227,7 @@ impl ThreadDirectoryIndex {
             .is_some_and(|projection| {
                 projection.observation.session_id != agent.session_id
                     || projection.observation.thread_id != agent.thread_id
-                    || !matches!(
-                        agent.backend,
-                        pl_protocol::session::AgentBackend::Native { .. }
-                    )
+                    || !matches!(agent.backend, crate::AgentBackend::Native { .. })
             })
         {
             self.native_activity.remove(&agent.agent_id);
@@ -306,14 +299,12 @@ impl ThreadDirectoryIndex {
                 entry.agents.values().map(|agent| {
                     let native = self.native_activity.get(&agent.agent_id);
                     let mut activity = match agent.backend {
-                        pl_protocol::session::AgentBackend::Native { .. } => native
+                        crate::AgentBackend::Native { .. } => native
                             .and_then(|projection| projection.activity.clone())
                             .unwrap_or_else(|| cold_native_activity(agent)),
-                        pl_protocol::session::AgentBackend::Acp { .. } => {
-                            StudioAgentActivity::Acp {
-                                explicitly_closed: agent.explicitly_closed,
-                            }
-                        }
+                        crate::AgentBackend::Acp { .. } => StudioAgentActivity::Acp {
+                            explicitly_closed: agent.explicitly_closed,
+                        },
                     };
                     if agent.explicitly_closed
                         && let StudioAgentActivity::Native {
@@ -324,9 +315,9 @@ impl ThreadDirectoryIndex {
                         } = &mut activity
                     {
                         *state = if agent.native_status() == Some(ThreadStatus::Closed) {
-                            pl_protocol::AgentState::Closed(pl_protocol::ClosedAgentState::new())
+                            crate::AgentState::Closed(crate::ClosedAgentState::new())
                         } else {
-                            pl_protocol::AgentState::Closing(pl_protocol::ClosingAgentState::new())
+                            crate::AgentState::Closing(crate::ClosingAgentState::new())
                         };
                         *can_stop = false;
                         *awaiting_scheduling = false;
@@ -392,10 +383,7 @@ impl ThreadDirectoryIndex {
         if session.archived
             || agent.session_id != observation.session_id
             || agent.agent_id != observation.agent_id
-            || !matches!(
-                agent.backend,
-                pl_protocol::session::AgentBackend::Native { .. }
-            )
+            || !matches!(agent.backend, crate::AgentBackend::Native { .. })
             || projection.observation != *observation
         {
             return None;
@@ -408,29 +396,29 @@ impl ThreadDirectoryIndex {
         &self,
         thread_id: &str,
     ) -> Option<(
-        pl_protocol::AgentThreadIdentity,
-        pl_protocol::AgentBinding,
-        Option<pl_protocol::ThreadId>,
+        crate::AgentThreadIdentity,
+        crate::AgentBinding,
+        Option<crate::ThreadId>,
     )> {
         let (session, agent) = self.directory_facts(thread_id)?;
         let parent_thread_id = agent
             .parent_agent_id
             .as_deref()
             .and_then(|parent| self.sessions.get(&session.session_id)?.agents.get(parent))
-            .map(|parent| pl_protocol::ThreadId::new(parent.thread_id.clone()))
+            .map(|parent| crate::ThreadId::new(parent.thread_id.clone()))
             .transpose()
             .ok()?;
         Some((
-            pl_protocol::AgentThreadIdentity {
-                session_id: pl_protocol::SessionId::new(session.session_id.clone()).ok()?,
-                agent_id: pl_protocol::AgentId::new(agent.agent_id.clone()).ok()?,
+            crate::AgentThreadIdentity {
+                session_id: crate::SessionId::new(session.session_id.clone()).ok()?,
+                agent_id: crate::AgentId::new(agent.agent_id.clone()).ok()?,
                 parent_agent_id: agent
                     .parent_agent_id
                     .clone()
-                    .map(pl_protocol::AgentId::new)
+                    .map(crate::AgentId::new)
                     .transpose()
                     .ok()?,
-                thread_id: pl_protocol::ThreadId::new(agent.thread_id.clone()).ok()?,
+                thread_id: crate::ThreadId::new(agent.thread_id.clone()).ok()?,
             },
             agent.backend.binding(),
             parent_thread_id,
@@ -438,7 +426,7 @@ impl ThreadDirectoryIndex {
     }
 
     /// 从目录事实投影 Native 执行域 Thread（既有 Native 消费方使用）。
-    pub(super) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<pl_protocol::Thread>> {
+    pub(super) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<crate::Thread>> {
         self.directory_facts(thread_id)
             .map(|(session, agent)| {
                 thread_projection(session, agent, |id| {
@@ -694,12 +682,7 @@ impl ProductEventBus {
             .lock()
             .expect("thread index lock poisoned");
         let (session, agent) = index.directory_facts(thread_id)?;
-        if session.archived
-            || !matches!(
-                agent.backend,
-                pl_protocol::session::AgentBackend::Native { .. }
-            )
-        {
+        if session.archived || !matches!(agent.backend, crate::AgentBackend::Native { .. }) {
             return None;
         }
         let before = index.agent_directory_entries();
@@ -757,10 +740,7 @@ impl ProductEventBus {
         if session.session_id != session_id
             || agent.agent_id != agent_id
             || session.archived
-            || !matches!(
-                agent.backend,
-                pl_protocol::session::AgentBackend::Native { .. }
-            )
+            || !matches!(agent.backend, crate::AgentBackend::Native { .. })
             || index
                 .native_activity
                 .get(&agent.agent_id)
@@ -968,7 +948,7 @@ impl ProductEventBus {
         #[cfg(test)]
         tests::pause(&self.directory_test_pauses.page_captured).await;
         let page = StudioThreadDirectoryPage {
-            state: pl_protocol::ObservedResource::ready(
+            state: crate::ObservedResource::ready(
                 read.stamp.revision,
                 read.updated_at,
                 StudioThreadDirectoryPageData {
@@ -1136,7 +1116,7 @@ impl ProductEventBus {
 
     fn apply_explicit_close_row(index: &ThreadDirectoryIndex, row: &mut SessionDirectoryRow) {
         if index.explicitly_closed.contains(&row.agent_id)
-            && let pl_protocol::session::AgentBackend::Native { status, .. } = &mut row.backend
+            && let crate::AgentBackend::Native { status, .. } = &mut row.backend
         {
             let agent = index
                 .get_agent(&row.agent_id)
@@ -1274,7 +1254,7 @@ impl ProductEventBus {
     pub(in crate::studio) fn patch_thread_runtime(
         &self,
         observation: Option<&NativeAgentObservation>,
-        status: pl_protocol::ThreadStatus,
+        status: crate::ThreadStatus,
         committed_at: i64,
         snapshot: &pl_core::thread::ThreadSnapshot,
         summary: Option<Option<String>>,
@@ -1383,7 +1363,7 @@ impl ProductEventBus {
     pub(in crate::studio) async fn commit_observed_thread_mode(
         &self,
         thread_id: &str,
-        mode: pl_protocol::ThreadModeId,
+        mode: crate::mode::ThreadModeId,
         committed_at: i64,
     ) -> Result<StudioProductEventEnvelope> {
         let (ticket, event) = {
@@ -1397,10 +1377,7 @@ impl ProductEventBus {
                 .ok_or_else(|| StudioError::not_found("session"))?;
             anyhow::ensure!(
                 agent.is_root_agent()
-                    && matches!(
-                        agent.backend,
-                        pl_protocol::session::AgentBackend::Native { .. }
-                    ),
+                    && matches!(agent.backend, crate::AgentBackend::Native { .. }),
                 "only a Native root owns workflow mode"
             );
             session.native_mode = Some(mode);
@@ -1659,7 +1636,7 @@ impl ProductEventBus {
     }
 
     /// Reads the current metadata summary without activating a cold Thread.
-    pub(crate) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<pl_protocol::Thread>> {
+    pub(crate) fn thread_snapshot(&self, thread_id: &str) -> Result<Option<crate::Thread>> {
         self.thread_index
             .lock()
             .expect("thread index lock poisoned")
@@ -1671,9 +1648,9 @@ impl ProductEventBus {
         &self,
         thread_id: &str,
     ) -> Option<(
-        pl_protocol::AgentThreadIdentity,
-        pl_protocol::AgentBinding,
-        Option<pl_protocol::ThreadId>,
+        crate::AgentThreadIdentity,
+        crate::AgentBinding,
+        Option<crate::ThreadId>,
     )> {
         self.thread_index
             .lock()
@@ -1684,9 +1661,9 @@ impl ProductEventBus {
     /// Resolve a product member without activating Native resources or reading history.
     pub(crate) fn member_identity(
         &self,
-        session: &pl_protocol::SessionId,
-        agent: &pl_protocol::AgentId,
-    ) -> Option<pl_protocol::AgentThreadIdentity> {
+        session: &crate::SessionId,
+        agent: &crate::AgentId,
+    ) -> Option<crate::AgentThreadIdentity> {
         let index = self
             .thread_index
             .lock()
@@ -1723,10 +1700,10 @@ impl ProductEventBus {
             .ok_or_else(|| anyhow::anyhow!("unregistered child is not resident: {id}"))?;
         let baseline = agent.clone();
         let state = crate::studio::records::DirectoryState {
-            kind: pl_protocol::ThreadStatus::Faulted,
+            kind: crate::ThreadStatus::Faulted,
             error: Some(message.into()),
         };
-        agent.set_native_status(pl_protocol::ThreadStatus::Faulted);
+        agent.set_native_status(crate::ThreadStatus::Faulted);
         agent.updated_at = crate::studio::unix_seconds();
         let delta = DirectoryDelta {
             unregistered_faults: vec![crate::studio::store::directory::UnregisteredChildFault {
@@ -1869,18 +1846,18 @@ pub(super) mod tests {
             thread_id: id.into(),
             workspace_id: workspace_id.into(),
             title: format!("Thread {id}"),
-            mode: Some(pl_protocol::ThreadModeId::simple()),
-            workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+            mode: Some(crate::mode::ThreadModeId::simple()),
+            workspace_mode: crate::ThreadWorkspaceMode::Local,
             delegation_mode: Default::default(),
             delegation_preference: Default::default(),
             workspace_path: format!("/tmp/{id}"),
             role: crate::config::ROOT_AGENT_ROUTE_KEY.into(),
-            backend: pl_protocol::session::AgentBackend::Native {
-                config: pl_protocol::NativeAgentConfig {
+            backend: crate::AgentBackend::Native {
+                config: crate::NativeAgentConfig {
                     route: None,
                     system_instructions: None,
                 },
-                status: pl_protocol::ThreadStatus::Idle,
+                status: crate::ThreadStatus::Idle,
             },
             created_at: sort_time,
             updated_at: sort_time,
@@ -1924,8 +1901,8 @@ pub(super) mod tests {
         }
     }
 
-    pub(super) fn set_status(row: &mut SessionDirectoryRow, next: pl_protocol::ThreadStatus) {
-        let pl_protocol::session::AgentBackend::Native { status, .. } = &mut row.backend else {
+    pub(super) fn set_status(row: &mut SessionDirectoryRow, next: crate::ThreadStatus) {
+        let crate::AgentBackend::Native { status, .. } = &mut row.backend else {
             panic!("Native fixture required");
         };
         *status = next;
@@ -1964,7 +1941,7 @@ pub(super) mod tests {
     pub(super) fn project(id: &str, name: &str, path: &str) -> ProjectDirectoryRecord {
         ProjectDirectoryRecord {
             id: id.into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name: name.into(),
             path: path.into(),
             ssh_alias: None,
@@ -2080,8 +2057,8 @@ pub(super) mod tests {
 
         fn acp(mut row: SessionDirectoryRow) -> SessionDirectoryRow {
             row.mode = None;
-            row.backend = pl_protocol::session::AgentBackend::Acp {
-                reference: pl_protocol::session::AcpSessionReference {
+            row.backend = crate::AgentBackend::Acp {
+                reference: crate::AcpSessionReference {
                     account_id: "account".into(),
                     acp_session_id: format!("external-{}", row.agent_id),
                     cwd: "/workspace/project".into(),
@@ -2330,11 +2307,11 @@ pub(super) mod tests {
                 assert_ne!(actual.session_id, actual.thread_id);
                 let json = serde_json::to_value(actual)?;
                 match expected.backend {
-                    pl_protocol::session::AgentBackend::Native { .. } => {
+                    crate::AgentBackend::Native { .. } => {
                         assert!(matches!(
                             actual.activity,
                             StudioAgentActivity::Native {
-                                state: pl_protocol::AgentState::Idle(_),
+                                state: crate::AgentState::Idle(_),
                                 execution: None,
                                 can_stop: false,
                                 awaiting_scheduling: false,
@@ -2342,7 +2319,7 @@ pub(super) mod tests {
                         ));
                         assert_eq!(json["activity"]["kind"], "native");
                     }
-                    pl_protocol::session::AgentBackend::Acp { .. } => {
+                    crate::AgentBackend::Acp { .. } => {
                         assert_eq!(
                             actual.activity,
                             StudioAgentActivity::Acp {
@@ -2488,22 +2465,21 @@ pub(super) mod tests {
             let active = events.read_agent_directory().await;
             assert_eq!(active.state.revision(), initial.state.revision() + 1);
             assert!(
-                matches!(&entries(&active)[0].activity, StudioAgentActivity::Native { state: pl_protocol::AgentState::Running(_), execution: Some(execution), can_stop: true, .. }
-                if execution.id() == "execution:1" && execution.phase() == pl_protocol::AgentExecutionPhase::Running)
+                matches!(&entries(&active)[0].activity, StudioAgentActivity::Native { state: crate::AgentState::Running(_), execution: Some(execution), can_stop: true, .. }
+                if execution.id() == "execution:1" && execution.phase() == crate::AgentExecutionPhase::Running)
             );
             changed(&mut changes, &active);
             let (session, mut agent) = events.directory_facts(&root.thread_id).unwrap();
             let mut renamed = session.clone();
             renamed.title = "Renamed by current directory".into();
-            renamed.delegation_preference = pl_protocol::DelegationPreference::Fast;
+            renamed.delegation_preference = crate::DelegationPreference::Fast;
             agent.role = "renamed-profile".into();
-            let route = pl_protocol::studio::NewThreadModelRoute {
+            let route = crate::NewThreadModelRoute {
                 account_id: "new-account".into(),
                 model_id: "new-model".into(),
                 effort: None,
             };
-            let pl_protocol::session::AgentBackend::Native { config, .. } = &mut agent.backend
-            else {
+            let crate::AgentBackend::Native { config, .. } = &mut agent.backend else {
                 unreachable!()
             };
             config.route = Some(route.clone());
@@ -2520,7 +2496,7 @@ pub(super) mod tests {
             assert_eq!(entries(&renamed)[0].frozen_model, Some(route));
             assert_eq!(
                 entries(&renamed)[0].delegation_preference,
-                pl_protocol::DelegationPreference::Fast
+                crate::DelegationPreference::Fast
             );
             assert_eq!(entries(&renamed)[0].activity, entries(&active)[0].activity);
             changed(&mut changes, &renamed);
@@ -2848,7 +2824,7 @@ pub(super) mod tests {
                     events
                         .begin_native_observation(&original.thread_id)
                         .as_ref(),
-                    pl_protocol::ThreadStatus::Running,
+                    crate::ThreadStatus::Running,
                     30,
                     &pl_core::thread::ThreadSnapshot::default(),
                     None,
@@ -2873,7 +2849,7 @@ pub(super) mod tests {
             );
             assert_eq!(
                 hot.row.as_ref().unwrap().native_status().unwrap(),
-                pl_protocol::ThreadStatus::Running
+                crate::ThreadStatus::Running
             );
             assert!(
                 events
@@ -2932,7 +2908,7 @@ pub(super) mod tests {
             assert_eq!(rebased.title, "Durable command title");
             assert_eq!(
                 rebased.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Running
+                crate::ThreadStatus::Running
             );
             assert!(after.stamp.revision > hot.stamp.revision);
             assert_eq!(
@@ -2963,7 +2939,7 @@ pub(super) mod tests {
                 .expect("rebased agent is durable");
             assert_eq!(
                 durable_agent.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Running
+                crate::ThreadStatus::Running
             );
             events.writer.shutdown().await?;
             Ok(())
@@ -3083,7 +3059,7 @@ pub(super) mod tests {
                 let value = (|| -> Result<ThreadMetadataFrame> {
                     worker_events.patch_thread_runtime(
                         worker_events.begin_native_observation("root").as_ref(),
-                        pl_protocol::ThreadStatus::Running,
+                        crate::ThreadStatus::Running,
                         2,
                         &pl_core::thread::ThreadSnapshot::default(),
                         None,
@@ -3100,7 +3076,7 @@ pub(super) mod tests {
             let frame = result.expect("metadata must not wait for the Catalog I/O lock")?;
             assert_eq!(
                 frame.row.unwrap().native_status().unwrap(),
-                pl_protocol::ThreadStatus::Running
+                crate::ThreadStatus::Running
             );
             events.writer.shutdown().await?;
             Ok(())
@@ -3123,7 +3099,7 @@ pub(super) mod tests {
             requested.title = "Manual title".into();
             events.patch_thread_runtime(
                 events.begin_native_observation("root").as_ref(),
-                pl_protocol::ThreadStatus::Running,
+                crate::ThreadStatus::Running,
                 2,
                 &pl_core::thread::ThreadSnapshot::default(),
                 None,
@@ -3132,18 +3108,15 @@ pub(super) mod tests {
                 .commit_session_update(baseline_session, requested)
                 .await?;
             events
-                .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 3)
+                .commit_observed_thread_mode("root", crate::mode::ThreadModeId::task(), 3)
                 .await?;
             let row = events
                 .read_thread_metadata("root", "request-base")?
                 .row
                 .unwrap();
             assert_eq!(row.title, "Manual title");
-            assert_eq!(
-                row.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Running
-            );
-            assert_eq!(row.mode, Some(pl_protocol::ThreadModeId::task()));
+            assert_eq!(row.native_status().unwrap(), crate::ThreadStatus::Running);
+            assert_eq!(row.mode, Some(crate::mode::ThreadModeId::task()));
             events.writer.flush().await?;
             let session = events.store.catalog().get_session("root").unwrap();
             let agent = events.store.catalog().get_agent("root").unwrap();
@@ -3188,7 +3161,7 @@ pub(super) mod tests {
             events.commit_explicit_close("child").await?;
             events.patch_thread_runtime(
                 events.begin_native_observation("child").as_ref(),
-                pl_protocol::ThreadStatus::Running,
+                crate::ThreadStatus::Running,
                 3,
                 &pl_core::thread::ThreadSnapshot::default(),
                 None,
@@ -3196,10 +3169,10 @@ pub(super) mod tests {
             let (_, baseline_agent) = events.directory_facts("child").expect("facts");
             assert_eq!(
                 baseline_agent.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Closing
+                crate::ThreadStatus::Closing
             );
             let mut closed_agent = baseline_agent.clone();
-            closed_agent.set_native_status(pl_protocol::ThreadStatus::Closed);
+            closed_agent.set_native_status(crate::ThreadStatus::Closed);
             let (saving, release_save) =
                 install_pause(&events.directory_test_pauses.commit_before_persist);
             let mut bases = DirectoryBaselines::default();
@@ -3219,12 +3192,12 @@ pub(super) mod tests {
             events.record_user_message("child", 4);
             assert!(
                 events
-                    .commit_observed_thread_mode("child", pl_protocol::ThreadModeId::task(), 5)
+                    .commit_observed_thread_mode("child", crate::mode::ThreadModeId::task(), 5)
                     .await
                     .is_err()
             );
             events
-                .commit_observed_thread_mode("root", pl_protocol::ThreadModeId::task(), 5)
+                .commit_observed_thread_mode("root", crate::mode::ThreadModeId::task(), 5)
                 .await?;
             release_save.send(()).unwrap();
             commit.await?;
@@ -3234,7 +3207,7 @@ pub(super) mod tests {
                 .unwrap();
             assert_eq!(
                 projected.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Closing,
+                crate::ThreadStatus::Closing,
                 "a generic raw Closed candidate cannot acknowledge permanent execution closure"
             );
             assert_eq!(projected.updated_at, 3);
@@ -3272,7 +3245,7 @@ pub(super) mod tests {
                 .unwrap();
             assert_eq!(
                 acknowledged.native_status(),
-                Some(pl_protocol::ThreadStatus::Closed)
+                Some(crate::ThreadStatus::Closed)
             );
             assert_eq!(acknowledged.updated_at, 3);
             assert_eq!(acknowledged.mode, None);
@@ -3283,7 +3256,7 @@ pub(super) mod tests {
                     .get_agent("child-agent")
                     .unwrap()
                     .native_status(),
-                Some(pl_protocol::ThreadStatus::Closed),
+                Some(crate::ThreadStatus::Closed),
                 "the queued publication must read the new true ACK, not its old false observation"
             );
             events.commit_explicit_close("child").await?;
@@ -3293,12 +3266,12 @@ pub(super) mod tests {
                     .row
                     .unwrap()
                     .native_status(),
-                Some(pl_protocol::ThreadStatus::Closed),
+                Some(crate::ThreadStatus::Closed),
                 "repeated close restoration must not regress the acknowledged stage"
             );
             events.patch_thread_runtime(
                 events.begin_native_observation("child").as_ref(),
-                pl_protocol::ThreadStatus::Idle,
+                crate::ThreadStatus::Idle,
                 6,
                 &pl_core::thread::ThreadSnapshot::default(),
                 None,
@@ -3310,21 +3283,21 @@ pub(super) mod tests {
                     .unwrap()
                     .native_status()
                     .unwrap(),
-                pl_protocol::ThreadStatus::Closed
+                crate::ThreadStatus::Closed
             );
             events.writer.shutdown().await?;
             let saved_agent = events.store.catalog().get_agent("child-agent").unwrap();
             assert!(saved_agent.explicitly_closed);
             assert_eq!(
                 saved_agent.native_status().unwrap(),
-                pl_protocol::ThreadStatus::Closed
+                crate::ThreadStatus::Closed
             );
             assert_eq!(saved_agent.updated_at, 6);
             let saved_session = events.store.catalog().get_session("root").unwrap();
             assert_eq!(saved_session.last_user_message_at, Some(4));
             assert_eq!(
                 saved_session.native_mode,
-                Some(pl_protocol::ThreadModeId::task())
+                Some(crate::mode::ThreadModeId::task())
             );
             Ok(())
         }
@@ -3339,8 +3312,8 @@ pub(super) mod tests {
             child.parent_agent_id = Some(root.agent_id.clone());
             child.mode = None;
             child.last_user_message_at = None;
-            child.backend = pl_protocol::session::AgentBackend::Acp {
-                reference: pl_protocol::session::AcpSessionReference {
+            child.backend = crate::AgentBackend::Acp {
+                reference: crate::AcpSessionReference {
                     account_id: "account".into(),
                     acp_session_id: "external-session".into(),
                     cwd: "/workspace/project".into(),
@@ -3392,7 +3365,7 @@ pub(super) mod tests {
                     error.downcast_ref::<crate::thread_assembler::ThreadAssemblyError>(),
                     Some(
                         crate::thread_assembler::ThreadAssemblyError::UnsupportedBackend {
-                            backend: pl_protocol::AgentBackendKind::Acp
+                            backend: crate::AgentBackendKind::Acp
                         }
                     )
                 ));
@@ -3442,7 +3415,7 @@ pub(super) mod tests {
                             HotMutation::Runtime => {
                                 worker_events.patch_thread_runtime(
                                     worker_events.begin_native_observation("first").as_ref(),
-                                    pl_protocol::ThreadStatus::Running,
+                                    crate::ThreadStatus::Running,
                                     10,
                                     &pl_core::thread::ThreadSnapshot::default(),
                                     None,
@@ -3463,7 +3436,7 @@ pub(super) mod tests {
                             HotMutation::Observed => {
                                 runtime.block_on(worker_events.commit_observed_thread_mode(
                                     &first.thread_id,
-                                    pl_protocol::ThreadModeId::task(),
+                                    crate::mode::ThreadModeId::task(),
                                     10,
                                 ))?;
                             }
@@ -3609,7 +3582,7 @@ pub(super) mod tests {
             );
 
             let running_pins = ThreadDirectoryQuery {
-                filter: pl_protocol::studio::ThreadDirectoryFilter::Running,
+                filter: crate::ThreadDirectoryFilter::Running,
                 ..pinned
             };
             assert!(query(&events, &running_pins, None, 64)?.rows.is_empty());
@@ -3618,7 +3591,7 @@ pub(super) mod tests {
                 row_projection(&session, &agent)
             };
             updated.title = "Changed outside the ordinary window".into();
-            set_status(&mut updated, pl_protocol::ThreadStatus::Running);
+            set_status(&mut updated, crate::ThreadStatus::Running);
             events.apply_thread_delta(vec![updated], vec![]).await?;
             let changed = query(&events, &running_pins, None, 64)?;
             assert_eq!(changed.rows.len(), 1);
@@ -3628,7 +3601,7 @@ pub(super) mod tests {
             events.writer.shutdown().await?;
             Ok(())
         }
-        use pl_protocol::studio::{StudioError, StudioErrorCode, ThreadDirectoryFilter};
+        use crate::{StudioError, StudioErrorCode, ThreadDirectoryFilter};
 
         #[tokio::test]
         async fn startup_index_owns_cold_archived_and_child_metadata() -> Result<()> {
@@ -3737,7 +3710,7 @@ pub(super) mod tests {
 
             let mut changed = c;
             changed.title = "Needle renamed".into();
-            set_status(&mut changed, pl_protocol::ThreadStatus::Running);
+            set_status(&mut changed, crate::ThreadStatus::Running);
             changed.workspace_id = "p2".into();
             changed.last_user_message_at = Some(40);
             changed.updated_at = 40;

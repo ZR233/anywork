@@ -5,8 +5,8 @@ use pl_lifecycle::{CloseError, CloseReport, OpenError};
 use crate::api::studio::types::{BridgeError, BridgeShutdownIssue};
 
 fn internal(message: &str) -> BridgeError {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::Internal,
+    pl_studio_runtime::StudioError::new(
+        pl_studio_runtime::StudioErrorCode::Internal,
         message,
         false,
     )
@@ -16,8 +16,8 @@ fn internal(message: &str) -> BridgeError {
 pub(crate) fn open_error(error: OpenError<BridgeError>) -> BridgeError {
     match error {
         OpenError::ScopeClosed => BridgeError::runtime_stopped(),
-        OpenError::Cancelled => pl_protocol::studio::StudioError::new(
-            pl_protocol::studio::StudioErrorCode::Cancelled,
+        OpenError::Cancelled => pl_studio_runtime::StudioError::new(
+            pl_studio_runtime::StudioErrorCode::Cancelled,
             "Observation creation was cancelled",
             false,
         )

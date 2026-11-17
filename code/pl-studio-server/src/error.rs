@@ -1,6 +1,6 @@
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use pl_protocol::studio::{StudioError, StudioErrorCode};
+use pl_studio_runtime::{StudioError, StudioErrorCode};
 
 pub(crate) struct ApiError(pub StudioError);
 

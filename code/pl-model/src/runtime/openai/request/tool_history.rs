@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use pl_protocol::{Message, MessageRole, Result, ToolCallCaller, ToolCallKind};
+use crate::completion::{Message, MessageRole, ToolCallCaller, ToolCallKind};
+use pl_protocol::Result;
 
 use super::protocol_error;
 
@@ -72,7 +73,7 @@ pub(super) fn validate_tool_history(messages: &[Message]) -> Result<()> {
 /// tool result 侧的 typed 记录不重复保存 caller；回放 `function_call_output` 时
 /// 每个结果消费其前序调用的位置；空 caller 也必须占一个位置。
 pub(super) fn tool_callers_by_result_position(
-    items: &[pl_protocol::ModelContextItem],
+    items: &[crate::completion::ModelContextItem],
 ) -> BTreeMap<usize, ToolCallCaller> {
     let mut calls = VecDeque::new();
     let mut results = BTreeMap::new();

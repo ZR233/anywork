@@ -1,7 +1,7 @@
 //! Typed SSH management commands delegated to `pl-tool::remote`.
 
+use crate::RemoteDirectoryListing;
 use anyhow::Result;
-use pl_protocol::remote::RemoteDirectoryListing;
 use pl_tool::remote::{SshConnectionSnapshot, SshServerProfile};
 
 use crate::studio::records::WorkspaceRecord;
@@ -76,10 +76,9 @@ impl StudioRuntime {
         if let SshPasswordUpdate::Replace { ref value } = password
             && value.trim().is_empty()
         {
-            return Err(pl_protocol::studio::StudioError::invalid_argument(
-                "SSH password must not be empty",
-            )
-            .into());
+            return Err(
+                crate::StudioError::invalid_argument("SSH password must not be empty").into(),
+            );
         }
         let previous = self
             .ssh_manager
@@ -149,10 +148,9 @@ impl StudioRuntime {
         remember_password: bool,
     ) -> Result<SshConnectionSnapshot> {
         if password.trim().is_empty() {
-            return Err(pl_protocol::studio::StudioError::invalid_argument(
-                "SSH password must not be empty",
-            )
-            .into());
+            return Err(
+                crate::StudioError::invalid_argument("SSH password must not be empty").into(),
+            );
         }
         let previous = self.ssh_manager.server_password(alias).await;
         self.ssh_manager
@@ -249,7 +247,7 @@ impl StudioRuntime {
             .unwrap_or_else(|| (crate::studio::ids::new_id("project"), now, name));
         let delta = ProjectDirectoryRecord {
             id: id.clone(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name: name.clone(),
             path: canonical_path.clone(),
             ssh_alias: Some(alias.to_string()),
@@ -264,7 +262,7 @@ impl StudioRuntime {
             .await?;
         Ok(WorkspaceRecord {
             id,
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             name,
             path: canonical_path,
             ssh_alias: Some(alias.to_string()),

@@ -30,11 +30,11 @@ use pl_model::model::{
     ModelMediaInputProfile, ModelModality, ModelTransportProfile,
 };
 use pl_model::protocol::ProtocolEndpoint;
-use pl_protocol::ThreadModeId;
 use pl_studio_runtime::config::{
     ConfigPaths, ConfigRuntime, ConfigStore, McpFileV1, McpServerTransport, StudioConfig,
     StudioMcpServerEntry, canonical_mcp_filename,
 };
+use pl_studio_runtime::mode::ThreadModeId;
 use sea_orm::sqlx::{
     Connection as _, Row,
     sqlite::{SqliteConnectOptions, SqliteConnection},
@@ -6167,7 +6167,7 @@ fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        use pl_protocol::{
+        use pl_studio_runtime::{
             ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatTerminalOutcome,
             ContentOwner, ContentTarget, ThreadTextChannel,
         };
@@ -6660,7 +6660,7 @@ fn failure_reason(line: &str) -> Option<String> {
 #[cfg(test)]
 mod history_fault_tests {
     use super::*;
-    use pl_protocol::{
+    use pl_studio_runtime::{
         ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle, ChatContentRole,
         ChatDeliveryKind, ChatSourceId, ChatTerminalOutcome, ChatToolIdentity, ContentOwner,
         ContentRef, ContentTarget, ThreadTextChannel,

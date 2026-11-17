@@ -1541,7 +1541,7 @@ mod storage_fault_tests {
     #[test]
     fn legacy_billing_timing_is_adapted_only_at_the_retired_blob_boundary() -> Result<()> {
         let body = serde_json::to_vec(&serde_json::json!({
-            "inferenceId": "legacy", "accounting": pl_protocol::InferenceAccounting::default(),
+            "inferenceId": "legacy", "accounting": crate::InferenceAccounting::default(),
             "recordedAt": 10, "timing": {
                 "ttftMillis": 5, "decodeMillis": 95, "responseMillis": 100
             },
@@ -1622,7 +1622,7 @@ mod storage_fault_tests {
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
-                first_output_source: pl_protocol::FirstOutputSource::Incremental,
+                first_output_source: crate::FirstOutputSource::Incremental,
                 ttft_millis: Some(2_700),
                 decode_millis: Some(278),
                 response_millis: Some(2_978),

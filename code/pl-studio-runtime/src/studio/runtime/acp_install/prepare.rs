@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use pl_protocol::studio::{
+use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallRelease, AcpInstallStage, AcpProvider,
 };
 use tokio_util::sync::CancellationToken;

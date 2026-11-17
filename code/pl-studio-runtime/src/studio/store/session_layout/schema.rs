@@ -11,7 +11,7 @@ enum WorkspaceModeV1 {
     Local,
     Worktree,
 }
-impl From<WorkspaceModeV1> for pl_protocol::ThreadWorkspaceMode {
+impl From<WorkspaceModeV1> for crate::ThreadWorkspaceMode {
     fn from(value: WorkspaceModeV1) -> Self {
         match value {
             WorkspaceModeV1::Local => Self::Local,
@@ -44,7 +44,7 @@ struct SessionManifestV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkspaceV2 {
     workspace_id: String,
-    kind: pl_protocol::studio::WorkspaceKind,
+    kind: crate::WorkspaceKind,
     path: String,
     ssh_alias: Option<String>,
 }
@@ -56,7 +56,7 @@ struct SessionV2 {
     workspace_id: String,
     parent_thread_id: Option<String>,
     root_thread_id: String,
-    workspace_mode: pl_protocol::ThreadWorkspaceMode,
+    workspace_mode: crate::ThreadWorkspaceMode,
     workspace_path: String,
     created_at: i64,
 }
@@ -64,7 +64,7 @@ impl MigratesTo<WorkspaceV2> for ProjectManifestV1 {
     fn migrate(self) -> WorkspaceV2 {
         WorkspaceV2 {
             workspace_id: self.project_id,
-            kind: pl_protocol::studio::WorkspaceKind::Project,
+            kind: crate::WorkspaceKind::Project,
             path: self.path,
             ssh_alias: self.ssh_alias,
         }

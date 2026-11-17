@@ -35,9 +35,6 @@ use crate::support::{
     completed_turn_from_children,
 };
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::{
-    ChatAtomKind, ChatBatch, ChatScope, CompletedEntry, ContentRange, ContentRef, ReadDemand,
-};
 use pl_provider_fixture::feishu::{
     CallKind, CardDisposition, CardEntityReport, CardObservation, CardOperation, ChatType,
     DIRECT_CHAT_ID, RecordedCall, SenderKind, SyntheticEvent, TRUSTED_USER_OPEN_ID, text_event,
@@ -45,6 +42,9 @@ use pl_provider_fixture::feishu::{
 use pl_provider_fixture::{
     Protocol, Reply, ReplyStage, Step, responses_authoritative_final,
     responses_reasoning_commentary_text_segments, responses_text,
+};
+use pl_studio_runtime::{
+    ChatAtomKind, ChatBatch, ChatScope, CompletedEntry, ContentRange, ContentRef, ReadDemand,
 };
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -474,7 +474,7 @@ async fn inner(session: &mut Session, evidence: &mut Vec<String>) -> Result<Case
         "response.completed must still be withheld while the item is already done"
     );
     ensure!(
-        matches!(turn_state, Some(pl_protocol::TurnState::Running(_))),
+        matches!(turn_state, Some(pl_studio_runtime::TurnState::Running(_))),
         "after output_item.done the target Turn must still be running, got {turn_state:?}"
     );
     let item_done_status = inbound_status(session, &bot_id, MESSAGE_STREAM).await?;
@@ -1437,7 +1437,7 @@ async fn wait_preview_observation(session: &Session, marker: &str) -> Result<Car
 async fn active_turn_state(
     session: &Session,
     bot_id: &str,
-) -> Result<Option<pl_protocol::TurnState>> {
+) -> Result<Option<pl_studio_runtime::TurnState>> {
     let thread_id = wait_thread_binding(&session.home, bot_id, DIRECT_CHAT_ID).await?;
     let snapshot = session.http()?.read_thread(&thread_id).await?;
     Ok(snapshot.active_turn.map(|turn| turn.state))
@@ -1713,7 +1713,7 @@ async fn inbound_target_timeline(
         entry.atom.kind == ChatAtomKind::Input
             && matches!(
                 &entry.atom.source,
-                pl_protocol::ChatSourceId::Input { input_id: source_input }
+                pl_studio_runtime::ChatSourceId::Input { input_id: source_input }
                     if source_input == &input_id
             )
     });
@@ -1859,7 +1859,7 @@ async fn assert_canonical_final_blank(
         else {
             ensure!(
                 item.atom.turn_id.as_deref() != Some(turn_id.as_str())
-                    || item.atom.text_channel != Some(pl_protocol::ThreadTextChannel::Final),
+                    || item.atom.text_channel != Some(pl_studio_runtime::ThreadTextChannel::Final),
                 "target Turn Final completion was not terminal"
             );
             continue;
@@ -1880,7 +1880,7 @@ async fn assert_canonical_final_blank(
             payload["data"]["channel"] == serde_json::to_value(text_channel)?,
             "completion text_channel and original text payload disagree"
         );
-        if text_channel != pl_protocol::ThreadTextChannel::Final {
+        if text_channel != pl_studio_runtime::ThreadTextChannel::Final {
             continue;
         }
         let text = body_text(&target.read, text_field(&payload)?).await?;
@@ -1932,8 +1932,8 @@ fn is_channel(payload: &serde_json::Value, turn_id: &str, channel: &str) -> bool
 async fn unique_channel_item(target: &mut TargetChat, channel: &str) -> Result<serde_json::Value> {
     let turn_id = &target.turn_id;
     let expected_channel = match channel {
-        "commentary" => pl_protocol::ThreadTextChannel::Commentary,
-        "final" => pl_protocol::ThreadTextChannel::Final,
+        "commentary" => pl_studio_runtime::ThreadTextChannel::Commentary,
+        "final" => pl_studio_runtime::ThreadTextChannel::Final,
         _ => anyhow::bail!("unsupported Timeline text channel {channel:?}"),
     };
     ensure!(

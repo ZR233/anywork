@@ -1,12 +1,13 @@
 //! Native remote compaction reuses the complete inference lifecycle and accounting.
 use super::{InvocationRunner, ModelInvocationContext};
+use crate::completion::ModelContextItem;
 use crate::completion::tool_schema::ToolProjection;
 use crate::completion::{
     CompletionFailure, ModelCompactionRequest, ModelCompactionResponse, OpenAiCompactionMode,
 };
 use crate::protocol::WireApi;
 use crate::runtime::openai::{OpenAiBase, OpenAiRequestBody};
-use pl_protocol::{ModelContextItem, PureError, Result};
+use pl_protocol::{PureError, Result};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 

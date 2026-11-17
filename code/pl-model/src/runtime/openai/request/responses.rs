@@ -1,7 +1,8 @@
-use pl_protocol::{
-    AttachmentModality, ContentPart, MessageContent, MessageRole, ResponsesContextItem, Result,
+use crate::completion::{
+    AttachmentModality, ContentPart, MessageContent, MessageRole, ResponsesContextItem,
     ToolCallKind, ToolCallRecord, ToolCallerMode, ToolSpec,
 };
+use pl_protocol::Result;
 use serde::Serialize;
 
 use crate::completion::{CompletionRequest, ReasoningConfig, ReasoningSummary};
@@ -138,7 +139,7 @@ impl ResponsesRequestBody {
                 replay_end = span.start + span.semantic.len();
                 continue;
             }
-            if let pl_protocol::ModelContextItem::ToolMedia { items } = item {
+            if let crate::completion::ModelContextItem::ToolMedia { items } = item {
                 let content = tool_media_content(items);
                 input.push(ResponsesInputItem::message(
                     ResponsesRole::User,
@@ -152,9 +153,9 @@ impl ResponsesRequestBody {
                 continue;
             }
             let msg = match item {
-                pl_protocol::ModelContextItem::Message { message }
-                | pl_protocol::ModelContextItem::ToolResult { message, .. } => message,
-                pl_protocol::ModelContextItem::Compaction { encrypted_content } => {
+                crate::completion::ModelContextItem::Message { message }
+                | crate::completion::ModelContextItem::ToolResult { message, .. } => message,
+                crate::completion::ModelContextItem::Compaction { encrypted_content } => {
                     input.push(ResponsesInputItem::typed(
                         ResponsesTypedInputItem::Compaction {
                             encrypted_content: encrypted_content.clone(),
@@ -162,11 +163,11 @@ impl ResponsesRequestBody {
                     ));
                     continue;
                 }
-                pl_protocol::ModelContextItem::Responses { item } => {
+                crate::completion::ModelContextItem::Responses { item } => {
                     input.push(ResponsesInputItem::replay(item.value.clone(), chatgpt)?);
                     continue;
                 }
-                pl_protocol::ModelContextItem::ToolMedia { .. } => unreachable!(),
+                crate::completion::ModelContextItem::ToolMedia { .. } => unreachable!(),
             };
             match msg.role {
                 MessageRole::Assistant if msg.tool_calls.is_some() => {
@@ -301,13 +302,13 @@ enum ResponsesTypedInputItem {
         arguments: String,
         call_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        caller: Option<pl_protocol::ToolCallCaller>,
+        caller: Option<crate::completion::ToolCallCaller>,
     },
     FunctionCallOutput {
         call_id: String,
         output: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        caller: Option<pl_protocol::ToolCallCaller>,
+        caller: Option<crate::completion::ToolCallCaller>,
     },
     CustomToolCall {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -316,13 +317,13 @@ enum ResponsesTypedInputItem {
         input: String,
         call_id: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        caller: Option<pl_protocol::ToolCallCaller>,
+        caller: Option<crate::completion::ToolCallCaller>,
     },
     CustomToolCallOutput {
         call_id: String,
         output: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        caller: Option<pl_protocol::ToolCallCaller>,
+        caller: Option<crate::completion::ToolCallCaller>,
     },
     Compaction {
         encrypted_content: String,
@@ -434,7 +435,7 @@ enum ResponsesTool {
         description: String,
         parameters: serde_json::Value,
         #[serde(skip_serializing_if = "Vec::is_empty")]
-        allowed_callers: Vec<pl_protocol::ToolCallerMode>,
+        allowed_callers: Vec<crate::completion::ToolCallerMode>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_schema: Option<serde_json::Value>,
     },
@@ -443,7 +444,7 @@ enum ResponsesTool {
         description: String,
         format: ToolFormatBody,
         #[serde(skip_serializing_if = "Vec::is_empty")]
-        allowed_callers: Vec<pl_protocol::ToolCallerMode>,
+        allowed_callers: Vec<crate::completion::ToolCallerMode>,
         #[serde(skip_serializing_if = "Option::is_none")]
         output_schema: Option<serde_json::Value>,
     },
@@ -455,11 +456,11 @@ enum ResponsesTool {
         #[serde(skip_serializing_if = "Option::is_none")]
         indexed_web_access: Option<bool>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        filters: Option<pl_protocol::WebSearchFilters>,
+        filters: Option<crate::completion::WebSearchFilters>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        user_location: Option<pl_protocol::WebSearchUserLocation>,
+        user_location: Option<crate::completion::WebSearchUserLocation>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        search_context_size: Option<pl_protocol::WebSearchContextSize>,
+        search_context_size: Option<crate::completion::WebSearchContextSize>,
         #[serde(skip_serializing_if = "Option::is_none")]
         search_content_types: Option<Vec<String>>,
     },
@@ -496,8 +497,8 @@ impl From<&ToolSpec> for ResponsesTool {
             },
             ToolSpec::ProgrammaticToolCalling => Self::ProgrammaticToolCalling,
             ToolSpec::WebSearch { options } => match options {
-                pl_protocol::HostedWebSearchOptions::DeepSeek => Self::DeepSeekWebSearch,
-                pl_protocol::HostedWebSearchOptions::OpenAi {
+                crate::completion::HostedWebSearchOptions::DeepSeek => Self::DeepSeekWebSearch,
+                crate::completion::HostedWebSearchOptions::OpenAi {
                     external_web_access,
                     indexed_web_access,
                     filters,

@@ -9,8 +9,8 @@ use crate::agent::worktree::{
     WorktreeManager, WorktreeOwnership,
 };
 use crate::studio::records::WorkspaceRecord;
+use crate::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
 use anyhow::{Context, Result};
-use pl_protocol::{AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode, AgentWorktreeSnapshot};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -400,9 +400,9 @@ pub(in crate::studio) async fn create_root_session_worktree<F>(
     progress: &F,
 ) -> Result<WorktreeLease>
 where
-    F: Fn(pl_protocol::studio::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
+    F: Fn(crate::ThreadPreparationStage, Option<&str>, Option<&str>) + Send + Sync,
 {
-    use pl_protocol::studio::ThreadPreparationStage;
+    use crate::ThreadPreparationStage;
     store
         .begin_thread_preparation(
             crate::studio::store::thread_preparation::PreparationIdentity {
@@ -422,8 +422,8 @@ where
         repository_manager(ssh_manager, project.ssh_alias.as_deref(), &project_root)
             .await
             .map_err(|error| {
-                error.context(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Unavailable,
+                error.context(crate::StudioError::new(
+                    crate::StudioErrorCode::Unavailable,
                     "Could not resolve the project's Git repository. Check that the project is inside a Git repository and the repository is accessible.",
                     false,
                 ))
@@ -432,8 +432,8 @@ where
         .resolve_head(&repository_root)
         .await
         .map_err(|error| {
-            anyhow::Error::from(error).context(pl_protocol::studio::StudioError::new(
-                pl_protocol::studio::StudioErrorCode::Unavailable,
+            anyhow::Error::from(error).context(crate::StudioError::new(
+                crate::StudioErrorCode::Unavailable,
                 "Could not resolve the repository's HEAD. Check that the repository has a commit and is accessible.",
                 false,
             ))
@@ -591,12 +591,12 @@ pub(in crate::studio) async fn root_session_workspace_root(
     );
     let frozen = store.workspace_identity(&root.agent.thread_id).await?;
     anyhow::ensure!(
-        project.kind != pl_protocol::studio::WorkspaceKind::Standalone
-            || (root.session.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local
+        project.kind != crate::WorkspaceKind::Standalone
+            || (root.session.workspace_mode == crate::ThreadWorkspaceMode::Local
                 && project.ssh_alias.is_none()),
         "standalone sessions only support local workspaces"
     );
-    if root.session.workspace_mode == pl_protocol::ThreadWorkspaceMode::Local {
+    if root.session.workspace_mode == crate::ThreadWorkspaceMode::Local {
         let actual =
             super::worktree_lease::resolve_physical_workspace(ssh_manager, project, &local_root)
                 .await?;

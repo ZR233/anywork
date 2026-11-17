@@ -1,7 +1,8 @@
 //! Model-owned context reduction; the host commits replacements using the frozen revision.
 use super::{AdapterError, ThreadModel, failure, receipt};
 use crate::{
-    completion::{InferenceAccounting, ModelContextItem},
+    completion::ModelContextItem,
+    model::InferenceAccounting,
     runtime::{ModelInvocationContext, ModelSession, TextSummaryRequest},
 };
 use pl_core::{
@@ -16,7 +17,7 @@ pub(super) const NATIVE_CHECKPOINT_VERSION: u32 = 4;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct NativeCheckpoint {
-    timing: Option<pl_protocol::InferenceTiming>,
+    timing: Option<crate::completion::InferenceTiming>,
     binding: super::receipt::ModelCallBinding,
     #[serde(default)]
     compatibility_family: Option<String>,
@@ -60,7 +61,7 @@ pub enum ThreadCompactionDecision {
 /// Successful reduction before the host's compare-and-swap commit.
 #[derive(Debug)]
 pub struct ThreadCompaction {
-    pub timing: Option<pl_protocol::InferenceTiming>,
+    pub timing: Option<crate::completion::InferenceTiming>,
     pub binding: super::receipt::ModelCallBinding,
     pub replacement: ReplaceContext,
     pub accounting: InferenceAccounting,
@@ -490,7 +491,7 @@ pub fn migrate_legacy_compaction(
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct MigratedCheckpoint<'a> {
-        timing: Option<pl_protocol::InferenceTiming>,
+        timing: Option<crate::completion::InferenceTiming>,
         binding: super::receipt::ModelCallBinding,
         compatibility_family: Option<String>,
         item: &'a serde_json::value::RawValue,

@@ -12,20 +12,20 @@ use crate::api::studio::types::{
 
 /// 平台可用性镜像；`target` 原样透传，不在客户端重新推断平台。
 pub(crate) fn bridge_acp_install_availability(
-    availability: pl_protocol::studio::AcpInstallAvailability,
+    availability: pl_studio_runtime::AcpInstallAvailability,
 ) -> BridgeAcpInstallAvailability {
     match availability {
-        pl_protocol::studio::AcpInstallAvailability::Available { target } => {
+        pl_studio_runtime::AcpInstallAvailability::Available { target } => {
             BridgeAcpInstallAvailability::Available { target }
         }
-        pl_protocol::studio::AcpInstallAvailability::UnsupportedPlatform => {
+        pl_studio_runtime::AcpInstallAvailability::UnsupportedPlatform => {
             BridgeAcpInstallAvailability::UnsupportedPlatform
         }
     }
 }
 
 pub(crate) fn bridge_acp_install_release(
-    release: pl_protocol::studio::AcpInstallRelease,
+    release: pl_studio_runtime::AcpInstallRelease,
 ) -> BridgeAcpInstallRelease {
     BridgeAcpInstallRelease {
         version: release.version,
@@ -36,7 +36,7 @@ pub(crate) fn bridge_acp_install_release(
 }
 
 fn bridge_acp_install_progress(
-    progress: pl_protocol::studio::AcpInstallProgress,
+    progress: pl_studio_runtime::AcpInstallProgress,
 ) -> BridgeAcpInstallProgress {
     BridgeAcpInstallProgress {
         completed_bytes: progress.completed_bytes,
@@ -45,22 +45,22 @@ fn bridge_acp_install_progress(
     }
 }
 
-fn bridge_acp_install_stage(stage: pl_protocol::studio::AcpInstallStage) -> BridgeAcpInstallStage {
+fn bridge_acp_install_stage(stage: pl_studio_runtime::AcpInstallStage) -> BridgeAcpInstallStage {
     match stage {
-        pl_protocol::studio::AcpInstallStage::Resolve => BridgeAcpInstallStage::Resolve,
-        pl_protocol::studio::AcpInstallStage::WaitForLock => BridgeAcpInstallStage::WaitForLock,
-        pl_protocol::studio::AcpInstallStage::Download => BridgeAcpInstallStage::Download,
-        pl_protocol::studio::AcpInstallStage::Verify => BridgeAcpInstallStage::Verify,
-        pl_protocol::studio::AcpInstallStage::Extract => BridgeAcpInstallStage::Extract,
-        pl_protocol::studio::AcpInstallStage::Publish => BridgeAcpInstallStage::Publish,
-        pl_protocol::studio::AcpInstallStage::Close => BridgeAcpInstallStage::Close,
+        pl_studio_runtime::AcpInstallStage::Resolve => BridgeAcpInstallStage::Resolve,
+        pl_studio_runtime::AcpInstallStage::WaitForLock => BridgeAcpInstallStage::WaitForLock,
+        pl_studio_runtime::AcpInstallStage::Download => BridgeAcpInstallStage::Download,
+        pl_studio_runtime::AcpInstallStage::Verify => BridgeAcpInstallStage::Verify,
+        pl_studio_runtime::AcpInstallStage::Extract => BridgeAcpInstallStage::Extract,
+        pl_studio_runtime::AcpInstallStage::Publish => BridgeAcpInstallStage::Publish,
+        pl_studio_runtime::AcpInstallStage::Close => BridgeAcpInstallStage::Close,
     }
 }
 
 fn bridge_acp_install_failure_code(
-    code: pl_protocol::studio::AcpInstallFailureCode,
+    code: pl_studio_runtime::AcpInstallFailureCode,
 ) -> BridgeAcpInstallFailureCode {
-    use pl_protocol::studio::AcpInstallFailureCode as Wire;
+    use pl_studio_runtime::AcpInstallFailureCode as Wire;
     match code {
         Wire::UnsupportedPlatform => BridgeAcpInstallFailureCode::UnsupportedPlatform,
         Wire::SourceRejected => BridgeAcpInstallFailureCode::SourceRejected,
@@ -80,7 +80,7 @@ fn bridge_acp_install_failure_code(
 }
 
 fn bridge_acp_install_failure(
-    failure: pl_protocol::studio::AcpInstallFailure,
+    failure: pl_studio_runtime::AcpInstallFailure,
 ) -> BridgeAcpInstallFailure {
     BridgeAcpInstallFailure {
         code: bridge_acp_install_failure_code(failure.code),
@@ -91,7 +91,7 @@ fn bridge_acp_install_failure(
 }
 
 fn bridge_acp_installed_server(
-    server: pl_protocol::studio::AcpInstalledServer,
+    server: pl_studio_runtime::AcpInstalledServer,
 ) -> BridgeAcpInstalledServer {
     BridgeAcpInstalledServer {
         installation_id: server.installation_id,
@@ -103,9 +103,9 @@ fn bridge_acp_installed_server(
 }
 
 pub(crate) fn bridge_acp_install_state(
-    state: pl_protocol::studio::AcpInstallState,
+    state: pl_studio_runtime::AcpInstallState,
 ) -> BridgeAcpInstallState {
-    use pl_protocol::studio::AcpInstallState as Wire;
+    use pl_studio_runtime::AcpInstallState as Wire;
     match state {
         Wire::Idle => BridgeAcpInstallState::Idle,
         Wire::Resolving { operation_id } => BridgeAcpInstallState::Resolving { operation_id },
@@ -179,7 +179,7 @@ pub(crate) fn bridge_acp_install_state(
 }
 
 pub(crate) fn bridge_acp_install_snapshot(
-    snapshot: pl_protocol::studio::AcpInstallSnapshot,
+    snapshot: pl_studio_runtime::AcpInstallSnapshot,
 ) -> BridgeAcpInstallSnapshot {
     BridgeAcpInstallSnapshot {
         revision: snapshot.revision,
@@ -198,8 +198,8 @@ pub(crate) fn bridge_acp_install_snapshot(
 /// FRB provider 镜像 → wire provider；与 `bridge_acp_provider` 互为反向穷尽映射。
 pub(crate) fn protocol_acp_install_provider(
     provider: BridgeAcpProvider,
-) -> pl_protocol::studio::AcpProvider {
+) -> pl_studio_runtime::AcpProvider {
     match provider {
-        BridgeAcpProvider::Antigravity => pl_protocol::studio::AcpProvider::Antigravity,
+        BridgeAcpProvider::Antigravity => pl_studio_runtime::AcpProvider::Antigravity,
     }
 }

@@ -1,6 +1,6 @@
 //! 模型持有 hosted 搜索的确定性选项映射。
-use pl_protocol::search::{WebSearchConfig, WebSearchMode};
-use pl_protocol::{HostedWebSearchOptions, WebSearchFilters, WebSearchUserLocation};
+use crate::search::{WebSearchConfig, WebSearchMode};
+use pl_model::completion::{HostedWebSearchOptions, WebSearchFilters, WebSearchUserLocation};
 
 pub(super) fn openai_options(config: &WebSearchConfig) -> Option<HostedWebSearchOptions> {
     let (external_web_access, indexed_web_access) = match config.mode {

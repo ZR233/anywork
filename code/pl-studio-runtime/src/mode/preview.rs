@@ -1,9 +1,9 @@
 //! Stateless authoring preview through the same machine as workflow_transition.
+use crate::PureError;
+use crate::mode::{WorkflowPreviewRequest, WorkflowPreviewSnapshot};
+use crate::workflow_tool::WorkflowSessionState;
 use crate::workflow_tool::machine::{
     CompletionInput, TransitionInput, WorkflowMachine, WorkflowOperation,
-};
-use pl_protocol::{
-    PureError, WorkflowPreviewRequest, WorkflowPreviewSnapshot, WorkflowSessionState,
 };
 
 /// Replays at most 128 direct edges in isolated memory. Natural-language truth is declared by the operator.
@@ -86,7 +86,7 @@ pub fn preview_workflow(
         path.push(target);
     }
     let run = state.current_run.as_ref().expect("preview has a run");
-    let terminal = run.lifecycle == pl_protocol::WorkflowRunLifecycle::Terminal;
+    let terminal = run.lifecycle == crate::workflow_tool::WorkflowRunLifecycle::Terminal;
     if accepted && terminal {
         message = "已到达终态；可重置预演".into();
     }

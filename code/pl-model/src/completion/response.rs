@@ -1,11 +1,13 @@
 //! Canonical completion 响应与 trace 上下文。
 
-use pl_protocol::trace::TraceTextChannel;
+use crate::trace::TraceTextChannel;
 use serde::{Deserialize, Serialize};
 
+use crate::completion::InferenceModelObservation;
 use crate::completion::tool_call::ToolCall;
-use pl_protocol::{InferenceAccounting, InferenceModelObservation, PureError};
-use pl_protocol::{InferenceTiming, ResponsesContextItem};
+use crate::completion::{InferenceTiming, ResponsesContextItem};
+use crate::model::InferenceAccounting;
+use pl_protocol::PureError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,7 +29,7 @@ pub struct CompletionResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presentation_items: Vec<CompletionPresentationItem>,
     #[serde(default)]
-    pub orchestration: pl_protocol::InferenceOrchestrationMetrics,
+    pub orchestration: crate::completion::InferenceOrchestrationMetrics,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timing: Option<InferenceTiming>,
     pub accounting: InferenceAccounting,

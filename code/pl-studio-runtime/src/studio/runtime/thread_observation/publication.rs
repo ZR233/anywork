@@ -1,8 +1,8 @@
 //! 稳定 ConversationStore 的最新完成边界与当前状态；通知不拥有可靠保存队列。
 //! 完成历史仍由同一 Session 读取，执行驱动只推进此处的共享发布。
+use crate::ActivitySnapshot;
 use crate::studio::thread_projection::CurrentState;
 use pl_core::chat::Session;
-use pl_protocol::ActivitySnapshot;
 use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 

@@ -5,12 +5,12 @@
 mod support;
 
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    ChatAtom, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentRange, ContentRef,
-    PayloadData, ReadDemand, SkillActivationCause, ThreadSkillItem, ThreadWorkspaceMode, TurnState,
-    studio::StopThreadRequest,
-};
 use pl_provider_fixture::{Protocol, ReplyStage, Step};
+use pl_studio_runtime::{
+    ChatAtom, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentRange, ContentRef,
+    PayloadData, ReadDemand, SkillActivationCause, StopThreadRequest, ThreadSkillItem,
+    ThreadWorkspaceMode, TurnState,
+};
 use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader};
 use serde_json::Value;
 use std::{collections::BTreeMap, time::Duration};
@@ -210,12 +210,12 @@ async fn completed_tool_and_skill_activation_are_public_before_the_turn_is_cance
         let parent_id = tokio::time::timeout(DEADLINE, async {
             loop {
                 let event = main.recv().await?.context("Main ended before State")?;
-                if let pl_protocol::ThreadSubscriptionUpdate::Snapshot {
+                if let pl_studio_runtime::ThreadSubscriptionUpdate::Snapshot {
                         completed_history_version,
                         snapshot,
                     } = event
                 {
-                    ensure!(completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION);
+                    ensure!(completed_history_version == pl_studio_runtime::COMPLETED_HISTORY_VERSION);
                     if let Some(head) = snapshot.active_turn
                         && head.id == turn_id
                     {

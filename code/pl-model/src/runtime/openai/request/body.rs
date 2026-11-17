@@ -3,8 +3,8 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::completion::ReasoningConfig;
+use crate::completion::ToolFormat;
 use crate::model::info::ModelInfo;
-use pl_protocol::ToolFormat;
 
 use super::protocol_error;
 #[derive(Debug, Clone, Serialize)]

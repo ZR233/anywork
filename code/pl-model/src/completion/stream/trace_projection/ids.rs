@@ -1,6 +1,6 @@
 //! trace part item id 的解析、别名收敛与段落编号。
 
-use pl_protocol::trace::{
+use crate::trace::{
     AgentEvent, TracePartAction, TracePartCompletion, TracePartKind, TracePartState,
     TraceTextChannel,
 };

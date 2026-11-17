@@ -4,7 +4,7 @@ mod registry;
 use std::sync::{Arc, Mutex as SyncMutex};
 
 use futures::future::BoxFuture;
-use pl_protocol::{CONTENT_WINDOW_MAX_BYTES, ContentRange, ContentRef, studio::StudioErrorCode};
+use pl_studio_runtime::{CONTENT_WINDOW_MAX_BYTES, ContentRange, ContentRef, StudioErrorCode};
 use pl_studio_runtime::{ContentWatch, ConversationReader, DisplayMembers};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
@@ -71,9 +71,9 @@ impl ContentWatches {
         &self,
         reader: &ConversationReader,
         facade_cancel: &CancellationToken,
-        reference: pl_protocol::DisplayBlockRef,
-        window: pl_protocol::DisplayMemberWindow,
-        demand: pl_protocol::ReadDemand,
+        reference: pl_studio_runtime::DisplayBlockRef,
+        window: pl_studio_runtime::DisplayMemberWindow,
+        demand: pl_studio_runtime::ReadDemand,
     ) -> Result<String, BridgeError> {
         let reader = reader.clone();
         self.install_open(
@@ -330,7 +330,9 @@ impl WatchOwner {
         if let Some(page) = &page {
             let mut serializer = flutter_rust_bridge::for_generated::SseSerializer::new();
             Some(page.clone()).sse_encode(&mut serializer);
-            if serializer.cursor.get_ref().len() + 1 > pl_protocol::CHAT_BATCH_MAX_BYTES as usize {
+            if serializer.cursor.get_ref().len() + 1
+                > pl_studio_runtime::CHAT_BATCH_MAX_BYTES as usize
+            {
                 return Err(error(
                     StudioErrorCode::Overloaded,
                     "member page exceeds the encoded transport budget",
@@ -397,7 +399,9 @@ fn validate_range(range: &ContentRange) -> Result<(), BridgeError> {
     Ok(())
 }
 
-fn bounded_window(window: pl_protocol::ContentWindow) -> Result<BridgeContentWindow, BridgeError> {
+fn bounded_window(
+    window: pl_studio_runtime::ContentWindow,
+) -> Result<BridgeContentWindow, BridgeError> {
     if window.bytes.len() > CONTENT_WINDOW_MAX_BYTES as usize {
         return Err(error(
             StudioErrorCode::Overloaded,
@@ -858,7 +862,7 @@ mod tests {
             })
             .is_err()
         );
-        let window = pl_protocol::ContentWindow {
+        let window = pl_studio_runtime::ContentWindow {
             offset: 9,
             bytes: Vec::new(),
             generation: "真实generation".into(),

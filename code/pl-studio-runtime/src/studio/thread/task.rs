@@ -2,7 +2,7 @@ use crate::mode::{
     StaticThreadModeRegistration, StaticWorkflowDefinition, StaticWorkflowState,
     StaticWorkflowTransition,
 };
-use pl_protocol::WorkflowStateKind;
+use crate::workflow_tool::WorkflowStateKind;
 
 pub const PROMPT: &str = r#"# Task 任务模式
 

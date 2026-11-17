@@ -465,7 +465,7 @@ impl SshManager {
         alias: &str,
         path: Option<String>,
         cursor: Option<String>,
-    ) -> Result<pl_protocol::remote::RemoteDirectoryListing, SshError> {
+    ) -> Result<crate::remote::RemoteDirectoryListing, SshError> {
         let _admitted = self.admit_connection().await?;
         let (key, state) = if let Some(key) = cursor {
             let state = self
@@ -543,7 +543,7 @@ impl SshManager {
                     held.pending = Some(entry);
                     return Ok((entries, true));
                 }
-                entries.push(pl_protocol::remote::RemoteDirectoryEntry {
+                entries.push(crate::remote::RemoteDirectoryEntry {
                     name: entry.name,
                     path: entry.path,
                     is_directory: true,
@@ -566,7 +566,7 @@ impl SshManager {
             self.close_directory(alias, key).await?;
             None
         };
-        Ok(pl_protocol::remote::RemoteDirectoryListing {
+        Ok(crate::remote::RemoteDirectoryListing {
             parent: state.parent.clone(),
             path: state.path.clone(),
             entries,

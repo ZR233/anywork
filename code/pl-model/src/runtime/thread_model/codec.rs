@@ -71,18 +71,18 @@ fn arguments(call: &ToolCall, kind: ArgumentKind) -> Result<OpaquePayload, Model
         input: String,
     }
     let (format, content) = match (kind, call.kind()) {
-        (ArgumentKind::Json, pl_protocol::ToolCallKind::Function) => {
+        (ArgumentKind::Json, crate::completion::ToolCallKind::Function) => {
             ("application/json", call.payload_text())
         }
-        (ArgumentKind::Text, pl_protocol::ToolCallKind::Custom) => {
+        (ArgumentKind::Text, crate::completion::ToolCallKind::Custom) => {
             ("text/plain", call.payload_text())
         }
-        (ArgumentKind::Text, pl_protocol::ToolCallKind::Function) => {
+        (ArgumentKind::Text, crate::completion::ToolCallKind::Function) => {
             let envelope: CustomEnvelope = serde_json::from_str(&call.payload_text())
                 .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
             ("text/plain", envelope.input)
         }
-        (ArgumentKind::Json, pl_protocol::ToolCallKind::Custom) => {
+        (ArgumentKind::Json, crate::completion::ToolCallKind::Custom) => {
             return Err(invalid("function tool returned custom wire arguments"));
         }
     };
@@ -424,7 +424,7 @@ pub(super) fn request(
                 complete.push(text);
                 let complete = complete.join("\n\n");
                 input.push(ModelContextItem::from(Message {
-                    presentation: pl_protocol::MessagePresentation::Hidden,
+                    presentation: crate::completion::MessagePresentation::Hidden,
                     role: MessageRole::System,
                     content: MessageContent::text(format!("Current complete host instruction snapshot. This supersedes every earlier host instruction snapshot.\n{complete}")),
                     reasoning_content: None, tool_calls: None, tool_result: None, metadata: Default::default(),
@@ -561,13 +561,13 @@ pub(super) fn request(
         }
         let mut parts = Vec::new();
         if let ContextSource::RuntimeFact { source_id } = &record.source {
-            parts.push(pl_protocol::ContentPart::Text {
+            parts.push(crate::completion::ContentPart::Text {
                 text: format!("[当前宿主事实：{source_id}]\n最新快照优先于历史摘要中的旧状态。\n"),
             });
         }
         for content in &record.content {
             match content {
-                ContextContent::Text { text } => parts.push(pl_protocol::ContentPart::Text {
+                ContextContent::Text { text } => parts.push(crate::completion::ContentPart::Text {
                     text: text.to_string(),
                 }),
                 ContextContent::Opaque { payload } => {
@@ -575,10 +575,10 @@ pub(super) fn request(
                     let reference = attachment.reference;
                     match &record.source {
                         ContextSource::ToolResult { call_id, .. } => {
-                            tool_media.push(pl_protocol::ToolMediaContext {
+                            tool_media.push(crate::completion::ToolMediaContext {
                                 call_id: call_id.clone(),
                                 label: reference.id().to_owned(),
-                                attachment: pl_protocol::ThreadAttachment {
+                                attachment: crate::completion::ThreadAttachment {
                                     id: reference.id().to_owned(),
                                     modality: attachment.modality,
                                     media_type: reference.media_type().to_owned(),
@@ -593,7 +593,7 @@ pub(super) fn request(
                         | ContextSource::Runtime { .. }
                         | ContextSource::RuntimeFact { .. }
                         | ContextSource::AgentMessage { .. } => {
-                            parts.push(pl_protocol::ContentPart::Attachment {
+                            parts.push(crate::completion::ContentPart::Attachment {
                                 attachment_id: reference.id().to_owned(),
                                 modality: attachment.modality,
                                 media_type: reference.media_type().to_owned(),
@@ -615,7 +615,7 @@ pub(super) fn request(
                         .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
                     let descriptor = serde_json::to_string(reference)
                         .map_err(|error| failure(ModelFailureKind::UnsupportedContent, error))?;
-                    parts.push(pl_protocol::ContentPart::Text {
+                    parts.push(crate::completion::ContentPart::Text {
                         text: format!("Resource reference: {descriptor}"),
                     });
                 }
@@ -637,7 +637,7 @@ pub(super) fn request(
             let call = calls
                 .get(call_id)
                 .ok_or_else(|| invalid("missing original tool call frame"))?;
-            message.tool_result = Some(pl_protocol::ToolResultRecord {
+            message.tool_result = Some(crate::completion::ToolResultRecord {
                 item_id: call.item_id.clone(),
                 call_id: call.call_id.clone(),
                 name: call.name.clone(),
@@ -764,8 +764,8 @@ fn response_inner(
             let raw_arguments = || {
                 OpaquePayload::new(
                     match call.kind() {
-                        pl_protocol::ToolCallKind::Function => "application/json",
-                        pl_protocol::ToolCallKind::Custom => "text/plain",
+                        crate::completion::ToolCallKind::Function => "application/json",
+                        crate::completion::ToolCallKind::Custom => "text/plain",
                     },
                     1,
                     call.payload_text(),

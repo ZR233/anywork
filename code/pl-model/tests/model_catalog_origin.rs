@@ -105,7 +105,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
         .unwrap();
     assert_eq!(
         compatible.default_billing_kind,
-        pl_protocol::BillingKind::Unknown
+        pl_model::config::BillingKind::Unknown
     );
     assert!(!compatible.supports_model_discovery);
     // 用描述投影本身创建账号：协议来自 catalog，不按模板 ID 或地址猜测。
@@ -116,7 +116,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
         .unwrap();
     assert_eq!(
         descriptor.default_billing_kind,
-        pl_protocol::BillingKind::Metered
+        pl_model::config::BillingKind::Metered
     );
     assert!(descriptor.supports_model_discovery);
     let kind: ProtocolKind = descriptor.protocol.parse().unwrap();
@@ -155,7 +155,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
         .find(|template| template.id.as_str() == "deepseek")
         .unwrap()
         .account
-        .billing_kind = Some(pl_protocol::BillingKind::NoCharge);
+        .billing_kind = Some(pl_model::config::BillingKind::NoCharge);
     let billing_changed = registry.snapshot().unwrap();
     let changed_template = billing_changed
         .templates
@@ -164,7 +164,7 @@ fn account_template_descriptor_projects_owned_protocol_capabilities_and_revision
         .unwrap();
     assert_eq!(
         changed_template.default_billing_kind,
-        pl_protocol::BillingKind::NoCharge
+        pl_model::config::BillingKind::NoCharge
     );
     assert_ne!(billing_changed.revision, snapshot.revision);
 
@@ -239,7 +239,7 @@ async fn overlay_retains_missing_bundled_members_disabled_and_keeps_exact_price_
     assert_eq!(manual_entry.model, manual);
     assert_eq!(
         model_descriptor(manual_entry).origin,
-        pl_protocol::ModelOriginDto::Manual
+        pl_model::config::ModelOriginDto::Manual
     );
     server.finish().await;
 }
@@ -903,6 +903,6 @@ fn unknown_online_price_is_not_zero_and_descriptor_keeps_origin() {
     assert_eq!(entry.origin, AccountModelOrigin::Online);
     assert_eq!(entry.model.pricing, ModelPricing::Unknown);
     let descriptor = model_descriptor(entry);
-    assert_eq!(descriptor.origin, pl_protocol::ModelOriginDto::Online);
+    assert_eq!(descriptor.origin, pl_model::config::ModelOriginDto::Online);
     assert_eq!(descriptor.pricing, None);
 }

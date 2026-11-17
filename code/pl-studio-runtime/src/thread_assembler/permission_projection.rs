@@ -1,14 +1,14 @@
 //! Typed Studio approval projection over authoritative core permission facts.
 use super::{SessionRuntime, approval::ApprovalPrompt};
+use crate::{
+    CancelInteraction, InteractionCommand, InteractionRequest, InteractionScope,
+    ResolveToolApproval, ToolApprovalResolution, ToolApprovalResolutionPayload,
+};
 use pl_core::{
     context::OpaquePayload,
     thread::permissions::{
         PermissionDecision, PermissionRecord, PermissionResolution, PermissionState,
     },
-};
-use pl_protocol::{
-    CancelInteraction, InteractionCommand, InteractionRequest, InteractionScope,
-    ResolveToolApproval, ToolApprovalResolution, ToolApprovalResolutionPayload,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -26,7 +26,7 @@ pub enum PermissionProjectionError {
     #[error("approval record is not present: {0}")]
     MissingPermission(String),
     #[error("approval projection transition failed")]
-    Projection(#[from] pl_protocol::InteractionTransitionError),
+    Projection(#[from] crate::InteractionTransitionError),
     #[error("approval resolution was rejected by its Thread")]
     Thread(#[from] pl_core::thread::ThreadError),
     #[error("approval response could not be frozen")]
@@ -142,7 +142,7 @@ pub fn project_execution_permission(
             agent_path: Some(thread_id.into()),
             purpose: Default::default(),
         },
-        pl_protocol::ToolApprovalRequest {
+        crate::ToolApprovalRequest {
             name: prompt.name,
             arguments: serde_json::Value::String(prompt.arguments.content().into()),
             working_directory: prompt.working_directory,

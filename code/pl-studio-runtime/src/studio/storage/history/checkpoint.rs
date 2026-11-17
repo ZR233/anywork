@@ -13,7 +13,7 @@ impl HistoryStore {
     /// snapshot, even if a timeline observer still retains this owner's initialized writer.
     pub(crate) async fn read_only_checkpoint_with_latest_turn(
         &self,
-    ) -> Result<Option<(ThreadCheckpoint, Option<pl_protocol::Turn>)>> {
+    ) -> Result<Option<(ThreadCheckpoint, Option<crate::Turn>)>> {
         let connection = {
             let _initializing = self.state.init.read().await;
             self.read_only_connection().await?
@@ -791,7 +791,7 @@ async fn add_cost(
 pub(crate) struct SessionAccounting {
     pub revision: u64,
     pub has_unpriced_usage: bool,
-    pub purpose_costs: Vec<(Option<String>, Vec<pl_protocol::RuntimeCostAmount>)>,
+    pub purpose_costs: Vec<(Option<String>, Vec<crate::RuntimeCostAmount>)>,
 }
 
 impl HistoryStore {
@@ -839,9 +839,9 @@ pub(super) async fn read_accounting(
 
 pub(super) async fn read_purpose_costs(
     tx: &impl ConnectionTrait,
-) -> Result<Vec<(Option<String>, Vec<pl_protocol::RuntimeCostAmount>)>> {
+) -> Result<Vec<(Option<String>, Vec<crate::RuntimeCostAmount>)>> {
     let mut purposes =
-        std::collections::BTreeMap::<Option<String>, Vec<pl_protocol::RuntimeCostAmount>>::new();
+        std::collections::BTreeMap::<Option<String>, Vec<crate::RuntimeCostAmount>>::new();
     for row in tx
         .query_all_raw(statement(
             "SELECT purpose,currency,amount FROM session_costs ORDER BY purpose,currency",
@@ -853,7 +853,7 @@ pub(super) async fn read_purpose_costs(
         purposes
             .entry(purpose)
             .or_default()
-            .push(pl_protocol::RuntimeCostAmount {
+            .push(crate::RuntimeCostAmount {
                 currency: row.try_get("", "currency")?,
                 amount: row.try_get("", "amount")?,
             });

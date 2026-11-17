@@ -1,11 +1,11 @@
 //! Immutable terminal reports contain submitted conclusions, never later delivery outcomes.
+use crate::Thread;
 use crate::studio::thread_projection::TurnResult;
 use anyhow::Result;
 use pl_core::{
     context::{ContextContent, OpaquePayload},
     thread::{ThreadSnapshot, TurnRecord},
 };
-use pl_protocol::Thread;
 use pl_tool::finish_turn::ReviewDisposition;
 
 #[derive(serde::Serialize)]
@@ -19,7 +19,7 @@ struct TurnReport<'a> {
     message: String,
     messages: Vec<MessageIdentity<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    last_tool: Option<pl_protocol::ThreadToolItem>,
+    last_tool: Option<crate::ThreadToolItem>,
     running_tasks: Vec<&'a str>,
     pending_interactions: Vec<&'a str>,
     permissions: Vec<&'a pl_core::thread::permissions::PermissionRecord>,
@@ -30,7 +30,7 @@ struct TurnReport<'a> {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReviewReport<'a> {
-    target: Option<&'a pl_protocol::AgentReviewTargetSnapshot>,
+    target: Option<&'a crate::AgentReviewTargetSnapshot>,
     /// Conclusion submitted for this frozen baseline, not approval of a later checkout.
     disposition: ReviewDisposition,
     summary: String,
@@ -79,24 +79,24 @@ pub(super) fn terminal_message(
     let profile = crate::studio::model_route::saved_profile(snapshot)?.map(|(profile, _)| profile);
     let is_review = assignment
         .as_ref()
-        .is_some_and(|assignment| assignment.mode == pl_protocol::AgentWorkspaceMode::Review)
-        || profile.as_ref().is_some_and(|profile| {
-            profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
-        });
+        .is_some_and(|assignment| assignment.mode == crate::AgentWorkspaceMode::Review)
+        || profile
+            .as_ref()
+            .is_some_and(|profile| profile.workspace_mode == crate::AgentWorkspaceMode::Review);
     if is_review {
         let typed = result
             .finish
             .as_ref()
             .and_then(|finish| finish.review.as_ref());
         let valid_binding = assignment.as_ref().is_some_and(|assignment| {
-            assignment.mode == pl_protocol::AgentWorkspaceMode::Review
+            assignment.mode == crate::AgentWorkspaceMode::Review
                 && assignment
                     .review_target
                     .as_ref()
                     .is_some_and(|target| target.baseline.is_some() && target.agent_id != thread.id)
-        }) && profile.as_ref().is_some_and(|profile| {
-            profile.workspace_mode == pl_protocol::AgentWorkspaceMode::Review
-        });
+        }) && profile
+            .as_ref()
+            .is_some_and(|profile| profile.workspace_mode == crate::AgentWorkspaceMode::Review);
         let unsettled = !report.running_tasks.is_empty()
             || !report.pending_interactions.is_empty()
             || snapshot

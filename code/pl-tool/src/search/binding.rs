@@ -4,12 +4,12 @@
 //! OpenAI 与 DeepSeek 两条规划彼此独立，任一可用都只追加自己的工具，不排斥其他工具。
 
 use crate::binding::{ToolCallPolicy, prepare_native_tool, prepare_registration};
+use crate::search::WebSearchConfig;
 use pl_core::tool::opaque::Registration;
+use pl_model::protocol::HostedWebSearchDialect;
 use pl_model::protocol::StandaloneWebSearchDialect;
 use pl_model::protocol::deepseek::tools::{ToolsClient, ToolsError, ToolsOptions};
 use pl_model::runtime::HostedTool;
-use pl_protocol::HostedWebSearchDialect;
-use pl_protocol::search::WebSearchConfig;
 
 use super::client::{SearchEndpoint, WebSearchClient};
 use super::hosted_options;

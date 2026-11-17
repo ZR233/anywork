@@ -121,7 +121,7 @@ impl StudioRuntime {
                     super::settings_api::model_catalog_snapshot(&settings, &catalog_state)?;
                 StudioProductBaselineState::ModelCatalog(Box::new(
                     crate::StudioModelCatalogStateSnapshot {
-                        state: pl_protocol::ObservedResource::ready(
+                        state: crate::ObservedResource::ready(
                             catalog.revision,
                             catalog.updated_at,
                             catalog,
@@ -212,6 +212,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    use crate::{MessagePresentation, UserInputAnswer, UserInputResolution, UserQuestion};
     use anyhow::{Context, Result};
     use pl_core::context::OpaquePayload;
     use pl_core::thread::interactions::{
@@ -219,7 +220,6 @@ mod tests {
     };
     use pl_core::thread::permissions::{PermissionRecord, PermissionState};
     use pl_core::thread::{ThreadLifecycle, ThreadSnapshot};
-    use pl_protocol::{MessagePresentation, UserInputAnswer, UserInputResolution, UserQuestion};
     use tokio::sync::Barrier;
 
     use super::*;
@@ -250,7 +250,7 @@ mod tests {
             revision,
             state: StudioProductBaselineState::ThreadDirectory(Box::new(
                 crate::StudioThreadDirectoryPage {
-                    state: pl_protocol::ObservedResource::ready(
+                    state: crate::ObservedResource::ready(
                         revision,
                         1,
                         crate::StudioThreadDirectoryPageData {
@@ -358,8 +358,8 @@ mod tests {
             "interaction-root".into(),
             &project.id,
             "root",
-            pl_protocol::ThreadModeId::simple(),
-            pl_protocol::ThreadWorkspaceMode::Local,
+            crate::mode::ThreadModeId::simple(),
+            crate::ThreadWorkspaceMode::Local,
             workspace.to_string_lossy().into_owned(),
             crate::config::ROOT_AGENT_ROUTE_KEY,
         );
@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(empty.state.revision(), 0);
         assert!(matches!(
             &empty.state,
-            pl_protocol::ObservedResource::Uninitialized(_)
+            crate::ObservedResource::Uninitialized(_)
         ));
         assert!(
             empty.state.value().is_none(),
@@ -452,12 +452,12 @@ mod tests {
         assert!(
             pending_interactions
                 .iter()
-                .any(|interaction| interaction.kind == pl_protocol::InteractionKind::UserInput)
+                .any(|interaction| interaction.kind == crate::InteractionKind::UserInput)
         );
         assert!(
-            pending_interactions.iter().any(|interaction| {
-                interaction.kind == pl_protocol::InteractionKind::ToolApproval
-            })
+            pending_interactions
+                .iter()
+                .any(|interaction| { interaction.kind == crate::InteractionKind::ToolApproval })
         );
         assert!(
             runtime
@@ -685,7 +685,7 @@ mod tests {
         let plan = "Verify the root-scoped projection.";
         let prompt = crate::plan_tool::PlanConfirmationPrompt {
             question: UserQuestion {
-                id: pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                id: crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
                 header: "Plan".into(),
                 question: plan.into(),
                 is_other: true,

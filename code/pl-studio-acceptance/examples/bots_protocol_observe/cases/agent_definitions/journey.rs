@@ -4,13 +4,6 @@ use crate::support::{
     completed_turn_from_children, completed_turn_records, content_bytes,
 };
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::{
-    AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
-    CreateThreadRequest, ModelConnectionIntent, NewThreadModelRoute, PatchAccountRequest,
-    SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
-    StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
-};
-use pl_protocol::{ChatAtomKind, ChatScope, ContentRef, ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -18,6 +11,13 @@ use pl_provider_fixture::{
     },
     feishu::{ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event},
 };
+use pl_studio_runtime::{
+    AccountConnectionMode, AccountModelsPatch, AccountTextPatch, BotModelRoute, BotSecretUpdate,
+    CreateThreadRequest, ModelConnectionIntent, NewThreadModelRoute, PatchAccountRequest,
+    SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
+    StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
+};
+use pl_studio_runtime::{ChatAtomKind, ChatScope, ContentRef, ThreadStatus, TurnState};
 use std::time::Instant;
 
 impl Observation<'_> {
@@ -51,9 +51,9 @@ impl Observation<'_> {
                         model_id: ROOT_MODEL.into(),
                         effort: None,
                     },
-                    delegation_mode: Some(pl_protocol::DelegationMode::Profile),
-                    delegation_preference: Some(pl_protocol::DelegationPreference::Balanced),
-                    workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+                    delegation_mode: Some(pl_studio_runtime::DelegationMode::Profile),
+                    delegation_preference: Some(pl_studio_runtime::DelegationPreference::Balanced),
+                    workspace_mode: pl_studio_runtime::ThreadWorkspaceMode::Local,
                 },
             )
             .await?;
@@ -579,7 +579,7 @@ impl Observation<'_> {
             charge_chat_batch(&page, &mut remaining)?;
             loop {
                 let notification = read.next_notification(deadline).await?;
-                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
                     notification.notification
                 else {
                     continue;
@@ -675,7 +675,7 @@ impl Observation<'_> {
                 operation_id: format!("agent-{operation}"),
                 expected_revision: current.config.revision,
                 account_id: config::CHILD_ACCOUNT.into(),
-                authentication: pl_protocol::studio::AccountAuthenticationIntent::Keep,
+                authentication: pl_studio_runtime::AccountAuthenticationIntent::Keep,
                 name: AccountTextPatch::Keep,
                 base_url: AccountTextPatch::Keep,
                 template_id: AccountTextPatch::Keep,
@@ -807,8 +807,8 @@ impl Observation<'_> {
         let receipt = &reply.receipt;
         ensure!(
             receipt.operation_id == operation
-                && receipt.disposition == pl_protocol::studio::CommandDisposition::Applied
-                && receipt.effect == pl_protocol::studio::CommandEffectPoint::Immediate
+                && receipt.disposition == pl_studio_runtime::CommandDisposition::Applied
+                && receipt.effect == pl_studio_runtime::CommandEffectPoint::Immediate
                 && receipt.effective,
             "Mode change has no effective applied receipt: {receipt:?}"
         );
@@ -949,7 +949,7 @@ impl Observation<'_> {
             let input_id = input(phase).input_id;
             let target_turn = loop {
                 let notification = read.next_notification(deadline).await?;
-                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                let pl_studio_runtime::ThreadNotification::TurnCompleted { turn } =
                     notification.notification
                 else {
                     continue;
@@ -1000,7 +1000,7 @@ impl Observation<'_> {
                     metadata["failedAt"]
                         .as_i64()
                         .context("failed spawn omitted failedAt")?;
-                    serde_json::from_value::<pl_protocol::ThreadToolFailure>(
+                    serde_json::from_value::<pl_studio_runtime::ThreadToolFailure>(
                         metadata
                             .get("failure")
                             .context("failed spawn omitted failure")?

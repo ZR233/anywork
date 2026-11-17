@@ -12,10 +12,10 @@ use crate::report::{self, CaseResult};
 use crate::sqlite;
 use crate::topic::BotsTopicWatch;
 use anyhow::{Context, Result, bail, ensure};
-use pl_protocol::studio::BotRegistrationStatus;
 use pl_provider_fixture::feishu::{
     ChatType, DIRECT_CHAT_ID, RegistrationPollScript, SenderKind, UNKNOWN_USER_OPEN_ID, text_event,
 };
+use pl_studio_runtime::BotRegistrationStatus;
 use pl_studio_runtime::StudioThreadDirectoryPage;
 use std::time::Instant;
 
@@ -96,12 +96,12 @@ async fn run_inner(session: &mut Session, deadline: Instant) -> Result<CaseResul
     ensure_registered_app(&bot.app_id)?;
     ensure!(bot.trusted_open_ids.is_empty());
     match bot.credential {
-        pl_protocol::studio::BotCredentialAvailability::Stored
-        | pl_protocol::studio::BotCredentialAvailability::SessionOnly => {}
-        pl_protocol::studio::BotCredentialAvailability::Missing => {
+        pl_studio_runtime::BotCredentialAvailability::Stored
+        | pl_studio_runtime::BotCredentialAvailability::SessionOnly => {}
+        pl_studio_runtime::BotCredentialAvailability::Missing => {
             bail!("no-user credential Missing")
         }
-        pl_protocol::studio::BotCredentialAvailability::Unavailable => {
+        pl_studio_runtime::BotCredentialAvailability::Unavailable => {
             bail!("no-user credential Unavailable")
         }
     }

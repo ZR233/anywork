@@ -3,7 +3,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub use pl_protocol::{
+pub use crate::{
     CacheUsageSummary, ChatAtomKind as HistoryEntityKind, ChatDeliveryKind as HistoryDelivery,
     ChatScope, ChatSourceId as HistorySource, ChatToolIdentity as HistoryToolIdentity,
     SingleVisibility as HistorySingleVisibility, ThreadTextChannel,
@@ -183,12 +183,8 @@ pub struct HistoryEntityHead {
 )]
 pub enum HistoryEntityState {
     Unknown,
-    KnownActive {
-        status: pl_protocol::ChatActiveStatus,
-    },
-    KnownTerminal {
-        outcome: pl_protocol::ChatTerminalOutcome,
-    },
+    KnownActive { status: crate::ChatActiveStatus },
+    KnownTerminal { outcome: crate::ChatTerminalOutcome },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,11 +207,11 @@ pub enum HistoryObservation {
 )]
 pub enum HistoryWaitHead {
     Inline {
-        presentation: pl_protocol::ThreadWaitPresentation,
+        presentation: crate::ThreadWaitPresentation,
     },
     Deferred {
         intent: HistoryWaitIntentHead,
-        state: pl_protocol::ThreadWaitState,
+        state: crate::ThreadWaitState,
         messages_ready: Option<bool>,
         presentation: HistoryEventBodyRef,
     },
@@ -239,8 +235,8 @@ pub struct HistoryTurnHead {
     pub input_id: Option<String>,
     pub run_id: Option<String>,
     pub state: HistoryTurnState,
-    pub phase: Option<pl_protocol::TurnPhase>,
-    pub context_disposition: pl_protocol::ThreadContextDisposition,
+    pub phase: Option<crate::TurnPhase>,
+    pub context_disposition: crate::ThreadContextDisposition,
     pub queued_at: Option<i64>,
     pub started_at: Option<i64>,
     pub finished_at: Option<i64>,
@@ -264,7 +260,7 @@ pub enum HistoryTurnState {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistorySourceHead {
     pub source: HistorySource,
-    pub lifecycle: pl_protocol::ChatSourceLifecycle,
+    pub lifecycle: crate::ChatSourceLifecycle,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
     pub observed_at: Option<i64>,

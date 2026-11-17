@@ -1,6 +1,6 @@
 //! Product provenance derived from typed facts, never from a frozen/deferred payload.
+use crate::protocol::*;
 use crate::{ExecutionItem, ExecutionShape};
-use pl_protocol::*;
 
 pub(crate) fn atom(item: &ExecutionItem) -> ChatAtom {
     let kind = match item.state() {

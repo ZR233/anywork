@@ -7,15 +7,13 @@ pub(crate) use cache::AccountUsageCacheMigrationError;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
+use crate::{
+    AccountUsageFailure, AccountUsageFailureCode, AccountUsageObservation, AccountUsagePhase,
+    ObservedResource,
+};
 use anyhow::{Result, anyhow};
 use futures::FutureExt;
 use pl_model::config::AccountId;
-use pl_protocol::{
-    ObservedResource,
-    studio::{
-        AccountUsageFailure, AccountUsageFailureCode, AccountUsageObservation, AccountUsagePhase,
-    },
-};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -232,9 +230,9 @@ impl AccountUsageRuntime {
         }
         // Config -> task registry is the lock order also used by the commit observer.
         let config = self.config.read()?;
-        let revision = config.usage_query_revision(&id).ok_or_else(|| {
-            pl_protocol::studio::StudioError::invalid_argument("Account does not exist")
-        })?;
+        let revision = config
+            .usage_query_revision(&id)
+            .ok_or_else(|| crate::StudioError::invalid_argument("Account does not exist"))?;
         let account = config
             .config
             .models
@@ -429,8 +427,8 @@ fn unchecked(id: &AccountId, revision: u64) -> AccountUsageObservation {
 }
 
 fn stopped() -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::RuntimeStopped,
+    crate::StudioError::new(
+        crate::StudioErrorCode::RuntimeStopped,
         "Account usage owner is closing",
         false,
     )

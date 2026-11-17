@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use pl_protocol::{McpScope, PureError, Result};
+use crate::{McpScope, PureError, Result};
 use pl_tool::mcp::config::{
     McpServerConfig, McpServerStartupMode, McpServerTransport, validate_mcp_identifier,
 };

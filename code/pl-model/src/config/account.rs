@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use pl_protocol::{PureError, Result};
 use serde::{Deserialize, Serialize};
 
-use super::{AccountId, AccountTemplateId, ModelCatalogId, builtin_model_catalog};
+use super::{
+    AccountAuthenticationMethod, AccountId, AccountTemplateId, ChatGptAccountInfo, ModelCatalogId,
+    builtin_model_catalog,
+};
 use crate::model::ModelInfo;
 use crate::protocol::{
     ApplyPatchToolType, ConnectionMode, ImageGenerationCapabilities, ProtocolEndpoint,
@@ -63,7 +66,7 @@ pub enum AccountModelOrigin {
 pub struct AccountModelEntry {
     pub model: ModelInfo,
     pub origin: AccountModelOrigin,
-    pub context: pl_protocol::ModelContextResolution,
+    pub context: crate::model::ModelContextResolution,
     /// 用户启用意图的投影；禁用成员仍留在目录里，只是不能被选为执行模型。
     ///
     /// 它不改写 [`Self::type_support`]：类型资格与启用意图是两个独立事实。
@@ -117,13 +120,13 @@ impl AccountModelEntry {
         }
         if let Some(reason) = self.context.unavailable {
             exclusions.push(match reason {
-                pl_protocol::ModelContextUnavailable::WindowUnknown => {
+                crate::model::ModelContextUnavailable::WindowUnknown => {
                     Exclusion::ContextWindowUnknown
                 }
-                pl_protocol::ModelContextUnavailable::InvalidParameters => {
+                crate::model::ModelContextUnavailable::InvalidParameters => {
                     Exclusion::ContextParametersInvalid
                 }
-                pl_protocol::ModelContextUnavailable::InputBudgetExhausted => {
+                crate::model::ModelContextUnavailable::InputBudgetExhausted => {
                     Exclusion::InputBudgetExhausted
                 }
             });
@@ -141,9 +144,9 @@ impl AccountModelEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AccountConfig {
     #[serde(default)]
-    pub authentication: pl_protocol::studio::AccountAuthenticationMethod,
+    pub authentication: AccountAuthenticationMethod,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chatgpt_account: Option<pl_protocol::studio::ChatGptAccountInfo>,
+    pub chatgpt_account: Option<ChatGptAccountInfo>,
     /// Rust-only pending/loaded protected record. Never serialized into configuration.
     #[serde(skip)]
     pub chatgpt_credentials: Option<crate::protocol::chatgpt::ChatGptCredentialRecord>,
@@ -157,7 +160,7 @@ pub struct AccountConfig {
     /// 分开保存「用户显式意图」与「模板推导」：修改 endpoint 时只有推导值会变化，用户显式
     /// 选择的类别必须保留。`subscription` 不证明订阅有效、额度充足或实际零费用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub billing_kind: Option<pl_protocol::BillingKind>,
+    pub billing_kind: Option<crate::config::BillingKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<AccountTemplateId>,
     pub name: String,
@@ -269,7 +272,7 @@ impl AccountConfig {
     /// 这是服务能力的唯一解析入口：声明不一致在此处失败，调用方不会拿到无效声明。
     pub fn service_capabilities(&self) -> Result<ProtocolServiceCapabilities> {
         let mut capabilities = self.resolve_service_capabilities()?;
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
             capabilities.files = Default::default();
             capabilities.image_generation = None;
             capabilities.web_search.standalone = None;
@@ -461,17 +464,17 @@ impl AccountConfig {
     /// 由明确模板与 canonical endpoint 推导的计费类别。
     ///
     /// 只有模板自身的 canonical endpoint 才预置类别；改过地址、未知模板或自定义账号返回
-    /// [`pl_protocol::BillingKind::Unknown`]。推导只描述计量方式，不证明订阅有效或额度充足。
+    /// [`crate::config::BillingKind::Unknown`]。推导只描述计量方式，不证明订阅有效或额度充足。
     /// 显式设置值不参与推导，见 [`Self::billing_kind`]。
     ///
     /// # Errors
     /// 引用未知模板时返回配置定义错误。
-    pub fn inferred_billing_kind(&self) -> Result<pl_protocol::BillingKind> {
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
-            return Ok(pl_protocol::BillingKind::Subscription);
+    pub fn inferred_billing_kind(&self) -> Result<crate::config::BillingKind> {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
+            return Ok(crate::config::BillingKind::Subscription);
         }
         let Some(template_id) = self.template_id() else {
-            return Ok(pl_protocol::BillingKind::Unknown);
+            return Ok(crate::config::BillingKind::Unknown);
         };
         let template = super::builtin_account_catalog()?
             .templates
@@ -481,7 +484,7 @@ impl AccountConfig {
                 PureError::ConfigError(format!("unknown account template: {template_id}"))
             })?;
         if self.base_url.trim_end_matches('/') != template.account.base_url.trim_end_matches('/') {
-            return Ok(pl_protocol::BillingKind::Unknown);
+            return Ok(crate::config::BillingKind::Unknown);
         }
         Ok(template_billing_kind(template_id))
     }
@@ -493,7 +496,7 @@ impl AccountConfig {
     ///
     /// # Errors
     /// 引用未知模板时返回配置定义错误。
-    pub fn billing_kind(&self) -> Result<pl_protocol::BillingKind> {
+    pub fn billing_kind(&self) -> Result<crate::config::BillingKind> {
         match self.billing_kind {
             Some(kind) => Ok(kind),
             None => self.inferred_billing_kind(),
@@ -616,7 +619,7 @@ impl AccountConfig {
         &self,
         mut entries: Vec<AccountModelEntry>,
     ) -> Vec<AccountModelEntry> {
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
             entries.retain(|entry| entry.model.binding.transport.protocol == WireApi::Responses);
             for entry in &mut entries {
                 entry.model.binding.transport.supported_connection_modes =
@@ -916,7 +919,7 @@ impl AccountConfig {
 
     /// 解析不包含模型与 transport 事实的 runtime endpoint。
     pub fn to_endpoint(&self) -> Result<ProtocolEndpoint> {
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
             crate::protocol::chatgpt::ChatGptSession::validate_account_resource(
                 self.chatgpt_account
                     .as_ref()
@@ -940,7 +943,7 @@ impl AccountConfig {
 
     /// 解析运行时凭证；配置中的显式 secret 优先于环境变量。
     pub fn resolved_bearer_token(&self) -> Option<String> {
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
             return None;
         }
         self.bearer_token
@@ -960,7 +963,7 @@ impl AccountConfig {
     }
 
     fn validate_structure(&self, account_id: &AccountId, strict_availability: bool) -> Result<()> {
-        if self.authentication == pl_protocol::studio::AccountAuthenticationMethod::ChatGpt {
+        if self.authentication == AccountAuthenticationMethod::ChatGpt {
             if self.template.as_ref().map(|id| id.as_str()) != Some("openai")
                 || self.protocol != crate::protocol::ProtocolKind::OpenAi
                 || self.chatgpt_account.is_none()
@@ -1173,11 +1176,11 @@ fn apply_connection_overrides(
 /// 模板默认计费类别。
 ///
 /// 只有订阅制模板预置 `subscription`，品牌 API 模板是 `metered`，自定义兼容入口保持未知。
-fn template_billing_kind(template: &AccountTemplateId) -> pl_protocol::BillingKind {
+fn template_billing_kind(template: &AccountTemplateId) -> crate::config::BillingKind {
     match template.as_str() {
-        "zhipu-coding-plan" | "mimo-token-plan" => pl_protocol::BillingKind::Subscription,
-        "openai-compatible" => pl_protocol::BillingKind::Unknown,
-        _ => pl_protocol::BillingKind::Metered,
+        "zhipu-coding-plan" | "mimo-token-plan" => crate::config::BillingKind::Subscription,
+        "openai-compatible" => crate::config::BillingKind::Unknown,
+        _ => crate::config::BillingKind::Metered,
     }
 }
 

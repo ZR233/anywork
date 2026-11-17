@@ -1,6 +1,6 @@
 //! Domain scenarios exercise the real cursor reader and original resource owners.
 use super::*;
-use pl_protocol::{ChatPlacement, DisplayBlock, DisplayBlockBody, DisplayBlockRef};
+use crate::{ChatPlacement, DisplayBlock, DisplayBlockBody, DisplayBlockRef};
 
 fn demand(max_items: u32) -> ReadDemand {
     ReadDemand {
@@ -114,7 +114,7 @@ async fn empty_production_feed_shares_query_qualification_and_close_wakes_receiv
         let mut state = env.runtime.open_conversation_state_feed(&thread.id).await?;
         assert!(matches!(
             state.recv().await?,
-            Some(pl_protocol::ThreadSubscriptionUpdate::Snapshot { .. })
+            Some(crate::ThreadSubscriptionUpdate::Snapshot { .. })
         ));
         state.close().await?;
         let reader = feed.reader().clone();
@@ -146,13 +146,13 @@ async fn empty_production_feed_shares_query_qualification_and_close_wakes_receiv
 
 mod lifecycle {
     use super::{production::timeline, production::work_reference, *};
+    use crate::DisplayMemberWindow;
     use crate::{
         runtime_test_support::Environment,
         studio::runtime::conversation_feed::tests::completed_runs::{Harness, start},
     };
     use anyhow::Context;
     use futures::poll;
-    use pl_protocol::DisplayMemberWindow;
     use std::task::Poll;
 
     #[tokio::test]
@@ -174,7 +174,7 @@ mod lifecycle {
                 .await?;
             assert!(matches!(
                 state.recv().await?,
-                Some(pl_protocol::ThreadSubscriptionUpdate::Snapshot { .. })
+                Some(crate::ThreadSubscriptionUpdate::Snapshot { .. })
             ));
             state.close().await?;
             let reader = feed.reader().clone();
@@ -238,12 +238,12 @@ mod lifecycle {
 mod live_cursor {
     use super::production::{timeline, work_reference};
     use super::*;
+    use crate::DisplayMemberWindow;
     use crate::{
         runtime_test_support::Environment,
         studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
     };
     use anyhow::Context;
-    use pl_protocol::DisplayMemberWindow;
 
     #[tokio::test]
     async fn live_cursor_is_invalidated_by_terminal_member_structure_while_frozen_members_stay_readable()
@@ -335,6 +335,7 @@ mod live_cursor {
 
 mod production {
     use super::*;
+    use crate::{ChatActiveStatus, ChatAtomLifecycle, ChatScope, DisplayMemberWindow};
     use crate::{
         ConversationEvent,
         runtime_test_support::Environment,
@@ -342,7 +343,6 @@ mod production {
     };
     use anyhow::Context;
     use futures::poll;
-    use pl_protocol::{ChatActiveStatus, ChatAtomLifecycle, ChatScope, DisplayMemberWindow};
     use std::task::Poll;
 
     pub(super) async fn timeline(feed: &mut ReaderFixture) -> Result<Frame> {
@@ -356,7 +356,7 @@ mod production {
         .await?
     }
 
-    async fn atomic(feed: &mut ConversationFeed) -> Result<pl_protocol::ChatBatch> {
+    async fn atomic(feed: &mut ConversationFeed) -> Result<crate::ChatBatch> {
         tokio::time::timeout(
             crate::runtime_test_support::integration_test_deadline()?,
             async {
@@ -461,7 +461,7 @@ mod production {
                 assert_eq!(h.history.reader_calls() - reads, 1,
                     "reclaimed waiting rows require one bounded DB page");
                 assert!(matches!(&page[0].body, DisplayBlockBody::Single { record, .. }
-                    if matches!(record.content_source, pl_protocol::DisplayContentSource::CompletedOriginal { .. })));
+                    if matches!(record.content_source, crate::DisplayContentSource::CompletedOriginal { .. })));
                 let appended = timeline(&mut feed).await?;
                 assert_eq!(appended.blocks, page);
                 persist(&h, &pending).await?;
@@ -491,6 +491,7 @@ mod production {
     #[tokio::test]
     async fn v364_accepted_parent_text_seals_work_once_and_survives_cold_display_read() -> Result<()>
     {
+        use crate::{ContentRange, DisplayContentSource, SingleVisibility};
         use pl_core::{
             chat::ChatHistory,
             context::{AgentMessageKind, OpaquePayload},
@@ -500,7 +501,6 @@ mod production {
                 inbox::{InboxRecord, ThreadMessage},
             },
         };
-        use pl_protocol::{ContentRange, DisplayContentSource, SingleVisibility};
         use std::sync::Arc;
 
         let env = Environment::new(vec![], vec![]).await?;
@@ -566,11 +566,11 @@ mod production {
         h.sequence = effect.sequence;
         assert_eq!(accepted.completions.len(), 1);
         let original = accepted.completions[0].clone();
-        let atom: pl_protocol::ChatAtom = serde_json::from_slice(&original.header.metadata)?;
-        assert_eq!(atom.kind, pl_protocol::ChatAtomKind::Text);
+        let atom: crate::ChatAtom = serde_json::from_slice(&original.header.metadata)?;
+        assert_eq!(atom.kind, crate::ChatAtomKind::Text);
         assert!(matches!(
             &atom.source,
-            pl_protocol::ChatSourceId::InboxMessage { source_id, message_id }
+            crate::ChatSourceId::InboxMessage { source_id, message_id }
                 if source_id == &inbox.message.source_id && message_id == &inbox.message.id
         ));
         persist(&h, &accepted).await?;
@@ -785,13 +785,13 @@ mod production {
                 .atom
                 .contents
                 .iter()
-                .find(|content| content.role == pl_protocol::ChatContentRole::Body)
+                .find(|content| content.role == crate::ChatContentRole::Body)
                 .context("empty body reference")?;
             let window = feed
                 .reader()
                 .read_content(
                     &body.reference,
-                    pl_protocol::ContentRange {
+                    crate::ContentRange {
                         offset: 0,
                         max_bytes: 1024,
                     },
@@ -811,7 +811,7 @@ mod production {
     #[tokio::test]
     async fn v364_reliable_visible_text_cross_source_late_results_and_final_empty_keep_one_tail()
     -> Result<()> {
-        use pl_protocol::{DisplayBlockState, SingleVisibility};
+        use crate::{DisplayBlockState, SingleVisibility};
         let env = Environment::new(vec![], vec![]).await?;
         let result = async {
             let mut h = Harness::new(&env).await?;
@@ -966,8 +966,8 @@ mod production {
             let turn = h.finish_successfully().await?;
             assert!(turn.current.source_changes.iter().any(|source| matches!(
                 source.lifecycle,
-                pl_protocol::ChatSourceLifecycle::Ended {
-                    outcome: pl_protocol::ChatTerminalOutcome::Completed
+                crate::ChatSourceLifecycle::Ended {
+                    outcome: crate::ChatTerminalOutcome::Completed
                 }
             )));
             persist(&h, &turn).await?;
@@ -1006,8 +1006,8 @@ mod production {
     #[tokio::test]
     async fn resting_member_observation_survives_execution_replacement_without_freezing_work()
     -> Result<()> {
+        use crate::DisplayBlockState;
         use pl_core::chat::{ChatError, ChatHistory};
-        use pl_protocol::DisplayBlockState;
 
         let env = Environment::new(vec![], vec![]).await?;
         let result = async {
@@ -1180,7 +1180,7 @@ mod production {
     #[tokio::test]
     async fn hot_terminal_members_watch_until_business_seal_with_unfinished_observation()
     -> Result<()> {
-        use pl_protocol::DisplayContentSource;
+        use crate::DisplayContentSource;
 
         let env = Environment::new(vec![], vec![]).await?;
         let result = async {
@@ -1304,9 +1304,9 @@ mod production {
                     .await?
                     .context("database")?;
                 let page=h.history.display_member_page(&database,&member.block_id,None,1,None).await?;
-                assert!(matches!(&page.entries[0].head.record.content_source,pl_protocol::DisplayContentSource::CompletedOriginal { completion_id } if completion_id=="missing"));
+                assert!(matches!(&page.entries[0].head.record.content_source,crate::DisplayContentSource::CompletedOriginal { completion_id } if completion_id=="missing"));
                 let feed=env.runtime.open_display_fixture(&h.thread.id,demand(1)).await?;
-                assert!(feed.reader().read_content(&pl_protocol::ContentRef {database_id:database.clone(),target:pl_protocol::ContentTarget::ItemPayload {item_id:"missing".into()}},pl_protocol::ContentRange {offset:0,max_bytes:1024}).await.is_err());
+                assert!(feed.reader().read_content(&crate::ContentRef {database_id:database.clone(),target:crate::ContentTarget::ItemPayload {item_id:"missing".into()}},crate::ContentRange {offset:0,max_bytes:1024}).await.is_err());
                 feed.reader().close().await?; feed.close().await?;
                 assert!(
                     pl_core::chat::ChatHistory::item(&h.history, &original)

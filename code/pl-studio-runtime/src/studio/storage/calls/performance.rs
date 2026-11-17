@@ -13,7 +13,7 @@ pub(super) struct PerformanceSample {
     pub(super) call_id: String,
     pub(super) purpose: Option<String>,
     pub(super) usage_status: pl_core::usage::UsageStatus,
-    pub(super) first_output_source: pl_protocol::FirstOutputSource,
+    pub(super) first_output_source: crate::FirstOutputSource,
     pub(super) throughput_valid: bool,
     pub(super) completed_at: i64,
     pub(super) account_id: Option<String>,
@@ -54,7 +54,7 @@ fn sample_with_validity(
         usage_status: record
             .usage_status
             .unwrap_or(pl_core::usage::UsageStatus::LegacyUnknown),
-        first_output_source: timing.map_or(pl_protocol::FirstOutputSource::Unobserved, |timing| {
+        first_output_source: timing.map_or(crate::FirstOutputSource::Unobserved, |timing| {
             timing.first_output_source
         }),
         throughput_valid,
@@ -303,7 +303,7 @@ INSERT INTO performance_samples VALUES
         );
         assert_eq!(
             unknown.first_output_source,
-            pl_protocol::FirstOutputSource::LegacyUnknown
+            crate::FirstOutputSource::LegacyUnknown
         );
         assert_eq!(unknown.purpose, None);
         assert!(!unknown.has_throughput_sample);
@@ -465,7 +465,7 @@ INSERT INTO performance_samples VALUES
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
-                first_output_source: pl_protocol::FirstOutputSource::Incremental,
+                first_output_source: crate::FirstOutputSource::Incremental,
                 ttft_millis: Some(200),
                 decode_millis: Some(800),
                 response_millis: Some(1_000),
@@ -489,7 +489,7 @@ INSERT INTO performance_samples VALUES
 
         let mut inconsistent = record;
         inconsistent.timing = Some(event::CallTimingRecord {
-            first_output_source: pl_protocol::FirstOutputSource::Incremental,
+            first_output_source: crate::FirstOutputSource::Incremental,
             ttft_millis: Some(900),
             decode_millis: Some(5),
             response_millis: Some(1_000),
@@ -518,7 +518,7 @@ INSERT INTO performance_samples VALUES
                 ..Default::default()
             }),
             timing: Some(event::CallTimingRecord {
-                first_output_source: pl_protocol::FirstOutputSource::CompletedToolInput,
+                first_output_source: crate::FirstOutputSource::CompletedToolInput,
                 response_millis: Some(100),
                 ..Default::default()
             }),
@@ -528,7 +528,7 @@ INSERT INTO performance_samples VALUES
         assert_eq!(sample.output_tokens, Some(20));
         assert_eq!(
             sample.first_output_source,
-            pl_protocol::FirstOutputSource::CompletedToolInput
+            crate::FirstOutputSource::CompletedToolInput
         );
         assert!(!sample.throughput_valid);
         let mut unknown = record;
@@ -666,7 +666,7 @@ INSERT INTO performance_samples VALUES
                 call_id: "call-new".to_owned(),
                 purpose: None,
                 usage_status: pl_core::usage::UsageStatus::Partial,
-                first_output_source: pl_protocol::FirstOutputSource::Unobserved,
+                first_output_source: crate::FirstOutputSource::Unobserved,
                 throughput_valid: true,
                 completed_at: now,
                 account_id: Some("account".to_owned()),

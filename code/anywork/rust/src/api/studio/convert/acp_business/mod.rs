@@ -7,7 +7,7 @@ mod notification;
 use crate::api::studio::types::*;
 pub(crate) use config::{protocol_config_value, protocol_list};
 pub(crate) use content::{content, protocol_content};
-use pl_protocol::studio::{self as p, acp_schema as s};
+use pl_studio_runtime::{self as p, acp_schema as s};
 pub(crate) type R<T> = Result<T, BridgeAcpBusinessError>;
 
 pub(super) fn unsupported(name: &str) -> BridgeAcpBusinessError {
@@ -83,10 +83,8 @@ impl From<BridgeOpenAcpSessionRequest> for p::OpenAcpSessionRequest {
                     delegation_preference,
                 } => p::AcpOpenIntent::Draft {
                     workspace_mode: match workspace_mode {
-                        BridgeAcpWorkspaceMode::Local => pl_protocol::ThreadWorkspaceMode::Local,
-                        BridgeAcpWorkspaceMode::Worktree => {
-                            pl_protocol::ThreadWorkspaceMode::Worktree
-                        }
+                        BridgeAcpWorkspaceMode::Local => p::ThreadWorkspaceMode::Local,
+                        BridgeAcpWorkspaceMode::Worktree => p::ThreadWorkspaceMode::Worktree,
                     },
                     delegation_mode: delegation_mode.map(Into::into),
                     delegation_preference: delegation_preference.map(Into::into),

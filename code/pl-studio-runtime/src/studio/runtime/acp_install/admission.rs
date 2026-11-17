@@ -7,11 +7,11 @@
 
 use std::sync::{Arc, PoisonError};
 
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     AcpInstallFailure, AcpInstallFailureCode, AcpInstallSnapshot, AcpInstallStage, AcpInstallState,
     AcpProvider, CancelAcpInstallRequest, StartAcpInstallRequest, StudioErrorCode,
 };
+use anyhow::Result;
 use tokio_util::sync::CancellationToken;
 
 use super::mapping::{command_error, ensure_operation_id, failure, failure_command_error};

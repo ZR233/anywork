@@ -3,12 +3,12 @@
 mod observation;
 mod projection;
 
-pub use observation::AccountObservation;
-pub use pl_protocol::studio::{
+pub use crate::{
     AccountDomainFrame, AccountIdentity, AccountObservationTarget, CreateAccountRequest,
     PatchAccountRequest, SetAccountModelAutoCompactRequest, SetAccountModelConnectionRequest,
     SyncAccountModelsReply, SyncAccountModelsRequest,
 };
+pub use observation::AccountObservation;
 
 use super::StudioRuntime;
 use anyhow::Result;
@@ -35,8 +35,8 @@ impl StudioRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AccountSummary;
     use crate::{StudioHostKind, StudioRuntimeOptions};
-    use pl_protocol::studio::AccountSummary;
 
     #[tokio::test]
     async fn acp_service_directory_summaries_project_published_safe_diagnostics() -> Result<()> {

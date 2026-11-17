@@ -1,9 +1,9 @@
 //! Only the checkpoint-maintenance transaction decodes the retired branch-bearing receipt.
-use anyhow::{Result, ensure};
-use pl_protocol::{
+use crate::{
     AgentReviewTargetSnapshot, AgentWorkspaceAssignmentSnapshot, AgentWorkspaceMode,
     AgentWorktreeSnapshot,
 };
+use anyhow::{Result, ensure};
 use serde::Deserialize;
 
 #[derive(Deserialize)]

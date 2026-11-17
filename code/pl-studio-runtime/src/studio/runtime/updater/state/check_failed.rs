@@ -1,4 +1,4 @@
-use pl_protocol::StateError;
+use crate::StateError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

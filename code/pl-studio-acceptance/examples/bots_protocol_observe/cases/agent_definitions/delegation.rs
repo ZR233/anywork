@@ -7,11 +7,11 @@ use crate::support::{
     completed_turn_from_children,
 };
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
+use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
+use pl_studio_runtime::{
     AgentProfileSnapshot, AgentWorkspaceMode, ChatAtomKind, ChatScope, ThreadStatus,
     ThreadWaitState,
 };
-use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
 
 impl Observation<'_> {

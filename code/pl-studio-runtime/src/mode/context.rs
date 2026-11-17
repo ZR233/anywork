@@ -1,8 +1,7 @@
 //! 当前 Mode 和轻量 run 的模型上下文投影。
 
-use pl_protocol::{
-    ContextSectionId, ModelContextSectionSnapshot, WorkflowRunLifecycle, WorkflowSessionState,
-};
+use crate::workflow_tool::{WorkflowRunLifecycle, WorkflowSessionState};
+use crate::{ContextSectionId, ModelContextSectionSnapshot};
 use serde::Serialize;
 
 use super::RegisteredThreadMode;
@@ -68,7 +67,7 @@ struct WorkflowContextProjection<'a> {
     graph_revision: u64,
     graph_hash: &'a str,
     lifecycle: WorkflowRunLifecycle,
-    current_state: &'a pl_protocol::WorkflowState,
+    current_state: &'a crate::workflow_tool::WorkflowState,
     allowed_transitions: Vec<WorkflowTransitionProjection<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     latest_completion_summary: Option<&'a str>,

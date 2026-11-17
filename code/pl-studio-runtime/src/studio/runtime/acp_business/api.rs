@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
+use crate::acp_schema::ContentBlock;
+use crate::protocol::*;
+use crate::{AcpSessionReference, AgentBackend};
 use anyhow::{Context, Result, ensure};
 use futures::FutureExt;
 use pl_acp::session as sdk;
-use pl_protocol::session::{AcpSessionReference, AgentBackend};
-use pl_protocol::studio::*;
 
 use super::{AcpResources, AcpSessionCompletion, AcpSessionObservation, projection};
 use crate::studio::records::{AgentDirectoryRecord, SessionDirectoryRecord};
@@ -30,7 +31,7 @@ pub(crate) struct AcpBusinessOwner {
 
 struct MemberOpen {
     owner: crate::thread_assembler::SessionRuntime,
-    identity: pl_protocol::AgentThreadIdentity,
+    identity: crate::AgentThreadIdentity,
     project: crate::studio::WorkspaceRecord,
     definition: crate::config::AcpServiceDefinition,
     session_record: SessionDirectoryRecord,
@@ -144,14 +145,11 @@ impl AcpBusinessOwner {
         &self,
         owner: &crate::thread_assembler::SessionRuntime,
         request: &crate::thread_assembler::ChildThreadRequest,
-        profile: &pl_protocol::AgentProfile,
+        profile: &crate::AgentProfile,
         definition: crate::config::AcpServiceDefinition,
-    ) -> Result<(
-        Arc<AcpResources>,
-        pl_protocol::AgentWorkspaceAssignmentSnapshot,
-    )> {
+    ) -> Result<(Arc<AcpResources>, crate::AgentWorkspaceAssignmentSnapshot)> {
         ensure!(
-            profile.workspace_mode != pl_protocol::AgentWorkspaceMode::Review
+            profile.workspace_mode != crate::AgentWorkspaceMode::Review
                 && request.model_selection.is_none()
                 && request.writable_paths.is_none()
                 && request.review_target_agent_id.is_none()
@@ -257,7 +255,7 @@ impl AcpBusinessOwner {
             let mut started = Some(started);
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
-                    let draft_worktree = if draft && session_record.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+                    let draft_worktree = if draft && session_record.workspace_mode == crate::ThreadWorkspaceMode::Worktree {
                         resources.retain_draft_worktree(factory.clone(), thread_id.clone()).await;
                         let lease = factory.prepare_acp_root_worktree(&thread_id, &project).await
                             .map_err(|error| projection::preparation(&error.to_string()))?;
@@ -345,7 +343,7 @@ impl AcpBusinessOwner {
                                     &resources,
                                     &config,
                                     &cwd,
-                                    pl_protocol::DelegationSettings {
+                                    crate::DelegationSettings {
                                         mode: session_record.delegation_mode,
                                         preference: session_record.delegation_preference,
                                     },
@@ -514,7 +512,7 @@ impl StudioRuntime {
             );
             let owner = self
                 .sessions
-                .materialize(&pl_protocol::SessionId::new(session.session_id.clone())?)?;
+                .materialize(&crate::SessionId::new(session.session_id.clone())?)?;
             // The existing per-member admission permit serializes cold preparation
             // registration, not protocol open or product publication.
             _admission = Some(owner.agent_operation(&agent.thread_id).await);
@@ -566,7 +564,7 @@ impl StudioRuntime {
                     delegation_preference.unwrap_or(delegation.preference),
                 ),
                 _ => (
-                    pl_protocol::ThreadWorkspaceMode::Local,
+                    crate::ThreadWorkspaceMode::Local,
                     delegation.mode,
                     delegation.preference,
                 ),
@@ -605,15 +603,15 @@ impl StudioRuntime {
         self.store
             .ensure_agent_execution_allowed(&thread_id)
             .await?;
-        let identity = pl_protocol::AgentThreadIdentity {
-            session_id: pl_protocol::SessionId::new(session_record.session_id.clone())?,
-            agent_id: pl_protocol::AgentId::new(agent_id.clone())?,
+        let identity = crate::AgentThreadIdentity {
+            session_id: crate::SessionId::new(session_record.session_id.clone())?,
+            agent_id: crate::AgentId::new(agent_id.clone())?,
             parent_agent_id: previous
                 .as_ref()
                 .and_then(|agent| agent.parent_agent_id.as_ref())
-                .map(|id| pl_protocol::AgentId::new(id.clone()))
+                .map(|id| crate::AgentId::new(id.clone()))
                 .transpose()?,
-            thread_id: pl_protocol::ThreadId::new(thread_id.clone())?,
+            thread_id: crate::ThreadId::new(thread_id.clone())?,
         };
         let owner = self.sessions.materialize(&identity.session_id)?;
         let business = AcpBusinessOwner::new(
@@ -663,7 +661,7 @@ impl StudioRuntime {
         &self,
         target: &AcpSessionTarget,
     ) -> Result<Arc<AcpResources>, AcpBusinessFailure> {
-        let id = pl_protocol::SessionId::new(target.session_id.clone())
+        let id = crate::SessionId::new(target.session_id.clone())
             .map_err(|_| projection::failure(sdk::Error::Stale))?;
         let owner = self
             .sessions
@@ -840,7 +838,7 @@ impl StudioRuntime {
                 && matches!(&agent.backend, AgentBackend::Acp { .. }),
             "ACP product membership is not executable"
         );
-        let id = pl_protocol::SessionId::new(session.session_id.clone())?;
+        let id = crate::SessionId::new(session.session_id.clone())?;
         let owner = self
             .sessions
             .get(&id)
@@ -858,7 +856,7 @@ impl StudioRuntime {
         Ok(snapshot.capabilities.prompt_capabilities)
     }
     pub async fn close_acp_session(&self, target: AcpSessionTarget) -> Result<AcpBusinessClose> {
-        let id = pl_protocol::SessionId::new(target.session_id)?;
+        let id = crate::SessionId::new(target.session_id)?;
         let owner = self
             .sessions
             .get(&id)

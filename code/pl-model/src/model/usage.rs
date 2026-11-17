@@ -1,8 +1,9 @@
 //! Thin adaptation of the model wire report to core's one usage analyzer.
 
+use crate::completion::InferenceTiming;
+use crate::model::UsageReport;
 use pl_core::model::ModelUsage;
 use pl_core::usage::{UsageAnalysis, UsageStatus};
-use pl_protocol::{InferenceTiming, UsageReport};
 
 /// Preserve all vendor fields, including missing sides and contradictory reported totals.
 pub fn model_usage(report: &UsageReport) -> ModelUsage {

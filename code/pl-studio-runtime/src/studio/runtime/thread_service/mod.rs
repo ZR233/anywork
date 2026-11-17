@@ -62,11 +62,11 @@ impl StudioRuntime {
     pub async fn create_thread_command(
         &self,
         workspace_id: String,
-        request: pl_protocol::studio::CreateThreadRequest,
+        request: crate::CreateThreadRequest,
         preparation_observer: Option<super::ThreadPreparationObserver>,
     ) -> Result<StudioStartNewThreadResponse> {
-        let mode = pl_protocol::ThreadModeId::from_label(request.mode.trim()).map_err(|_| {
-            anyhow::Error::new(pl_protocol::studio::StudioError::invalid_argument(
+        let mode = crate::mode::ThreadModeId::from_label(request.mode.trim()).map_err(|_| {
+            anyhow::Error::new(crate::StudioError::invalid_argument(
                 "mode must be an available mode.* id",
             ))
         })?;
@@ -234,7 +234,7 @@ mod s2_delete_recovery_tests {
             &self,
             identity: &crate::thread_assembler::ThreadActivation,
         ) -> std::result::Result<
-            pl_protocol::DelegationSettings,
+            crate::DelegationSettings,
             crate::thread_assembler::ThreadAssemblyError,
         > {
             self.native.root_delegation(identity).await

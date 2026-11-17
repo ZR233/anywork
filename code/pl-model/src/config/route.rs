@@ -85,12 +85,12 @@ pub enum ModelRouteAvailability {
 /// 完成引用校验后可直接创建模型 account 的角色路由。
 #[derive(Debug, Clone)]
 pub struct ResolvedModelRoute {
-    pub pricing_mode: pl_protocol::PricingMode,
+    pub pricing_mode: crate::model::PricingMode,
     pub role: AgentRoleId,
     pub account_id: AccountId,
     pub endpoint: ProtocolEndpoint,
     pub model: ModelInfo,
-    pub context: pl_protocol::ModelContextResolution,
+    pub context: crate::model::ModelContextResolution,
     pub effort: Option<ReasoningEffort>,
 }
 

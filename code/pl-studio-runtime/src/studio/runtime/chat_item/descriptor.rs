@@ -1,13 +1,13 @@
 //! 唯一的产品元数据编码：头部与不含流式正文的描述，不接受旧 ExecutionItem 内存外壳。
 
-use crate::{ExecutionItem, ExecutionShape};
-use anyhow::Result;
-use pl_core::chat::ChatError;
-use pl_protocol::{
+use crate::{
     AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ThreadAgentState, ThreadContentLifecycle,
     ThreadInferenceState, ThreadToolOutput, ThreadToolState, ThreadToolUserInput,
     ThreadToolUserInputState, TurnState, UserInputAnswer, UserInputResolution,
 };
+use crate::{ExecutionItem, ExecutionShape};
+use anyhow::Result;
+use pl_core::chat::ChatError;
 
 use super::payload::{
     AgentDescriptor, AgentOutcome, AnswerDescriptor, ContentOutcome, InferenceDescriptor,
@@ -376,7 +376,7 @@ fn user_input(input: &ThreadToolUserInput, thread_id: &str) -> Result<UserInputD
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::{
+    use crate::{
         InterruptedThreadTool, ResolvedThreadToolUserInput, ThreadPlanDocumentIdentity,
         ThreadToolInvocation, ThreadToolItem, ThreadToolUserInputAnswer, UserQuestion,
     };

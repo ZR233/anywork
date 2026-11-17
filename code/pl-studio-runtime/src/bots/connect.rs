@@ -7,8 +7,8 @@ use super::protocol::im::FeishuIm;
 use super::protocol::ws::{FeishuWsSession, WsEndpointDiscovery, WsInbound};
 use super::send::SendPlan;
 use super::storage::{BotStateStore, SendRecord, SendRecordStatus, SendSegmentFact};
+use crate::BotConnectionState;
 use crate::studio::unix_seconds;
-use pl_protocol::studio::BotConnectionState;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -338,9 +338,7 @@ pub struct ClaimedSend<'a> {
     pub rate: &'a super::send::SendRate,
 }
 
-pub async fn send_text(
-    claimed: ClaimedSend<'_>,
-) -> Result<pl_protocol::studio::BotSendResult, FeishuError> {
+pub async fn send_text(claimed: ClaimedSend<'_>) -> Result<crate::BotSendResult, FeishuError> {
     let ClaimedSend {
         http,
         token,
@@ -365,9 +363,9 @@ pub async fn send_text(
         {
             Ok(outcome) => {
                 ids.push(outcome.message_id.clone());
-                segments.push(pl_protocol::studio::BotSendSegment {
+                segments.push(crate::BotSendSegment {
                     index: index as u32,
-                    status: pl_protocol::studio::BotSendStatus::Succeeded,
+                    status: crate::BotSendStatus::Succeeded,
                     platform_message_id: Some(outcome.message_id.clone()),
                     diagnostic: None,
                 });
@@ -376,9 +374,9 @@ pub async fn send_text(
             }
             Err(error) if error.acceptance_unknown() => {
                 unknown = true;
-                segments.push(pl_protocol::studio::BotSendSegment {
+                segments.push(crate::BotSendSegment {
                     index: index as u32,
-                    status: pl_protocol::studio::BotSendStatus::Unknown,
+                    status: crate::BotSendStatus::Unknown,
                     platform_message_id: None,
                     diagnostic: Some(error.diagnostic()),
                 });
@@ -387,9 +385,9 @@ pub async fn send_text(
             }
             Err(error) => {
                 rejected = true;
-                segments.push(pl_protocol::studio::BotSendSegment {
+                segments.push(crate::BotSendSegment {
                     index: index as u32,
-                    status: pl_protocol::studio::BotSendStatus::Rejected,
+                    status: crate::BotSendStatus::Rejected,
                     platform_message_id: None,
                     diagnostic: Some(error.diagnostic()),
                 });
@@ -429,17 +427,17 @@ pub async fn send_text(
         },
     )
     .await?;
-    Ok(pl_protocol::studio::BotSendResult {
+    Ok(crate::BotSendResult {
         operation_id: operation_id.to_string(),
         bot_id: bot_id.to_string(),
         chat_id: chat_id.to_string(),
         status: product_send_status(status),
         segments,
-        receipt: pl_protocol::studio::StudioCommandReceipt {
+        receipt: crate::StudioCommandReceipt {
             operation_id: operation_id.to_string(),
-            disposition: pl_protocol::studio::CommandDisposition::Applied,
+            disposition: crate::CommandDisposition::Applied,
             targets: Vec::new(),
-            effect: pl_protocol::studio::CommandEffectPoint::Immediate,
+            effect: crate::CommandEffectPoint::Immediate,
             effective: true,
             durable: true,
             requires_identity_observation: false,
@@ -452,10 +450,10 @@ pub(crate) fn replay_send(
     operation_id: &str,
     bot_id: &str,
     chat_id: &str,
-) -> pl_protocol::studio::BotSendResult {
+) -> crate::BotSendResult {
     let facts_complete = existing.facts_complete;
     let status = product_send_status(existing.status);
-    pl_protocol::studio::BotSendResult {
+    crate::BotSendResult {
         operation_id: operation_id.to_string(),
         bot_id: bot_id.to_string(),
         chat_id: chat_id.to_string(),
@@ -463,30 +461,28 @@ pub(crate) fn replay_send(
         segments: existing
             .segments
             .into_iter()
-            .map(|fact| pl_protocol::studio::BotSendSegment {
+            .map(|fact| crate::BotSendSegment {
                 index: fact.index,
                 status: product_send_status(fact.status),
                 platform_message_id: fact.platform_message_id,
-                diagnostic: fact
-                    .diagnostic
-                    .map(|message| pl_protocol::studio::BotDiagnostic {
-                        code: "sendSegment".to_string(),
-                        message,
-                        retryable: false,
-                        platform_code: None,
-                        guidance: if facts_complete {
-                            None
-                        } else {
-                            Some("legacySegmentFactsUnproven".to_string())
-                        },
-                    }),
+                diagnostic: fact.diagnostic.map(|message| crate::BotDiagnostic {
+                    code: "sendSegment".to_string(),
+                    message,
+                    retryable: false,
+                    platform_code: None,
+                    guidance: if facts_complete {
+                        None
+                    } else {
+                        Some("legacySegmentFactsUnproven".to_string())
+                    },
+                }),
             })
             .collect(),
-        receipt: pl_protocol::studio::StudioCommandReceipt {
+        receipt: crate::StudioCommandReceipt {
             operation_id: operation_id.to_string(),
-            disposition: pl_protocol::studio::CommandDisposition::NoChange,
+            disposition: crate::CommandDisposition::NoChange,
             targets: Vec::new(),
-            effect: pl_protocol::studio::CommandEffectPoint::Immediate,
+            effect: crate::CommandEffectPoint::Immediate,
             effective: true,
             durable: true,
             requires_identity_observation: false,
@@ -519,12 +515,12 @@ fn overall_send_status(
     }
 }
 
-fn product_send_status(status: SendRecordStatus) -> pl_protocol::studio::BotSendStatus {
+fn product_send_status(status: SendRecordStatus) -> crate::BotSendStatus {
     match status {
-        SendRecordStatus::Succeeded => pl_protocol::studio::BotSendStatus::Succeeded,
-        SendRecordStatus::Partial => pl_protocol::studio::BotSendStatus::Partial,
-        SendRecordStatus::Rejected => pl_protocol::studio::BotSendStatus::Rejected,
-        SendRecordStatus::Unknown => pl_protocol::studio::BotSendStatus::Unknown,
+        SendRecordStatus::Succeeded => crate::BotSendStatus::Succeeded,
+        SendRecordStatus::Partial => crate::BotSendStatus::Partial,
+        SendRecordStatus::Rejected => crate::BotSendStatus::Rejected,
+        SendRecordStatus::Unknown => crate::BotSendStatus::Unknown,
     }
 }
 

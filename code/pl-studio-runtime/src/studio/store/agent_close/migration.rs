@@ -29,7 +29,7 @@ struct CloseV1 {
     git: Option<GrantV1>,
     execution_closed: bool,
     worktree_cleanup: AgentWorktreeCleanup,
-    error: Option<pl_protocol::StateError>,
+    error: Option<crate::StateError>,
 }
 
 #[derive(Deserialize)]

@@ -246,7 +246,7 @@ struct HistoryConnection {
 pub(crate) struct InputIdentityWrite {
     pub entry: crate::studio::storage::state::InputIdentityEntry,
     pub request_digest: Option<String>,
-    pub presentation: pl_protocol::MessagePresentation,
+    pub presentation: crate::MessagePresentation,
 }
 
 /// 持久化幂等命中：保存的最小身份加上保存的 host 提交摘要。
@@ -342,7 +342,7 @@ pub(in crate::studio) struct CheckpointEffect<'a> {
 pub(in crate::studio) struct ColdStateFacet {
     pub current: Arc<crate::studio::thread_projection::CurrentState>,
     pub model_route: Option<crate::studio::model_route::SavedModelRoute>,
-    pub terminal_turn: Option<pl_protocol::Turn>,
+    pub terminal_turn: Option<crate::Turn>,
     /// Saved core envelope from this same read. Context records stay with execution recovery;
     /// usage, context-window and cost facts remain on the envelope.
     pub saved_state: Option<pl_core::thread::ThreadSnapshot>,
@@ -804,7 +804,7 @@ impl HistoryStore {
                     &tx,
                     integer(write_seq)?,
                     &LegacyTurn {
-                        turn: pl_protocol::Turn {
+                        turn: crate::Turn {
                             id: item.turn_id.clone(),
                             thread_id: item.thread_id.clone(),
                             input_id: turn.input_id().map(str::to_owned),
@@ -1391,7 +1391,7 @@ impl HistoryStore {
         &self,
         turn_id: &str,
     ) -> Result<crate::studio::thread_projection::TurnResult> {
-        use pl_protocol::{ChatAtom, ChatAtomKind, ThreadTextChannel};
+        use crate::{ChatAtom, ChatAtomKind, ThreadTextChannel};
         let mut result = crate::studio::thread_projection::TurnResult::default();
         let Some(connection) = self.reader().await? else {
             return Ok(result);
@@ -1703,8 +1703,7 @@ impl HistoryStore {
                 );
                 ensure!(
                     stored.context_disposition == turn.context_disposition
-                        || stored.context_disposition
-                            == pl_protocol::ThreadContextDisposition::Active,
+                        || stored.context_disposition == crate::ThreadContextDisposition::Active,
                     "history Turn context disposition regressed at revision {revision}"
                 );
                 ensure!(
@@ -1776,9 +1775,7 @@ impl HistoryStore {
 
     /// Saved bounded current only, through the same identity/schema admission as other reads.
     #[cfg(test)]
-    pub(crate) async fn conversation_current(
-        &self,
-    ) -> Result<Option<pl_protocol::CurrentProjection>> {
+    pub(crate) async fn conversation_current(&self) -> Result<Option<crate::CurrentProjection>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
@@ -1832,7 +1829,7 @@ impl HistoryStore {
     #[cfg(test)]
     pub(in crate::studio) async fn read_business_refs(
         &self,
-    ) -> Result<Option<pl_protocol::ThreadBusinessRefs>> {
+    ) -> Result<Option<crate::ThreadBusinessRefs>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
@@ -1848,12 +1845,7 @@ impl HistoryStore {
     /// This validates the original state envelope without restoring execution context records.
     pub(in crate::studio) async fn read_state_with_business_refs(
         &self,
-    ) -> Result<
-        Option<(
-            pl_core::thread::ThreadSnapshot,
-            pl_protocol::ThreadBusinessRefs,
-        )>,
-    > {
+    ) -> Result<Option<(pl_core::thread::ThreadSnapshot, crate::ThreadBusinessRefs)>> {
         let connection = {
             let _initializing = self.state.init.read().await;
             self.read_only_connection().await?
@@ -1903,7 +1895,7 @@ impl HistoryStore {
         &self,
         after_atom_id: Option<&str>,
         limit: usize,
-    ) -> Result<Vec<pl_protocol::ChatAtom>> {
+    ) -> Result<Vec<crate::ChatAtom>> {
         ensure!(
             (1..=128).contains(&limit),
             "recovery start page limit must be 1..=128"
@@ -1919,9 +1911,9 @@ impl HistoryStore {
 
     pub(crate) async fn execution_sources(
         &self,
-        sources: &[pl_protocol::ChatSourceId],
+        sources: &[crate::ChatSourceId],
         effect_cut: u64,
-    ) -> Result<Vec<pl_protocol::ChatSourceState>> {
+    ) -> Result<Vec<crate::ChatSourceState>> {
         if sources.is_empty() {
             return Ok(Vec::new());
         }
@@ -1932,9 +1924,9 @@ impl HistoryStore {
                 .iter()
                 .filter(|source| seen.insert((*source).clone()))
                 .cloned()
-                .map(|source| pl_protocol::ChatSourceState {
+                .map(|source| crate::ChatSourceState {
                     source,
-                    lifecycle: pl_protocol::ChatSourceLifecycle::Unknown,
+                    lifecycle: crate::ChatSourceLifecycle::Unknown,
                     started: None,
                     ended: None,
                 })
@@ -1965,11 +1957,11 @@ impl HistoryStore {
     #[cfg(test)]
     pub(in crate::studio) async fn page_current(
         &self,
-        reference: &pl_protocol::CurrentCollectionRef,
+        reference: &crate::CurrentCollectionRef,
         after: Option<&str>,
-        demand: pl_protocol::ReadDemand,
+        demand: crate::ReadDemand,
         encode_continuation: &(dyn Fn(String) -> Result<String> + Send + Sync),
-    ) -> Result<pl_protocol::CurrentCollectionPage> {
+    ) -> Result<crate::CurrentCollectionPage> {
         let connection = self.reader().await?.context(ChatError::StaleContent)?;
         ensure!(
             reference.database_id == connection.database_id,
@@ -2006,16 +1998,14 @@ impl HistoryStore {
     /// identity and revision are the writer's own, not a re-derivation, and no body is read.
     ///
     /// 冷读缺失历史库时返回 `None`，且绝不创建它。
-    pub(crate) async fn newest_terminal_turn(&self) -> Result<Option<pl_protocol::Turn>> {
+    pub(crate) async fn newest_terminal_turn(&self) -> Result<Option<crate::Turn>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
         };
         Self::newest_terminal_turn_in(&connection.db).await
     }
 
-    async fn newest_terminal_turn_in(
-        db: &impl ConnectionTrait,
-    ) -> Result<Option<pl_protocol::Turn>> {
+    async fn newest_terminal_turn_in(db: &impl ConnectionTrait) -> Result<Option<crate::Turn>> {
         turns::terminal(db).await
     }
 
@@ -2121,10 +2111,7 @@ impl HistoryStore {
     /// Unlike the retained-terminal seed, this query must not skip a newer unfinished Turn. The
     /// existing `(kind, ordinal)` item index orders admissions, not later items of an older Turn;
     /// its matching typed Turn and the watermark are read in the same SQLite snapshot.
-    pub(crate) async fn latest_turn_at(
-        &self,
-        history_fence: u64,
-    ) -> Result<Option<pl_protocol::Turn>> {
+    pub(crate) async fn latest_turn_at(&self, history_fence: u64) -> Result<Option<crate::Turn>> {
         let Some(connection) = self.reader().await? else {
             ensure!(history_fence == 0, "child durable history is missing");
             return Ok(None);
@@ -2150,9 +2137,9 @@ impl HistoryStore {
         &self,
         cursor: Option<&str>,
         limit: usize,
-    ) -> Result<pl_protocol::ThreadTurnPage> {
+    ) -> Result<crate::ThreadTurnPage> {
         let Some(connection) = self.reader().await? else {
-            return Ok(pl_protocol::ThreadTurnPage {
+            return Ok(crate::ThreadTurnPage {
                 turns: vec![],
                 next_cursor: None,
             });
@@ -2183,7 +2170,7 @@ impl HistoryStore {
         through: Option<u64>,
         limit: usize,
         cancellation: &tokio_util::sync::CancellationToken,
-    ) -> Result<(u64, u64, Vec<pl_protocol::CompletedEntry>, bool)> {
+    ) -> Result<(u64, u64, Vec<crate::CompletedEntry>, bool)> {
         let read = async {
             // 行上限与探测行必须用同一份 limit：早先的写法按调用方 limit 比较 `has_more`，却把
             // SQL LIMIT 截到 51，limit > 50 时会返回 51 条却宣称“没有更多”。这里先收敛 limit，再
@@ -2290,7 +2277,7 @@ impl HistoryStore {
                     started,
                     value.turn.updated_at,
                     ExecutionShape::Turn(
-                        pl_protocol::ThreadTurnItem::new(value.turn.state)
+                        crate::ThreadTurnItem::new(value.turn.state)
                             .with_input_id(value.turn.input_id),
                     ),
                 )));
@@ -2567,7 +2554,7 @@ async fn read_latest_turn_at(
     tx: &impl ConnectionTrait,
     thread_id: &str,
     history_fence: u64,
-) -> Result<Option<pl_protocol::Turn>> {
+) -> Result<Option<crate::Turn>> {
     turns::latest_at(tx, thread_id, history_fence).await
 }
 
@@ -2978,10 +2965,10 @@ async fn write_input_identity(
     Ok(())
 }
 
-fn presentation_label(presentation: pl_protocol::MessagePresentation) -> &'static str {
+fn presentation_label(presentation: crate::MessagePresentation) -> &'static str {
     match presentation {
-        pl_protocol::MessagePresentation::Visible => "visible",
-        pl_protocol::MessagePresentation::Hidden => "hidden",
+        crate::MessagePresentation::Visible => "visible",
+        crate::MessagePresentation::Hidden => "hidden",
     }
 }
 
@@ -3307,7 +3294,7 @@ pub(crate) async fn discard_empty_demand_fixture(db: &impl ConnectionTrait) -> R
 pub(super) fn test_current(sequence: u64) -> conversation::current::PreparedCurrent {
     conversation::current::PreparedCurrent::new(
         crate::studio::thread_projection::FrozenCurrentProjection::new(
-            pl_protocol::CurrentProjection::empty(sequence, pl_protocol::ThreadStatus::Idle),
+            crate::CurrentProjection::empty(sequence, crate::ThreadStatus::Idle),
         ),
         std::sync::Arc::from([]),
     )
@@ -3378,7 +3365,7 @@ pub(in crate::studio) fn test_turns(effect: u64, items: &[ExecutionItem]) -> Vec
                 return None;
             };
             Some(turns::TurnWrite {
-                turn: pl_protocol::Turn {
+                turn: crate::Turn {
                     id: item.turn_id.clone(),
                     thread_id: item.thread_id.clone(),
                     input_id: turn.input_id().map(str::to_owned),
@@ -3399,7 +3386,7 @@ pub(in crate::studio) fn test_turns(effect: u64, items: &[ExecutionItem]) -> Vec
 #[cfg(test)]
 mod agent_session_tests {
     use super::*;
-    use pl_protocol::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
+    use crate::{ThreadContentLifecycle, ThreadTextChannel, ThreadTextItem};
     use tokio_util::sync::CancellationToken;
 
     fn text(ordinal: u64, revision: u64, body: &str) -> ExecutionItem {
@@ -3640,6 +3627,7 @@ mod agent_session_tests {
 mod business_refs_tests {
     //! Real SQLite business references: same-cut heads, immutable documents and local invalidation.
     use super::*;
+    use crate::{ContentOwner, ContentTarget, ThreadBusinessRefs, UserQuestion};
     use conversation::current::{CurrentContentWrite, PreparedCurrent};
     use pl_core::{
         context::OpaquePayload,
@@ -3649,7 +3637,6 @@ mod business_refs_tests {
             interactions::{InteractionRecord, InteractionRequest, InteractionState},
         },
     };
-    use pl_protocol::{ContentOwner, ContentTarget, ThreadBusinessRefs, UserQuestion};
     use std::collections::BTreeSet;
 
     const THREAD: &str = "cold-business-refs";
@@ -4014,7 +4001,7 @@ mod business_refs_tests {
         Ok(refs)
     }
 
-    fn content_request(reference: &pl_protocol::ContentRef) -> Result<ContentReadRequest> {
+    fn content_request(reference: &crate::ContentRef) -> Result<ContentReadRequest> {
         let ContentTarget::Body { owner, key } = &reference.target else {
             anyhow::bail!("body ref required");
         };
@@ -4056,7 +4043,7 @@ mod business_refs_tests {
             .page_current(
                 reference,
                 None,
-                pl_protocol::ReadDemand {
+                crate::ReadDemand {
                     max_items: 1,
                     max_bytes: 16384,
                 },
@@ -4068,7 +4055,7 @@ mod business_refs_tests {
             .page_current(
                 reference,
                 page.continuation.as_deref(),
-                pl_protocol::ReadDemand {
+                crate::ReadDemand {
                     max_items: 1,
                     max_bytes: 16384,
                 },
@@ -4083,7 +4070,7 @@ mod business_refs_tests {
             cold.page_current(
                 &wrong,
                 None,
-                pl_protocol::ReadDemand {
+                crate::ReadDemand {
                     max_items: 1,
                     max_bytes: 16384
                 },
@@ -4098,7 +4085,7 @@ mod business_refs_tests {
             cold.page_current(
                 &wrong,
                 None,
-                pl_protocol::ReadDemand {
+                crate::ReadDemand {
                     max_items: 1,
                     max_bytes: 16384
                 },
@@ -4113,7 +4100,7 @@ mod business_refs_tests {
             cold.page_current(
                 &wrong,
                 None,
-                pl_protocol::ReadDemand {
+                crate::ReadDemand {
                     max_items: 1,
                     max_bytes: 16384
                 },
@@ -4270,7 +4257,7 @@ mod future_size_tests {
             (
                 "checkpoint recovery",
                 future_size(
-                    |(store, thread): (&'static StudioStore, &'static pl_protocol::Thread)| {
+                    |(store, thread): (&'static StudioStore, &'static crate::Thread)| {
                         load_checkpoint_for_recovery(store, thread)
                     },
                 ),
@@ -4296,8 +4283,8 @@ mod future_size_tests {
                 future_size(|runtime: &'static StudioRuntime| {
                     runtime.open_conversation_feed(
                         "size",
-                        pl_protocol::ChatScope::conversation(None),
-                        pl_protocol::ReadDemand {
+                        crate::ChatScope::conversation(None),
+                        crate::ReadDemand {
                             max_items: 1,
                             max_bytes: 16 * 1024,
                         },
@@ -4401,11 +4388,11 @@ mod storage_fault_tests {
     #[tokio::test]
     async fn legacy_fixture_downgrade_rejects_original_and_open_work_before_any_ddl() -> Result<()>
     {
-        use pl_core::chat::{ChatDraft, ChatItem};
-        use pl_protocol::{
+        use crate::{
             ChatActiveStatus, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind, ChatFactPosition,
             ChatSourceId,
         };
+        use pl_core::chat::{ChatDraft, ChatItem};
 
         for open_work in [false, true] {
             let dir = tempfile::tempdir()?;
@@ -4414,7 +4401,7 @@ mod storage_fault_tests {
             store.prepare_write().await?;
             let connection = store.writer().await?;
             let db = &connection.db;
-            let mut atom: pl_protocol::ChatAtom =
+            let mut atom: crate::ChatAtom =
                 serde_json::from_slice(&conversation::tests::metadata("preserved-original"))?;
             if open_work {
                 atom.kind = ChatAtomKind::ToolCall;
@@ -4807,7 +4794,7 @@ mod storage_fault_tests {
         )?;
         let billing = crate::studio::thread_projection::AuxiliaryBillingReceipt {
             succeeded: true,
-            billing: pl_protocol::InferenceBillingRecord {
+            billing: crate::InferenceBillingRecord {
                 inference_id: "atomic-title".into(),
                 purpose: Some("title".into()),
                 account_id: "frozen-account".into(),
@@ -4816,16 +4803,16 @@ mod storage_fault_tests {
                 model_observation: None,
                 effort: None,
                 context_window: None,
-                accounting: pl_protocol::InferenceAccounting {
-                    usage: pl_protocol::UsageReport {
+                accounting: crate::InferenceAccounting {
+                    usage: crate::UsageReport {
                         input_tokens: Some(10),
                         output_tokens: Some(2),
                         cache_read_tokens: Some(0),
                         total_tokens: Some(12),
                         ..Default::default()
                     },
-                    pricing: pl_protocol::PricingOutcome::Estimated {
-                        cost: pl_protocol::RuntimeCostAmount {
+                    pricing: crate::PricingOutcome::Estimated {
+                        cost: crate::RuntimeCostAmount {
                             currency: "USD".into(),
                             amount: 1.25,
                         },
@@ -4976,7 +4963,7 @@ mod storage_fault_tests {
             committed_accounting.purpose_costs,
             vec![(
                 Some("title".into()),
-                vec![pl_protocol::RuntimeCostAmount {
+                vec![crate::RuntimeCostAmount {
                     currency: "USD".into(),
                     amount: 1.25,
                 }],
@@ -5724,13 +5711,9 @@ mod storage_fault_tests {
                 1,
                 1,
                 1,
-                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
-                    pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                        Some(1),
-                        1,
-                        pl_protocol::TurnCompletion::Normal,
-                    )),
-                )),
+                ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
+                    crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
+                ))),
             )
         };
         let mut first_items = vec![terminal("first", 1)];
@@ -5825,7 +5808,7 @@ mod storage_fault_tests {
         let fresh = store.turn_page(Some(&fresh_second), 1).await?;
         assert_eq!(
             fresh.turns[0].context_disposition,
-            pl_protocol::ThreadContextDisposition::RolledBack
+            crate::ThreadContextDisposition::RolledBack
         );
         let mut legacy: serde_json::Value =
             serde_json::from_str(fresh.next_cursor.as_ref().unwrap())?;
@@ -5854,7 +5837,7 @@ mod storage_fault_tests {
                 .await?
                 .unwrap()
                 .context_disposition,
-            pl_protocol::ThreadContextDisposition::Active
+            crate::ThreadContextDisposition::Active
         );
         assert!(
             change(&store, 84, &[], &["third", "missing"])
@@ -5867,7 +5850,7 @@ mod storage_fault_tests {
                 .await?
                 .unwrap()
                 .context_disposition,
-            pl_protocol::ThreadContextDisposition::Active
+            crate::ThreadContextDisposition::Active
         );
         db.db
             .execute_unprepared(
@@ -5899,7 +5882,7 @@ mod storage_fault_tests {
         let fresh_second = store.turn_page(None, 2).await?.next_cursor.unwrap();
         assert_eq!(
             store.turn_page(Some(&fresh_second), 1).await?.turns[0].context_disposition,
-            pl_protocol::ThreadContextDisposition::RolledBack
+            crate::ThreadContextDisposition::RolledBack
         );
         assert_eq!(
             turns::read(&db.db, "first").await?.unwrap().updated_effect,
@@ -5910,26 +5893,24 @@ mod storage_fault_tests {
         let mut running = original_turn[0].clone();
         running.turn.id = "running".into();
         running.turn_order = 1000;
-        running.turn.state = pl_protocol::TurnState::Running(pl_protocol::RunningTurnState::new(
-            1,
-            pl_protocol::TurnPhase::Thinking,
-        ));
+        running.turn.state =
+            crate::TurnState::Running(crate::RunningTurnState::new(1, crate::TurnPhase::Thinking));
         running.updated_effect = Some(85);
         running.terminal_effect = None;
         change(&store, 85, &[running.clone()], &[]).await?;
         change(&store, 86, &[], &["running"]).await?;
         running.updated_effect = Some(87);
         running.turn.revision = 87;
-        running.turn.state = pl_protocol::TurnState::Running(pl_protocol::RunningTurnState::new(
+        running.turn.state = crate::TurnState::Running(crate::RunningTurnState::new(
             1,
-            pl_protocol::TurnPhase::Responding,
+            crate::TurnPhase::Responding,
         ));
         change(&store, 87, &[running], &["running"]).await?;
         let updated = turns::read(&db.db, "running").await?.unwrap();
         assert_eq!(updated.updated_effect, Some(87));
         assert_eq!(
             updated.context_disposition,
-            pl_protocol::ThreadContextDisposition::RolledBack
+            crate::ThreadContextDisposition::RolledBack
         );
 
         Ok(())
@@ -5991,7 +5972,7 @@ mod storage_fault_tests {
                     1,
                 ),
                 request_digest: None,
-                presentation: pl_protocol::MessagePresentation::Hidden,
+                presentation: crate::MessagePresentation::Hidden,
             },
             InputIdentityWrite {
                 entry: crate::studio::storage::state::InputIdentityEntry::new(
@@ -5999,7 +5980,7 @@ mod storage_fault_tests {
                     1,
                 ),
                 request_digest: None,
-                presentation: pl_protocol::MessagePresentation::Visible,
+                presentation: crate::MessagePresentation::Visible,
             },
         ];
         let receipts = [FactReceiptWrite {
@@ -6127,12 +6108,8 @@ mod storage_fault_tests {
                 7,
                 8,
                 ExecutionShape::Turn(
-                    pl_protocol::ThreadTurnItem::new(pl_protocol::TurnState::Completed(
-                        pl_protocol::CompletedTurnState::new(
-                            Some(1),
-                            1,
-                            pl_protocol::TurnCompletion::Normal,
-                        ),
+                    crate::ThreadTurnItem::new(crate::TurnState::Completed(
+                        crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
                     ))
                     .with_input_id(Some(input_id.into())),
                 ),
@@ -6178,7 +6155,7 @@ mod storage_fault_tests {
                     1,
                 ),
                 request_digest: None,
-                presentation: pl_protocol::MessagePresentation::Visible,
+                presentation: crate::MessagePresentation::Visible,
             },
         )
         .await?;
@@ -6568,13 +6545,9 @@ mod storage_fault_tests {
                 1,
                 1,
                 1,
-                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
-                    pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                        Some(1),
-                        1,
-                        pl_protocol::TurnCompletion::Normal,
-                    )),
-                )),
+                ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
+                    crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
+                ))),
             );
             let mut message = ThreadMessage {
                 kind: AgentMessageKind::Report,
@@ -6691,13 +6664,9 @@ mod storage_fault_tests {
                 1,
                 1,
                 1,
-                ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
-                    pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                        Some(1),
-                        1,
-                        pl_protocol::TurnCompletion::Normal,
-                    )),
-                )),
+                ExecutionShape::Turn(crate::ThreadTurnItem::new(crate::TurnState::Completed(
+                    crate::CompletedTurnState::new(Some(1), 1, crate::TurnCompletion::Normal),
+                ))),
             );
             let receipts = [FactReceiptWrite {
                 item_id: message.id.clone(),
@@ -7598,12 +7567,12 @@ mod storage_fault_tests {
                 amount: 2.0,
             });
         for (id, pricing) in [
-            ("historical-disabled", pl_protocol::PricingOutcome::Disabled),
-            ("no-charge", pl_protocol::PricingOutcome::NoCharge),
+            ("historical-disabled", crate::PricingOutcome::Disabled),
+            ("no-charge", crate::PricingOutcome::NoCharge),
         ] {
             let receipt = crate::studio::thread_projection::AuxiliaryBillingReceipt {
                 succeeded: true,
-                billing: pl_protocol::InferenceBillingRecord {
+                billing: crate::InferenceBillingRecord {
                     inference_id: id.into(),
                     purpose: Some("title".into()),
                     account_id: "frozen-account".into(),
@@ -7612,8 +7581,8 @@ mod storage_fault_tests {
                     model_observation: None,
                     effort: None,
                     context_window: Some(64_000),
-                    accounting: pl_protocol::InferenceAccounting {
-                        usage: pl_protocol::UsageReport {
+                    accounting: crate::InferenceAccounting {
+                        usage: crate::UsageReport {
                             input_tokens: Some(100),
                             output_tokens: Some(10),
                             cache_read_tokens: Some(40),
@@ -7705,7 +7674,7 @@ mod storage_fault_tests {
             .map(
                 |(purpose, amount)| super::super::calls::PurposeUsageProjection {
                     purpose: Some(purpose.into()),
-                    estimated_costs: vec![pl_protocol::RuntimeCostAmount {
+                    estimated_costs: vec![crate::RuntimeCostAmount {
                         currency: "USD".into(),
                         amount,
                     }],
@@ -7745,9 +7714,9 @@ mod storage_fault_tests {
         assert_eq!(facts.len(), 4);
         for fact in facts {
             let expected = if fact.record.inference_id.ends_with("historical-disabled") {
-                pl_protocol::PricingOutcome::Disabled
+                crate::PricingOutcome::Disabled
             } else {
-                pl_protocol::PricingOutcome::NoCharge
+                crate::PricingOutcome::NoCharge
             };
             assert_eq!(fact.record.accounting.pricing, expected);
             assert_eq!(fact.record.accounting.usage.total_tokens, Some(110));
@@ -8082,25 +8051,25 @@ mod storage_fault_tests {
     /// 问题原始正文、答案值与私有的 `pl.studio.user-answer` 回执都由这里构造，测试直接用真实
     /// 生产者格式验证历史链路，而不是另造一份测试专用协议。
     struct QuestionFixture {
-        questions: Vec<pl_protocol::UserQuestion>,
+        questions: Vec<crate::UserQuestion>,
         answer: serde_json::Value,
     }
 
     fn question_fixture() -> QuestionFixture {
         QuestionFixture {
             questions: vec![
-                pl_protocol::UserQuestion {
+                crate::UserQuestion {
                     id: "provider".into(),
                     header: "Provider".into(),
                     question: "Which provider should the next release verify?".into(),
                     is_other: true,
                     is_secret: false,
-                    options: Some(vec![pl_protocol::UserQuestionOption {
+                    options: Some(vec![crate::UserQuestionOption {
                         label: "anthropic".into(),
                         description: "Verify the Claude route".into(),
                     }]),
                 },
-                pl_protocol::UserQuestion {
+                crate::UserQuestion {
                     id: "token".into(),
                     header: "Token".into(),
                     question: "Paste the deployment token".into(),
@@ -8174,15 +8143,13 @@ mod storage_fault_tests {
             3,
             111,
             222,
-            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                pl_protocol::ThreadToolInvocation::new(
+            ExecutionShape::Tool(crate::ThreadToolItem::new(
+                crate::ThreadToolInvocation::new(
                     call_id.into(),
                     "request_user_input".into(),
                     "{\"questions\":[]}".into(),
                 ),
-                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
-                    String::new(),
-                )),
+                crate::ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
             )),
         )
     }
@@ -8202,10 +8169,10 @@ mod storage_fault_tests {
 
     /// 一条真实的计划确认事实：提问正文就是计划文档，hash、问题身份与选项都由生产者格式约束。
     fn plan_fixture(plan: &str) -> Result<crate::plan_tool::PlanConfirmationPrompt> {
-        use pl_protocol::{MessagePresentation, UserQuestion, UserQuestionOption};
+        use crate::{MessagePresentation, UserQuestion, UserQuestionOption};
         Ok(crate::plan_tool::PlanConfirmationPrompt {
             question: UserQuestion {
-                id: pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
+                id: crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID.into(),
                 header: "Plan".into(),
                 question: plan.into(),
                 is_other: true,
@@ -8241,15 +8208,13 @@ mod storage_fault_tests {
             3,
             111,
             222,
-            ExecutionShape::Tool(pl_protocol::ThreadToolItem::new(
-                pl_protocol::ThreadToolInvocation::new(
+            ExecutionShape::Tool(crate::ThreadToolItem::new(
+                crate::ThreadToolInvocation::new(
                     call_id.into(),
                     "plan_submit".into(),
                     "{\"expectedRevision\":0,\"plan\":\"# Plan\"}".into(),
                 ),
-                pl_protocol::ThreadToolState::Running(pl_protocol::RunningThreadTool::new(
-                    String::new(),
-                )),
+                crate::ThreadToolState::Running(crate::RunningThreadTool::new(String::new())),
             )),
         )
     }
@@ -8296,7 +8261,7 @@ mod storage_fault_tests {
                         1,
                         serde_json::to_string(&serde_json::json!({
                             "answers": {
-                                pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: {
+                                crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID: {
                                     "answers": answers
                                 }
                             }
@@ -8311,7 +8276,7 @@ mod storage_fault_tests {
     /// 已回答的问答必须落在原工具条目上：ID、ordinal、创建时间与 Turn 不变，只增加问答正文。
     #[test]
     fn ordinary_user_answer_updates_the_calling_item_in_place() -> Result<()> {
-        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let thread = crate::Thread::placeholder("qa-thread");
         let fixture = question_fixture();
         let call_id = "call-qa";
         let saved = question_tool_item(call_id, &thread.id, 7);
@@ -8340,7 +8305,7 @@ mod storage_fault_tests {
         let user_input = item.user_input().context("pending Q&A")?;
         assert!(matches!(
             user_input.state(),
-            pl_protocol::ThreadToolUserInputState::Pending
+            crate::ThreadToolUserInputState::Pending
         ));
         assert_eq!(user_input.questions().len(), 2);
         assert_eq!(waiting.items[0].id, saved.id);
@@ -8373,9 +8338,9 @@ mod storage_fault_tests {
     /// 同一份 canonical 交互事实，不因工具成功或当前计划而推演。
     #[test]
     fn plan_confirmation_history_lands_on_the_submitting_call_in_place() -> Result<()> {
-        use pl_protocol::ThreadToolUserInputState;
+        use crate::ThreadToolUserInputState;
 
-        let thread = pl_protocol::Thread::placeholder("plan-thread");
+        let thread = crate::Thread::placeholder("plan-thread");
         let plan = "# Plan\n\n1. Migrate the receipts.\n";
         let prompt = plan_fixture(plan)?;
         let saved = plan_tool_item("call-plan", &thread.id, 5);
@@ -8416,7 +8381,7 @@ mod storage_fault_tests {
         assert_eq!(pending.questions().len(), 1);
         assert_eq!(
             pending.questions()[0].id,
-            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+            crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
         );
         assert_eq!(pending.questions()[0].question, plan);
         assert_eq!(
@@ -8446,7 +8411,7 @@ mod storage_fault_tests {
         assert_eq!(answers.len(), 1);
         assert_eq!(
             answers[0].question_id(),
-            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+            crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
         );
         assert_eq!(answers[0].answers(), ["Revise", "split the migration step"]);
         assert!(!answers[0].is_redacted());
@@ -8456,7 +8421,7 @@ mod storage_fault_tests {
     /// 调用正文只剩历史时，投影报告该 identity 让调用方补读，而不是丢下已回答的问答。
     #[test]
     fn pruned_call_reports_the_identity_instead_of_dropping_the_answer() -> Result<()> {
-        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let thread = crate::Thread::placeholder("qa-thread");
         let fixture = question_fixture();
         let projection = crate::studio::thread_projection::project_effect_items(
             &thread,
@@ -8474,12 +8439,11 @@ mod storage_fault_tests {
 
         // live 投影只剩放置元数据占位（真实正文已被回收）时同样报告 identity，绝不静默丢弃权威问答。
         let mut placeholder = question_tool_item("call-qa", &thread.id, 7);
-        placeholder =
-            placeholder.with_state(ExecutionShape::Raw(pl_protocol::ThreadRawItem::stored(
-                vec![],
-                "This item's body is no longer resident in the live preview cache.",
-                111,
-            )));
+        placeholder = placeholder.with_state(ExecutionShape::Raw(crate::ThreadRawItem::stored(
+            vec![],
+            "This item's body is no longer resident in the live preview cache.",
+            111,
+        )));
         let mut resident = std::collections::BTreeMap::new();
         resident.insert(placeholder.id.clone(), placeholder.clone());
         let without_body = crate::studio::thread_projection::project_effect_items(
@@ -8526,7 +8490,7 @@ mod storage_fault_tests {
     fn later_projection_of_the_same_call_keeps_the_saved_answer() -> Result<()> {
         use pl_core::thread::task::{TaskRecord, TaskStatus};
 
-        let thread = pl_protocol::Thread::placeholder("qa-thread");
+        let thread = crate::Thread::placeholder("qa-thread");
         let fixture = question_fixture();
         let mut answered = question_tool_item("call-qa", &thread.id, 7);
         let record = answered_record("call-qa", &fixture)?;
@@ -8865,7 +8829,7 @@ mod storage_fault_tests {
             .context("migrated cancelled Q&A")?;
         assert!(matches!(
             user_input.state(),
-            pl_protocol::ThreadToolUserInputState::Cancelled
+            crate::ThreadToolUserInputState::Cancelled
         ));
         assert!(user_input.answers().is_empty());
         Ok(())
@@ -8976,7 +8940,7 @@ mod storage_fault_tests {
         assert_eq!(decision.questions().len(), 1);
         assert_eq!(
             decision.questions()[0].id,
-            pl_protocol::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
+            crate::AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID
         );
         assert_eq!(decision.questions()[0].question, approved_plan);
         assert_eq!(decision.answers()[0].answers(), ["Approve"]);
@@ -8991,7 +8955,7 @@ mod storage_fault_tests {
             .context("cancelled Plan history")?;
         assert!(matches!(
             cancelled_history.state(),
-            pl_protocol::ThreadToolUserInputState::Cancelled
+            crate::ThreadToolUserInputState::Cancelled
         ));
         assert!(cancelled_history.answers().is_empty());
 
@@ -9390,16 +9354,11 @@ mod storage_fault_tests {
             anyhow::bail!("question fixture is not a tool");
         };
         item = item.clone().with_state(ExecutionShape::Tool(
-            pl_protocol::ThreadToolItem::new(
+            crate::ThreadToolItem::new(
                 tool.invocation().clone(),
-                pl_protocol::ThreadToolState::Succeeded(pl_protocol::SucceededThreadTool::new(
+                crate::ThreadToolState::Succeeded(crate::SucceededThreadTool::new(
                     222,
-                    pl_protocol::ThreadToolOutput::new(
-                        "answer accepted".into(),
-                        vec![],
-                        vec![],
-                        Some(0),
-                    ),
+                    crate::ThreadToolOutput::new("answer accepted".into(), vec![], vec![], Some(0)),
                 )),
             )
             .with_user_input(tool.user_input().cloned()),

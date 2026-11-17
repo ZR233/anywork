@@ -12,9 +12,9 @@ pub(super) enum ActivationPurpose {
 /// Product identity selected before allocating physical resources.
 #[derive(Debug, Clone)]
 pub struct ThreadActivation {
-    pub agent: pl_protocol::AgentThreadIdentity,
-    pub parent_thread_id: Option<pl_protocol::ThreadId>,
-    pub binding: pl_protocol::AgentBinding,
+    pub agent: crate::AgentThreadIdentity,
+    pub parent_thread_id: Option<crate::ThreadId>,
+    pub binding: crate::AgentBinding,
 }
 
 impl ThreadActivation {
@@ -23,16 +23,14 @@ impl ThreadActivation {
     }
 
     pub fn parent_id(&self) -> Option<&str> {
-        self.parent_thread_id
-            .as_ref()
-            .map(pl_protocol::ThreadId::as_str)
+        self.parent_thread_id.as_ref().map(crate::ThreadId::as_str)
     }
 
     pub(super) fn ensure_native(&self) -> Result<(), ThreadAssemblyError> {
         match &self.binding {
-            pl_protocol::AgentBinding::Native(_) => Ok(()),
-            pl_protocol::AgentBinding::Acp(_) => Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp,
+            crate::AgentBinding::Native(_) => Ok(()),
+            crate::AgentBinding::Acp(_) => Err(ThreadAssemblyError::UnsupportedBackend {
+                backend: crate::AgentBackendKind::Acp,
             }),
         }
     }
@@ -40,21 +38,20 @@ impl ThreadActivation {
     #[cfg(test)]
     pub(crate) fn native_test(id: &str, parent_id: Option<&str>) -> Self {
         Self {
-            agent: pl_protocol::AgentThreadIdentity {
-                session_id: pl_protocol::SessionId::new("test-session")
-                    .expect("valid test session"),
-                agent_id: pl_protocol::AgentId::new(id).expect("valid test agent"),
+            agent: crate::AgentThreadIdentity {
+                session_id: crate::SessionId::new("test-session").expect("valid test session"),
+                agent_id: crate::AgentId::new(id).expect("valid test agent"),
                 parent_agent_id: parent_id
-                    .map(pl_protocol::AgentId::new)
+                    .map(crate::AgentId::new)
                     .transpose()
                     .expect("valid test parent agent"),
-                thread_id: pl_protocol::ThreadId::new(id).expect("valid test Thread"),
+                thread_id: crate::ThreadId::new(id).expect("valid test Thread"),
             },
             parent_thread_id: parent_id
-                .map(pl_protocol::ThreadId::new)
+                .map(crate::ThreadId::new)
                 .transpose()
                 .expect("valid test parent Thread"),
-            binding: pl_protocol::AgentBinding::Native(pl_protocol::NativeAgentConfig {
+            binding: crate::AgentBinding::Native(crate::NativeAgentConfig {
                 route: None,
                 system_instructions: None,
             }),
@@ -71,7 +68,7 @@ pub struct ThreadPreparation {
     /// Preflighted collaboration registrations; no physical tool allocation has started yet.
     pub agent_controls: Vec<Registration>,
     /// Root-only strategy read from canonical saved/newly admitted facts before tool preflight.
-    pub delegation: Option<pl_protocol::DelegationSettings>,
+    pub delegation: Option<crate::DelegationSettings>,
 }
 
 /// Resolves an existing product task into fresh model/tool resources and saved facts.
@@ -81,7 +78,7 @@ pub trait StudioActivationFactory: std::fmt::Debug + Send + Sync + 'static {
     fn root_delegation(
         &self,
         identity: &ThreadActivation,
-    ) -> impl Future<Output = Result<pl_protocol::DelegationSettings, ThreadAssemblyError>> + Send;
+    ) -> impl Future<Output = Result<crate::DelegationSettings, ThreadAssemblyError>> + Send;
 
     /// Owns cleanup of allocations when preparation fails before returning a spec.
     /// Must honor cancellation and must not execute restored model calls or tool effects.
@@ -402,7 +399,7 @@ mod backend_tests {
         async fn root_delegation(
             &self,
             identity: &ThreadActivation,
-        ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
+        ) -> Result<crate::DelegationSettings, ThreadAssemblyError> {
             self.delegation_reads.fetch_add(1, Ordering::SeqCst);
             Err(ThreadAssemblyError::Identity(identity.id().to_owned()))
         }
@@ -428,14 +425,14 @@ mod backend_tests {
             preparations: preparations.clone(),
         };
         let mut identity = ThreadActivation::native_test("acp-root", None);
-        identity.binding = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+        identity.binding = crate::AgentBinding::Acp(crate::AcpAgentConfig {
             account_id: "acp-account".into(),
         });
 
         assert!(matches!(
             owner.activate(identity, factory.clone()).await,
             Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp
+                backend: crate::AgentBackendKind::Acp
             })
         ));
         assert_eq!(delegation_reads.load(Ordering::SeqCst), 0);
@@ -460,13 +457,13 @@ mod backend_tests {
             preparations: child_preparations.clone(),
         };
         let mut child = ThreadActivation::native_test("acp-child", Some("native-parent"));
-        child.binding = pl_protocol::AgentBinding::Acp(pl_protocol::AcpAgentConfig {
+        child.binding = crate::AgentBinding::Acp(crate::AcpAgentConfig {
             account_id: "acp-account".into(),
         });
         assert!(matches!(
             child_owner.activate(child, child_factory.clone()).await,
             Err(ThreadAssemblyError::UnsupportedBackend {
-                backend: pl_protocol::AgentBackendKind::Acp
+                backend: crate::AgentBackendKind::Acp
             })
         ));
         assert_eq!(child_delegation_reads.load(Ordering::SeqCst), 0);

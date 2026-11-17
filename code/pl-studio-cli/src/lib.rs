@@ -7,16 +7,16 @@ pub use args::{Cli, Command, ExecArgs, PreparedExec, PreparedExport};
 pub use signals::SignalListener;
 
 use anyhow::{Context, Result};
-use pl_protocol::{
-    ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnCompletion,
-    TurnState, studio::StudioPromptInput,
-};
 use pl_studio_runtime::{
     BuildInfoV2, ExecutionErrorStage, ExecutionErrorV2, ExecutionOutcome, RESULT_SCHEMA_VERSION,
     ResultOutcome, ResultV2, RunExportOptions, RunExportReport, RunExporter,
     StudioPendingPersistence, StudioRuntime, StudioShutdownOutcome, StudioShutdownReport,
     StudioStartNewThreadRequest, StudioStartupError, StudioStartupErrorKind,
     StudioSubmitPromptOptions, TimingReportV2, format_export_utc_rfc3339,
+};
+use pl_studio_runtime::{
+    StudioPromptInput, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn,
+    TurnCompletion, TurnState,
 };
 use std::future::Future;
 use std::time::{Instant, SystemTime};
@@ -363,7 +363,7 @@ async fn execute_observed(
                     })
                     .await
                     .map_err(|error| {
-                        use pl_protocol::studio::StudioErrorCode;
+                        use pl_studio_runtime::StudioErrorCode;
                         match pl_studio_runtime::studio_error_from_anyhow_ref(&error).code {
                             StudioErrorCode::InvalidArgument | StudioErrorCode::NotFound => {
                                 ExecutionError::Input(error)
@@ -675,7 +675,7 @@ mod tests {
                     model_id: "startup-test".into(),
                     effort: None,
                 },
-                mode: pl_studio_runtime::ThreadModeId::simple(),
+                mode: pl_studio_runtime::mode::ThreadModeId::simple(),
                 prompt: "must not run".into(),
                 max_model_steps: None,
                 export: None,
@@ -717,7 +717,7 @@ mod tests {
             id: "turn".into(),
             thread_id: "thread".into(),
             revision: 12,
-            state: TurnState::Completed(pl_protocol::CompletedTurnState::new(
+            state: TurnState::Completed(pl_studio_runtime::CompletedTurnState::new(
                 Some(1),
                 2,
                 TurnCompletion::Normal,
@@ -763,7 +763,7 @@ mod tests {
             id: "turn".into(),
             thread_id: "thread".into(),
             revision: 12,
-            state: TurnState::Completed(pl_protocol::CompletedTurnState::new(
+            state: TurnState::Completed(pl_studio_runtime::CompletedTurnState::new(
                 Some(1),
                 2,
                 TurnCompletion::Normal,

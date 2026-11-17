@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn api_errors_keep_categories_and_safe_typed_io_sources() {
-        use pl_protocol::studio::StudioErrorCode;
+        use crate::StudioErrorCode;
         for (error, expected) in [
             (
                 AcpDefinitionError::StaleDocument,

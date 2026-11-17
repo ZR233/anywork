@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use pl_protocol::{
+use crate::{
     BudgetLimitedTurnState, CancelledThreadAgent, CancelledThreadContent, CancelledThreadInference,
     CancelledTurnState, CompletedThreadContent, CompletedThreadInference, CompletedTurnState,
     DeniedThreadAgent, FailedThreadAgent, FailedThreadContent, FailedThreadInference,

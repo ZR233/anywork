@@ -1,5 +1,5 @@
+use crate::protocol::*;
 use pl_acp::session::{Event, Observer};
-use pl_protocol::studio::*;
 use tokio::sync::watch;
 
 use super::projection;

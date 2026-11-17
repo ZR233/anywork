@@ -53,8 +53,8 @@ pub(in crate::studio::storage::history) struct LegacyCurrent {
     projection: Arc<FrozenCurrentProjection>,
     changes: Arc<[CurrentEntryChange]>,
     contents: Arc<[CurrentContentWrite]>,
-    source_changes: Arc<[pl_protocol::ChatSourceState]>,
-    references: Arc<[pl_protocol::ContentRef]>,
+    source_changes: Arc<[crate::ChatSourceState]>,
+    references: Arc<[crate::ContentRef]>,
 }
 impl LegacyCurrent {
     pub(in crate::studio::storage::history) fn new(
@@ -81,7 +81,7 @@ impl LegacyCurrent {
 
 pub(in crate::studio) fn references(
     projection: &CurrentProjection,
-) -> impl Iterator<Item = &pl_protocol::ContentRef> {
+) -> impl Iterator<Item = &crate::ContentRef> {
     projection
         .plan
         .iter()
@@ -152,7 +152,7 @@ pub(in super::super) async fn apply_changes(
     }
     // The product envelope is bounded; growing facts belong in the collection/content tables.
     ensure!(
-        current.frozen_projection().json_bytes() <= u64::from(pl_protocol::CHAT_BATCH_MAX_BYTES),
+        current.frozen_projection().json_bytes() <= u64::from(crate::CHAT_BATCH_MAX_BYTES),
         "current projection exceeds the product envelope budget"
     );
     for change in current.changes.iter() {
@@ -169,7 +169,7 @@ pub(in super::super) async fn apply_changes(
                     .chain(current.projection().interactions.iter())
                     .find(|reference| reference.collection == entry.collection)
                     .context("current entry has no collection revision")?;
-                let owner = pl_protocol::ContentOwner::Current {
+                let owner = crate::ContentOwner::Current {
                     domain: format!("collection:{}", entry.collection),
                     id: entry.entry_id.clone(),
                     revision: collection.revision,
@@ -227,18 +227,18 @@ pub(in super::super) async fn apply_changes(
 
 async fn validate_references(
     db: &impl ConnectionTrait,
-    references: &[pl_protocol::ContentRef],
+    references: &[crate::ContentRef],
 ) -> Result<()> {
     for reference in references {
         let exists = match &reference.target {
-            pl_protocol::ContentTarget::ItemPayload { item_id } => db
+            crate::ContentTarget::ItemPayload { item_id } => db
                 .query_one_raw(statement(
                     "SELECT 1 FROM conversation_items WHERE item_id=?",
                     vec![item_id.clone().into()],
                 ))
                 .await?
                 .is_some(),
-            pl_protocol::ContentTarget::Body { owner, key } => {
+            crate::ContentTarget::Body { owner, key } => {
                 let owner_key = crate::studio::conversation_identity::content_owner_key(owner)?;
                 db.query_one_raw(statement(
                     "SELECT 1 FROM conversation_contents WHERE owner_key=? AND content_key=?",
@@ -262,7 +262,7 @@ pub(in super::super) async fn write_head(
 ) -> Result<()> {
     let bytes = serde_json::to_vec(current.projection())?;
     ensure!(
-        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        bytes.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
         "current projection exceeds the product envelope budget"
     );
     db.execute_raw(statement(
@@ -284,7 +284,7 @@ pub(crate) async fn read(db: &impl ConnectionTrait) -> Result<CurrentProjection>
         .context("current projection is missing; explicit storage repair is required")?;
     let bytes: Vec<u8> = row.try_get("", "payload")?;
     ensure!(
-        bytes.len() <= pl_protocol::CHAT_BATCH_MAX_BYTES as usize,
+        bytes.len() <= crate::CHAT_BATCH_MAX_BYTES as usize,
         "stored current projection exceeds the product envelope budget"
     );
     let mut current: CurrentProjection = serde_json::from_slice(&bytes)?;

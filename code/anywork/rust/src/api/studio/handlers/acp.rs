@@ -3,7 +3,7 @@
 //! 保存/删除接入沿用 Settings 写路径（返回既有 Settings 回执）；检查连接、登录与取消是独立的
 //! 认证命令，返回受理回执与受理时快照。命令都不等待人工登录或进程退出（见 design/25、design/28）。
 
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     CancelAcpAuthRequest, ContinueAcpAuthRequest, RemoveAcpAccountRequest, StartAcpAuthRequest,
 };
 

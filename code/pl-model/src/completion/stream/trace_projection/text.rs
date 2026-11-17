@@ -1,8 +1,6 @@
 //! 正文与 reasoning 流的 trace part 投影。
 
-use pl_protocol::trace::{
-    AgentEvent, TraceDelta, TracePartCompletion, TracePartKind, TraceTextChannel,
-};
+use crate::trace::{AgentEvent, TraceDelta, TracePartCompletion, TracePartKind, TraceTextChannel};
 
 use super::TraceProjection;
 
@@ -21,7 +19,7 @@ impl TraceProjection {
         }
         self.start_item(
             item_id,
-            pl_protocol::trace::TracePartState::Text(pl_protocol::trace::TraceTextPart::streaming(
+            crate::trace::TracePartState::Text(crate::trace::TraceTextPart::streaming(
                 channel,
                 String::new(),
             )),
@@ -39,7 +37,7 @@ impl TraceProjection {
             let item_id = self.active_text_item_id(item_id, channel);
             events.extend(self.apply_item(
                 &item_id,
-                pl_protocol::trace::TracePartAction::Append(TraceDelta::Text { channel, delta }),
+                crate::trace::TracePartAction::Append(TraceDelta::Text { channel, delta }),
             ));
         }
         events
@@ -71,9 +69,7 @@ impl TraceProjection {
         }
         self.start_item(
             item_id,
-            pl_protocol::trace::TracePartState::Thinking(
-                pl_protocol::trace::TraceThinkingPart::streaming(),
-            ),
+            crate::trace::TracePartState::Thinking(crate::trace::TraceThinkingPart::streaming()),
         )
     }
 
@@ -88,7 +84,7 @@ impl TraceProjection {
             let item_id = self.active_thinking_item_id(item_id, chunk_index);
             events.extend(self.apply_item(
                 &item_id,
-                pl_protocol::trace::TracePartAction::Append(TraceDelta::Thinking {
+                crate::trace::TracePartAction::Append(TraceDelta::Thinking {
                     chunk_index: LOCAL_THINKING_CHUNK_INDEX,
                     delta,
                 }),
@@ -108,7 +104,7 @@ impl TraceProjection {
             let item_id = self.active_thinking_item_id(item_id, chunk_index);
             events.extend(self.apply_item(
                 &item_id,
-                pl_protocol::trace::TracePartAction::Append(TraceDelta::ReasoningContent {
+                crate::trace::TracePartAction::Append(TraceDelta::ReasoningContent {
                     chunk_index: LOCAL_THINKING_CHUNK_INDEX,
                     delta,
                 }),

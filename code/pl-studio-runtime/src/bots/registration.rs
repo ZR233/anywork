@@ -14,7 +14,7 @@ use super::protocol::registration::{
 };
 use crate::studio::new_id;
 use crate::studio::unix_seconds;
-use pl_protocol::studio::{
+use crate::{
     BotDiagnostic, BotRegistrationAttempt, BotRegistrationStatus, BotsCommandReply,
     CommandDisposition, CommandEffectPoint, ResourceStamp, StudioCommandReceipt,
 };

@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::task::{Context, Waker};
 
 use pl_studio_statistics::{
-    StatisticsError, StatisticsPublisher, StudioModelPerformanceEffortSummary,
-    StudioModelPerformanceSample, StudioModelPerformanceSnapshot, StudioModelPerformanceSummary,
+    FirstOutputSource, MetricAvailability, StatisticsError, StatisticsPublisher,
+    StudioModelPerformanceEffortSummary, StudioModelPerformanceSample,
+    StudioModelPerformanceSnapshot, StudioModelPerformanceSummary, UsageReportStatus,
 };
 
 fn snapshot() -> StudioModelPerformanceSnapshot {
@@ -38,10 +39,10 @@ fn snapshot() -> StudioModelPerformanceSnapshot {
         thread_id: "thread".into(),
         call_id: "call".into(),
         purpose: None,
-        first_output_source: pl_protocol::FirstOutputSource::Incremental,
-        usage_status: pl_protocol::UsageReportStatus::Reported,
-        ttft_availability: pl_protocol::MetricAvailability::Available,
-        throughput_availability: pl_protocol::MetricAvailability::Available,
+        first_output_source: FirstOutputSource::Incremental,
+        usage_status: UsageReportStatus::Reported,
+        ttft_availability: MetricAvailability::Available,
+        throughput_availability: MetricAvailability::Available,
         completed_at: 1,
         account_id: "account".into(),
         account_display_name: "Account".into(),

@@ -1,6 +1,6 @@
 use crate::api::studio::types::*;
 
-impl From<BridgeDelegationMode> for pl_protocol::DelegationMode {
+impl From<BridgeDelegationMode> for pl_studio_runtime::DelegationMode {
     fn from(value: BridgeDelegationMode) -> Self {
         match value {
             BridgeDelegationMode::Profile => Self::Profile,
@@ -9,16 +9,16 @@ impl From<BridgeDelegationMode> for pl_protocol::DelegationMode {
     }
 }
 
-impl From<pl_protocol::DelegationMode> for BridgeDelegationMode {
-    fn from(value: pl_protocol::DelegationMode) -> Self {
+impl From<pl_studio_runtime::DelegationMode> for BridgeDelegationMode {
+    fn from(value: pl_studio_runtime::DelegationMode) -> Self {
         match value {
-            pl_protocol::DelegationMode::Profile => Self::Profile,
-            pl_protocol::DelegationMode::Automatic => Self::Automatic,
+            pl_studio_runtime::DelegationMode::Profile => Self::Profile,
+            pl_studio_runtime::DelegationMode::Automatic => Self::Automatic,
         }
     }
 }
 
-impl From<BridgeDelegationPreference> for pl_protocol::DelegationPreference {
+impl From<BridgeDelegationPreference> for pl_studio_runtime::DelegationPreference {
     fn from(value: BridgeDelegationPreference) -> Self {
         match value {
             BridgeDelegationPreference::Economy => Self::Economy,
@@ -28,17 +28,17 @@ impl From<BridgeDelegationPreference> for pl_protocol::DelegationPreference {
     }
 }
 
-impl From<pl_protocol::DelegationPreference> for BridgeDelegationPreference {
-    fn from(value: pl_protocol::DelegationPreference) -> Self {
+impl From<pl_studio_runtime::DelegationPreference> for BridgeDelegationPreference {
+    fn from(value: pl_studio_runtime::DelegationPreference) -> Self {
         match value {
-            pl_protocol::DelegationPreference::Economy => Self::Economy,
-            pl_protocol::DelegationPreference::Balanced => Self::Balanced,
-            pl_protocol::DelegationPreference::Fast => Self::Fast,
+            pl_studio_runtime::DelegationPreference::Economy => Self::Economy,
+            pl_studio_runtime::DelegationPreference::Balanced => Self::Balanced,
+            pl_studio_runtime::DelegationPreference::Fast => Self::Fast,
         }
     }
 }
 
-impl From<BridgeBillingKind> for pl_protocol::BillingKind {
+impl From<BridgeBillingKind> for pl_studio_runtime::BillingKind {
     fn from(value: BridgeBillingKind) -> Self {
         match value {
             BridgeBillingKind::Metered => Self::Metered,
@@ -49,19 +49,19 @@ impl From<BridgeBillingKind> for pl_protocol::BillingKind {
     }
 }
 
-impl From<pl_protocol::BillingKind> for BridgeBillingKind {
-    fn from(value: pl_protocol::BillingKind) -> Self {
+impl From<pl_studio_runtime::BillingKind> for BridgeBillingKind {
+    fn from(value: pl_studio_runtime::BillingKind) -> Self {
         match value {
-            pl_protocol::BillingKind::Metered => Self::Metered,
-            pl_protocol::BillingKind::Subscription => Self::Subscription,
-            pl_protocol::BillingKind::NoCharge => Self::NoCharge,
-            pl_protocol::BillingKind::Unknown => Self::Unknown,
+            pl_studio_runtime::BillingKind::Metered => Self::Metered,
+            pl_studio_runtime::BillingKind::Subscription => Self::Subscription,
+            pl_studio_runtime::BillingKind::NoCharge => Self::NoCharge,
+            pl_studio_runtime::BillingKind::Unknown => Self::Unknown,
         }
     }
 }
 
-impl From<pl_protocol::studio::NewThreadModelRoute> for BridgeNewThreadModelRoute {
-    fn from(value: pl_protocol::studio::NewThreadModelRoute) -> Self {
+impl From<pl_studio_runtime::NewThreadModelRoute> for BridgeNewThreadModelRoute {
+    fn from(value: pl_studio_runtime::NewThreadModelRoute) -> Self {
         Self {
             account_id: value.account_id,
             model_id: value.model_id,
@@ -70,7 +70,7 @@ impl From<pl_protocol::studio::NewThreadModelRoute> for BridgeNewThreadModelRout
     }
 }
 
-impl From<BridgeNewThreadModelRoute> for pl_protocol::studio::NewThreadModelRoute {
+impl From<BridgeNewThreadModelRoute> for pl_studio_runtime::NewThreadModelRoute {
     fn from(value: BridgeNewThreadModelRoute) -> Self {
         Self {
             account_id: value.account_id,
@@ -80,7 +80,7 @@ impl From<BridgeNewThreadModelRoute> for pl_protocol::studio::NewThreadModelRout
     }
 }
 
-impl From<BridgeAgentTaskCategory> for pl_protocol::AgentTaskCategory {
+impl From<BridgeAgentTaskCategory> for pl_studio_runtime::AgentTaskCategory {
     fn from(value: BridgeAgentTaskCategory) -> Self {
         match value {
             BridgeAgentTaskCategory::Reasoning => Self::Reasoning,
@@ -93,20 +93,20 @@ impl From<BridgeAgentTaskCategory> for pl_protocol::AgentTaskCategory {
     }
 }
 
-impl From<pl_protocol::AgentTaskCategory> for BridgeAgentTaskCategory {
-    fn from(value: pl_protocol::AgentTaskCategory) -> Self {
+impl From<pl_studio_runtime::AgentTaskCategory> for BridgeAgentTaskCategory {
+    fn from(value: pl_studio_runtime::AgentTaskCategory) -> Self {
         match value {
-            pl_protocol::AgentTaskCategory::Reasoning => Self::Reasoning,
-            pl_protocol::AgentTaskCategory::Coding => Self::Coding,
-            pl_protocol::AgentTaskCategory::Tooling => Self::Tooling,
-            pl_protocol::AgentTaskCategory::LongContext => Self::LongContext,
-            pl_protocol::AgentTaskCategory::Multimodal => Self::Multimodal,
-            pl_protocol::AgentTaskCategory::General => Self::General,
+            pl_studio_runtime::AgentTaskCategory::Reasoning => Self::Reasoning,
+            pl_studio_runtime::AgentTaskCategory::Coding => Self::Coding,
+            pl_studio_runtime::AgentTaskCategory::Tooling => Self::Tooling,
+            pl_studio_runtime::AgentTaskCategory::LongContext => Self::LongContext,
+            pl_studio_runtime::AgentTaskCategory::Multimodal => Self::Multimodal,
+            pl_studio_runtime::AgentTaskCategory::General => Self::General,
         }
     }
 }
 
-impl From<BridgeDelegationModelCapability> for pl_protocol::DelegationModelCapability {
+impl From<BridgeDelegationModelCapability> for pl_studio_runtime::DelegationModelCapability {
     fn from(value: BridgeDelegationModelCapability) -> Self {
         match value {
             BridgeDelegationModelCapability::ToolCalling => Self::ToolCalling,
@@ -124,7 +124,7 @@ impl From<BridgeDelegationModelCapability> for pl_protocol::DelegationModelCapab
     }
 }
 
-impl From<BridgeListDelegationModelsRequest> for pl_protocol::ListDelegationModelsRequest {
+impl From<BridgeListDelegationModelsRequest> for pl_studio_runtime::ListDelegationModelsRequest {
     fn from(value: BridgeListDelegationModelsRequest) -> Self {
         Self {
             capabilities: value.capabilities.into_iter().map(Into::into).collect(),
@@ -135,8 +135,8 @@ impl From<BridgeListDelegationModelsRequest> for pl_protocol::ListDelegationMode
     }
 }
 
-impl From<pl_protocol::DelegationModelList> for BridgeDelegationModelList {
-    fn from(value: pl_protocol::DelegationModelList) -> Self {
+impl From<pl_studio_runtime::DelegationModelList> for BridgeDelegationModelList {
+    fn from(value: pl_studio_runtime::DelegationModelList) -> Self {
         Self {
             models: value
                 .models
@@ -159,8 +159,8 @@ impl From<pl_protocol::DelegationModelList> for BridgeDelegationModelList {
     }
 }
 
-impl From<pl_protocol::DelegationModelDetail> for BridgeDelegationModelDetail {
-    fn from(value: pl_protocol::DelegationModelDetail) -> Self {
+impl From<pl_studio_runtime::DelegationModelDetail> for BridgeDelegationModelDetail {
+    fn from(value: pl_studio_runtime::DelegationModelDetail) -> Self {
         Self {
             account_id: value.account_id,
             account_name: value.account_name,
@@ -177,13 +177,13 @@ impl From<pl_protocol::DelegationModelDetail> for BridgeDelegationModelDetail {
                     .into_iter()
                     .map(|source| BridgeModelSelectionSource {
                         kind: match source.kind {
-                            pl_protocol::ModelSelectionSourceKindDto::Official => {
+                            pl_studio_runtime::ModelSelectionSourceKindDto::Official => {
                                 BridgeModelSelectionSourceKind::Official
                             }
-                            pl_protocol::ModelSelectionSourceKindDto::Benchmark => {
+                            pl_studio_runtime::ModelSelectionSourceKindDto::Benchmark => {
                                 BridgeModelSelectionSourceKind::Benchmark
                             }
-                            pl_protocol::ModelSelectionSourceKindDto::Community => {
+                            pl_studio_runtime::ModelSelectionSourceKindDto::Community => {
                                 BridgeModelSelectionSourceKind::Community
                             }
                         },
@@ -217,13 +217,13 @@ impl From<pl_protocol::DelegationModelDetail> for BridgeDelegationModelDetail {
                     revision: evaluation.revision,
                     task_category: evaluation.task_category.into(),
                     outcome: match evaluation.outcome {
-                        pl_protocol::AgentEvaluationOutcome::Passed => {
+                        pl_studio_runtime::AgentEvaluationOutcome::Passed => {
                             BridgeAgentEvaluationOutcome::Passed
                         }
-                        pl_protocol::AgentEvaluationOutcome::Failed => {
+                        pl_studio_runtime::AgentEvaluationOutcome::Failed => {
                             BridgeAgentEvaluationOutcome::Failed
                         }
-                        pl_protocol::AgentEvaluationOutcome::NotRated => {
+                        pl_studio_runtime::AgentEvaluationOutcome::NotRated => {
                             BridgeAgentEvaluationOutcome::NotRated
                         }
                     },
@@ -238,8 +238,8 @@ impl From<pl_protocol::DelegationModelDetail> for BridgeDelegationModelDetail {
     }
 }
 
-impl From<pl_protocol::LocalModelPerformanceSummary> for BridgeLocalModelPerformanceSummary {
-    fn from(value: pl_protocol::LocalModelPerformanceSummary) -> Self {
+impl From<pl_studio_runtime::LocalModelPerformanceSummary> for BridgeLocalModelPerformanceSummary {
+    fn from(value: pl_studio_runtime::LocalModelPerformanceSummary) -> Self {
         Self {
             sample_count: value.sample_count,
             tokens_per_second: value.tokens_per_second,
@@ -250,8 +250,8 @@ impl From<pl_protocol::LocalModelPerformanceSummary> for BridgeLocalModelPerform
     }
 }
 
-impl From<pl_protocol::AgentEvaluationSummary> for BridgeAgentEvaluationSummary {
-    fn from(value: pl_protocol::AgentEvaluationSummary) -> Self {
+impl From<pl_studio_runtime::AgentEvaluationSummary> for BridgeAgentEvaluationSummary {
+    fn from(value: pl_studio_runtime::AgentEvaluationSummary) -> Self {
         Self {
             window: value.window,
             rated_samples: value.rated_samples,

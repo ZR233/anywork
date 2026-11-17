@@ -8,9 +8,9 @@
 
 use std::collections::BTreeSet;
 
+use crate::AccountUsageObservation;
 use anyhow::{Result, ensure};
 use pl_model::config::AccountId;
-use pl_protocol::studio::AccountUsageObservation;
 use serde::{Deserialize, Serialize};
 
 use super::history;
@@ -94,7 +94,7 @@ fn validate_bindings(accounts: &[AccountUsageSettingBinding]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pl_protocol::studio::AccountUsagePhase;
+    use crate::AccountUsagePhase;
 
     const LEGACY_V2: &str = r#"{"state":{"kind":"ready","data":{"revision":19,"updatedAt":22,"lastCheckedAt":22,"value":{"configFingerprint":"legacy-inputs","usages":[{"accountId":"legacy-balance","revision":9,"updatedAt":22,"lastOperationId":"legacy-check","state":{"kind":"ready","data":{"data":{"kind":"deepSeekBalance","data":{"is_available":true,"balances":[{"currency":"USD","total_balance":"1.000001","granted_balance":"0.000001","topped_up_balance":"1.000000"},{"currency":"CNY","total_balance":"7.25","granted_balance":"2.00","topped_up_balance":"5.25"}]}}}}}]}}}}"#;
 

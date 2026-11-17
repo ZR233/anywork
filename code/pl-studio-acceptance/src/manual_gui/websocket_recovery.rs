@@ -202,10 +202,10 @@ fn read_history(home: &Path, thread_id: &str) -> Result<Value> {
             let rows:Vec<(String,Vec<u8>,Vec<u8>)>=sea_orm::sqlx::query_as("SELECT item_id,payload,metadata FROM conversation_items ORDER BY seq").fetch_all(&mut connection).await?;
             let mut originals=Vec::new();
             for (id,payload,metadata) in rows {
-                let atom:pl_protocol::ChatAtom=serde_json::from_slice(&metadata)?;
+                let atom:pl_studio_runtime::ChatAtom=serde_json::from_slice(&metadata)?;
                 let mut bodies=Vec::new();
                 for body in &atom.contents {
-                    let pl_protocol::ContentTarget::Body { owner:pl_protocol::ContentOwner::Item { item_id },key }=&body.reference.target else {anyhow::bail!("original has a mutable content owner")};
+                    let pl_studio_runtime::ContentTarget::Body { owner:pl_studio_runtime::ContentOwner::Item { item_id },key }=&body.reference.target else {anyhow::bail!("original has a mutable content owner")};
                     ensure!(item_id==&id,"original body owner differs");
                     let chunks:Vec<Vec<u8>>=sea_orm::sqlx::query_scalar("SELECT data FROM conversation_content_chunks WHERE owner_key=?1 AND content_key=?2 ORDER BY byte_offset")
                         .bind(format!("4:item{id}")).bind(key).fetch_all(&mut connection).await?;

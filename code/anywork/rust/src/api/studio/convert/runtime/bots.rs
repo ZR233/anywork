@@ -2,7 +2,7 @@
 
 use crate::api::studio::convert::commands::command_receipt;
 use crate::api::studio::types::*;
-use pl_protocol::studio::{
+use pl_studio_runtime::{
     BotConnectionState, BotConversation, BotConversationKind, BotConversationPage,
     BotConversationSource, BotConversationThreadBinding, BotConversationThreadReply,
     BotConversationThreadState, BotCredentialAvailability, BotCredentialOperation, BotDiagnostic,
@@ -217,7 +217,7 @@ pub(crate) fn protocol_save_bot(value: BridgeSaveBotRequest) -> SaveBotRequest {
     SaveBotRequest {
         model_route: value
             .model_route
-            .map(|route| pl_protocol::studio::BotModelRoute {
+            .map(|route| pl_studio_runtime::BotModelRoute {
                 account_id: route.account_id,
                 model_id: route.model_id,
                 effort: route.effort,

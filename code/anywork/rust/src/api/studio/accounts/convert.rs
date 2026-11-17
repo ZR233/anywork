@@ -7,7 +7,7 @@ use crate::api::studio::convert::{
     settings::{bridge_account_settings, bridge_model_catalog_account},
 };
 use crate::api::studio::types::BridgeResourceStamp;
-use pl_protocol::studio as p;
+use pl_studio_runtime as p;
 
 impl From<BridgeAccountIdentity> for p::AccountIdentity {
     fn from(value: BridgeAccountIdentity) -> Self {

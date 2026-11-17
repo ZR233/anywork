@@ -1,9 +1,12 @@
 use anyhow::Result;
-use pl_protocol::{
+use pl_studio_runtime::mode::{
     ThreadModeDefinition, ThreadModeDefinitionCommandReply, ThreadModeDefinitionSnapshot,
     ThreadModeDocument, ThreadModeEditorLayout, ThreadModeId, ThreadModeValidationIssue,
-    ThreadModeValidationResult, WorkflowDefinition, WorkflowNodePosition, WorkflowPreviewRequest,
-    WorkflowPreviewSnapshot, WorkflowState, WorkflowStateKind, WorkflowTransition,
+    ThreadModeValidationResult, WorkflowNodePosition, WorkflowPreviewRequest,
+    WorkflowPreviewSnapshot,
+};
+use pl_studio_runtime::workflow_tool::{
+    WorkflowDefinition, WorkflowState, WorkflowStateKind, WorkflowTransition,
 };
 
 use crate::api::studio::types::{
@@ -19,10 +22,8 @@ use super::runtime::bridge_thread_mode_catalog;
 
 fn thread_mode_id(value: &str) -> Result<ThreadModeId> {
     ThreadModeId::new(value).map_err(|error| {
-        pl_protocol::studio::StudioError::invalid_argument(format!(
-            "invalid Thread Mode id: {error}"
-        ))
-        .into()
+        pl_studio_runtime::StudioError::invalid_argument(format!("invalid Thread Mode id: {error}"))
+            .into()
     })
 }
 

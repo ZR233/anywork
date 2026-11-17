@@ -13,7 +13,6 @@ pl-studio-update = { workspace = true }
 pl-studio-statistics = { workspace = true }
 pl-studio-runtime = { workspace = true }
 pl-lifecycle = { workspace = true }
-pl-protocol = { workspace = true }
 anyhow = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }

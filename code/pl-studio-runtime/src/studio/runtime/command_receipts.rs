@@ -1,8 +1,8 @@
-use anyhow::Result;
-use pl_protocol::studio::{
+use crate::{
     CommandDisposition, CommandEffectPoint, ResourceStamp, SettingsCommandReply,
     StudioCommandReceipt,
 };
+use anyhow::Result;
 
 use super::StudioRuntime;
 
@@ -14,10 +14,7 @@ impl StudioRuntime {
 
     pub(super) fn validate_operation_id(operation_id: &str) -> Result<()> {
         if operation_id.trim().is_empty() {
-            return Err(pl_protocol::studio::StudioError::invalid_argument(
-                "operationId is required",
-            )
-            .into());
+            return Err(crate::StudioError::invalid_argument("operationId is required").into());
         }
         Ok(())
     }

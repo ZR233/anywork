@@ -5,11 +5,11 @@ use pl_model::config::{AgentRoleId, ModelRouteConfig};
 use pl_model::model::{
     ModelParameter, ModelPricing, ParameterWire, TokenPriceTier, WireAssignment,
 };
-use pl_protocol::{AgentBinding, BillingKind, DelegationSettings, NativeAgentConfig};
 use pl_provider_fixture::delegation::{OTHER_MODEL, SHARED_MODEL};
 use pl_studio_runtime::config::{
     AcpDefinitionsSnapshot, ConfigPaths, UserAgentProfile, save_user_agent_profile,
 };
+use pl_studio_runtime::{AgentBinding, BillingKind, DelegationSettings, NativeAgentConfig};
 
 pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
     let mut config = fixture_config(ready, ModelTransportProfile::responses_http())?;
@@ -94,7 +94,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
         description: "Synthetic manual observation role".into(),
         when_to_use: "Automatic mode only; its fixed route is intentionally disabled".into(),
         binding: AgentBinding::Native(NativeAgentConfig {
-            route: Some(pl_protocol::studio::NewThreadModelRoute {
+            route: Some(pl_studio_runtime::NewThreadModelRoute {
                 account_id: a_id.as_str().into(),
                 model_id: "delegation-disabled".into(),
                 effort: None,
@@ -104,7 +104,7 @@ pub(super) fn write(home: &Path, ready: &FixtureReady) -> Result<()> {
                     .into(),
             ),
         }),
-        workspace_mode: pl_protocol::AgentWorkspaceMode::Unrestricted,
+        workspace_mode: pl_studio_runtime::AgentWorkspaceMode::Unrestricted,
     };
     // Persist the valid Profile through its schema owner before disabling its
     // fixed model. The final config reproduces an existing now-unavailable

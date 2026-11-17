@@ -906,7 +906,7 @@ effort = "high"
         assert_eq!(reviewer.account_id.as_str(), "second");
         assert_eq!(reviewer.model_id, "deepseek-reasoner");
         assert_eq!(
-            migrated.mode_model_routes[&pl_protocol::ThreadModeId::task()]
+            migrated.mode_model_routes[&crate::mode::ThreadModeId::task()]
                 .account_id
                 .as_str(),
             "second"
@@ -1040,12 +1040,12 @@ effort = "high"
         assert!(
             migrated_acp
                 .mode_model_routes
-                .contains_key(&pl_protocol::ThreadModeId::simple())
+                .contains_key(&crate::mode::ThreadModeId::simple())
         );
         assert!(
             migrated_acp
                 .mode_model_routes
-                .contains_key(&pl_protocol::ThreadModeId::task())
+                .contains_key(&crate::mode::ThreadModeId::task())
         );
 
         // 23 及以上不再访问旧 `provider:<id>` 命名空间：迁移只处理结构，不复制旧凭据，
@@ -1766,13 +1766,10 @@ catalog = "deepseek"
     }
 
     fn assert_main_fields_preserved(config: &StudioConfig) {
-        assert_eq!(
-            config.delegation.mode,
-            pl_protocol::DelegationMode::Automatic
-        );
+        assert_eq!(config.delegation.mode, crate::DelegationMode::Automatic);
         assert_eq!(
             config.delegation.preference,
-            pl_protocol::DelegationPreference::Fast
+            crate::DelegationPreference::Fast
         );
         let account =
             &config.models.accounts[&pl_model::config::AccountId::new("deepseek").unwrap()];
@@ -1783,10 +1780,7 @@ catalog = "deepseek"
                 .copied(),
             Some(false)
         );
-        assert_eq!(
-            account.billing_kind,
-            Some(pl_protocol::BillingKind::Subscription)
-        );
+        assert_eq!(account.billing_kind, Some(crate::BillingKind::Subscription));
     }
 
     fn schema_25_with_disabled_estimation() -> String {
@@ -1823,13 +1817,10 @@ catalog = "deepseek"
         let custom = &migrated.models.accounts
             [&pl_model::config::AccountId::new("legacy-disabled").unwrap()];
         assert_eq!(custom.billing_kind, None);
+        assert_eq!(custom.billing_kind().unwrap(), crate::BillingKind::Unknown);
         assert_eq!(
-            custom.billing_kind().unwrap(),
-            pl_protocol::BillingKind::Unknown
-        );
-        assert_eq!(
-            pl_protocol::PricingMode::from(custom.billing_kind().unwrap()),
-            pl_protocol::PricingMode::Catalog
+            crate::PricingMode::from(custom.billing_kind().unwrap()),
+            crate::PricingMode::Catalog
         );
         assert_eq!(
             credentials.load("deepseek").unwrap().as_deref(),
@@ -2097,10 +2088,7 @@ catalog = "deepseek"
             .load_for_startup()
             .expect("current schema with missing optional fields loads");
         assert_eq!(loaded.schema_version, STUDIO_CONFIG_SCHEMA_VERSION);
-        assert_eq!(
-            loaded.delegation,
-            pl_protocol::DelegationSettings::default()
-        );
+        assert_eq!(loaded.delegation, crate::DelegationSettings::default());
         assert!(
             loaded
                 .models

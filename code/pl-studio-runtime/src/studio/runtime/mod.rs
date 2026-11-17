@@ -4,9 +4,7 @@ use anyhow::Result;
 use crate::config::ConfigRuntime;
 use crate::studio::records::ThreadRecord;
 use crate::studio::{ProductEventBus, StudioActiveTurn, StudioRuntimeState, StudioStore};
-use pl_protocol::studio::StudioPromptInput;
-
-pub use pl_protocol::studio::{ThreadPreparationProgress, ThreadPreparationStage};
+use crate::{StudioPromptInput, ThreadPreparationProgress, ThreadPreparationStage};
 
 /// Nonblocking observation of a creation command. The observer must not reenter the runtime;
 /// losing observation does not cancel creation or transfer its resource ownership.
@@ -116,11 +114,11 @@ pub struct StudioStartNewThreadRequest {
     pub workspace_id: String,
     pub title: Option<String>,
     pub input: StudioPromptInput,
-    pub mode: pl_protocol::ThreadModeId,
-    pub route: pl_protocol::studio::NewThreadModelRoute,
-    pub delegation_mode: Option<pl_protocol::DelegationMode>,
-    pub delegation_preference: Option<pl_protocol::DelegationPreference>,
-    pub workspace_mode: pl_protocol::ThreadWorkspaceMode,
+    pub mode: crate::mode::ThreadModeId,
+    pub route: crate::NewThreadModelRoute,
+    pub delegation_mode: Option<crate::DelegationMode>,
+    pub delegation_preference: Option<crate::DelegationPreference>,
+    pub workspace_mode: crate::ThreadWorkspaceMode,
     pub options: StudioSubmitPromptOptions,
     pub preparation_observer: Option<ThreadPreparationObserver>,
 }
@@ -128,7 +126,7 @@ pub struct StudioStartNewThreadRequest {
 /// Studio UI 提交 prompt 的附加选项。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StudioSubmitPromptOptions {
-    pub presentation: pl_protocol::MessagePresentation,
+    pub presentation: crate::MessagePresentation,
     /// Existing-Thread user submissions carry the route revision observed by
     /// their caller. Initial submission of an explicitly routed new Thread has
     /// no prior Client mirror and remains in the same lifecycle transaction.
@@ -161,21 +159,21 @@ pub struct StudioStartNewThreadResponse {
 pub struct StudioArchiveThreadResult {
     pub archived_root_id: String,
     pub removed_thread_ids: Vec<String>,
-    pub next_root: Option<pl_protocol::SessionDirectoryRow>,
+    pub next_root: Option<crate::SessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenameThreadCommandReply {
-    pub thread: pl_protocol::SessionDirectoryRow,
-    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+    pub thread: crate::SessionDirectoryRow,
+    pub receipt: crate::StudioCommandReceipt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveThreadCommandReply {
     pub result: StudioArchiveThreadResult,
-    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+    pub receipt: crate::StudioCommandReceipt,
 }
 
 /// Result of permanently deleting a root Thread and all its descendants.
@@ -184,14 +182,14 @@ pub struct ArchiveThreadCommandReply {
 pub struct StudioDeleteThreadResult {
     pub deleted_root_id: String,
     pub deleted_thread_ids: Vec<String>,
-    pub next_root: Option<pl_protocol::SessionDirectoryRow>,
+    pub next_root: Option<crate::SessionDirectoryRow>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteThreadCommandReply {
     pub result: StudioDeleteThreadResult,
-    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+    pub receipt: crate::StudioCommandReceipt,
 }
 
 /// Studio UI resolve interaction 后的核心响应。
@@ -200,7 +198,7 @@ pub struct DeleteThreadCommandReply {
 pub struct StudioResolveInteractionResponse {
     pub thread_id: String,
     pub interaction: InteractionRequest,
-    pub receipt: pl_protocol::studio::StudioCommandReceipt,
+    pub receipt: crate::StudioCommandReceipt,
 }
 
 /// 归档前「结束会话树活动工作」的有界等待上界。
@@ -326,7 +324,7 @@ impl StudioRuntime {
         expected_settings_revision: u64,
         profile_id: &str,
         profile: &crate::config::UserAgentProfile,
-    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+    ) -> Result<crate::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
         let (state, changed) = self.config_runtime.save_user_agent_profile(
             expected_settings_revision,
@@ -338,7 +336,7 @@ impl StudioRuntime {
             operation_id,
             &state,
             changed,
-            pl_protocol::studio::CommandEffectPoint::FutureSession,
+            crate::CommandEffectPoint::FutureSession,
         )
     }
 
@@ -349,7 +347,7 @@ impl StudioRuntime {
         expected_settings_revision: u64,
         profile_id: &str,
         enabled: bool,
-    ) -> Result<pl_protocol::studio::SettingsCommandReply> {
+    ) -> Result<crate::SettingsCommandReply> {
         Self::validate_operation_id(&operation_id)?;
         if !crate::config::is_system_profile_id(profile_id)? {
             anyhow::bail!("`{profile_id}` is not a system Agent Profile");
@@ -372,7 +370,7 @@ impl StudioRuntime {
             operation_id,
             &state,
             changed,
-            pl_protocol::studio::CommandEffectPoint::FutureSession,
+            crate::CommandEffectPoint::FutureSession,
         )
     }
 
@@ -392,7 +390,7 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
         fault_generation: u64,
-    ) -> Result<pl_protocol::PersistenceQueueSnapshot> {
+    ) -> Result<crate::PersistenceQueueSnapshot> {
         self.store
             .thread_persistence()
             .retry_history(thread_id, fault_generation)
@@ -425,7 +423,7 @@ impl StudioRuntime {
         &self,
         thread_id: &str,
         fault_generation: u64,
-    ) -> Result<pl_protocol::PersistenceQueueSnapshot> {
+    ) -> Result<crate::PersistenceQueueSnapshot> {
         if let Some(thread) = self
             .session_of(thread_id)
             .and_then(|session| session.thread(thread_id))
@@ -445,7 +443,7 @@ impl StudioRuntime {
     /// 唯一事实源是持有全部 per-Thread writer 的持久化协调器；本入口只是把它已观测到的
     /// 真实值投影为协议形态，不读取、不聚合、也不编造任何 GUI 本地计数。队列字节、最老
     /// 待保存年龄、在途字节与最近错误都直接来自协调器，缺失即为未知而非零。
-    pub fn persistence_queue_snapshot(&self) -> pl_protocol::PersistenceQueueSnapshot {
+    pub fn persistence_queue_snapshot(&self) -> crate::PersistenceQueueSnapshot {
         self.store
             .thread_persistence()
             .report_calls(self.store.calls());
@@ -665,6 +663,7 @@ pub(crate) mod bot_archive_test_host {
 mod timeline_backlog_tests {
     //! Ordinary reliable backlog preserves immutable completions through the original writer.
     use super::*;
+    use crate::protocol::*;
     use crate::runtime_test_support as support;
     use anyhow::{Context, Result, bail, ensure};
     use futures::FutureExt as _;
@@ -684,7 +683,6 @@ mod timeline_backlog_tests {
         },
         runtime::{ModelMemberReceipt, ModelMemberState},
     };
-    use pl_protocol::*;
     use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
     use std::{
         panic::AssertUnwindSafe,
@@ -840,7 +838,7 @@ mod timeline_backlog_tests {
                         CompletionPresentationItemKind::Reasoning
                     } else {
                         CompletionPresentationItemKind::Text(
-                            pl_protocol::trace::TraceTextChannel::Final,
+                            pl_model::trace::TraceTextChannel::Final,
                         )
                     },
                     parts: vec![CompletionPresentationPart {

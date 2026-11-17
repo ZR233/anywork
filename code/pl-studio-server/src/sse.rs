@@ -7,8 +7,8 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
-use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
 use pl_studio_runtime::{ConversationEvent, ConversationStateFeed, StudioProductFrame};
+use pl_studio_runtime::{ThreadNotification, ThreadSubscriptionUpdate};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -177,10 +177,10 @@ fn topic_resync_path(topic: &pl_studio_runtime::StudioProductTopic) -> String {
         StudioProductTopic::McpCatalog { scope } => {
             query.append_pair("topic", "mcpCatalog");
             match scope {
-                pl_protocol::McpScope::Host => {
+                pl_studio_runtime::McpScope::Host => {
                     query.append_pair("scope", "host");
                 }
-                pl_protocol::McpScope::Ssh { ssh_alias } => {
+                pl_studio_runtime::McpScope::Ssh { ssh_alias } => {
                     query.append_pair("scope", "ssh");
                     query.append_pair("sshAlias", ssh_alias);
                 }
@@ -242,23 +242,27 @@ pub(crate) struct ConversationQuery {
 }
 
 impl ConversationQuery {
-    fn scope_demand(self) -> Result<(pl_protocol::ChatScope, pl_protocol::ReadDemand), ApiError> {
-        let query_class = serde_json::from_str::<pl_protocol::ChatClassFilter>(&self.query_class)
-            .map_err(|error| {
-            ApiError(pl_protocol::studio::StudioError::invalid_argument(format!(
+    fn scope_demand(
+        self,
+    ) -> Result<(pl_studio_runtime::ChatScope, pl_studio_runtime::ReadDemand), ApiError> {
+        let query_class = serde_json::from_str::<pl_studio_runtime::ChatClassFilter>(
+            &self.query_class,
+        )
+        .map_err(|error| {
+            ApiError(pl_studio_runtime::StudioError::invalid_argument(format!(
                 "queryClass requires an explicit Class or All filter: {error}"
             )))
         })?;
-        let scope = pl_protocol::ChatScope {
+        let scope = pl_studio_runtime::ChatScope {
             query_class,
             parent_id: self.parent_id,
         };
         if !scope.is_valid() {
-            return Err(ApiError(
-                pl_protocol::studio::StudioError::invalid_argument("Invalid record filter"),
-            ));
+            return Err(ApiError(pl_studio_runtime::StudioError::invalid_argument(
+                "Invalid record filter",
+            )));
         }
-        let demand = pl_protocol::ReadDemand {
+        let demand = pl_studio_runtime::ReadDemand {
             max_items: self.max_items,
             max_bytes: self.max_bytes,
         };
@@ -395,8 +399,8 @@ impl Drop for ConversationCompletion {
             self.owner.request_close();
             self.owner
                 .completed
-                .send_replace(Some(Err(pl_protocol::studio::StudioError::new(
-                    pl_protocol::studio::StudioErrorCode::Internal,
+                .send_replace(Some(Err(pl_studio_runtime::StudioError::new(
+                    pl_studio_runtime::StudioErrorCode::Internal,
                     "conversation HTTP owner task did not finish cleanup",
                     false,
                 ))));
@@ -571,7 +575,7 @@ async fn run_conversation(
 
 pub(crate) async fn close_conversation(
     owner: &ReadOwner,
-) -> Result<(), pl_protocol::studio::StudioError> {
+) -> Result<(), pl_studio_runtime::StudioError> {
     owner.request_close();
     let _close = owner.close_gate.lock().await;
     // These are independent owners: one failure must never skip the other join.
@@ -819,10 +823,10 @@ fn encode_event(
 mod tests {
     use anyhow::{Context, Result};
     use axum::{body::to_bytes, extract::FromRequestParts, http::Request, response::IntoResponse};
-    use pl_protocol::{
+    use pl_studio_runtime::{
         ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatBatch, ChatDeliveryKind, ChatFactPosition,
         ChatPlacement, ChatScope, ChatSourceId, ChatTerminalOutcome, CompletedEntry, PayloadData,
-        ReadDemand, studio::StudioErrorCode,
+        ReadDemand, StudioErrorCode,
     };
 
     use super::*;
@@ -859,10 +863,10 @@ mod tests {
                 host_thread_id: identity.into(),
             },
             StudioProductTopic::McpCatalog {
-                scope: pl_protocol::McpScope::Host,
+                scope: pl_studio_runtime::McpScope::Host,
             },
             StudioProductTopic::McpCatalog {
-                scope: pl_protocol::McpScope::Ssh {
+                scope: pl_studio_runtime::McpScope::Ssh {
                     ssh_alias: identity.into(),
                 },
             },
@@ -934,7 +938,7 @@ mod tests {
         assert_eq!(
             scope,
             ChatScope {
-                query_class: pl_protocol::ChatClassFilter::All {},
+                query_class: pl_studio_runtime::ChatClassFilter::All {},
                 parent_id: Some("4:turnparent-a".into())
             }
         );
@@ -1004,7 +1008,7 @@ mod tests {
                     attempt_id: Some("attempt-a".into()),
                     tool: None,
                     wait: None,
-                    text_channel: Some(pl_protocol::ThreadTextChannel::Final),
+                    text_channel: Some(pl_studio_runtime::ThreadTextChannel::Final),
                     content_present: Some(true),
                     started_at: None,
                     finished_at: None,
