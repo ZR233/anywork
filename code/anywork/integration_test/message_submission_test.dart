@@ -784,13 +784,8 @@ class _SubmissionReader implements TimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
-  }) => original.openDisplayMembers(
-    reference: reference,
-    window: window,
-    demand: demand,
-  );
+  }) => original.openDisplayMembers(reference: reference, demand: demand);
   @override
   void requestClose() {
     owner.releaseFeed();

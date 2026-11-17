@@ -7,7 +7,6 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
-import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/conversation_current_connector.dart';
@@ -386,10 +385,10 @@ final class TimelineObservation {
             .singleOrNull;
         if (group == null) return;
         expect(group.error, isNull);
-        final page = unit(block.id).expansion.members?.page;
-        if (page == null) return;
-        expect(page.block, members);
-        for (final entry in page.entries) {
+        final controller = unit(block.id).expansion.members;
+        if (controller == null || !controller.hasSnapshot) return;
+        expect(controller.reference, members);
+        for (final entry in controller.entries) {
           yield (
             blockId: block.id,
             displayId: entry.memberKey,
@@ -456,24 +455,57 @@ final class TimelineObservation {
     yield* liveWork;
   }
 
-  /// Explicit bounded provenance evidence, not an atom-history scan or a cache.
-  Future<DisplayMemberPage> readMemberPage(
+  /// Read one complete producer cut through one original reader. The aggregate
+  /// is evidence, not a synthetic over-budget transport batch.
+  Future<
+    ({
+      DisplayBlockRef block,
+      int revision,
+      bool sealed,
+      List<DisplayMemberHead> entries,
+    })
+  >
+  readMemberSnapshot(
     DisplayBlockRef reference, {
-    DisplayMemberWindow window = const LatestDisplayMembers(),
     ReadDemand demand = const ReadDemand(maxItems: 1, maxBytes: 16384),
   }) async {
     final original = lease;
     final handle = await original.openDisplayMembers(
       reference: reference,
-      window: window,
       demand: demand,
     );
     try {
-      final page = await handle.next();
-      expect(lease, same(original));
-      expect(page, isNotNull);
-      expect(page!.block, reference);
-      return page;
+      final entries = <DisplayMemberHead>[];
+      int? revision;
+      bool? sealed;
+      final keys = <String>{};
+      while (true) {
+        final batch = await handle.next();
+        expect(lease, same(original));
+        expect(batch, isNotNull, reason: 'EOF before a complete member result');
+        expect(batch!.block, reference);
+        expect(batch.offset, entries.length);
+        revision ??= batch.revision;
+        sealed ??= batch.sealed;
+        expect(batch.revision, revision);
+        expect(batch.sealed, sealed);
+        for (final entry in batch.entries) {
+          expect(keys.add(entry.memberKey), isTrue);
+          if (entries.isNotEmpty) {
+            expect(entry.memberOrder, greaterThan(entries.last.memberOrder));
+          }
+          entries.add(entry);
+        }
+        if (batch.complete) {
+          return (
+            block: reference,
+            revision: revision,
+            sealed: sealed,
+            entries: List<DisplayMemberHead>.unmodifiable(entries),
+          );
+        }
+        expect(batch.entries, isNotEmpty);
+      }
     } finally {
       handle.requestClose();
       await handle.close();
@@ -483,22 +515,10 @@ final class TimelineObservation {
   Future<bool> _workContainsSource(
     TimelineDisplayUnit block,
     ChatSourceId source,
-  ) async {
-    DisplayMemberWindow window = const LatestDisplayMembers();
-    while (true) {
-      final page = await readMemberPage(
-        block.memberReference!,
-        window: window,
-        demand: const ReadDemand(maxItems: 32, maxBytes: 16384),
-      );
-      if (page.entries.any((head) => head.record.atom.source == source)) {
-        return true;
-      }
-      final before = page.before;
-      if (before == null) return false;
-      window = BeforeDisplayMembers(memberOrder: before);
-    }
-  }
+  ) async => (await readMemberSnapshot(
+    block.memberReference!,
+    demand: const ReadDemand(maxItems: 32, maxBytes: 16384),
+  )).entries.any((head) => head.record.atom.source == source);
 
   Future<List<TimelineDisplayUnit>> workForSource(ChatSourceId source) async =>
       [
@@ -524,45 +544,17 @@ final class TimelineObservation {
     return false;
   }
 
-  /// Explicit finite fixture inventory. UI still owns just its selected page.
+  /// Explicit finite fixture inventory at one complete cut.
   Future<List<DisplayMemberHead>> readMemberInventory(
     TimelineDisplayUnit block, {
     int? expectedCount,
   }) async {
-    final result = <DisplayMemberHead>[];
-    DisplayMemberWindow window = const LatestDisplayMembers();
-    int? revision;
-    while (true) {
-      final page = await readMemberPage(
-        block.memberReference!,
-        window: window,
-        demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
-      );
-      revision ??= page.revision;
-      expect(
-        page.revision,
-        revision,
-        reason: 'A mutable fixture inventory must stay at one structural cut',
-      );
-      result.insertAll(0, page.entries);
-      if (expectedCount != null) {
-        expect(result.length, lessThanOrEqualTo(expectedCount));
-      }
-      final before = page.before;
-      if (before == null) break;
-      window = BeforeDisplayMembers(memberOrder: before);
-    }
-    if (expectedCount != null) expect(result, hasLength(expectedCount));
-    expect(
-      result.map((head) => head.memberKey).toSet(),
-      hasLength(result.length),
+    final result = await readMemberSnapshot(
+      block.memberReference!,
+      demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
     );
-    var previous = 0;
-    for (final head in result) {
-      expect(head.memberOrder, greaterThan(previous));
-      previous = head.memberOrder;
-    }
-    return List.unmodifiable(result);
+    if (expectedCount != null) expect(result.entries, hasLength(expectedCount));
+    return result.entries;
   }
 
   Future<List<ChatAtom>> readFixtureAtoms(
@@ -1674,7 +1666,7 @@ final class TimelineObservation {
             display?.loading == false &&
             display!.atoms.isNotEmpty;
       },
-      'bounded member page for Work $id',
+      'complete member result for Work $id',
       timeout: timeout,
     );
     expect(display!.blockReference, reference);
@@ -1690,120 +1682,6 @@ final class TimelineObservation {
       reason: 'Member demand cannot replace Main',
     );
     return display!;
-  }
-
-  /// Demand one older page through the exact mounted Work's production control.
-  /// The caller owns the total budget across opening, paging and qualification.
-  Future<void> loadOlderMemberPage(
-    TimelineGroupDisplay display, {
-    required Duration timeout,
-  }) async {
-    if (timeout <= Duration.zero) {
-      fail('Loading a member page requires a positive deadline');
-    }
-    final clock = Stopwatch()..start();
-    Duration remaining() {
-      final value = timeout - clock.elapsed;
-      if (value <= Duration.zero) {
-        fail('Timed out loading original member page ${display.unitId}');
-      }
-      return value;
-    }
-
-    final originalLease = lease;
-    final reference = unit(display.unitId).memberReference!;
-    final before = display.before;
-    expect(before, isNotNull);
-    void requireOriginal() {
-      expect(lease, same(originalLease));
-      expect(display.isCurrent, isTrue);
-      expect(display.expanded, isTrue);
-      expect(display.blockReference, reference);
-      expect(
-        lease.groupDisplays.singleWhere(
-          (value) => value.unitId == display.unitId,
-        ),
-        same(display),
-      );
-      if (display.error case final error?) throw StateError('$error');
-    }
-
-    while (true) {
-      await until(
-        () {
-          requireOriginal();
-          return !display.loading;
-        },
-        'original member page ready',
-        timeout: remaining(),
-      );
-      if (display.before != before) return;
-      await _scrollMembers(display, 300, timeout: remaining());
-    }
-  }
-
-  Future<void> _scrollMembers(
-    TimelineGroupDisplay display,
-    double distance, {
-    required Duration timeout,
-  }) async {
-    final viewport = find.descendant(
-      of: groupRow(display.unitId),
-      matching: find.descendant(
-        of: find.byType(CompletionRunScrollScope),
-        matching: find.byType(SingleChildScrollView),
-      ),
-    );
-    await until(
-      () => viewport.evaluate().length == 1,
-      'original member scroll viewport',
-      timeout: timeout,
-    );
-    await Scrollable.ensureVisible(tester.element(viewport), alignment: .5);
-    await tester.pump();
-    expect(display.isCurrent && display.expanded, isTrue);
-    // A tool body may contain its own scrollable. Start in the Work's leading
-    // gutter so this gesture reaches the member viewport, not that body.
-    final bounds = tester.getRect(viewport);
-    await tester.dragFrom(
-      Offset(bounds.left + 4, bounds.center.dy),
-      Offset(0, distance),
-    );
-    await tester.pump();
-    expect(tester.takeException(), isNull);
-  }
-
-  Future<void> selectLatestMembers(
-    TimelineGroupDisplay display, {
-    Duration timeout = const Duration(seconds: 60),
-  }) async {
-    final original = lease;
-    final clock = Stopwatch()..start();
-    Duration remaining() {
-      final value = timeout - clock.elapsed;
-      if (value <= Duration.zero) {
-        fail('Timed out returning to latest members ${display.unitId}');
-      }
-      return value;
-    }
-
-    while (true) {
-      await until(
-        () {
-          expect(lease, same(original));
-          expect(display.isCurrent, isTrue);
-          if (display.error case final error?) throw StateError('$error');
-          return !display.loading;
-        },
-        'original member page ready',
-        timeout: remaining(),
-      );
-      if (unit(display.unitId).expansion.members!.window
-          is LatestDisplayMembers) {
-        return;
-      }
-      await _scrollMembers(display, -300, timeout: remaining());
-    }
   }
 
   Future<void> revealSingle(
@@ -1828,18 +1706,11 @@ final class TimelineObservation {
 
     final value = unitForBlock(reference);
     final display = await openWork(value.id, timeout: remaining());
-    if (!display.atoms.any((member) => member.id == atom.id)) {
-      await selectLatestMembers(display);
-    }
-    while (!display.atoms.any((member) => member.id == atom.id)) {
-      remaining();
-      expect(
-        display.before,
-        isNotNull,
-        reason: 'The producer-defined member must be in this block',
-      );
-      await loadOlderMemberPage(display, timeout: remaining());
-    }
+    expect(
+      display.atoms.any((member) => member.id == atom.id),
+      isTrue,
+      reason: 'The complete producer-defined group contains the member',
+    );
     final row = find.descendant(
       of: groupRow(value.id),
       matching: find.byWidgetPredicate(
@@ -2028,7 +1899,6 @@ final class TimelineObservation {
           !display.expanded &&
           display.atoms.isEmpty &&
           !display.isCurrent &&
-          display.before == null &&
           !display.loading,
       'collapsed member window revoked',
       timeout: remaining(),

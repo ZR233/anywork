@@ -5,331 +5,623 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const _ref = DisplayBlockRef(databaseId: 'db', blockId: 'group');
-const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
+const _demand = ReadDemand(maxItems: 12, maxBytes: 32768);
 
-void main() {
-  test('sealed head revokes mutable page immediately and waits for native sealed records', () async {
-    final handle = _Handle();
-    final controller = DisplayMemberController(
-      reference: _ref,
-      demand: _demand,
-      open: (_, _, _) async => handle,
-    );
-    await handle.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      revision: 1,
-      sealed: false,
-      entries: [
-        DisplayMemberHead(
-          memberKey: 'row',
-          memberOrder: 1,
-          record: DisplayRecord(
-            contentSource: const CurrentAtom(),
-            atom: ChatAtom(
-              id: 'atom',
-              source: const ForegroundTurnChatSource(turnId: 'turn'),
-              sourceOrder: 1,
-              kind: ChatAtomKind.reasoning,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: const ActiveChatAtom(
-                started: null,
-                status: ChatActiveStatus.running,
-              ),
-              contents: const [],
-            ),
+DisplayMemberHead _head(int order, {bool frozen = false, String? text}) =>
+    DisplayMemberHead(
+      memberKey: 'row-$order',
+      memberOrder: order * 7,
+      record: DisplayRecord(
+        contentSource: frozen
+            ? const FrozenObservation(capturedAt: 100, available: true)
+            : const CurrentAtom(),
+        atom: ChatAtom(
+          id: 'atom-$order',
+          source: const ForegroundTurnChatSource(turnId: 'turn'),
+          sourceOrder: order,
+          kind: ChatAtomKind.reasoning,
+          delivery: ChatDeliveryKind.foreground,
+          lifecycle: const ActiveChatAtom(
+            started: null,
+            status: ChatActiveStatus.running,
           ),
+          contents: const [],
+          payload: InlinePayload(bytes: (text ?? 'row-$order').codeUnits),
         ),
-      ],
+      ),
     );
-    handle.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
-    final old = controller.disclosure('row')..expanded = true;
-    controller.requireSealed();
-    expect(controller.page, same(page));
-    expect(controller.awaitingSealed, isTrue);
-    expect(old.retired, isTrue);
-    expect(controller.disclosure('row').expanded, isTrue);
-    handle.reply.complete(
-      DisplayMemberPage(block: _ref, revision: 2, sealed: false, entries: []),
-    );
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.page, same(page));
-    final sealed = DisplayMemberPage(
-      block: _ref,
-      revision: 3,
-      sealed: true,
-      entries: [],
-    );
-    handle.reply.complete(sealed);
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.page, same(sealed));
-    expect(controller.awaitingSealed, isFalse);
-    expect(controller.error, isNull);
+DisplayMemberBatch _batch(
+  List<DisplayMemberHead> entries, {
+  int revision = 1,
+  int offset = 0,
+  bool complete = true,
+  bool sealed = false,
+}) => DisplayMemberBatch(
+  block: _ref,
+  revision: revision,
+  offset: offset,
+  complete: complete,
+  sealed: sealed,
+  entries: entries,
+);
+Future<void> _drain() => Future<void>.delayed(Duration.zero);
+DisplayMemberController _controller(_Handle handle) => DisplayMemberController(
+  reference: _ref,
+  demand: _demand,
+  open: (_, _) async => handle,
+);
+
+Future<
+  ({
+    DisplayMemberController controller,
+    _Handle fresh,
+    List<DisplayMemberHead> retained,
+  })
+>
+_retryAfterSnapshot({
+  required bool sealed,
+  List<DisplayMemberHead>? entries,
+}) async {
+  final old = _Handle();
+  final fresh = _Handle();
+  var opens = 0;
+  final controller = DisplayMemberController(
+    reference: _ref,
+    demand: _demand,
+    open: (_, _) async => ++opens == 1 ? old : fresh,
+  );
+  addTearDown(() async {
     await controller.close();
     controller.dispose();
   });
+  await old.pulling.future;
+  old.reply.complete(
+    _batch(entries ?? [_head(1, frozen: sealed)], revision: 7, sealed: sealed),
+  );
+  await _drain();
+  final retained = controller.entries;
+  expect(controller.revision, 7);
+  old.reply.completeError(StateError('transient member transport failure'));
+  await _drain();
+  expect(controller.error, isA<StateError>());
+  expect(controller.entries, same(retained));
+  await controller.retry();
+  await fresh.pulling.future;
+  expect(old.closed.isCompleted, isTrue);
+  expect(controller.entries, same(retained));
+  expect(controller.loading, isTrue);
+  return (controller: controller, fresh: fresh, retained: retained);
+}
 
-  test('sealed current page stays readable after explicit EOF and releases its handle', () async {
-    final handle = _Handle();
-    final controller = DisplayMemberController(
-      reference: _ref,
-      demand: _demand,
-      open: (reference, window, demand) async => handle,
-    );
-    await handle.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      revision: 1,
-      sealed: true,
-      entries: [],
-      before: 50,
-    );
-    final accepted = Completer<void>();
-    controller.addListener(() {
-      if (controller.page == page && !accepted.isCompleted) accepted.complete();
+void main() {
+  for (final sealed in [false, true]) {
+    test('unchanged same revision snapshot resumes after retry sealed=$sealed', () async {
+      final retry = await _retryAfterSnapshot(
+        sealed: sealed,
+        entries: [
+          _head(1, frozen: sealed),
+          _head(2, frozen: sealed),
+        ],
+      );
+      final controller = retry.controller;
+      final row = controller.member('row-1');
+      var rowChanges = 0;
+      row.addListener(() => rowChanges++);
+      final disclosure = controller.disclosure('row-1')..expanded = true;
+      retry.fresh.reply.complete(
+        _batch(
+          [_head(1, frozen: sealed)],
+          revision: 7,
+          sealed: sealed,
+          complete: false,
+        ),
+      );
+      await _drain();
+      expect(controller.entries, same(retry.retained));
+      expect(controller.loading, isTrue);
+      retry.fresh.reply.complete(
+        _batch(
+          [_head(2, frozen: sealed)],
+          revision: 7,
+          sealed: sealed,
+          offset: 1,
+        ),
+      );
+      await _drain();
+      expect(
+        controller.error,
+        isNull,
+        reason: 'A new qualified observation may start at the unchanged current revision',
+      );
+      expect(controller.loading, isFalse);
+      expect(controller.revision, 7);
+      expect(controller.sealed, sealed);
+      expect(controller.entries.map((e) => e.memberKey), ['row-1', 'row-2']);
+      expect(controller.member('row-1'), same(row));
+      expect(rowChanges, 0);
+      expect(controller.disclosure('row-1'), same(disclosure));
+      expect(disclosure.expanded, isTrue);
+      expect(
+        retry.fresh.requested,
+        isFalse,
+        reason:
+            'Recovery must not swallow the error and close the new observation',
+      );
+      if (sealed) {
+        retry.fresh.reply.complete(null);
+        await retry.fresh.closed.future;
+        expect(controller.error, isNull);
+      } else {
+        retry.fresh.reply.complete(
+          _batch([_head(1, text: 'later update'), _head(2)], revision: 8),
+        );
+        await _drain();
+        expect(controller.error, isNull);
+        expect(controller.revision, 8);
+        expect(rowChanges, 1);
+      }
     });
-    handle.reply.complete(page);
-    await accepted.future;
-    // The consumer requests exactly one next after accepting the real sealed page.
-    await Future<void>.delayed(Duration.zero);
+  }
+
+  for (final scenario in [
+    (
+      label: 'revision rollback',
+      wasSealed: false,
+      nextSealed: false,
+      revision: 6,
+      changed: false,
+    ),
+    (
+      label: 'open content changed',
+      wasSealed: false,
+      nextSealed: false,
+      revision: 7,
+      changed: true,
+    ),
+    (
+      label: 'sealed content changed',
+      wasSealed: true,
+      nextSealed: true,
+      revision: 7,
+      changed: true,
+    ),
+    (
+      label: 'content changed while sealing',
+      wasSealed: false,
+      nextSealed: true,
+      revision: 7,
+      changed: true,
+    ),
+    (
+      label: 'same revision unsealed',
+      wasSealed: true,
+      nextSealed: false,
+      revision: 7,
+      changed: false,
+    ),
+    (
+      label: 'higher revision unsealed',
+      wasSealed: true,
+      nextSealed: false,
+      revision: 8,
+      changed: false,
+    ),
+  ]) {
+    test(
+      'retry rejects ${scenario.label} without replacing retained snapshot',
+      () async {
+        final retry = await _retryAfterSnapshot(sealed: scenario.wasSealed);
+        retry.fresh.reply.complete(
+          _batch(
+            [
+              _head(
+                1,
+                frozen: scenario.wasSealed,
+                text: scenario.changed ? 'changed' : null,
+              ),
+            ],
+            revision: scenario.revision,
+            sealed: scenario.nextSealed,
+          ),
+        );
+        await _drain();
+        expect(retry.controller.error, isA<ConversationContinuityError>());
+        expect(retry.controller.entries, same(retry.retained));
+        expect(retry.controller.revision, 7);
+        expect(retry.controller.sealed, scenario.wasSealed);
+        expect(retry.fresh.requested, isTrue);
+      },
+    );
+  }
+
+  for (final reopened in [false, true]) {
+    test(
+      'same observation rejects ordinary duplicate after ${reopened ? 'retry' : 'initial open'}',
+      () async {
+        late DisplayMemberController controller;
+        late _Handle handle;
+        if (reopened) {
+          final retry = await _retryAfterSnapshot(sealed: false);
+          controller = retry.controller;
+          handle = retry.fresh;
+        } else {
+          handle = _Handle();
+          controller = _controller(handle);
+          addTearDown(controller.close);
+          await handle.pulling.future;
+        }
+        handle.reply.complete(_batch([_head(1)], revision: 7));
+        await _drain();
+        expect(controller.error, isNull);
+        final retained = controller.entries;
+        handle.reply.complete(_batch([_head(1)], revision: 7));
+        await _drain();
+        expect(controller.error, isA<ConversationContinuityError>());
+        expect(controller.entries, same(retained));
+        expect(handle.requested, isTrue);
+      },
+    );
+  }
+
+  test('one observation allows unchanged same revision qualification sealing then EOF', () async {
+    final handle = _Handle();
+    final controller = _controller(handle);
+    addTearDown(controller.close);
+    await handle.pulling.future;
+    handle.reply.complete(_batch([_head(1)], revision: 7));
+    await _drain();
+    handle.reply.complete(_batch([_head(1)], revision: 7, sealed: true));
+    await _drain();
+    expect(controller.error, isNull);
+    expect(controller.sealed, isTrue);
     handle.reply.complete(null);
     await handle.closed.future;
-    expect(controller.page, same(page));
     expect(controller.error, isNull);
-    expect(handle.calls, 2);
-    await controller.close();
-    controller.dispose();
+  });
+
+  for (final sealed in [false, true]) {
+    test(
+      'one observation rejects data after complete sealed result nextSealed=$sealed',
+      () async {
+        final handle = _Handle();
+        final controller = _controller(handle);
+        addTearDown(controller.close);
+        await handle.pulling.future;
+        handle.reply.complete(
+          _batch([_head(1, frozen: true)], revision: 7, sealed: true),
+        );
+        await _drain();
+        final retained = controller.entries;
+        handle.reply.complete(
+          _batch([_head(1, frozen: true)], revision: 8, sealed: sealed),
+        );
+        await _drain();
+        expect(controller.error, isA<ConversationContinuityError>());
+        expect(controller.entries, same(retained));
+        expect(controller.revision, 7);
+        expect(controller.sealed, isTrue);
+      },
+    );
+  }
+
+  test('unpublished live result still advances the observation continuity baseline', () async {
+    final handle = _Handle();
+    final controller = _controller(handle);
+    addTearDown(controller.close);
+    await handle.pulling.future;
+    handle.reply.complete(_batch([_head(1)], revision: 1));
+    await _drain();
+    final retained = controller.entries;
+    controller.requireSealed();
+    handle.reply.complete(_batch([_head(1)], revision: 3));
+    await _drain();
+    expect(controller.entries, same(retained));
+    handle.reply.complete(
+      _batch([_head(1, frozen: true)], revision: 2, sealed: true),
+    );
+    await _drain();
+    expect(controller.error, isA<ConversationContinuityError>());
+    expect(controller.entries, same(retained));
+    expect(controller.revision, 1);
+  });
+
+  test('more than 12 members publish only at complete; early-row changes notify just that row', () async {
+    final handle = _Handle();
+    final controller = _controller(handle);
+    addTearDown(controller.close);
+    await handle.pulling.future;
+    var structure = 0, first = 0, last = 0;
+    controller.addListener(() => structure++);
+    handle.reply.complete(
+      _batch([for (var i = 1; i <= 12; i++) _head(i)], complete: false),
+    );
+    await _drain();
+    expect(controller.entries, isEmpty);
+    expect(controller.hasSnapshot, isFalse);
+    expect(structure, 0);
+    handle.reply.complete(
+      _batch(
+        [for (var i = 13; i <= 24; i++) _head(i)],
+        offset: 12,
+        complete: false,
+      ),
+    );
+    await _drain();
+    expect(controller.entries, isEmpty);
+    handle.reply.complete(_batch([_head(25)], offset: 24));
+    await _drain();
+    expect(controller.entries.map((e) => e.memberKey), [
+      for (var i = 1; i <= 25; i++) 'row-$i',
+    ]);
+    expect(() => controller.entries.clear(), throwsUnsupportedError);
+    expect(structure, 1);
+    controller.member('row-1').addListener(() => first++);
+    controller.member('row-25').addListener(() => last++);
+    final intent = controller.disclosure('row-25')..expanded = true;
+    handle.reply.complete(
+      _batch(
+        [
+          for (var i = 1; i <= 12; i++)
+            _head(i, text: i == 1 ? 'changed' : null),
+        ],
+        revision: 2,
+        complete: false,
+      ),
+    );
+    await _drain();
+    expect((first, last, structure), (0, 0, 1));
+    handle.reply.complete(
+      _batch(
+        [for (var i = 13; i <= 24; i++) _head(i)],
+        revision: 2,
+        offset: 12,
+        complete: false,
+      ),
+    );
+    await _drain();
+    expect((first, last, structure), (0, 0, 1));
+    handle.reply.complete(_batch([_head(25)], revision: 2, offset: 24));
+    await _drain();
+    expect((first, last, structure), (1, 0, 1));
+    expect(controller.disclosure('row-25'), same(intent));
+    expect(intent.expanded, isTrue);
+  });
+
+  for (final eof in [false, true]) {
+    test(
+      'pending ${eof ? 'EOF' : 'failure'} retains the previous complete result and reports error',
+      () async {
+        final handle = _Handle();
+        final controller = _controller(handle);
+        addTearDown(controller.close);
+        await handle.pulling.future;
+        handle.reply.complete(_batch([_head(1)]));
+        await _drain();
+        final previous = controller.entries;
+        handle.reply.complete(
+          _batch([_head(2)], revision: 2, complete: false, sealed: true),
+        );
+        await _drain();
+        expect(controller.entries, same(previous));
+        if (eof) {
+          handle.reply.complete(null);
+        } else {
+          handle.reply.completeError(StateError('pending failed'));
+        }
+        await _drain();
+        expect(controller.entries, same(previous));
+        expect(controller.revision, 1);
+        expect(
+          controller.error,
+          eof ? isA<ConversationContinuityError>() : isA<StateError>(),
+        );
+        expect(controller.loading, isFalse);
+        expect(handle.requested, isTrue);
+      },
+    );
+  }
+
+  test('sealed header revokes mutable disclosure synchronously before complete sealed result', () async {
+    final handle = _Handle();
+    final controller = _controller(handle);
+    addTearDown(controller.close);
+    await handle.pulling.future;
+    handle.reply.complete(_batch([_head(1), _head(2)]));
+    await _drain();
+    final old = controller.disclosure('row-1')..expanded = true;
+    controller.requireSealed();
+    expect(old.retired, isTrue);
+    expect(controller.disclosure('row-1').expanded, isTrue);
+    expect(controller.awaitingSealed, isTrue);
+    handle.reply.complete(
+      _batch(
+        [_head(1, frozen: true)],
+        revision: 2,
+        sealed: true,
+        complete: false,
+      ),
+    );
+    await _drain();
+    expect(controller.revision, 1);
+    expect(controller.awaitingSealed, isTrue);
+    handle.reply.complete(
+      _batch([_head(2, frozen: true)], revision: 2, sealed: true, offset: 1),
+    );
+    await _drain();
+    expect(controller.revision, 2);
+    expect(controller.awaitingSealed, isFalse);
+    handle.reply.complete(null);
+    await handle.closed.future;
+    expect(controller.error, isNull);
+    expect(controller.entries, hasLength(2));
   });
 
   test(
-    'window switch closes original demand and rejects its late failure',
+    'sealed members arriving before header stay readable through explicit EOF',
     () async {
-      final windows = <DisplayMemberWindow>[];
-      final handles = <_Handle>[];
-      final controller = DisplayMemberController(
-        reference: _ref,
-        demand: _demand,
-        open: (reference, window, demand) async {
-          expect(reference, _ref);
-          expect(demand.maxItems, 1);
-          windows.add(window);
-          final handle = _Handle();
-          handles.add(handle);
-          return handle;
-        },
-      );
-      await Future<void>.delayed(Duration.zero);
-      final old = handles.single;
-      controller.select(const BeforeDisplayMembers(memberOrder: 50));
-      expect(old.requested, isTrue);
-      await Future<void>.delayed(Duration.zero);
-      expect(windows, [
-        isA<LatestDisplayMembers>(),
-        isA<BeforeDisplayMembers>(),
-      ]);
-      final current = handles.last;
-      final value = DisplayMemberPage(
-        block: _ref,
-        revision: 3,
-        sealed: false,
-        entries: [],
-      );
-      current.reply.complete(value);
-      await Future<void>.delayed(Duration.zero);
-      expect(controller.page, same(value));
+      final handle = _Handle();
+      final controller = _controller(handle);
+      addTearDown(controller.close);
+      await handle.pulling.future;
+      handle.reply.complete(_batch([_head(1, frozen: true)], sealed: true));
+      await _drain();
+      final intent = controller.disclosure('row-1')..expanded = true;
+      controller.requireSealed();
+      expect(controller.disclosure('row-1'), same(intent));
+      expect(intent.retired, isFalse);
+      handle.reply.complete(null);
+      await handle.closed.future;
+      expect(controller.hasSnapshot, isTrue);
       expect(controller.error, isNull);
-      controller.retire();
-      expect(current.requested, isTrue);
-      await controller.close();
-      controller.dispose();
+      expect(handle.calls, 2);
     },
   );
 
-  test('Latest to Before to Latest rejects the first Latest late failure with the same page generation', () async {
-    final firstOpen = Completer<DisplayMembers>();
-    final before = _Handle();
-    final latest = _Handle();
-    final windows = <DisplayMemberWindow>[];
+  test('retiring a pending open joins and closes its late success without publishing', () async {
+    final opened = Completer<DisplayMembers>();
+    final handle = _Handle();
     final controller = DisplayMemberController(
       reference: _ref,
       demand: _demand,
-      open: (_, window, _) {
-        windows.add(window);
-        return switch (windows.length) {
-          1 => firstOpen.future,
-          2 => Future.value(before),
-          _ => Future.value(latest),
-        };
-      },
+      open: (_, _) => opened.future,
     );
-    await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(memberOrder: 50));
-    await before.pulling.future;
-    controller.select(const LatestDisplayMembers());
-    await latest.pulling.future;
-    final page = DisplayMemberPage(
-      block: _ref,
-      revision: 7,
-      sealed: false,
-      entries: [],
-    );
-    latest.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
-    expect(windows, [
-      isA<LatestDisplayMembers>(),
-      isA<BeforeDisplayMembers>(),
-      isA<LatestDisplayMembers>(),
-    ]);
-    expect(before.requested, isTrue);
-    expect(controller.page, same(page));
-    firstOpen.completeError(StateError('obsolete first Latest'));
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.page, same(page));
+    await _drain();
+    controller.retire();
+    var joined = false;
+    final closing = controller.close().then((_) => joined = true);
+    await _drain();
+    expect(joined, isFalse);
+    opened.complete(handle);
+    await closing;
+    expect(handle.requested, isTrue);
+    expect(handle.closed.isCompleted, isTrue);
+    expect(controller.hasSnapshot, isFalse);
     expect(controller.error, isNull);
-    expect(controller.loading, isFalse);
-    await controller.close();
-    controller.dispose();
   });
 
-  test('retry retains cleanup failure until the same handle really closes, then accepts a clean page', () async {
-    final failure = StateError('first close failed');
-    final old = _Handle()..closeFailure = failure;
-    final fresh = _Handle();
-    var opens = 0;
-    final controller = DisplayMemberController(
-      reference: _ref,
-      demand: _demand,
-      open: (_, _, _) async => ++opens == 1 ? old : fresh,
-    );
-    await old.pulling.future;
-    controller.select(const BeforeDisplayMembers(memberOrder: 50));
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.cleanupError, same(failure));
-    expect(opens, 1);
-    old.closeFailure = null;
-    old.closeGate = Completer<void>();
-    final retry = controller.retry();
-    await Future<void>.delayed(Duration.zero);
-    expect(old.closeCalls, 2);
-    expect(controller.error, same(failure));
-    expect(
-      opens,
-      1,
-      reason: 'A new page cannot bypass unfinished original cleanup',
-    );
-    old.closeGate!.complete();
-    await retry;
-    await fresh.pulling.future;
-    final atom = ChatAtom(
-      id: 'fresh-member',
-      source: const ForegroundTurnChatSource(turnId: 'turn'),
-      sourceOrder: 1,
-      kind: ChatAtomKind.reasoning,
-      delivery: ChatDeliveryKind.foreground,
-      lifecycle: const ActiveChatAtom(
-        started: null,
-        status: ChatActiveStatus.running,
-      ),
-      contents: const [],
-    );
-    final page = DisplayMemberPage(
-      block: _ref,
-      revision: 2,
-      sealed: false,
-      entries: [
-        DisplayMemberHead(
-          memberKey: 'fresh-key',
-          memberOrder: 1,
-          record: DisplayRecord(atom: atom, contentSource: const CurrentAtom()),
-        ),
-      ],
-    );
-    fresh.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
-    expect(old.closed.isCompleted, isTrue);
-    expect(old.closeCalls, 2);
-    expect(opens, 2);
-    expect(controller.page, same(page));
-    expect(controller.page!.entries.single.record.atom, same(atom));
-    expect(controller.error, isNull);
-    expect(controller.cleanupError, isNull);
-    await controller.close();
-    controller.dispose();
-  });
+  test(
+    'retry drops pending cut and ignores obsolete acquisition failure',
+    () async {
+      final opened = Completer<DisplayMembers>();
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        demand: _demand,
+        open: (_, _) => ++opens == 1 ? opened.future : Future.value(fresh),
+      );
+      addTearDown(controller.close);
+      await _drain();
+      await controller.retry();
+      await fresh.pulling.future;
+      fresh.reply.complete(_batch([_head(1)], revision: 7));
+      await _drain();
+      opened.completeError(StateError('obsolete'));
+      await _drain();
+      expect(controller.revision, 7);
+      expect(controller.error, isNull);
+    },
+  );
 
-  test('closing another handle cannot erase an unresolved original cleanup failure', () async {
-    final lateOpen = Completer<DisplayMembers>();
-    final failure = StateError('late original close failed');
-    final original = _Handle()..closeFailure = failure;
-    final current = _Handle()..closeGate = Completer<void>();
-    final fresh = _Handle();
-    var opens = 0;
-    final controller = DisplayMemberController(
-      reference: _ref,
-      demand: _demand,
-      open: (_, _, _) {
-        opens++;
-        return switch (opens) {
-          1 => lateOpen.future,
+  test(
+    'retry keeps failed original close obligation until that same handle joins',
+    () async {
+      final failure = StateError('close failed');
+      final old = _Handle()..closeFailure = failure;
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        demand: _demand,
+        open: (_, _) async => ++opens == 1 ? old : fresh,
+      );
+      await old.pulling.future;
+      old.reply.completeError(StateError('read failed'));
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      old.closeFailure = null;
+      old.closeGate = Completer<void>();
+      final retry = controller.retry();
+      await _drain();
+      expect(old.closeCalls, 2);
+      expect(opens, 1);
+      expect(controller.error, same(failure));
+      old.closeGate!.complete();
+      await retry;
+      await fresh.pulling.future;
+      fresh.reply.complete(_batch([_head(1)], revision: 2));
+      await _drain();
+      expect(controller.cleanupError, isNull);
+      expect(controller.revision, 2);
+      await controller.close();
+    },
+  );
+
+  test(
+    'closing a different late handle cannot erase an unresolved cleanup error',
+    () async {
+      final late = Completer<DisplayMembers>();
+      final failure = StateError('late original close failed');
+      final original = _Handle()..closeFailure = failure;
+      final current = _Handle()..closeGate = Completer<void>();
+      final fresh = _Handle();
+      var opens = 0;
+      final controller = DisplayMemberController(
+        reference: _ref,
+        demand: _demand,
+        open: (_, _) => switch (++opens) {
+          1 => late.future,
           2 => Future.value(current),
           _ => Future.value(fresh),
-        };
-      },
-    );
-    await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(memberOrder: 60));
-    await current.pulling.future;
-    lateOpen.complete(original);
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.error, same(failure));
-    controller.select(const BeforeDisplayMembers(memberOrder: 40));
-    await Future<void>.delayed(Duration.zero);
-    current.closeGate!.complete();
-    await Future<void>.delayed(Duration.zero);
-    expect(current.closed.isCompleted, isTrue);
-    expect(
-      controller.cleanupError,
-      same(failure),
-      reason: 'The first handle still owns a failed close obligation',
-    );
-    expect(opens, 2);
-    original.closeFailure = null;
-    await controller.retry();
-    await fresh.pulling.future;
-    fresh.reply.complete(
-      DisplayMemberPage(block: _ref, revision: 3, sealed: false, entries: []),
-    );
-    await Future<void>.delayed(Duration.zero);
-    expect(original.closeCalls, 2);
-    expect(controller.error, isNull);
-    await controller.close();
-    controller.dispose();
-  });
+        },
+      );
+      await _drain();
+      await controller.retry();
+      await current.pulling.future;
+      late.complete(original);
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      final restarting = controller.retry();
+      await _drain();
+      current.closeGate!.complete();
+      await restarting;
+      await _drain();
+      expect(controller.cleanupError, same(failure));
+      expect(opens, 2);
+      original.closeFailure = null;
+      await controller.retry();
+      await fresh.pulling.future;
+      expect(original.closeCalls, greaterThanOrEqualTo(2));
+      fresh.reply.complete(_batch([]));
+      await _drain();
+      expect(controller.error, isNull);
+      await controller.close();
+    },
+  );
 }
 
 class _Handle implements DisplayMembers {
-  Completer<DisplayMemberPage?> reply = Completer();
+  Completer<DisplayMemberBatch?> reply = Completer();
   final pulling = Completer<void>();
   final closed = Completer<void>();
-  bool requested = false;
-  bool waiting = false;
-  int calls = 0;
-  int closeCalls = 0;
+  bool requested = false, waiting = false;
+  int calls = 0, closeCalls = 0;
   Object? closeFailure;
   Completer<void>? closeGate;
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     calls++;
     waiting = true;
-    if (!pulling.isCompleted) pulling.complete();
+    if (!pulling.isCompleted) {
+      pulling.complete();
+    }
     final original = reply;
     return original.future
-        .then((page) {
+        .then((batch) {
           if (identical(reply, original)) {
-            reply = Completer<DisplayMemberPage?>();
+            reply = Completer<DisplayMemberBatch?>();
           }
-          return page;
+          return batch;
         })
         .whenComplete(() => waiting = false);
   }
@@ -346,7 +638,11 @@ class _Handle implements DisplayMembers {
   Future<void> close() async {
     closeCalls++;
     await closeGate?.future;
-    if (closeFailure case final failure?) throw failure;
-    if (!closed.isCompleted) closed.complete();
+    if (closeFailure case final failure?) {
+      throw failure;
+    }
+    if (!closed.isCompleted) {
+      closed.complete();
+    }
   }
 }

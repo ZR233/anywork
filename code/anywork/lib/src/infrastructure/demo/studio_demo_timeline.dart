@@ -1075,14 +1075,9 @@ final class _DemoTimelineReader implements TimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) => reader._read(() {
     _demoDemand(demand);
-    if (window case BeforeDisplayMembers(:final memberOrder)
-        when memberOrder < 1) {
-      throw _demoQueryFailure('Invalid display member boundary');
-    }
     if (reference.databaseId != reader._history.epoch) throw _demoStale();
     final known =
         reader._history.displayBlocks.any(
@@ -1092,34 +1087,39 @@ final class _DemoTimelineReader implements TimelineReader {
           (b) => b.id == reference.blockId && b.body is WorkDisplayBlock,
         );
     if (!known) throw _demoMissing();
-    final members = _DemoDisplayMembers(reader, reference, window, demand);
+    final members = _DemoDisplayMembers(reader, reference, demand);
     reader._displayReads.add(members);
     return members;
   });
 }
 
 final class _DemoDisplayMembers implements DisplayMembers {
-  _DemoDisplayMembers(this.reader, this.reference, this.window, this.demand) {
+  _DemoDisplayMembers(this.reader, this.reference, this.demand) {
     reader._history.changes.add(_changed);
   }
   final _DemoReader reader;
   final DisplayBlockRef reference;
-  final DisplayMemberWindow window;
   final ReadDemand demand;
   bool _closed = false, _reading = false, _sealedDelivered = false;
   int? _revision;
+  bool _sealed = false;
+  List<DisplayMemberHead>? _cut;
+  int _offset = 0;
   Completer<void>? _wake;
-  Future<DisplayMemberPage?>? _pending;
+  Future<DisplayMemberBatch?>? _pending;
   int get revision =>
       reader._history.displayMemberRevisions[reference.blockId] ?? 0;
+  bool get isSealed =>
+      reader._history.displayBlocks.any((b) => b.id == reference.blockId);
   void _changed() {
-    if (_revision != revision && !(_wake?.isCompleted ?? true)) {
+    if ((_revision != revision || _sealed != isSealed) &&
+        !(_wake?.isCompleted ?? true)) {
       _wake!.complete();
     }
   }
 
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     if (_reading) {
       return Future.error(_demoQueryFailure('Concurrent member next'));
     }
@@ -1132,33 +1132,50 @@ final class _DemoDisplayMembers implements DisplayMembers {
     });
   }
 
-  Future<DisplayMemberPage?> _next() async {
-    while (!_closed && !_sealedDelivered && _revision == revision) {
+  Future<DisplayMemberBatch?> _next() async {
+    while (!_closed &&
+        !_sealedDelivered &&
+        _cut == null &&
+        _revision == revision &&
+        _sealed == isSealed) {
       _wake = Completer<void>();
       await _wake!.future;
     }
     if (_closed || _sealedDelivered) return null;
-    final history = reader._history;
-    final sealed = history.displayBlocks.any((b) => b.id == reference.blockId);
-    final all = history.displayHeads[reference] ?? const [];
-    final end = switch (window) {
-      LatestDisplayMembers() => null,
-      BeforeDisplayMembers(:final memberOrder) => memberOrder,
-    };
-    final records = all
-        .where((h) => end == null || h.memberOrder < end)
-        .toList();
+    if (_cut == null) {
+      // Capture lightweight immutable heads at one cut. Changes arriving during
+      // transport belong to the next result, never the remaining batches.
+      _revision = revision;
+      _sealed = isSealed;
+      _offset = 0;
+      _cut = List.unmodifiable([
+        for (final h
+            in reader._history.displayHeads[reference] ??
+                const <DisplayMemberHead>[])
+          DisplayMemberHead(
+            memberKey: h.memberKey,
+            memberOrder: h.memberOrder,
+            record: DisplayRecord(
+              atom: reader.fit(h.record.atom, 0),
+              startFact: h.record.startFact,
+              endFact: h.record.endFact,
+              contentSource: h.record.contentSource,
+            ),
+          ),
+      ]);
+    }
+    final cut = _cut!;
     final selected = <DisplayMemberHead>[];
-    int? before;
-    int pageBytes(List<DisplayMemberHead> entries, int? before) =>
+    int batchBytes(List<DisplayMemberHead> entries, bool complete) =>
         _demoEncoded({
           'block': {
             'databaseId': reference.databaseId,
             'blockId': reference.blockId,
           },
-          'revision': revision,
-          'sealed': sealed,
-          'before': before,
+          'revision': _revision!,
+          'offset': _offset,
+          'sealed': _sealed,
+          'complete': complete,
           'entries': [
             for (final e in entries)
               {
@@ -1168,24 +1185,16 @@ final class _DemoDisplayMembers implements DisplayMembers {
               },
           ],
         });
-    if (pageBytes([], null) > demand.maxBytes) {
+    if (batchBytes([], cut.isEmpty) > demand.maxBytes) {
       throw _demoQueryFailure('InvalidDemand: member envelope does not fit');
     }
-    for (var i = records.length - 1; i >= 0; i--) {
-      final h = records[i];
-      final candidate = DisplayMemberHead(
-        memberKey: h.memberKey,
-        memberOrder: h.memberOrder,
-        record: DisplayRecord(
-          atom: reader.fit(h.record.atom, 0),
-          startFact: h.record.startFact,
-          endFact: h.record.endFact,
-          contentSource: h.record.contentSource,
-        ),
-      );
-      final trial = [candidate, ...selected];
-      final size = pageBytes(trial, i > 0 ? h.memberOrder : null);
-      if (size > demand.maxBytes) {
+    for (
+      var i = _offset;
+      i < cut.length && selected.length < demand.maxItems;
+      i++
+    ) {
+      final trial = [...selected, cut[i]];
+      if (batchBytes(trial, i + 1 == cut.length) > demand.maxBytes) {
         if (selected.isEmpty) {
           throw _demoQueryFailure(
             'InvalidDemand: member envelope does not fit',
@@ -1193,25 +1202,30 @@ final class _DemoDisplayMembers implements DisplayMembers {
         }
         break;
       }
-      selected.insert(0, candidate);
-      before = i > 0 ? h.memberOrder : null;
-      if (selected.length == demand.maxItems) break;
+      selected.add(cut[i]);
     }
-    _revision = revision;
-    _sealedDelivered = sealed;
-    return DisplayMemberPage(
+    final complete = _offset + selected.length == cut.length;
+    final result = DisplayMemberBatch(
       block: reference,
-      revision: revision,
-      sealed: sealed,
-      entries: selected,
-      before: before,
+      revision: _revision!,
+      offset: _offset,
+      sealed: _sealed,
+      complete: complete,
+      entries: List.unmodifiable(selected),
     );
+    _offset += selected.length;
+    if (complete) {
+      _cut = null;
+      _sealedDelivered = _sealed;
+    }
+    return result;
   }
 
   @override
   void requestClose() {
     if (_closed) return;
     _closed = true;
+    _cut = null;
     reader._history.changes.remove(_changed);
     if (!(_wake?.isCompleted ?? true)) _wake!.complete();
   }

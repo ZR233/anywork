@@ -161,9 +161,14 @@ final class TimelineDisplayLease
     return unit;
   }
 
+  void _requireSealedMembers(Iterable<String> blockIds) {
+    for (final id in blockIds) {
+      _expansions[id]?.members?.requireSealed();
+    }
+  }
+
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) async {
     final scope = queries;
@@ -172,7 +177,6 @@ final class TimelineDisplayLease
     }
     final members = await scope.openDisplayMembers(
       reference: reference,
-      window: window,
       demand: demand,
     );
     if (_retired || !scope.isActive) {
@@ -255,15 +259,11 @@ final class TimelineDisplayLease
       _groupDisplays.add(display);
       return () => _groupDisplays.remove(display);
     };
-    intent.openDisplayMembers = (reference, window, demand) {
+    intent.openDisplayMembers = (reference, demand) {
       if (_retired || intent.isRetired || !intent.bodyActive) {
         throw const StaleConversationScope();
       }
-      return openDisplayMembers(
-        reference: reference,
-        window: window,
-        demand: demand,
-      );
+      return openDisplayMembers(reference: reference, demand: demand);
     };
   }
 
@@ -912,6 +912,21 @@ final class TimelineSessionOwner {
         throw const StaleConversationScope();
       }
       await current._mutate(() async {
+        // Head admission revokes mutable body capability before any async UI
+        // handoff, not when a later member result or Widget rebuild arrives.
+        current._requireSealedMembers([
+          for (final block in history.blocks)
+            if (block.body is WorkDisplayBlock) block.id,
+          for (final block in tail!.blocks)
+            if (block.state == DisplayBlockState.sealed &&
+                block.body is WorkDisplayBlock)
+              block.id,
+        ]);
+        if (!_ownsRead(read) ||
+            !identical(_current, current) ||
+            current.isRetired) {
+          return;
+        }
         if (history.blocks.isNotEmpty) {
           try {
             await current._presentation!.applyBlocks(

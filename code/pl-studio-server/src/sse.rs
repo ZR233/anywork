@@ -1161,6 +1161,18 @@ mod tests {
         assert!(schemas["ChatBatch"]["properties"].get("current").is_none());
         assert!(schemas.get("TimelineItem").is_none());
         assert!(schemas.get("TimelineMembersRef").is_none());
+        assert!(schemas.get("DisplayMemberWindow").is_none());
+        assert!(schemas.get("DisplayMemberPage").is_none());
+        assert!(
+            schemas["MembersRequest"]["properties"]
+                .get("window")
+                .is_none()
+        );
+        assert!(
+            schemas["DisplayMemberBatch"]["properties"]
+                .get("before")
+                .is_none()
+        );
         assert!(schemas.get("ChatEntry").is_none());
         for (schema, fields) in [
             (
@@ -1178,7 +1190,13 @@ mod tests {
                 ][..],
             ),
             ("OlderRequest", &["before", "demand"][..]),
-            ("MembersRequest", &["reference", "window", "demand"][..]),
+            ("MembersRequest", &["reference", "demand"][..]),
+            (
+                "DisplayMemberBatch",
+                &[
+                    "block", "revision", "offset", "sealed", "complete", "entries",
+                ][..],
+            ),
             ("HistoryDelta", &["placement", "blocks", "throughOrder"][..]),
             (
                 "TimelinePage",
@@ -1245,7 +1263,6 @@ mod tests {
             ("OlderRequest", "demand", "ReadDemand"),
             ("MembersRequest", "demand", "ReadDemand"),
             ("MembersRequest", "reference", "DisplayBlockRef"),
-            ("MembersRequest", "window", "DisplayMemberWindow"),
             ("DisplayBlock", "body", "DisplayBlockBody"),
             ("LiveDisplayBlock", "body", "DisplayBlockBody"),
             ("LiveDisplayBlock", "state", "DisplayBlockState"),

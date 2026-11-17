@@ -947,12 +947,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeDisplayMemberPage dco_decode_box_autoadd_bridge_display_member_page(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeDisplayMemberWindow dco_decode_box_autoadd_bridge_display_member_window(
+  BridgeDisplayMemberBatch dco_decode_box_autoadd_bridge_display_member_batch(
     dynamic raw,
   );
 
@@ -2659,15 +2654,10 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayMemberBatch dco_decode_bridge_display_member_batch(dynamic raw);
+
+  @protected
   BridgeDisplayMemberHead dco_decode_bridge_display_member_head(dynamic raw);
-
-  @protected
-  BridgeDisplayMemberPage dco_decode_bridge_display_member_page(dynamic raw);
-
-  @protected
-  BridgeDisplayMemberWindow dco_decode_bridge_display_member_window(
-    dynamic raw,
-  );
 
   @protected
   BridgeDisplayRecord dco_decode_bridge_display_record(dynamic raw);
@@ -4577,8 +4567,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   dco_decode_opt_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
   @protected
-  BridgeDisplayMemberPage?
-  dco_decode_opt_box_autoadd_bridge_display_member_page(dynamic raw);
+  BridgeDisplayMemberBatch?
+  dco_decode_opt_box_autoadd_bridge_display_member_batch(dynamic raw);
 
   @protected
   BridgeHistoryFault? dco_decode_opt_box_autoadd_bridge_history_fault(
@@ -5868,12 +5858,7 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeDisplayMemberPage sse_decode_box_autoadd_bridge_display_member_page(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeDisplayMemberWindow sse_decode_box_autoadd_bridge_display_member_window(
+  BridgeDisplayMemberBatch sse_decode_box_autoadd_bridge_display_member_batch(
     SseDeserializer deserializer,
   );
 
@@ -8142,17 +8127,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDisplayMemberBatch sse_decode_bridge_display_member_batch(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDisplayMemberHead sse_decode_bridge_display_member_head(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeDisplayMemberPage sse_decode_bridge_display_member_page(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeDisplayMemberWindow sse_decode_bridge_display_member_window(
     SseDeserializer deserializer,
   );
 
@@ -10488,8 +10468,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeDisplayMemberPage?
-  sse_decode_opt_box_autoadd_bridge_display_member_page(
+  BridgeDisplayMemberBatch?
+  sse_decode_opt_box_autoadd_bridge_display_member_batch(
     SseDeserializer deserializer,
   );
 
@@ -12018,14 +11998,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_box_autoadd_bridge_display_member_page(
-    BridgeDisplayMemberPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_display_member_window(
-    BridgeDisplayMemberWindow self,
+  void sse_encode_box_autoadd_bridge_display_member_batch(
+    BridgeDisplayMemberBatch self,
     SseSerializer serializer,
   );
 
@@ -14691,20 +14665,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  void sse_encode_bridge_display_member_batch(
+    BridgeDisplayMemberBatch self,
+    SseSerializer serializer,
+  );
+
+  @protected
   void sse_encode_bridge_display_member_head(
     BridgeDisplayMemberHead self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_display_member_page(
-    BridgeDisplayMemberPage self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_bridge_display_member_window(
-    BridgeDisplayMemberWindow self,
     SseSerializer serializer,
   );
 
@@ -17514,8 +17482,8 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  void sse_encode_opt_box_autoadd_bridge_display_member_page(
-    BridgeDisplayMemberPage? self,
+  void sse_encode_opt_box_autoadd_bridge_display_member_batch(
+    BridgeDisplayMemberBatch? self,
     SseSerializer serializer,
   );
 

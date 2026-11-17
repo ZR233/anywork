@@ -168,7 +168,8 @@ class _CurrentState extends State<ConversationCurrentConnector>
   }
 
   Widget _buildWorkSection(LiveStatusTimelineWorkSlice slice) {
-    Widget pad(Widget child) => Padding(
+    Widget pad(Widget child, {Key? key}) => Padding(
+      key: key,
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
       child: child,
     );
@@ -181,7 +182,14 @@ class _CurrentState extends State<ConversationCurrentConnector>
       ),
       if (window != null)
         for (final block in slice.workBlocks)
-          pad(_work(block, window.executionPresent)),
+          pad(
+            _work(
+              block,
+              window.executionPresent,
+              activity: slice.mergedActivityFor(block.id),
+            ),
+            key: ValueKey(block.id),
+          ),
     ];
     return Column(
       key: const ValueKey('timeline-current-work'),
@@ -216,10 +224,8 @@ class _CurrentState extends State<ConversationCurrentConnector>
       if (window != null)
         for (final block in surface.blocks)
           switch (block.body) {
-            WorkDisplayBlock() => _work(
-              block,
-              window.executionPresent,
-              activity: surface.mergedActivityFor(block.id),
+            WorkDisplayBlock() => throw StateError(
+              'Work belongs to the main timeline',
             ),
             SingleDisplayBlock(
               visibility: SingleVisibility.finalEmptyAfterContent,

@@ -53,13 +53,8 @@ class MappedTimelineReader implements TimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
-  }) => inner.openDisplayMembers(
-    reference: reference,
-    window: window,
-    demand: demand,
-  );
+  }) => inner.openDisplayMembers(reference: reference, demand: demand);
   @override
   void requestClose() => inner.requestClose();
   @override

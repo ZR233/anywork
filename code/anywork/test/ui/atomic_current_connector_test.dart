@@ -28,7 +28,6 @@ import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart';
 import 'package:anywork_client/src/observation/latest_value.dart';
-import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -163,11 +162,11 @@ final class _Scope extends Fake implements ConversationQueryScope {
 }
 
 final class _FreezeMembers implements DisplayMembers {
-  final _pages = <DisplayMemberPage>[];
-  Completer<DisplayMemberPage?>? _pending;
+  final _pages = <DisplayMemberBatch>[];
+  Completer<DisplayMemberBatch?>? _pending;
   bool _closing = false;
   bool closed = false;
-  void send(DisplayMemberPage page) {
+  void send(DisplayMemberBatch page) {
     final pending = _pending;
     _pending = null;
     if (pending == null) {
@@ -178,10 +177,10 @@ final class _FreezeMembers implements DisplayMembers {
   }
 
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     if (_closing) return Future.value();
     if (_pages.isNotEmpty) return Future.value(_pages.removeAt(0));
-    return (_pending = Completer<DisplayMemberPage?>()).future;
+    return (_pending = Completer<DisplayMemberBatch?>()).future;
   }
 
   @override
@@ -412,7 +411,7 @@ void main() {
       final handle = _FreezeMembers();
       final expansion = TimelineExpansionIntent()
         ..expanded = true
-        ..openDisplayMembers = (_, _, _) async => handle;
+        ..openDisplayMembers = (_, _) async => handle;
       addTearDown(() {
         expansion.retire();
         images.release();
@@ -420,9 +419,12 @@ void main() {
       await tester.pumpWidget(
         _host(_workConnector(expansion, content, images)),
       );
-      DisplayMemberPage page({bool changed = false}) => DisplayMemberPage(
+      var revision = 0;
+      DisplayMemberBatch page({bool changed = false}) => DisplayMemberBatch(
+        offset: 0,
+        complete: true,
         block: _workReference,
-        revision: changed ? 2 : 1,
+        revision: ++revision,
         sealed: false,
         entries: [
           _workRow(1, text: changed ? '更新成员' : null),
@@ -474,64 +476,48 @@ void main() {
 
   for (final location in WorkDisplayLocation.values) {
     testWidgets(
-      'work $location uses natural short height and bounded long scrolling without overflow',
+      'work $location uses natural height and only its parent scrolls',
       (tester) async {
-        Widget scene(double height, {double parentHeight = 190}) => _host(
-          Align(
-            alignment: Alignment.topLeft,
-            child: SizedBox(
-              height: parentHeight,
-              width: 500,
-              child: CompletionRunView(
-                id: 'bounded-work',
-                timing: displayTiming(),
-                location: location,
-                initiallyExpanded: true,
-                childBuilder: (_) =>
-                    SizedBox(height: height, child: const Text('内容')),
-              ),
+        Widget scene(double height) => _host(
+          SingleChildScrollView(
+            child: CompletionRunView(
+              id: 'natural-work',
+              timing: displayTiming(),
+              location: location,
+              initiallyExpanded: true,
+              childBuilder: (_) =>
+                  SizedBox(height: height, child: const Text('完整成员正文')),
             ),
           ),
         );
         await tester.pumpWidget(scene(24));
         await _flush(tester);
-        final scroll = find.descendant(
-          of: find.byType(CompletionRunScrollScope),
-          matching: find.byType(SingleChildScrollView),
+        expect(
+          tester.getSize(find.byType(CompletionRunView)).height,
+          lessThan(120),
         );
-        expect(tester.getSize(scroll).height, 24);
-        await tester.pumpWidget(scene(900));
+        await tester.pumpWidget(scene(1400));
         await _flush(tester);
-        final header = find.byKey(
-          const ValueKey('completion-run-header:bounded-work'),
-        );
-        final available = 190 - tester.getSize(header).height - 8;
         expect(
-          tester.getSize(scroll).height,
-          closeTo(available.clamp(0, 420), .001),
+          tester.getSize(find.byType(CompletionRunView)).height,
+          greaterThan(1400),
         );
         expect(
-          tester.getRect(scroll).bottom,
-          lessThanOrEqualTo(
-            tester.getRect(find.byType(CompletionRunView)).bottom,
+          find.descendant(
+            of: find.byType(CompletionRunView),
+            matching: find.byType(Scrollable),
           ),
+          findsNothing,
         );
-        final scope = tester.widget<CompletionRunScrollScope>(
-          find.byType(CompletionRunScrollScope),
-        );
-        expect(scope.controller.position.maxScrollExtent, greaterThan(700));
-        await tester.drag(scroll, const Offset(0, -80));
-        await tester.pump();
-        expect(scope.controller.offset, greaterThan(0));
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(scene(900, parentHeight: 600));
+        expect(find.byType(Scrollable), findsOneWidget);
+        await tester.drag(find.byType(Scrollable), const Offset(0, -300));
         await _flush(tester);
-        expect(tester.getSize(scroll).height, 420);
         expect(
-          tester.getRect(scroll).bottom,
-          lessThanOrEqualTo(
-            tester.getRect(find.byType(CompletionRunView)).bottom,
-          ),
+          tester
+              .state<ScrollableState>(find.byType(Scrollable))
+              .position
+              .pixels,
+          greaterThan(0),
         );
         expect(tester.takeException(), isNull);
         await tester.pumpWidget(const SizedBox());
@@ -539,289 +525,114 @@ void main() {
     );
   }
 
-  testWidgets('short work pages can scroll to older and newer members', (
-    tester,
-  ) async {
-    final content = _Content();
-    final images = TimelineImageResources(threadId: 'thread');
-    final requests = <DisplayMemberWindow>[];
-    final expansion = TimelineExpansionIntent()..expanded = true;
-    expansion.openDisplayMembers = (_, window, _) async {
-      requests.add(window);
-      final end = window is BeforeDisplayMembers ? window.memberOrder - 1 : 4;
-      final start = (end - 1).clamp(1, 4);
-      return _FreezeMembers()..send(
-        DisplayMemberPage(
-          block: _workReference,
-          revision: requests.length,
-          sealed: false,
-          entries: [for (var i = start; i <= end; i++) _workRow(i)],
-          before: start > 1 ? start : null,
-        ),
-      );
-    };
-    addTearDown(() {
-      expansion.retire();
-      images.release();
-    });
-    await tester.pumpWidget(
-      _host(
-        Align(
-          alignment: Alignment.topLeft,
-          child: SizedBox(
-            height: 600,
-            width: 600,
-            child: CompletionRunView(
-              id: 'short-scroll-work',
-              timing: displayTiming(),
-              location: WorkDisplayLocation.history,
-              initiallyExpanded: true,
-              childBuilder: (_) => _workConnector(expansion, content, images),
-            ),
-          ),
-        ),
-      ),
-    );
-    await _flush(tester);
-    final scope = tester.widget<CompletionRunScrollScope>(
-      find.byType(CompletionRunScrollScope),
-    );
-    final scroll = find.descendant(
-      of: find.byType(CompletionRunScrollScope),
-      matching: find.byType(SingleChildScrollView),
-    );
-    expect(scope.controller.position.maxScrollExtent, 0);
-    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
-
-    Future<void> wheel(double delta) async {
-      await tester.sendEventToBinding(
-        PointerScrollEvent(
-          position: tester.getCenter(scroll),
-          scrollDelta: Offset(0, delta),
-        ),
-      );
-      await _flush(tester);
-    }
-
-    await wheel(-70);
-    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [2, 3]);
-    await wheel(70);
-    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
-    await tester.drag(scroll, const Offset(0, 70));
-    await _flush(tester);
-    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [2, 3]);
-    await tester.drag(scroll, const Offset(0, -70));
-    await _flush(tester);
-    expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [3, 4]);
-    expect(requests, hasLength(5));
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
-
-  testWidgets('nested body keeps wheel priority over work pagination', (
-    tester,
-  ) async {
-    final content = _Content();
-    final images = TimelineImageResources(threadId: 'thread');
-    final handle = _FreezeMembers();
-    var requests = 0;
-    final expansion = TimelineExpansionIntent()
-      ..expanded = true
-      ..openDisplayMembers = (_, _, _) async {
-        requests++;
-        return handle;
-      };
-    addTearDown(() {
-      expansion.retire();
-      images.release();
-    });
-    await tester.pumpWidget(
-      _host(
-        SizedBox(
-          height: 260,
-          child: CompletionRunView(
-            id: 'nested-wheel-work',
-            timing: displayTiming(),
-            location: WorkDisplayLocation.live,
-            initiallyExpanded: true,
-            childBuilder: (_) => _workConnector(
-              expansion,
-              content,
-              images,
-              executionPresent: true,
-            ),
-          ),
-        ),
-      ),
-    );
-    handle.send(
-      DisplayMemberPage(
-        block: _workReference,
-        revision: 1,
-        sealed: false,
-        entries: [
-          DisplayMemberHead(
-            memberKey: 'response',
-            memberOrder: 2,
-            record: DisplayRecord(
-              atom: _textItem(),
-              contentSource: const CurrentAtom(),
-            ),
-          ),
-        ],
-        before: 1,
-      ),
-    );
-    await _flush(tester);
-    content.scopes.single.watches.single.add(
-      _window(List.generate(80, (index) => '正文第 $index 行').join('\n')),
-    );
-    await _flush(tester);
-    final body = find.descendant(
-      of: find.byType(TimelineMemberAtom),
-      matching: find.byType(SingleChildScrollView),
-    );
-    final position = tester
-        .state<ScrollableState>(
-          find.descendant(of: body, matching: find.byType(Scrollable)),
-        )
-        .position;
-    expect(position.maxScrollExtent, greaterThan(50));
-    position.jumpTo(50);
-    await tester.pump();
-    await tester.sendEventToBinding(
-      PointerScrollEvent(
-        position: tester.getCenter(body),
-        scrollDelta: const Offset(0, -30),
-      ),
-    );
-    await _flush(tester);
-    expect(position.pixels, lessThan(50));
-    expect(requests, 1);
-    expect(expansion.members!.page!.before, 1);
-    expect(tester.takeException(), isNull);
-    await tester.pumpWidget(const SizedBox());
-  });
-
   testWidgets(
-    'work scroll boundaries read overlapping pages and keep the visible anchor without buttons',
+    'all transported work rows share parent scrolling without reopening membership',
     (tester) async {
       final content = _Content();
       final images = TimelineImageResources(threadId: 'thread');
-      final handles = <_FreezeMembers>[];
-      final requests = <DisplayMemberWindow>[];
-      final expansion = TimelineExpansionIntent()..expanded = true;
-      expansion.openDisplayMembers = (_, window, demand) async {
-        requests.add(window);
-        final end = window is BeforeDisplayMembers
-            ? window.memberOrder - 1
-            : 40;
-        final start = (end - demand.maxItems + 1).clamp(1, 40);
-        final handle = _FreezeMembers()
-          ..send(
-            DisplayMemberPage(
-              block: _workReference,
-              revision: handles.length + 1,
-              sealed: false,
-              entries: [for (var i = start; i <= end; i++) _workRow(i)],
-              before: start > 1 ? start : null,
-            ),
-          );
-        handles.add(handle);
-        return handle;
-      };
+      final handle = _FreezeMembers();
+      var opens = 0;
+      final expansion = TimelineExpansionIntent()
+        ..expanded = true
+        ..openDisplayMembers = (_, demand) async {
+          opens++;
+          expect(demand.maxItems, 12);
+          return handle;
+        };
       addTearDown(() {
         expansion.retire();
         images.release();
       });
       await tester.pumpWidget(
         _host(
-          Align(
-            alignment: Alignment.topLeft,
-            child: SizedBox(
-              height: 260,
-              width: 600,
-              child: CompletionRunView(
-                id: 'scroll-work',
-                timing: displayTiming(),
-                location: WorkDisplayLocation.history,
-                initiallyExpanded: true,
-                childBuilder: (_) => _workConnector(expansion, content, images),
-              ),
+          SingleChildScrollView(
+            child: CompletionRunView(
+              id: 'complete-work',
+              timing: displayTiming(),
+              location: WorkDisplayLocation.live,
+              initiallyExpanded: true,
+              childBuilder: (_) => _workConnector(expansion, content, images),
             ),
           ),
         ),
       );
-      await _flush(tester);
-      final scroll = find.descendant(
-        of: find.byType(CompletionRunScrollScope),
-        matching: find.byType(SingleChildScrollView),
-      );
-      final anchor = find.byWidgetPredicate(
-        (widget) =>
-            widget is TimelineMemberAtom && widget.displayId == 'member-29',
-      );
-      final original = tester.state(anchor);
-      final y = tester.getTopLeft(anchor).dy;
-      await tester.drag(scroll, const Offset(0, 70));
-      await _flush(tester);
-      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
-        for (var i = 18; i <= 29; i++) i,
-      ]);
-      expect(tester.state(anchor), same(original));
-      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
-      expect(handles.first.closed, isTrue);
-      // A block revision can advance while this fixed boundary is being read.
-      // Its same-cut bounded page must not return the reader to Latest.
-      handles.last.send(
-        DisplayMemberPage(
+      handle.send(
+        DisplayMemberBatch(
           block: _workReference,
-          revision: 100,
+          revision: 1,
+          offset: 0,
+          complete: false,
           sealed: false,
-          entries: [for (var i = 18; i <= 29; i++) _workRow(i)],
-          before: 18,
+          entries: [for (var i = 1; i <= 12; i++) _workRow(i)],
         ),
       );
       await _flush(tester);
-      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
-      expect(tester.state(anchor), same(original));
-      expect(requests.length, 2);
-      expect(find.text('更早成员'), findsNothing);
-      expect(find.text('最新成员'), findsNothing);
-      await tester.drag(scroll, const Offset(0, -50));
+      expect(find.byType(TimelineMemberAtom), findsNothing);
+      for (final offset in [12, 24, 36]) {
+        handle.send(
+          DisplayMemberBatch(
+            block: _workReference,
+            revision: 1,
+            offset: offset,
+            complete: offset == 36,
+            sealed: false,
+            entries: [
+              for (var i = offset + 1; i <= (offset + 12).clamp(0, 40); i++)
+                _workRow(i),
+            ],
+          ),
+        );
+      }
       await _flush(tester);
-      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
-        for (var i = 29; i <= 40; i++) i,
+      expect(find.byType(TimelineMemberAtom), findsNWidgets(40));
+      expect(expansion.members!.entries.map((e) => e.memberOrder), [
+        for (var i = 1; i <= 40; i++) i,
       ]);
-      expect(tester.state(anchor), same(original));
-      expect(tester.getTopLeft(anchor).dy, closeTo(y, 1));
-      expect(requests.length, 3);
-      // After navigating back to Latest, a large reverse gesture can reach
-      // the retained leading spacer before any member intersects the viewport.
-      await tester.drag(scroll, const Offset(0, -1000));
-      await _flush(tester);
-      expect(expansion.members!.window, isA<LatestDisplayMembers>());
-      await tester.drag(scroll, const Offset(0, 1000));
-      await _flush(tester);
-      expect(expansion.members!.page!.entries.map((e) => e.memberOrder), [
-        for (var i = 18; i <= 29; i++) i,
-      ]);
+      expect(find.byType(Scrollable), findsOneWidget);
       expect(
-        content.scopes,
-        isEmpty,
-        reason: 'Member pagination does not open body watches',
+        find.descendant(
+          of: find.byType(CompletionRunView),
+          matching: find.byType(Scrollable),
+        ),
+        findsNothing,
       );
-      expect(tester.takeException(), isNull);
+      final first = find.byWidgetPredicate(
+        (w) => w is TimelineMemberAtom && w.displayId == 'member-1',
+      );
+      final state = tester.state(first);
+      await tester.drag(find.byType(Scrollable), const Offset(0, -400));
+      await _flush(tester);
+      expect(opens, 1);
+      for (final offset in [0, 12, 24, 36]) {
+        handle.send(
+          DisplayMemberBatch(
+            block: _workReference,
+            revision: 2,
+            offset: offset,
+            complete: offset == 36,
+            sealed: false,
+            entries: [
+              for (var i = offset + 1; i <= (offset + 12).clamp(0, 44); i++)
+                _workRow(i),
+            ],
+          ),
+        );
+      }
+      await _flush(tester);
+      expect(tester.state(first), same(state));
+      expect(expansion.members!.entries, hasLength(44));
+      expect(opens, 1);
+      expect(content.scopes, isEmpty);
       await tester.pumpWidget(const SizedBox());
       expansion.retire();
       await _flush(tester);
-      expect(handles.every((handle) => handle.closed), isTrue);
+      expect(handle.closed, isTrue);
     },
   );
 
   for (final bounded in [true, false]) {
     testWidgets(
-      '#364 small ${bounded ? 'bounded' : '45-percent'} dock scrolls notices and pagers without replacing the expanded tail owners',
+      '#364 small ${bounded ? 'bounded' : '45-percent'} dock scrolls notices and pagers without replacing the main timeline Work owners',
       (tester) async {
         final content = _Content();
         final images = TimelineImageResources(threadId: 'thread');
@@ -832,7 +643,7 @@ void main() {
           blockId: 'tail',
         );
         var opens = 0;
-        expansion.openDisplayMembers = (_, _, _) async {
+        expansion.openDisplayMembers = (_, _) async {
           opens++;
           return handle;
         };
@@ -902,6 +713,15 @@ void main() {
                   ),
                 ),
               if (showLeading) ...[
+                // Keep the notice-only dock genuinely taller than its budget;
+                // the complete Work no longer contributes to footer height.
+                const ExecutionLiveNotice(
+                  ConversationActivityView(
+                    identity: 'approval',
+                    kind: ConversationActivityKind.awaitingApproval,
+                    summary: '等待工具审批',
+                  ),
+                ),
                 const ExecutionLiveNotice(
                   ConversationActivityView(
                     identity: 'stopping',
@@ -919,21 +739,24 @@ void main() {
               ],
             ],
           );
-          final connector = ConversationCurrentConnector(
-            section: ConversationLiveSection.output,
+          TimelineDisplayUnit liveUnit(
+            LiveDisplayBlock block,
+            bool executionPresent,
+          ) => TimelineDisplayUnit.live(
+            block: block,
+            executionPresent: executionPresent,
+            expansion: expansion,
+          );
+          final workConnector = ConversationCurrentConnector(
+            section: ConversationLiveSection.work,
+            workSlice: LiveStatusTimelineWorkSlice(
+              workBlocks: projected.timelineWorkBlocks,
+              mergedWorkActivity: projected.mergedWorkActivity,
+              effectiveWindow: latest,
+            ),
             threadId: 'thread',
             content: content,
-            presenting: LiveStatusPresenting(
-              surface: projected.surface!,
-              effectiveWindow: window,
-              paging: paging,
-              showInteractionDetails: false,
-            ),
-            liveUnit: (block, executionPresent) => TimelineDisplayUnit.live(
-              block: block,
-              executionPresent: executionPresent,
-              expansion: expansion,
-            ),
+            liveUnit: liveUnit,
             images: images,
             readAttachment: (_) async => Uint8List(0),
             isDisplayActive: () => true,
@@ -941,6 +764,24 @@ void main() {
               display = value;
               return () => display = null;
             },
+            now: () => now,
+          );
+          final connector = ConversationCurrentConnector(
+            section: ConversationLiveSection.output,
+            threadId: 'thread',
+            content: content,
+            presenting: projected.surface == null
+                ? null
+                : LiveStatusPresenting(
+                    surface: projected.surface!,
+                    effectiveWindow: window,
+                    paging: paging,
+                    showInteractionDetails: false,
+                  ),
+            liveUnit: liveUnit,
+            images: images,
+            readAttachment: (_) async => Uint8List(0),
+            isDisplayActive: () => true,
             onLoadOlder: pagingRequests.add,
             onReturnToLatest: () => returnsToLatest++,
             now: () => now,
@@ -952,13 +793,21 @@ void main() {
                 alignment: Alignment.topLeft,
                 child: SizedBox(
                   width: 480,
-                  height: bounded ? 162 : null,
-                  child: bounded
-                      ? connector
-                      : Column(
+                  height: 360,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: SingleChildScrollView(child: workConnector),
+                      ),
+                      if (bounded)
+                        SizedBox(height: 162, child: connector)
+                      else
+                        Column(
                           mainAxisSize: MainAxisSize.min,
                           children: [connector],
                         ),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -967,7 +816,9 @@ void main() {
 
         await tester.pumpWidget(scene(true));
         handle.send(
-          DisplayMemberPage(
+          DisplayMemberBatch(
+            offset: 0,
+            complete: true,
             block: reference,
             revision: 1,
             sealed: false,
@@ -1212,7 +1063,7 @@ void main() {
             databaseId: 'database',
             blockId: 'work',
           );
-          expansion.openDisplayMembers = (_, _, _) async => handle;
+          expansion.openDisplayMembers = (_, _) async => handle;
           addTearDown(() {
             if (!cancellation.isCompleted) cancellation.complete();
             expansion.retire();
@@ -1234,7 +1085,9 @@ void main() {
               key: key,
             ),
           );
-          DisplayMemberPage page(bool frozen) => DisplayMemberPage(
+          DisplayMemberBatch page(bool frozen) => DisplayMemberBatch(
+            offset: 0,
+            complete: true,
             block: reference,
             revision: frozen ? 2 : 1,
             sealed: frozen,
@@ -2003,126 +1856,128 @@ void main() {
       TimelineMemberDisplay? display;
       Widget scene({bool withBody = true, bool withBackground = false}) =>
           _host(
-            CompletionRunView(
-              id: 'mixed-current-work',
-              timing: displayTiming(),
-              location: WorkDisplayLocation.live,
-              executionPresent: true,
-              initiallyExpanded: true,
-              childBuilder: (_) => Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (withBackground)
+            SingleChildScrollView(
+              child: CompletionRunView(
+                id: 'mixed-current-work',
+                timing: displayTiming(),
+                location: WorkDisplayLocation.live,
+                executionPresent: true,
+                initiallyExpanded: true,
+                childBuilder: (_) => Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (withBackground)
+                      TimelineMemberAtom(
+                        key: const ValueKey("background-result"),
+                        content: content,
+                        isActive: () => true,
+                        images: images,
+                        readAttachment: null,
+                        displayId: "background-result",
+                        record: DisplayRecord(
+                          contentSource: const CompletedOriginal(
+                            completionId: "background-completion",
+                          ),
+                          atom: ChatAtom(
+                            id: "background-result",
+                            completionItemId: "background-completion",
+                            completionSeq: 8,
+                            source: const BackgroundResultChatSource(
+                              messageId: "task-result",
+                            ),
+                            sourceOrder: 1,
+                            kind: ChatAtomKind.toolCall,
+                            delivery: ChatDeliveryKind.independent,
+                            lifecycle: const TerminalChatAtom(
+                              started: null,
+                              ended: null,
+                              outcome: ChatTerminalOutcome.completed,
+                            ),
+                            contents: const [
+                              ChatAtomContent(
+                                role: ChatContentRole.toolOutput,
+                                reference: backgroundRef,
+                              ),
+                            ],
+                            payload: InlinePayload(
+                              bytes: utf8.encode(
+                                jsonEncode({
+                                  "contract": "anywork.chat/1",
+                                  "type": "tool",
+                                  "data": {
+                                    "invocation": {
+                                      "toolCallId": "background-call",
+                                      "name": "独立后台命令",
+                                      "presentationContract": "generic@1",
+                                    },
+                                    "state": {
+                                      "kind": "succeeded",
+                                      "completedAt": 12,
+                                      "output": {
+                                        "exitCode": 0,
+                                        "attachments": [],
+                                      },
+                                    },
+                                  },
+                                  "bodies": [
+                                    {
+                                      "key": "tool.arguments",
+                                      "byteLength": 2,
+                                      "inline": [123, 125],
+                                    },
+                                    {
+                                      "key": "tool.result",
+                                      "byteLength": utf8
+                                          .encode(backgroundText)
+                                          .length,
+                                      "inline": utf8.encode(backgroundText),
+                                    },
+                                  ],
+                                }),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     TimelineMemberAtom(
-                      key: const ValueKey("background-result"),
+                      key: const ValueKey('reasoning-member'),
                       content: content,
                       isActive: () => true,
                       images: images,
                       readAttachment: null,
-                      displayId: "background-result",
+                      registerDisplay: (value) {
+                        display = value;
+                        return () => display = null;
+                      },
                       record: DisplayRecord(
-                        contentSource: const CompletedOriginal(
-                          completionId: "background-completion",
-                        ),
                         atom: ChatAtom(
-                          id: "background-result",
-                          completionItemId: "background-completion",
-                          completionSeq: 8,
-                          source: const BackgroundResultChatSource(
-                            messageId: "task-result",
-                          ),
+                          id: 'reasoning-member',
+                          source: _source,
                           sourceOrder: 1,
-                          kind: ChatAtomKind.toolCall,
-                          delivery: ChatDeliveryKind.independent,
-                          lifecycle: const TerminalChatAtom(
+                          kind: ChatAtomKind.reasoning,
+                          delivery: ChatDeliveryKind.foreground,
+                          lifecycle: const ActiveChatAtom(
                             started: null,
-                            ended: null,
-                            outcome: ChatTerminalOutcome.completed,
+                            status: ChatActiveStatus.running,
                           ),
-                          contents: const [
-                            ChatAtomContent(
-                              role: ChatContentRole.toolOutput,
-                              reference: backgroundRef,
+                          contents: [
+                            const ChatAtomContent(
+                              role: ChatContentRole.reasoningSummary,
+                              reference: summaryRef,
                             ),
+                            if (withBody)
+                              ChatAtomContent(
+                                role: ChatContentRole.body,
+                                reference: _ref(),
+                              ),
                           ],
-                          payload: InlinePayload(
-                            bytes: utf8.encode(
-                              jsonEncode({
-                                "contract": "anywork.chat/1",
-                                "type": "tool",
-                                "data": {
-                                  "invocation": {
-                                    "toolCallId": "background-call",
-                                    "name": "独立后台命令",
-                                    "presentationContract": "generic@1",
-                                  },
-                                  "state": {
-                                    "kind": "succeeded",
-                                    "completedAt": 12,
-                                    "output": {
-                                      "exitCode": 0,
-                                      "attachments": [],
-                                    },
-                                  },
-                                },
-                                "bodies": [
-                                  {
-                                    "key": "tool.arguments",
-                                    "byteLength": 2,
-                                    "inline": [123, 125],
-                                  },
-                                  {
-                                    "key": "tool.result",
-                                    "byteLength": utf8
-                                        .encode(backgroundText)
-                                        .length,
-                                    "inline": utf8.encode(backgroundText),
-                                  },
-                                ],
-                              }),
-                            ),
-                          ),
                         ),
+                        contentSource: const CurrentAtom(),
                       ),
+                      displayId: "fixture-current",
                     ),
-                  TimelineMemberAtom(
-                    key: const ValueKey('reasoning-member'),
-                    content: content,
-                    isActive: () => true,
-                    images: images,
-                    readAttachment: null,
-                    registerDisplay: (value) {
-                      display = value;
-                      return () => display = null;
-                    },
-                    record: DisplayRecord(
-                      atom: ChatAtom(
-                        id: 'reasoning-member',
-                        source: _source,
-                        sourceOrder: 1,
-                        kind: ChatAtomKind.reasoning,
-                        delivery: ChatDeliveryKind.foreground,
-                        lifecycle: const ActiveChatAtom(
-                          started: null,
-                          status: ChatActiveStatus.running,
-                        ),
-                        contents: [
-                          const ChatAtomContent(
-                            role: ChatContentRole.reasoningSummary,
-                            reference: summaryRef,
-                          ),
-                          if (withBody)
-                            ChatAtomContent(
-                              role: ChatContentRole.body,
-                              reference: _ref(),
-                            ),
-                        ],
-                      ),
-                      contentSource: const CurrentAtom(),
-                    ),
-                    displayId: "fixture-current",
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           );

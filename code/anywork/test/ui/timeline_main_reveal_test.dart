@@ -200,7 +200,7 @@ void main() {
         controller as InMemoryChatController,
         generation: lease.generation,
         onUnitCreated: (unit) {
-          unit.expansion.openDisplayMembers = (_, _, _) async {
+          unit.expansion.openDisplayMembers = (_, _) async {
             memberOpens++;
             throw StateError('Main reveal must not open a member query');
           };

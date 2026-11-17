@@ -13,7 +13,7 @@ use super::runtime::thread_observation::{
 };
 use super::storage::history::HistoryStore;
 use super::storage::thread_writer::{HistoryChannel, ThreadStorageBinding};
-use super::thread_projection::presentation::{DisplayMemberCut, PresentationCut};
+use super::thread_projection::presentation::{DisplayMemberCapture, PresentationCut};
 use super::thread_projection::{LiveProjection, PreparedEffect};
 
 pub(in crate::studio) enum ReadRequest<'a> {
@@ -26,8 +26,8 @@ pub(in crate::studio) enum ReadRequest<'a> {
     },
     Members {
         block: &'a str,
-        before: Option<u64>,
-        limit: usize,
+        delivered: Option<(u64, bool)>,
+        fixed_snapshot: bool,
     },
 }
 
@@ -35,7 +35,7 @@ pub(in crate::studio) enum ReadCut {
     Ready {
         source: Arc<ConversationSource>,
         display: Option<PresentationCut>,
-        members: Option<DisplayMemberCut>,
+        members: Option<DisplayMemberCapture>,
     },
     Cold(Option<super::storage::history::ConversationSnapshot>),
 }
@@ -614,11 +614,16 @@ impl ConversationReadHandle {
                 Some(owner.capture(*before, *limit, *after, *history_limit)),
                 None,
             ),
+            // Filter unchanged revisions before enumerating resident members. Changed results
+            // still capture the complete overlay under these same locks, independent of demand.
             ReadRequest::Members {
                 block,
-                before,
-                limit,
-            } => (None, owner.member_cut(block, *before, *limit)),
+                delivered,
+                fixed_snapshot,
+            } => (
+                None,
+                owner.capture_members(block, *delivered, *fixed_snapshot),
+            ),
         };
         drop(owner);
         Some(ReadCut::Ready {

@@ -55,7 +55,8 @@ use pl_studio_runtime::{
         pl_studio_runtime::ActivitySnapshot,
         pl_studio_runtime::ActivityEntry,
         pl_studio_runtime::ActivityIdentity,
-        pl_studio_runtime::ChatScope
+        pl_studio_runtime::ChatScope,
+        pl_studio_runtime::DisplayMemberBatch
     ))
 )]
 struct StudioApi;

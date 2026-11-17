@@ -55,14 +55,13 @@ abstract interface class TimelineQueryScope implements ConversationQueryScope {
   });
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   });
 }
 
-/// One bounded display-member query observation, owned by its read scope.
+/// A complete member observation delivered in bounded batches by its read scope.
 abstract interface class DisplayMembers {
-  Future<DisplayMemberPage?> next();
+  Future<DisplayMemberBatch?> next();
   void requestClose();
   Future<void> close();
 }

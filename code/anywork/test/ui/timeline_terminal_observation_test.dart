@@ -46,12 +46,13 @@ DisplayBlock _single(ChatSourceId source) => DisplayBlock(
   ),
 );
 
-DisplayMemberPage _page(ChatSourceId source, {int order = 1, int? before}) =>
-    DisplayMemberPage(
+DisplayMemberBatch _page(ChatSourceId source, {int order = 1}) =>
+    DisplayMemberBatch(
+      offset: 0,
+      complete: true,
       block: _reference,
       revision: 1,
       sealed: true,
-      before: before,
       entries: [
         DisplayMemberHead(
           memberKey: 'stable-member-key',
@@ -107,21 +108,42 @@ final class _Fixture {
 }
 
 void main() {
-  testWidgets('mixed-source Work qualifies through bounded member pages', (
+  testWidgets('mixed-source Work qualifies through complete member batches', (
     tester,
   ) async {
     final f = _Fixture(tester);
     await f.set([displayWork('work', 1)]);
-    f.content.scope.replyForWindow = (window) async => switch (window) {
-      LatestDisplayMembers() => _page(_other, order: 2, before: 2),
-      BeforeDisplayMembers(:final memberOrder) => () {
-        expect(memberOrder, 2);
-        return _page(_source);
-      }(),
-    };
+    f.content.scope.replies = [
+      Future.value(
+        DisplayMemberBatch(
+          block: _reference,
+          revision: 1,
+          offset: 0,
+          sealed: true,
+          complete: false,
+          entries: _page(_source).entries,
+        ),
+      ),
+      Future.value(
+        DisplayMemberBatch(
+          block: _reference,
+          revision: 1,
+          offset: 1,
+          sealed: true,
+          complete: true,
+          entries: [
+            DisplayMemberHead(
+              memberKey: 'other-member',
+              memberOrder: 2,
+              record: _page(_other).entries.single.record,
+            ),
+          ],
+        ),
+      ),
+    ];
     expect(f.observed.singleBlocks, isEmpty);
     expect(await f.observed.hasHistoricalSource(_source), isTrue);
-    expect(f.content.scope.demands, hasLength(2));
+    expect(f.content.scope.demands, hasLength(1));
     for (final demand in f.content.scope.demands) {
       expect(demand.maxItems, 32);
       expect(demand.maxBytes, 16384);
@@ -206,7 +228,7 @@ void main() {
       await next.set([displayWork('work', 1)]);
       var borrowed = old.lease;
       final observed = TimelineObservation(tester, () => borrowed);
-      final reply = Completer<DisplayMemberPage>();
+      final reply = Completer<DisplayMemberBatch>();
       old.content.scope.reply = reply.future;
       final result = observed.hasHistoricalSource(_source);
       final rejected = expectLater(result, throwsA(isA<TestFailure>()));
@@ -284,21 +306,16 @@ final class _Content extends Fake implements TimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) {
     opened++;
-    return scope.openDisplayMembers(
-      reference: reference,
-      window: window,
-      demand: demand,
-    );
+    return scope.openDisplayMembers(reference: reference, demand: demand);
   }
 }
 
 final class _Scope extends Fake implements TimelineQueryScope {
-  late Future<DisplayMemberPage> reply;
-  Future<DisplayMemberPage> Function(DisplayMemberWindow)? replyForWindow;
+  late Future<DisplayMemberBatch> reply;
+  List<Future<DisplayMemberBatch>>? replies;
   final entered = Completer<void>();
   final demands = <ReadDemand>[];
   final handles = <_Members>[];
@@ -310,13 +327,11 @@ final class _Scope extends Fake implements TimelineQueryScope {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) async {
     expect(reference, _reference);
-    if (replyForWindow == null) expect(window, isA<LatestDisplayMembers>());
     demands.add(demand);
-    final handle = _Members(replyForWindow?.call(window) ?? reply, nextFailure);
+    final handle = _Members(replies ?? [reply], nextFailure);
     handles.add(handle);
     if (!entered.isCompleted) entered.complete();
     return handle;
@@ -333,14 +348,15 @@ final class _Scope extends Fake implements TimelineQueryScope {
 
 final class _Members implements DisplayMembers {
   _Members(this.reply, this.failure);
-  final Future<DisplayMemberPage> reply;
+  final List<Future<DisplayMemberBatch>> reply;
+  int index = 0;
   final Object? failure;
   bool closeRequested = false;
   bool closed = false;
   @override
-  Future<DisplayMemberPage?> next() async {
+  Future<DisplayMemberBatch?> next() async {
     if (failure case final error?) throw error;
-    return await reply;
+    return index < reply.length ? await reply[index++] : null;
   }
 
   @override

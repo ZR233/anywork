@@ -19,15 +19,6 @@ pub(crate) fn block_ref(value: protocol::DisplayBlockRef) -> BridgeDisplayBlockR
     }
 }
 
-pub(crate) fn member_window(value: BridgeDisplayMemberWindow) -> protocol::DisplayMemberWindow {
-    match value {
-        BridgeDisplayMemberWindow::Latest => protocol::DisplayMemberWindow::Latest,
-        BridgeDisplayMemberWindow::Before { member_order } => {
-            protocol::DisplayMemberWindow::Before { member_order }
-        }
-    }
-}
-
 fn timing(value: protocol::WorkTiming) -> BridgeWorkTiming {
     BridgeWorkTiming {
         started_at: value.started_at,
@@ -80,11 +71,13 @@ fn body(value: protocol::DisplayBlockBody) -> BridgeDisplayBlockBody {
     }
 }
 
-pub(crate) fn member_page(value: protocol::DisplayMemberPage) -> BridgeDisplayMemberPage {
-    BridgeDisplayMemberPage {
+pub(crate) fn member_batch(value: protocol::DisplayMemberBatch) -> BridgeDisplayMemberBatch {
+    BridgeDisplayMemberBatch {
         block: block_ref(value.block),
         revision: value.revision,
+        offset: value.offset,
         sealed: value.sealed,
+        complete: value.complete,
         entries: value
             .entries
             .into_iter()
@@ -94,7 +87,6 @@ pub(crate) fn member_page(value: protocol::DisplayMemberPage) -> BridgeDisplayMe
                 record: record(member.record),
             })
             .collect(),
-        before: value.before,
     }
 }
 
@@ -329,11 +321,13 @@ mod tests {
     }
 
     #[test]
-    fn member_page_keeps_real_interruption_without_fabricating_completion() {
-        let mapped = member_page(protocol::DisplayMemberPage {
+    fn member_batch_keeps_real_interruption_without_fabricating_completion() {
+        let mapped = member_batch(protocol::DisplayMemberBatch {
             block: reference(),
             revision: 9,
+            offset: 4,
             sealed: true,
+            complete: false,
             entries: vec![protocol::DisplayMemberHead {
                 member_key: "original-member".into(),
                 member_order: 7,
@@ -357,12 +351,12 @@ mod tests {
                     },
                 },
             }],
-            before: Some(7),
         });
         assert_eq!(protocol_block_ref(mapped.block), reference());
         assert_eq!(mapped.revision, 9);
         assert!(mapped.sealed);
-        assert_eq!(mapped.before, Some(7));
+        assert_eq!(mapped.offset, 4);
+        assert!(!mapped.complete);
         let member = &mapped.entries[0];
         assert_eq!(member.member_key, "original-member");
         assert_eq!(member.member_order, 7);
@@ -394,13 +388,5 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(
-            member_window(BridgeDisplayMemberWindow::Before { member_order: 7 }),
-            protocol::DisplayMemberWindow::Before { member_order: 7 }
-        );
-        assert_eq!(
-            member_window(BridgeDisplayMemberWindow::Latest),
-            protocol::DisplayMemberWindow::Latest
-        );
     }
 }

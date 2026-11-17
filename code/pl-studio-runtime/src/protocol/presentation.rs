@@ -204,17 +204,6 @@ pub struct LiveDisplayBlock {
     pub thinking_summary: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum DisplayMemberWindow {
-    Latest,
-    Before { member_order: u64 },
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DisplayMemberHead {
@@ -225,12 +214,13 @@ pub struct DisplayMemberHead {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DisplayMemberPage {
+pub struct DisplayMemberBatch {
     pub block: DisplayBlockRef,
     pub revision: u64,
+    pub offset: u64,
     pub sealed: bool,
+    pub complete: bool,
     pub entries: Vec<DisplayMemberHead>,
-    pub before: Option<u64>,
 }
 
 #[cfg(test)]

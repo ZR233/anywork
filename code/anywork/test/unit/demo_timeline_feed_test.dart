@@ -16,6 +16,95 @@ const _one = ReadDemand(maxItems: 1, maxBytes: 65536);
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  test('member transport keeps one immutable cut while a new revision arrives and bytes split before item limit', () async {
+    final api = await _open();
+    final reference = DisplayBlockRef(
+      databaseId: api.conversationDatabaseId(_thread),
+      blockId: 'transport-work',
+    );
+    final body = WorkDisplayBlock(timing: displayTiming(), members: reference);
+    void seed(int revision, int count) => api.seedDisplayBlocks(
+      threadId: _thread,
+      blocks: [],
+      live: TailSnapshot(
+        currentWorkId: reference.blockId,
+        revision: revision,
+        layoutRevision: revision,
+        readyFrontier: 3,
+        executionPresent: true,
+        blocks: [
+          LiveDisplayBlock(
+            id: reference.blockId,
+            blockOrder: 4,
+            body: body,
+            state: DisplayBlockState.open,
+          ),
+        ],
+      ),
+      members: {
+        reference: [
+          for (var i = 1; i <= count; i++)
+            DisplayMemberHead(
+              memberKey: '成员-${'长中文键' * 32}-$i',
+              memberOrder: i * 5,
+              record: DisplayRecord(
+                atom: chatAtomMessage('transport-$i'),
+                contentSource: const CurrentAtom(),
+              ),
+            ),
+        ],
+      },
+    );
+    seed(1, 30);
+    final feed = await api.openTimelineReader(
+      _thread,
+      presentationVersion: presentationVersion,
+      readerProtocolVersion: timelineReaderProtocolVersion,
+      demand: chatDemand,
+    );
+    addTearDown(feed.close);
+    final members = await feed.openDisplayMembers(
+      reference: reference,
+      demand: const ReadDemand(maxItems: 12, maxBytes: 4096),
+    );
+    final first = (await members.next())!;
+    expect(first.offset, 0);
+    expect(first.complete, isFalse);
+    expect(
+      first.entries.length,
+      lessThan(12),
+      reason: 'UTF-8 JSON bytes, not only item count, bound transport',
+    );
+    seed(2, 31);
+    final original = <DisplayMemberHead>[...first.entries];
+    var batch = first;
+    while (!batch.complete) {
+      batch = (await members.next())!;
+      expect(batch.offset, original.length);
+      expect(batch.revision, first.revision);
+      expect(batch.sealed, isFalse);
+      original.addAll(batch.entries);
+    }
+    expect(original.map((e) => e.memberOrder), [
+      for (var i = 1; i <= 30; i++) i * 5,
+    ]);
+    batch = (await members.next())!;
+    final revision = batch.revision;
+    expect(revision, greaterThan(first.revision));
+    expect(batch.offset, 0);
+    final next = <DisplayMemberHead>[...batch.entries];
+    while (!batch.complete) {
+      batch = (await members.next())!;
+      expect(batch.offset, next.length);
+      expect(batch.revision, revision);
+      next.addAll(batch.entries);
+    }
+    expect(next.map((e) => e.memberOrder), [
+      for (var i = 1; i <= 31; i++) i * 5,
+    ]);
+    await members.close();
+  });
+
   test('summary-only Demo updates replay Status and preserve the original older cursor', () async {
     final api = await _open();
     final work = DisplayBlockRef(
@@ -112,7 +201,6 @@ void main() {
     expect(work.timing.finishedAt, isNotNull);
     final members = await feed.openDisplayMembers(
       reference: work.members,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final page = (await members.next())!;
@@ -208,24 +296,23 @@ void main() {
       )).completionSeq,
       100,
     );
-    final latest = await feed.openDisplayMembers(
-      reference: ref,
-      window: const LatestDisplayMembers(),
-      demand: _one,
-    );
-    final page = (await latest.next())!;
-    expect(page.entries.single.memberOrder, 3);
-    expect(page.before, 3);
-    expect(await latest.next(), isNull);
-    final earlier = await feed.openDisplayMembers(
-      reference: ref,
-      window: BeforeDisplayMembers(memberOrder: page.before!),
-      demand: chatDemand,
-    );
-    final earlierPage = (await earlier.next())!;
-    expect(earlierPage.entries.map((h) => h.memberOrder), [1, 2]);
-    expect(earlierPage.before, isNull);
-    expect(await earlier.next(), isNull);
+    final members = await feed.openDisplayMembers(reference: ref, demand: _one);
+    final batches = <DisplayMemberBatch>[];
+    while (true) {
+      final batch = await members.next();
+      if (batch == null) break;
+      batches.add(batch);
+      expect(batch.offset, batches.length - 1);
+      expect(batch.entries, hasLength(1));
+      expect(batch.complete, batches.length == 3);
+      expect(batch.sealed, isTrue);
+    }
+    expect(batches.expand((b) => b.entries).map((e) => e.memberOrder), [
+      1,
+      2,
+      3,
+    ]);
+    expect(batches.map((b) => b.revision).toSet(), hasLength(1));
     await feed.close();
   });
 
@@ -342,7 +429,6 @@ void main() {
                   !live.hasUnfinishedMembers) {
             final reader = await feed.openDisplayMembers(
               reference: members,
-              window: const LatestDisplayMembers(),
               demand: chatDemand,
             );
             final page = await reader.next();
@@ -414,7 +500,6 @@ void main() {
     expect(sealedWork.timing.finishedAt, isNotNull);
     final members = await feed.openDisplayMembers(
       reference: sealedWork.members,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final page = (await members.next())!;
@@ -484,7 +569,6 @@ void main() {
     final body = work.body as WorkDisplayBlock;
     final members = await feed.openDisplayMembers(
       reference: body.members,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final active = (await members.next())!;
@@ -527,7 +611,6 @@ void main() {
     }
     final stoppedMembers = await feed.openDisplayMembers(
       reference: (sealed.body as WorkDisplayBlock).members,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final stoppedPage = (await stoppedMembers.next())!;
@@ -733,7 +816,6 @@ void main() {
       );
       final members = await feed.openDisplayMembers(
         reference: ref,
-        window: const LatestDisplayMembers(),
         demand: chatDemand,
       );
       final initial = (await members.next())!;
@@ -762,7 +844,6 @@ void main() {
       expect(await members.next(), isNull);
       final fresh = await feed.openDisplayMembers(
         reference: ref,
-        window: const LatestDisplayMembers(),
         demand: chatDemand,
       );
       final freshPage = (await fresh.next())!;
@@ -855,11 +936,10 @@ void main() {
       addTearDown(events.cancel);
       final before = await _nextTimeline(events, 1);
       DisplayMembers? memberRead;
-      DisplayMemberPage? initialPage;
+      DisplayMemberBatch? initialPage;
       if (original is WorkDisplayBlock) {
         memberRead = await feed.openDisplayMembers(
           reference: ref,
-          window: const LatestDisplayMembers(),
           demand: chatDemand,
         );
         initialPage = await memberRead.next();
@@ -923,7 +1003,6 @@ void main() {
       if (memberRead != null) {
         final fresh = await afterFeed.openDisplayMembers(
           reference: ref,
-          window: const LatestDisplayMembers(),
           demand: chatDemand,
         );
         final preserved = (await fresh.next())!;
@@ -1034,7 +1113,6 @@ void main() {
     await _nextTimeline(events, 1); // Own Timeline Set credit; never ACK it.
     final members = await feed.openDisplayMembers(
       reference: ref,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     expect((await members.next())!.sealed, isFalse);
@@ -1104,7 +1182,6 @@ void main() {
             as WorkDisplayBlock;
     final members = await feed.openDisplayMembers(
       reference: work.members,
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     expect((await members.next())!.sealed, isTrue);

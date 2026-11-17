@@ -116,7 +116,6 @@ impl BridgeTimelineReader {
     pub async fn open_display_members(
         &self,
         reference: BridgeDisplayBlockRef,
-        window: BridgeDisplayMemberWindow,
         demand: BridgeReadDemand,
     ) -> Result<BridgeDisplayMembers, BridgeError> {
         let owner = &self.conversation.inner;
@@ -128,7 +127,6 @@ impl BridgeTimelineReader {
                 &owner.content()?.reader,
                 &owner.cancel,
                 presentation::protocol_block_ref(reference),
-                presentation::member_window(window),
                 chat::demand(demand),
             )
             .await?;
@@ -236,14 +234,14 @@ impl BridgeTimelineReader {
     }
 }
 
-/// Fixed member window registered with the same read owner as content observations.
+/// Complete member observation registered with the same read owner as content observations.
 pub struct BridgeDisplayMembers {
     owner: Arc<ConversationOwner>,
     id: String,
 }
 
 impl BridgeDisplayMembers {
-    pub async fn next(&self) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
+    pub async fn next(&self) -> Result<Option<BridgeDisplayMemberBatch>, BridgeError> {
         self.owner.content()?.watches.next_members(&self.id).await
     }
 

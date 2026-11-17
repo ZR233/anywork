@@ -255,39 +255,41 @@ void main() {
   }
 
   testWidgets(
-    'history members use a bounded viewport and scrolling reaches the final details',
+    'history members exceed 420 naturally and parent scrolling reaches final details',
     (tester) async {
       await tester.pumpWidget(
         _host(
-          CompletionRunView(
-            id: 'history',
-            timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
-            location: WorkDisplayLocation.history,
-            initiallyExpanded: true,
-            childBuilder: (_) => const Column(
-              children: [
-                SizedBox(height: 500),
-                Text('member failure and cancellation details'),
-              ],
+          SingleChildScrollView(
+            child: CompletionRunView(
+              id: 'history',
+              timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
+              location: WorkDisplayLocation.history,
+              initiallyExpanded: true,
+              childBuilder: (_) => const Column(
+                children: [
+                  SizedBox(height: 900),
+                  Text('member failure and cancellation details'),
+                ],
+              ),
             ),
           ),
         ),
       );
-      final viewport = find.byType(Scrollable);
-      expect(viewport, findsOneWidget);
-      expect(tester.getSize(viewport).height, lessThanOrEqualTo(420));
       expect(
         tester.getSize(find.byType(CompletionRunView)).height,
-        lessThan(500),
+        greaterThan(900),
+      );
+      expect(
+        find.descendant(
+          of: find.byType(CompletionRunView),
+          matching: find.byType(Scrollable),
+        ),
+        findsNothing,
       );
       final details = find.text('member failure and cancellation details');
       expect(details.hitTestable(), findsNothing);
-      await tester.drag(viewport, const Offset(0, -220));
+      await tester.ensureVisible(details);
       await tester.pumpAndSettle();
-      expect(
-        tester.state<ScrollableState>(viewport).position.pixels,
-        greaterThan(0),
-      );
       expect(details.hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
@@ -417,6 +419,7 @@ class _LiveHarness {
           );
     final workSlice = LiveStatusTimelineWorkSlice(
       workBlocks: projected.timelineWorkBlocks,
+      mergedWorkActivity: projected.mergedWorkActivity,
       effectiveWindow: live.value,
     );
     Widget section(ConversationLiveSection section) =>

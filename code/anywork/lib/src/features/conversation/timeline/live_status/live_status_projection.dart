@@ -122,6 +122,7 @@ abstract final class LiveStatusProjection {
   static ({
     LiveStatusPrimarySurface? surface,
     List<LiveDisplayBlock> timelineWorkBlocks,
+    ({String blockId, ConversationActivityView activity})? mergedWorkActivity,
   })
   projectSurfaceAndTimelineWork({
     required TailSnapshot? effectiveOutputWindow,
@@ -135,12 +136,24 @@ abstract final class LiveStatusProjection {
     final timelineWorkBlocks = <LiveDisplayBlock>[
       for (final block
           in effectiveTimelineWindow?.blocks ?? const <LiveDisplayBlock>[])
-        if (block.body is WorkDisplayBlock && block.id != tail?.id) block,
+        if (block.body is WorkDisplayBlock) block,
     ];
 
-    final merged = mergeableWorkNotice(live: latestWindow, notices: rawNotices);
+    final candidate = mergeableWorkNotice(
+      live: latestWindow,
+      notices: rawNotices,
+    );
+    final merged =
+        candidate != null &&
+            timelineWorkBlocks.any((block) => block.id == candidate.blockId)
+        ? candidate
+        : null;
+    final mergedWorkActivity = merged == null
+        ? null
+        : (blockId: merged.blockId, activity: merged.notice.view);
     final unrestoredInWorkHeader =
         tail != null &&
+        timelineWorkBlocks.any((block) => block.id == tail.id) &&
         latestWindow?.executionPresent == false &&
         latestWindow!.blocks.every((block) => block.body is WorkDisplayBlock);
     final standaloneNotices = <LiveStatusNotice>[
@@ -159,7 +172,6 @@ abstract final class LiveStatusProjection {
       for (final block
           in effectiveOutputWindow?.blocks ?? const <LiveDisplayBlock>[])
         if (block.body is SingleDisplayBlock) block,
-      ?tail,
     ];
 
     final hasPagingControls =
@@ -169,22 +181,15 @@ abstract final class LiveStatusProjection {
     if (outputBlocks.isEmpty &&
         standaloneNotices.isEmpty &&
         !hasPagingControls) {
-      return (surface: null, timelineWorkBlocks: timelineWorkBlocks);
+      return (
+        surface: null,
+        timelineWorkBlocks: timelineWorkBlocks,
+        mergedWorkActivity: mergedWorkActivity,
+      );
     }
 
     final LiveStatusPrimarySurface surface;
-    if (tail != null) {
-      final mergedView = merged?.blockId == tail.id
-          ? merged?.notice.view
-          : null;
-      surface = LiveStatusWorkSurface(
-        workBlock: tail,
-        precedingSingles: outputBlocks.sublist(0, outputBlocks.length - 1),
-        mergedActivity: mergedView,
-        headerIndicatorStyle: resolveLiveHeaderIndicatorStyle(mergedView),
-        standaloneNotices: standaloneNotices,
-      );
-    } else if (outputBlocks.isNotEmpty) {
+    if (outputBlocks.isNotEmpty) {
       surface = LiveStatusStreamingSurface(
         singleBlocks: outputBlocks,
         standaloneNotices: standaloneNotices,
@@ -192,7 +197,11 @@ abstract final class LiveStatusProjection {
     } else {
       surface = LiveStatusNoticeOnlySurface(notices: standaloneNotices);
     }
-    return (surface: surface, timelineWorkBlocks: timelineWorkBlocks);
+    return (
+      surface: surface,
+      timelineWorkBlocks: timelineWorkBlocks,
+      mergedWorkActivity: mergedWorkActivity,
+    );
   }
 
   static LiveStatusView project({
@@ -264,6 +273,7 @@ abstract final class LiveStatusProjection {
     );
     final timelineSlice = LiveStatusTimelineWorkSlice(
       workBlocks: projected.timelineWorkBlocks,
+      mergedWorkActivity: projected.mergedWorkActivity,
       effectiveWindow: effectiveTimelineWindow,
       paging: timelineWorkPaging,
     );

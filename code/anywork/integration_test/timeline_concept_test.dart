@@ -1340,7 +1340,7 @@ final class _ConceptScene {
           display.unitId == work.id &&
           display.blockReference == work.memberReference,
     );
-    final originalHead = work.expansion.members!.page!.entries.single;
+    final originalHead = work.expansion.members!.entries.single;
     expect(originalHead.record.atom.id, member.id);
     final originalCurrent = observed.currentDisplayForWork(work.id);
     expect(originalCurrent.isCurrent, isTrue);
@@ -1489,7 +1489,6 @@ final class _ConceptScene {
         .unit(work.id)
         .expansion
         .members!
-        .page!
         .entries
         .single;
     expect(resumedHead.memberKey, originalHead.memberKey);
@@ -1595,7 +1594,6 @@ final class _ConceptScene {
       'runReference': reference(value.blockReference),
       'isCurrent': value.isCurrent,
       'expanded': value.expanded,
-      'before': value.before,
       'loading': value.loading,
       'error': value.error?.toString(),
       'mountedMemberCount': value.atoms.length,
@@ -1657,27 +1655,11 @@ final class _ConceptScene {
     try {
       final display = await observed.openWork(id, timeout: remaining());
       original = display;
-      await observed.selectLatestMembers(display, timeout: remaining());
       final ids = <String>{};
-      var olderPageCommands = 0;
-      while (true) {
-        await _until(
-          tester,
-          () {
-            expect(display.isCurrent, isTrue);
-            expect(display.expanded, isTrue);
-            if (display.error case final error?) throw error;
-            return !display.loading;
-          },
-          'original group member window is ready',
-          timeout: remaining(),
-        );
-        ids.addAll(display.atoms.map((atom) => atom.id));
-        if (display.before == null) break;
-        // Scroll the original Work viewport to request its next older page.
-        await observed.loadOlderMemberPage(display, timeout: remaining());
-        olderPageCommands++;
-      }
+      expect(display.isCurrent && display.expanded, isTrue);
+      if (display.error case final error?) throw error;
+      expect(display.loading, isFalse);
+      ids.addAll(display.atoms.map((atom) => atom.id));
       expect(ids, isNotEmpty);
       final observations =
           (report['memberPageObservations'] ??= <Map<String, Object?>>[])
@@ -1686,7 +1668,6 @@ final class _ConceptScene {
         'itemId': id,
         'reusedMountedWindow': reusedWindow,
         'memberScopeOpenCommands': reusedWindow ? 0 : 1,
-        'olderPageCommands': olderPageCommands,
         'costMeaning':
             'explicit UI demands; not physical/native IO page counts',
         'distinctObservedMembers': ids.length,
@@ -1709,7 +1690,6 @@ final class _ConceptScene {
     );
     expect(display.isCurrent, isTrue);
     expect(display.expanded, isTrue);
-    expect(display.before, isNull);
     expect(display.loading, isFalse);
     _recordMemberInventory(
       'earliest-member-before-close',
@@ -2112,11 +2092,9 @@ final class _ConceptScene {
       isEmpty,
       reason: 'A folded live Work must not open member or body demand',
     );
-    final active = (await observed.readMemberPage(initialWork.memberReference!))
-        .entries
-        .single
-        .record
-        .atom;
+    final active = (await observed.readMemberSnapshot(
+      initialWork.memberReference!,
+    )).entries.single.record.atom;
     final source = active.source;
     expect(source, isA<ForegroundTurnChatSource>());
     expect(active.lifecycle, isA<ActiveChatAtom>());
@@ -2288,7 +2266,7 @@ final class _ConceptScene {
     expect(g2, isNot(g1));
     expect(secondWork.memberReference, isNot(firstWork.memberReference));
     expect(
-      (await observed.readMemberPage(secondWork.memberReference!))
+      (await observed.readMemberSnapshot(secondWork.memberReference!))
           .entries
           .single
           .record
@@ -3002,12 +2980,11 @@ final class _ConceptScene {
   ) async {
     expect(work.state, DisplayBlockState.sealed);
     expect(work.blockOrder, greaterThan(0));
-    final page = await observed.readMemberPage(
+    final page = await observed.readMemberSnapshot(
       work.memberReference!,
       demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
     );
     expect(page.sealed, isTrue);
-    expect(page.before, isNull);
     expect(page.entries, hasLength(2));
     final timing = work.timing!;
     expect(
@@ -3058,7 +3035,7 @@ final class _ConceptScene {
     );
     final work = observed.liveWork.single;
     final ref = work.memberReference!;
-    final reasonHead = (await observed.readMemberPage(ref)).entries.single;
+    final reasonHead = (await observed.readMemberSnapshot(ref)).entries.single;
     final reason = reasonHead.record.atom;
     final source = reason.source as ForegroundTurnChatSource;
     final owner = lease;
@@ -4087,7 +4064,6 @@ final class _ConceptScene {
     await observed.closeWork(display);
     _recordMemberInventory('media-closed', imageGroup.id, original: display);
     expect(display.atoms, isEmpty);
-    expect(display.before, isNull);
     expect(imageGroup.expansion.bodyActive, isFalse);
     final joinedWait = Stopwatch()..start();
     expect(

@@ -494,7 +494,7 @@ void main() {
       h.content.read = (_, _) async => canonical;
       final intent = TimelineExpansionIntent();
       final members = _Members(head);
-      intent.openDisplayMembers = (_, _, _) async => members;
+      intent.openDisplayMembers = (_, _) async => members;
       h.groupIntent = intent;
       await h.controls.adapter.applyFixtureUpdate(
         displayBatch([displayWork('work', 1)]),
@@ -538,7 +538,7 @@ void main() {
         final gate = Completer<CompletedEntry>();
         h.content.read = (_, _) => gate.future;
         final intent = TimelineExpansionIntent()..expanded = true;
-        intent.openDisplayMembers = (_, _, _) async =>
+        intent.openDisplayMembers = (_, _) async =>
             _Members(_head(kind: ChatAtomKind.toolCall));
         h.groupIntent = intent;
         await h.controls.adapter.applyFixtureUpdate(
@@ -740,12 +740,14 @@ class _Scope extends Fake implements ConversationQueryScope {
 class _Members implements DisplayMembers {
   _Members(this.atom);
   final ChatAtom atom;
-  final stopped = Completer<DisplayMemberPage?>();
+  final stopped = Completer<DisplayMemberBatch?>();
   int calls = 0;
   @override
-  Future<DisplayMemberPage?> next() async {
+  Future<DisplayMemberBatch?> next() async {
     if (calls++ > 0) return stopped.future;
-    return DisplayMemberPage(
+    return DisplayMemberBatch(
+      offset: 0,
+      complete: true,
       block: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
       revision: 1,
       sealed: true,

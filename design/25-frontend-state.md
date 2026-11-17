@@ -41,7 +41,7 @@ flowchart LR
 | 项目、目录、配置、模型目录、服务状态 | Rust 对应领域所有者 | 各领域只读模型归约器（reducer） | 各自 `ResourceStamp`；领域关闭或应用退出 |
 | 模型统计汇总、推理强度（`effort`）细分与调用历史 | Rust 统计所有者 | 独立 `StatisticsRepository` 归约器 | 所有者／统计材料来源；绑定页面可见需求与应用关闭（见 [§25.13](#2513-独立统计领域与呈现模块)） |
 | 轮次、活动摘要、交互、运行时、存储状态 | Rust 会话（`Thread`）所有者 | Client 会话状态归约器 | 会话 ID 与 `owner epoch`；选择切换结束观察，不终止轮次 |
-| 不可变原件、冻结展示块与成员索引 | Rust ConversationStore 及其共享 Session/HistoryStore | SDK 机械接纳；原 ChatController 一块一卡；display lease 持成员窗口与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
+| 不可变原件、冻结展示块与成员索引 | Rust ConversationStore 及其共享 Session/HistoryStore | SDK 机械接纳；原 ChatController 一块一卡；display lease 持完整成员观察与展开意图 | 完成 seq、展示 pos、读取 epoch、scope、显示资格 |
 | 当前选中项目、会话 | Client 本地选择意图 | 选择控制器（Selection controller） | 选择身份；旧异步命令结果不得覆盖较新的选择意图 |
 | 输入文本、参数、路由与附件引用 | Client 草稿（受理后可靠附件归 Rust） | 草稿所有者与附件所有权账本（ownership ledger） | `DraftStamp + OperationId`；所有权明确转移或显式放弃 |
 | 命令提交、待确认覆盖层（pending overlay）与未知结果 | Rust 变更所有者 / Client 操作所有者 | `MutationBoard` | `OperationId` 与目标资源戳；真实结果按操作独立记录 |
@@ -216,7 +216,7 @@ requestClose 同步封准入、取消并唤醒等待，close 汇合自己拥有�
 
 SDK 各 Repository 是当前领域态唯一 Dart writer；FRB 只映射和转发，ViewModel 从不可变快照派生 UI 词汇，不二次归约 LiveDelta，不将 snapshot 拆为伪事件。execution、authoring、configuration、metrics、context 有各自版本，不能用指标全局版本触发历史、配置或输入区重建。
 
-完成历史不是 SDK 当前态缓存。主时间线 DTO 经 FRB 和 SDK 机械映射后交唯一 Flutter 应用所有者；冻结块、历史分页与尾部的合同见 [26](./26-timeline-content.md)。`Message.metadata` 保存已加载块，显示租约按稳定 `block_id` 保存展开意图和有界成员窗口，不建立原子、分组和消息三份全量镜像。SDK 的旧页查询只返回结果，不自动修改组件。状态栏是规范尾部和独立业务状态的纯投影，诊断借用已得到的结果。
+完成历史不是 SDK 当前态缓存。主时间线 DTO 经 FRB 和 SDK 机械映射后交唯一 Flutter 应用所有者；冻结块、历史分页与尾部的合同见 [26](./26-timeline-content.md)。`Message.metadata` 保存已加载块，显示租约按稳定 `block_id` 保存展开意图和完整成员观察，不建立原子、分组和消息三份全量镜像。SDK 的历史页查询只返回结果，不自动修改组件。状态栏是规范尾部和独立业务状态的纯投影，诊断借用已得到的结果。
 
 问答、Plan、媒体和工具业务在冻结 payload 内保留，单项当前 renderer 在必要呈现包装边界解释；纯 View 不解析 raw JSON，不通过当前交互/私有回执补历史。未知、Malformed、截断预览和 Deferred 分别处理，局部降级不关闭 feed；真实存储/恢复错误不吞成不兼容。图片 owner 复用同一附件在途/成功读取，按已加载 Message 引用计数，最后引用或呈现代次退出后回收；迟到读取只归原 scope，大二进制不进 ViewState。
 
@@ -491,7 +491,7 @@ ChatGPT 账号的列表身份与套餐来自权威账号摘要的已验证元数
 
 生产列表、详情、编辑、模型资料和每个有独立职责的公共呈现组件必须能通过独立的纯视图入口直接用于官方 Widget Previewer，并具有可发现的预览；私有布局辅助随父组件验证。该入口不连带依赖 Connector、Provider、AppGraph、FRB 或平台业务服务。薄预览包装复用生产主题、本地化与品牌资源，仅注入合成不可变展示值及本地动作，不装配 Client/Repository，不依赖 ProviderScope，不复制 UI 或加入生产业务假分支。复用场景工厂、统一 host 与官方多预览能力表达语义变体、宽窄及文字缩放，避免逐供应商复制组件树或建立平行预览应用。
 
-官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。仅将满足独立纯视图边界的组件（如账号模块视图，以及实时区共用的 `ConversationActivityBar`、`TimelineWorkGroupView` 与正文视图）注册为官方预览；原生工作区与完整聊天列表的装配继续通过既有 demo 或 `manual-gui --preset` 观察，不保留退役的历史分组组件、依赖原生壳却无法独立编译的预览注册或无消费者的合成壳。思考成员的概要与正文按既有 role/manifest 区分：概要占单行标题，正文单独按展开意图读取；实时订阅仍由同一成员 owner 持有，折叠时同步撤销正文窗口。
+官方预览按项目发现全部注册入口，任一入口引入原生应用聚合库都会污染整个 Web 编译。只注册满足纯视图边界的生产组件，包括工作组 `CompletionRunView` 与可注入不可变状态、UI controller 和回调的 `TimelineView`；原生工作区、Client/AppGraph 和服务装配仍使用隔离原生观察，不进入预览。大量成员场景可复用这两个生产 View 构成同一主滚动时间线，不另造预览列表或复制工作组 UI。思考成员概要与正文按原 role/manifest 区分：概要占单行标题，正文按自己的展开意图读取；实时订阅仍由同一成员 owner 持有，折叠同步撤销正文窗口。
 
 预览交互仅改变本地展示状态或记录动作，不访问真实凭据、文件、账号或网络。Web 预览的编译、热更新与截图可证明呈现解耦和布局，不能证明原生插件、真实数据与关闭行为（见 [24](./24-testing.md)）。官方组件可满足时不增设预览框架或平行应用；常规操作入口归工程文档维护。
 
@@ -509,23 +509,23 @@ conversation 与 drafts 分别维护 SDK domain 不可变值/typed 端口和 dat
 
 Plan/交互读取头只从 State.snapshot.businessRefs 和 BusinessRefsChanged 机械接纳到原领域 owner，不再暴露永远为空的旧 content.current。业务引用形状及空值语义见 [26](./26-timeline-content.md#266-业务引用由-state-交付)。原 State.interactions/runtime.plan 与新增只读引用来自同一负责人，不建第二可写模型；pageCurrent 查询不覆盖可操作问题。资源 revision 变化仅撤销受影响展开窗口，保留历史、其他详情和草稿；真实 State 失连续仍按原方式恢复。用户提交回执不直接插入历史，GUI 公开内容只由 Timeline 接纳，完成级消费者沿原 Chat 接纳。
 
-GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用打开有界成员窗口，实时到历史不改名。原件使用显式 Class／All 与真实 parent 的统一 Records 查询；其资格独立于展示分组。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，成员页 cursor/数量不覆盖 Main 或组总数，见 [26](./26-timeline-content.md)。
+GUI Main Set/Prepend/Append 只接纳冻结展示块；明细通过 database_id/block_id 的稳定引用观察完整成员集合，实时到历史不改名。完整集合在同一 Native 修订／切面内按有界批次交付，批次位置不覆盖 Main 游标或历史水位。原件使用显式 Class／All 与真实 parent 的统一 Records 查询，其资格独立于展示分组。Flutter 不解析 payload 或 ordinal 猜类别、不扫描原子找组头，见 [26](./26-timeline-content.md)。
 
 工作组统一在 Timeline 工作记录区域呈现。当前开放工作区机械消费 Native live Work，使用既有 block_order，不虚增历史前沿；可靠正文开始立即冻结旧组，不等成员终态，冻结待发布段仍遵守来源顺序。封存行的状态、内容和计时不再变化，晚结束在新组使用新记录身份。DTO 区分开始/结束引用和 CurrentAtom/FrozenObservation/CompletedOriginal 内容来源，客户端不配对或回填历史。未展开不读参数/工具结果/思考/媒体；折叠撤销自身资格并 cancel/join，不留隐藏 Element 或无主快照。稳定 block_id 的展开意图跨封存保留，不要求 Widget 整体移交。
 
 CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Children 按真实业务资格可读 Hidden。SDK 机械接纳 from_seq/through_seq，过滤间隔不补记录；Activity.completedThrough 必须与已接纳 through 一致。源状态不是组边界或排序依据，各 scope 的实际 entries 与编码成本受需求约束。
 
-生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。TimelineMessageController 持唯一已加载历史：Set 一次，Prepend/Append 批量插入冻结块，不更新历史尾组。主更新与历史页经过同一应用队列；组件操作成功并复核原读取器资格后，才共同公开尾部、历史水位及游标。Keep 仅退役本批实际入历史的同 ID 实时块，其余仍保持原值；空历史更新不枚举主列表，也不产生绘制确认。显示租约保留独立有界尾页与展开窗口，View 按布局补旧块。
+生成式 AsyncNotifier/Freezed 保持 ViewModel→Connector→View，ViewState 不持资源，纯 View 不读业务 Provider/Repository/生成代码。TimelineMessageController 持唯一已加载历史：Set 一次，Prepend/Append 批量插入冻结块，不更新历史尾组。主更新与历史页经过同一应用队列；组件操作成功并复核原读取器资格后，才共同公开尾部、历史水位及游标。Keep 仅退役本批实际入历史的同 ID 实时块，其余保持原值；空历史更新不枚举主列表，也不产生绘制确认。显示租约保留独立有界尾页及已展开组的完整成员观察，View 按布局补旧块。
 
 底部实时状态栏由 `features/conversation/timeline/live_status/` 自包含呈现，外壳只传入会话标识。其视图模型观察既有 State 和显示租约，用 `LiveStatusProjection` 纯函数派生状态栏、时间线工作区和主活动呈现；局部分页只保留加载/错误与请求资格，不复制业务快照或归约状态机。诊断借用同一派生结果。保存、停止、审批和错误等业务状态继续独立交付，状态栏不因为有界尾页缺少正文就推断执行已结束。已有同源正文 renderer 时不叠加普通输出提示；新组不继承旧组摘要，封存观察明确说明封存时未结束的事实。展开、滚动与跟随输出属于显示租约，不进入业务摘要。
 
 导航所有者从已提交页面身份声明可见租约，设置页不因 selection 改变开启隐藏内容；草稿、已受理操作和后台执行不随页面销毁而终止。读取/关闭失败保留原责任，短暂 observer 重建不释放仍有 owner 的展示资源。
 
-历史展示块、确定回执、活动正文、成员窗口、原件 Records 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller/回调。GUI 段卡稳定 key 来自 database_id/block_id，展开资格绑定显示代次；局部滚动、计时、展开归 UI，关闭失败保留原 join 责任。
+历史展示块、确定回执、活动正文、完整成员观察、原件 Records 与媒体分别管理读取责任。Future、订阅、资格检查留原 owner/Connector，纯 View 消费不可变呈现值及 UI controller／回调。GUI 段卡稳定 key 来自 database_id/block_id，展开资格绑定显示代次；主滚动、计时和展开归 UI，关闭失败保留原 join 责任。
 
-工作组成员页由同一显示租约所有者接纳，并向列表结构与各稳定成员分别分发呈现通知；相同成员结构下，一行数据变化不重新构建列表及未变化行。按行观察仅是原有界页的派生读取，不引入逐行后端订阅或第二份业务集合。滚动分页与正文范围读取仍使用原资格，分页缓存有界、离开后退休，具体呈现约定见 [26](./26-timeline-content.md)。
+工作组成员 ViewModel 由同一显示租约持有，自动串行装配原成员观察的连续批次，只有同一修订完整后才发布新集合；不是再加一层全局快照或原始事件订阅。它向列表结构和各稳定成员分别分发呈现通知：相同成员结构下一行变化不重建列表及未变化行，正文沿原 owner 局部观察。尚未完整的新修订不能覆盖已接纳集合，错误、换代与关闭保留真实资格／清理责任；live→history 继续借用同一 owner，不丢展开状态。工作组无独立滚动或成员分页；自然高度由官方聊天列表重布局，只有消息事实变化才更新 Main 消息。展开组保留全部轻量头，正文和原件不因而无限缓存；离开／折叠后退役需求，具体批次与呈现约定见 [26](./26-timeline-content.md)。
 
-涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。局部状态由组件持有，跨组件呈现状态归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 `ExpansionTile`/`ExpansibleController`；实时块移入历史时，由原 display lease 按稳定 block_id 保存并恢复用户的展开意图，读取窗口沿同一资格继续。组件身份和资格真正改变时按 key/生命周期退役，不以补偿刷新、强制重置或备用数据维持显示。
+涉及的 Flutter 界面均按职责组件化，不以外层包装维持原有大块实现。局部状态由组件持有，跨组件呈现状态归既有生成式 ViewModel，不上移为页面级补偿布尔值或私有数据镜像。折叠优先使用官方 ExpansionTile／ExpansibleController；实时块移入历史时由原 display lease 按稳定 block_id 保存并恢复展开意图，完整成员观察沿原资格继续。组件身份或资格真正改变时按 key／生命周期退役，不以补偿刷新、强制重置或备用数据维持显示。
 
 实时栏与详情仅有一套生产内容组件：领域绑定在所属组件内完成，不能同时保留“外部 builder 覆盖内容”和“内部备用渲染”两条路径，也不能用预览特供实现替代生产内容。正常的不可变参数、组件组合、依赖装配和官方预览构造值不承担运行态写入；禁止外层注入业务状态、合成 current、兜底控制或数据修补来制造正确画面。官方预览须操作同一生产组件自身的状态，不能在外壳模拟其展开、加载或翻页状态机。
 
@@ -535,7 +535,7 @@ CompletedEntry 保留真实 atom 与完成身份；Main 不返回 Hidden，Child
 
 ### 25.15.1 唯一尾组的呈现与读取所有权
 
-Native presentation v6 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配第二展示位置，只挂一处；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
+Native presentation v6 的 current_work_id 是当前尾组唯一身份，不按 source、activeTurnId 或分页末项重算；旧页不覆盖规范最新身份。Work 与其可合并的头部活动统一由原实时工作区切片交给主 Timeline；状态栏只承载独立正文、通知与交互，不保存或再挂当前 Work。Resting 尾卡仍是可变 live 资源，不插入不可变历史 controller，不分配第二展示位置；同 ID 恢复 Active 保留 display lease、展开与内容窗口。只有冷源真实未收束/不可用成员显示 Unrestored，全 Terminal 冷组静态。活动资格与阶段仍来自独立 State，不以 execution_present 证明正在工作，无 activeTurnId 的后台活动可正常呈现。Single 按类型化 visibility 显示 FinalEmptyAfterContent，不用文本猜边界。CurrentAtom→CompletedOriginal 只更换对应内容引用，保持 member_key 和其余列表；封存头接纳时由原 display lease 同步撤销可变正文，不将此责任延后到 View。history/live 同批接纳、信用、ACK、A→B→A 资格及 cancel/join 均保留。具体合同见 [26](./26-timeline-content.md)。
 
 实时区的业务分组、活动合并、遮蔽及窗口分页只由视图模型投影。组件消费同一不可变呈现切片和类型化动作，不保留另一套平行归约或分页实现；展开、动画、滚动与已挂载内容的退役通知由各自有状态组件持有，资源读取仍借用原展示租约。
 

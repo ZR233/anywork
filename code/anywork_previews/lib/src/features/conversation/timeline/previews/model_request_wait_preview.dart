@@ -9,9 +9,9 @@ import 'package:anywork/src/features/conversation/timeline/widgets/conversation_
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_display_unit_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 
-/// Typed execution/foreground-source facts pass through the production state
-/// machine. In particular, the activity is never injected into a Work header:
-/// a failed merge must remain visible as an extra standalone notice here.
+/// Typed execution/foreground-source facts pass through the production
+/// projection. Work headers borrow its timeline slice; only independent
+/// notices use the dock, including any activity the projection did not merge.
 class ModelRequestWaitPreview extends StatefulWidget {
   const ModelRequestWaitPreview({super.key});
 
@@ -81,13 +81,17 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
 
   @override
   Widget build(BuildContext context) {
-    final presenting = _aggregate.barState as LiveStatusPresenting;
-    final surface = presenting.surface;
-    return ConversationActivityBar(
+    final work = _aggregate.timelineWork;
+    final surface = switch (_aggregate.barState) {
+      LiveStatusPresenting(:final surface) => surface,
+      LiveStatusDockMasked(:final obscured) => obscured?.surface,
+      LiveStatusHidden() => null,
+    };
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (surface.standaloneNotices.isNotEmpty)
-          ConversationRealtimeNotices(notices: surface.standaloneNotices),
-        for (final block in surface.blocks)
+        for (final block in work.workBlocks)
           TimelineDisplayUnitView(
             key: ValueKey(block.id),
             unit: TimelineDisplayUnit.live(
@@ -95,7 +99,7 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
               executionPresent: _window.executionPresent,
               expansion: _expansion,
             ),
-            activity: surface.mergedActivityFor(block.id),
+            activity: work.mergedActivityFor(block.id),
             now: () => _now,
             childBuilder: (_) => const TimelineToolDetails(
               item: TimelineToolPresentation(
@@ -108,6 +112,12 @@ class _ModelRequestWaitPreviewState extends State<ModelRequestWaitPreview> {
                 output: '',
               ),
             ),
+          ),
+        if (surface != null && surface.standaloneNotices.isNotEmpty)
+          ConversationActivityBar(
+            children: [
+              ConversationRealtimeNotices(notices: surface.standaloneNotices),
+            ],
           ),
       ],
     );

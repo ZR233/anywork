@@ -60,18 +60,16 @@ final class FrbTimelineReader extends _FrbPortProxy<_FrbRawTimelineReader>
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) {
     if (_admissionsClosed) throw _conversationClosedFailure;
     final entry = _raw.membersScope
         .open<
-          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberPage>
+          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberBatch>
         >('display-members', (operation) async {
           final handle = await FrbStudioTransport._bridgeCall(
             () => _raw.timeline.openDisplayMembers(
               reference: _displayBlockRefToFrb(reference),
-              window: _displayMemberWindowToFrb(window),
               demand: _readDemandToFrb(demand),
             ),
           );
@@ -81,7 +79,7 @@ final class FrbTimelineReader extends _FrbPortProxy<_FrbRawTimelineReader>
             (handle) async {
               final page = await handle.next();
               if (_admissionsClosed) throw _conversationClosedFailure;
-              return page == null ? null : _displayMemberPageFromFrb(page);
+              return page == null ? null : _displayMemberBatchFromFrb(page);
             },
             (handle) => handle.requestClose(),
             (handle) => handle.close(),
@@ -140,10 +138,10 @@ final class _FrbRawTimelineReader extends _FrbRawResource {
 final class _FrbDisplayMembers
     extends
         _FrbPortProxy<
-          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberPage>
+          _FrbRawPull<frb_timeline.BridgeDisplayMembers, DisplayMemberBatch>
         >
     implements DisplayMembers {
   _FrbDisplayMembers(super.entry, super.raw);
   @override
-  Future<DisplayMemberPage?> next() => _raw.next();
+  Future<DisplayMemberBatch?> next() => _raw.next();
 }

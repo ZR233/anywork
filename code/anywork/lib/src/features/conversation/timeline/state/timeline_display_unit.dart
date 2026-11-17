@@ -14,7 +14,6 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   bool Function()? isDisplayActive;
   Future<DisplayMembers> Function(
     DisplayBlockRef,
-    DisplayMemberWindow,
     ReadDemand,
   )?
   openDisplayMembers;
