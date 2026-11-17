@@ -27,4 +27,5 @@ pub use reader::HistoryReader;
 pub use store::{HistoryStore, HistoryStoreShare};
 pub(crate) use types::milliseconds_from_seconds;
 pub use types::*;
+pub(crate) use upgrade::requires_history_upgrade;
 pub use upgrade::{UpgradeReport, UpgradeStatus, upgrade_history};

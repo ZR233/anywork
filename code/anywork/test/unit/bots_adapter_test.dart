@@ -154,9 +154,10 @@ void main() {
   test(
     'settings navigation to bots does not close the active session',
     () async {
+      final transport = RecordingDemoTransport();
       final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
-        transport: RecordingDemoTransport(),
+        transport: transport,
         clientId: 'bots-session',
       );
       addTearDown(
@@ -175,6 +176,9 @@ void main() {
       );
       final session = graph.client.conversations.existingSession('thread-main');
       expect(session, isNotNull);
+      await timelineReady(graph.timeline, 'thread-main');
+      await session!.source.waitFor((state) => state.hasSnapshot);
+      await _awaitCurrentReaders(graph, transport, 'thread-main');
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
       );
@@ -190,4 +194,22 @@ void main() {
       expect(graph.client.conversations.sessionState('thread-main'), isNotNull);
     },
   );
+}
+
+Future<void> _awaitCurrentReaders(
+  AppGraph graph,
+  RecordingDemoTransport transport,
+  String threadId,
+) async {
+  final timeline = graph.timeline.lease(threadId)!.current;
+  final current = transport.currentReaders
+      .where((reader) => reader.threadId == threadId)
+      .toList();
+  expect(current, hasLength(2));
+  expect(timeline, isA<RecordingCurrentReader>());
+  final state = current.singleWhere((reader) => !identical(reader, timeline));
+  await Future.wait([
+    (timeline as RecordingCurrentReader).watchEntered.future,
+    state.watchEntered.future,
+  ]);
 }

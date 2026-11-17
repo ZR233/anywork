@@ -47,6 +47,7 @@ void main() {
         'thread-main',
       )!;
       await timelineReady(graph.timeline, session.threadId);
+      await _awaitCurrentReaders(graph, transport, session.threadId);
       await transport.firstSetAcknowledged.future;
       await session.source.waitFor((value) => value.hasSnapshot);
       final initial = session.state.workspace!;
@@ -181,6 +182,7 @@ void main() {
         clientId: 'status-cold-compact',
       );
       await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      graph.timeline.updateReadDemand(chatDemand);
       await pumpClientFuture(
         tester,
         (graph..setConversationPageVisible(true)).client.directoryCommands
@@ -194,6 +196,25 @@ void main() {
         tester,
         () => session.state.hasSnapshot,
         'session baseline',
+      );
+      await pumpClientFuture(
+        tester,
+        timelineReady(graph.timeline, 'thread-main'),
+        'timeline baseline',
+      );
+      final timelineReader =
+          graph.timeline.lease('thread-main')!.current
+              as RecordingCurrentReader;
+      final stateReader = _stateCurrentReader(transport);
+      await pumpClientUntil(
+        tester,
+        () => timelineReader.watchEntered.isCompleted,
+        'timeline Current watch',
+      );
+      await pumpClientUntil(
+        tester,
+        () => stateReader.watchEntered.isCompleted,
+        'session Current watch',
       );
       final container = ProviderContainer(
         overrides: [appGraphProvider.overrideWithValue(graph)],
@@ -462,6 +483,7 @@ void main() {
         .timeout(const Duration(seconds: 10));
     final session = graph.client.conversations.existingSession('thread-main')!;
     await timelineReady(graph.timeline, session.threadId);
+    await _awaitCurrentReaders(graph, transport, session.threadId);
     await transport.firstSetAcknowledged.future;
     await session.source.waitFor((value) => value.hasSnapshot);
     final composer = graph.client.drafts.existingComposer('thread-main')!;
@@ -774,3 +796,24 @@ RecordingCurrentReader _stateCurrentReader(RecordingDemoTransport transport) =>
       (reader) =>
           reader.threadId == 'thread-main' && reader.demand.maxItems == 128,
     );
+
+Future<void> _awaitCurrentReaders(
+  AppGraph graph,
+  RecordingDemoTransport transport,
+  String threadId,
+) async {
+  final session = graph.client.conversations.existingSession(threadId);
+  if (session == null) {
+    throw StateError('Thread session is not open: $threadId');
+  }
+  await session.source.waitFor((state) => state.hasSnapshot);
+  final timeline = graph.timeline.lease(threadId)?.current;
+  final state = transport.currentReaders.lastWhere(
+    (reader) => reader.threadId == threadId && reader.demand.maxItems == 128,
+  );
+  expect(timeline, isA<RecordingCurrentReader>());
+  await Future.wait([
+    (timeline as RecordingCurrentReader).watchEntered.future,
+    state.watchEntered.future,
+  ]);
+}

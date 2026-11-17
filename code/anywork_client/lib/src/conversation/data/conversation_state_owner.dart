@@ -138,8 +138,14 @@ final class ConversationStateOwner {
   }
 
   void _validateIdentity(CurrentReader reader) {
+    if (reader.metadata.currentProtocolVersion != currentProtocolVersion) {
+      throw ProtocolVersionMismatch(
+        received: reader.metadata.currentProtocolVersion,
+        supported: currentProtocolVersion,
+        field: 'currentProtocolVersion',
+      );
+    }
     if (reader.threadId != threadId ||
-        reader.metadata.currentProtocolVersion != currentProtocolVersion ||
         reader.metadata.readerId.isEmpty ||
         reader.metadata.currentOwnerId.isEmpty) {
       throw const ConversationContinuityError(

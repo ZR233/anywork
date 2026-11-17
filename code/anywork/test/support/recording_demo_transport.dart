@@ -272,6 +272,7 @@ final class RecordingCurrentReader implements CurrentReader {
   void Function()? onClosed;
   final StreamController<CurrentFrame> _injected =
       StreamController<CurrentFrame>.broadcast(sync: true);
+  Future<void>? _injectedClosing;
   final watchEntered = Completer<void>();
   int deliveredFrames = 0;
 
@@ -326,6 +327,10 @@ final class RecordingCurrentReader implements CurrentReader {
     watchCalls++;
     return inner.watch(after: after, demand: demand).then((watch) {
       if (!watchEntered.isCompleted) watchEntered.complete();
+      if (_requested) {
+        watch.requestClose();
+        return watch;
+      }
       return _RecordingCurrentWatch(watch, _injected.stream, _mapFrame);
     });
   }
@@ -419,7 +424,7 @@ final class RecordingCurrentReader implements CurrentReader {
     if (_requested) return;
     _requested = true;
     onClosed?.call();
-    unawaited(_injected.close());
+    _injectedClosing ??= _injected.close();
     inner.requestClose();
   }
 
@@ -429,7 +434,24 @@ final class RecordingCurrentReader implements CurrentReader {
     return _closing ??= () async {
       try {
         closeCalls++;
-        await inner.close();
+        Object? error;
+        StackTrace? stack;
+        final injectedClosing = _injectedClosing;
+        if (injectedClosing != null) {
+          try {
+            await injectedClosing;
+          } catch (failure, trace) {
+            error = failure;
+            stack = trace;
+          }
+        }
+        try {
+          await inner.close();
+        } catch (failure, trace) {
+          error ??= failure;
+          stack ??= trace;
+        }
+        if (error != null) Error.throwWithStackTrace(error, stack!);
         if (!joined.isCompleted) joined.complete();
       } catch (_) {
         _closing = null;
@@ -455,14 +477,21 @@ final class _RecordingCurrentWatch implements CurrentWatch {
     Stream<CurrentFrame> injected,
     CurrentFrame Function(CurrentFrame) mapFrame,
   ) : _output = StreamController<CurrentFrame>(sync: true) {
-    _innerSubscription = inner.frames
-        .map(mapFrame)
-        .listen(_output.add, onError: _output.addError, onDone: _endFromInner);
-    _injectedSubscription = injected.listen(
-      _output.add,
-      onError: _output.addError,
-      onDone: _endFromInjected,
-    );
+    try {
+      _innerSubscription = inner.frames
+          .map(mapFrame)
+          .listen(_addFrame, onError: _addError, onDone: _endFromInner);
+      if (!_output.isClosed) {
+        _injectedSubscription = injected.listen(
+          _addFrame,
+          onError: _addError,
+          onDone: _endFromInjected,
+        );
+      }
+    } catch (error, stack) {
+      requestClose();
+      Error.throwWithStackTrace(error, stack);
+    }
   }
 
   final CurrentWatch inner;
@@ -471,10 +500,19 @@ final class _RecordingCurrentWatch implements CurrentWatch {
   StreamSubscription<CurrentFrame>? _injectedSubscription;
   Future<void>? _closing;
   bool _innerDone = false;
+  bool _requested = false;
   Future<void>? _outputClosing;
 
   @override
   Stream<CurrentFrame> get frames => _output.stream;
+
+  void _addFrame(CurrentFrame frame) {
+    if (!_output.isClosed) _output.add(frame);
+  }
+
+  void _addError(Object error, StackTrace stack) {
+    if (!_output.isClosed) _output.addError(error, stack);
+  }
 
   void _endFromInner() {
     _innerDone = true;
@@ -488,7 +526,10 @@ final class _RecordingCurrentWatch implements CurrentWatch {
   }
 
   void _closeOutput() {
-    if (_output.isClosed) return;
+    if (_output.isClosed) {
+      _outputClosing ??= Future<void>.value();
+      return;
+    }
     final listened = _output.hasListener;
     final closed = _output.close();
     // A late watch can be retired before its output is ever transferred to
@@ -498,6 +539,8 @@ final class _RecordingCurrentWatch implements CurrentWatch {
 
   @override
   void requestClose() {
+    if (_requested) return;
+    _requested = true;
     inner.requestClose();
     unawaited(_injectedSubscription?.cancel());
     _closeOutput();

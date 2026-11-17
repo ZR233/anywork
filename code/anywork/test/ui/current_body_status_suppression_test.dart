@@ -199,21 +199,31 @@ void main() {
       addTearDown(() async {
         await tester.pumpWidget(const SizedBox.shrink());
         if (!graphClosed) {
-          await graph.close(
-            budget: testBudgetUntil(
-              DateTime.now().add(const Duration(seconds: 5)),
+          final report = await pumpClientFuture(
+            tester,
+            graph.close(
+              budget: testBudgetUntil(
+                DateTime.now().add(const Duration(seconds: 5)),
+              ),
             ),
+            'current body teardown close',
           );
+          expect(report.complete, isTrue);
           graphClosed = true;
         } else {
-          await graph.client.conversations.retryCleanup(
-            budget: testBudgetUntil(
-              DateTime.now().add(const Duration(seconds: 5)),
+          await pumpClientFuture(
+            tester,
+            graph.client.conversations.retryCleanup(
+              budget: testBudgetUntil(
+                DateTime.now().add(const Duration(seconds: 5)),
+              ),
             ),
+            'current body teardown retry cleanup',
           );
         }
       });
       await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
+      graph.timeline.updateReadDemand(chatDemand);
 
       var showTimeline = true;
       late StateSetter rebuildRoot;
@@ -231,11 +241,30 @@ void main() {
         graph.client.directoryCommands.selectThread(_threadId),
         'select thread',
       );
-      await pumpClientFuture(
+      await pumpClientUntil(
         tester,
-        timelineReady(graph.timeline, _threadId),
-        'timeline lease',
+        () =>
+            graph.client.conversations.visibleThreadId.value == _threadId &&
+            graph.client.conversations
+                    .existingSession(_threadId)
+                    ?.state
+                    .workspace !=
+                null,
+        'visible conversation',
       );
+      try {
+        await pumpClientFuture(
+          tester,
+          timelineReady(graph.timeline, _threadId),
+          'timeline lease',
+        );
+      } catch (error) {
+        fail(
+          '$error; timeline=${graph.timeline.source.value}; '
+          'current readers=${transport.currentReaders.length}; '
+          'lease=${graph.timeline.lease(_threadId)}',
+        );
+      }
 
       final workspace = chatWorkspace(_threadId).copyWith(
         revision: 2,
@@ -268,7 +297,7 @@ void main() {
       final reader = _timelineReader(graph);
       final ownerId = reader.metadata.currentOwnerId;
       final firstListening = Completer<void>();
-      final firstBody = StreamController<ContentWindow>(
+      final firstBody = StreamController<ContentWindow>.broadcast(
         sync: true,
         onListen: () => firstListening.complete(),
       );
@@ -316,7 +345,7 @@ void main() {
       );
 
       final secondListening = Completer<void>();
-      final secondBody = StreamController<ContentWindow>(
+      final secondBody = StreamController<ContentWindow>.broadcast(
         sync: true,
         onListen: () => secondListening.complete(),
       );

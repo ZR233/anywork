@@ -15,14 +15,22 @@ const _ref = DisplayBlockRef(
 const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
 
 void main() {
-  test('sealed head revokes mutable page immediately and waits for native sealed records', () async {
-    final handle = _Handle();
+  test('sealed head rebases mutable rows onto a native sealed page', () async {
+    final handles = <_Handle>[];
+    final secondOpened = Completer<void>();
     final controller = DisplayMemberController(
       reference: _ref,
       groupClosed: false,
       demand: _demand,
-      open: (_, _, _, _) async => handle,
+      open: (_, _, _, _) async {
+        final handle = _Handle();
+        handles.add(handle);
+        if (handles.length == 2) secondOpened.complete();
+        return handle;
+      },
     );
+    await Future<void>.delayed(Duration.zero);
+    final handle = handles.single;
     await handle.pulling.future;
     final page = DisplayMemberPage(
       block: _ref,
@@ -51,25 +59,24 @@ void main() {
         ),
       ],
     );
+    final mutableAccepted = Completer<void>();
+    controller.addListener(() {
+      if (controller.page == page && !mutableAccepted.isCompleted) {
+        mutableAccepted.complete();
+      }
+    });
     handle.reply.complete(page);
-    await Future<void>.delayed(Duration.zero);
+    await mutableAccepted.future;
     final old = controller.disclosure('row')..expanded = true;
-    controller.requireSealed();
-    expect(controller.page, same(page));
+    controller.rebase(_ref, groupClosed: true);
+    expect(controller.page, isNull);
+    expect(controller.loading, isTrue);
     expect(controller.awaitingSealed, isTrue);
     expect(old.retired, isTrue);
     expect(controller.disclosure('row').expanded, isTrue);
-    handle.reply.complete(
-      DisplayMemberPage(
-        block: _ref,
-        cut: _cut,
-        revision: 2,
-        sealed: false,
-        entries: [],
-      ),
-    );
-    await Future<void>.delayed(Duration.zero);
-    expect(controller.page, same(page));
+    await secondOpened.future;
+    final sealedHandle = handles.last;
+    await sealedHandle.pulling.future;
     final sealed = DisplayMemberPage(
       block: _ref,
       cut: _cut,
@@ -77,8 +84,14 @@ void main() {
       sealed: true,
       entries: [],
     );
-    handle.reply.complete(sealed);
-    await Future<void>.delayed(Duration.zero);
+    final sealedAccepted = Completer<void>();
+    controller.addListener(() {
+      if (controller.page == sealed && !sealedAccepted.isCompleted) {
+        sealedAccepted.complete();
+      }
+    });
+    sealedHandle.reply.complete(sealed);
+    await sealedAccepted.future;
     expect(controller.page, same(sealed));
     expect(controller.awaitingSealed, isFalse);
     expect(controller.error, isNull);
@@ -86,7 +99,7 @@ void main() {
     controller.dispose();
   });
 
-  test('sealed current page stays readable after explicit EOF and releases its handle', () async {
+  test('sealed current page stays readable after fixed-page EOF and releases its handle', () async {
     final handle = _Handle();
     final controller = DisplayMemberController(
       reference: _ref,
@@ -109,13 +122,11 @@ void main() {
     });
     handle.reply.complete(page);
     await accepted.future;
-    // The consumer requests exactly one next after accepting the real sealed page.
-    await Future<void>.delayed(Duration.zero);
-    handle.reply.complete(null);
     await handle.closed.future;
     expect(controller.page, same(page));
     expect(controller.error, isNull);
-    expect(handle.calls, 2);
+    expect(handle.calls, 1);
+    expect(handle.requested, isTrue);
     await controller.close();
     controller.dispose();
   });

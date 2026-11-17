@@ -2346,10 +2346,13 @@ pub(crate) mod tests {
             }
             assert!(owner.runtime.health_snapshot().await.is_err());
             assert!(
-                first.peek().is_none(),
-                "early task runs without a join waiter"
+                futures::poll!(&mut final_close).is_pending(),
+                "Core terminal-flush work must remain independent of member MCP shutdown"
             );
-            assert!(futures::poll!(&mut final_close).is_pending());
+            assert!(
+                matches!(first.peek(), Some(Ok(()))),
+                "member MCP shutdown completes independently of the blocked Core terminal flush"
+            );
             assert!(Arc::ptr_eq(
                 scope.mcp.lock().unwrap().as_ref().unwrap(),
                 &owner

@@ -336,6 +336,7 @@ class TestHistoryReader implements HistoryReader {
   Future<HistoryCut> Function(HistoryCut)? onWaitChanged;
   int requestCloseCalls = 0;
   int closeCalls = 0;
+  final Set<void Function()> _pendingReads = {};
   final Set<Completer<HistoryCut>> _pendingWaits = {};
   bool _closed = false;
   bool get requested => requestCloseCalls > 0;
@@ -354,15 +355,18 @@ class TestHistoryReader implements HistoryReader {
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) async {
+  }) {
     final read = onTimeline;
     if (read == null) {
-      throw UnsupportedError('Unscripted history timelinePage');
+      return Future.error(UnsupportedError('Unscripted history timelinePage'));
     }
     final actualCut = cut ?? this.cut;
-    final page = await read(actualCut, cursor, demand);
-    this.cut = page.cut;
-    return page;
+    return _read(() async {
+      final page = await read(actualCut, cursor, demand);
+      if (_closed) throw const ClientResourceClosed();
+      this.cut = page.cut;
+      return page;
+    });
   }
 
   @override
@@ -386,9 +390,13 @@ class TestHistoryReader implements HistoryReader {
     HistoryCut? cut,
     String? cursor,
     required HistoryDemand demand,
-  }) =>
-      onEvents?.call(query, cut, cursor, demand) ??
-      Future.error(UnsupportedError('Unscripted history eventsPage'));
+  }) {
+    final read = onEvents;
+    if (read == null) {
+      return Future.error(UnsupportedError('Unscripted history eventsPage'));
+    }
+    return _read(() => read(query, cut, cursor, demand));
+  }
 
   @override
   Future<HistoryEventDetail> readEvent({
@@ -445,11 +453,50 @@ class TestHistoryReader implements HistoryReader {
     });
   }
 
+  Future<T> _read<T>(Future<T> Function() operation) {
+    if (_closed) return Future.error(const ClientResourceClosed());
+    final waiter = Completer<T>();
+    void cancel() {
+      if (!waiter.isCompleted) {
+        waiter.completeError(const ClientResourceClosed());
+      }
+    }
+
+    _pendingReads.add(cancel);
+    late final Future<T> source;
+    try {
+      source = operation();
+    } catch (error, stack) {
+      waiter.completeError(error, stack);
+      _pendingReads.remove(cancel);
+      return waiter.future;
+    }
+    unawaited(
+      source
+          .then<void>(
+            (value) {
+              if (!waiter.isCompleted) waiter.complete(value);
+            },
+            onError: (Object error, StackTrace stack) {
+              if (!waiter.isCompleted) waiter.completeError(error, stack);
+            },
+          )
+          .whenComplete(() {
+            _pendingReads.remove(cancel);
+          }),
+    );
+    return waiter.future;
+  }
+
   @override
   void requestClose() {
     requestCloseCalls++;
     if (_closed) return;
     _closed = true;
+    for (final cancel in _pendingReads.toList()) {
+      cancel();
+    }
+    _pendingReads.clear();
     for (final waiter in _pendingWaits.toList()) {
       if (!waiter.isCompleted) {
         waiter.completeError(const ClientResourceClosed());

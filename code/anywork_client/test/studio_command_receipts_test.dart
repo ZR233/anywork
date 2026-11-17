@@ -414,9 +414,11 @@ final class _RouteConflictTransport extends _Transport {
   }
 
   final List<StreamController<ThreadStreamFrame>> stateBindings = [];
+  final List<_RouteConflictCurrentReader> readers = [];
   final Future<void> Function(int index)? onCurrentClose;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
+  Completer<void>? nextCurrentOpenGate;
 
   @override
   Future<CurrentReader> openCurrentReader(
@@ -431,14 +433,22 @@ final class _RouteConflictTransport extends _Transport {
     if (stateBindings.length == 2 && !refreshEntered.isCompleted) {
       refreshEntered.complete();
     }
-    return _RouteConflictCurrentReader(
+    final initial = index == 0
+        ? _workspace(revision: 40, routeRevision: 3)
+        : _workspace(revision: 7, routeRevision: 4);
+    final reader = _RouteConflictCurrentReader(
       threadId: threadId,
       states: binding.stream,
-      initialView: currentViewForWorkspace(
-        _workspace(revision: index + 1, routeRevision: 3),
-      ),
+      initialView: currentViewForWorkspace(initial),
       onClose: () => onCurrentClose?.call(index) ?? Future<void>.value(),
     );
+    readers.add(reader);
+    if (index > 0) {
+      final gate = nextCurrentOpenGate;
+      nextCurrentOpenGate = null;
+      await gate?.future;
+    }
+    return reader;
   }
 
   @override
@@ -2376,7 +2386,7 @@ void main() {
   });
 
   test(
-    'route conflict resync rebuilds the state feed and awaits the new baseline',
+    'route conflict resync uses the replacement initialView before retrying',
     () async {
       final transport = _RouteConflictTransport();
       final client = await _client(transport);
@@ -2398,6 +2408,7 @@ void main() {
           ),
         ),
       );
+      final replacementOpen = transport.nextCurrentOpenGate = Completer<void>();
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
         accountId: 'account',
@@ -2415,7 +2426,8 @@ void main() {
         hasLength(1),
         reason: 'await the replacement baseline',
       );
-      await session.deliverWorkspace(_workspace(revision: 7, routeRevision: 4));
+      expect(session.state.modelRoute?.revision, 3);
+      replacementOpen.complete();
       await changing;
       expect(transport.attempts, hasLength(2));
       expect(
@@ -2424,6 +2436,7 @@ void main() {
       );
       expect(transport.attempts.last.expectedRouteRevision, 4);
       expect(transport.attempts.last.expectedSettingsRevision, 2);
+      expect(session.state.modelRoute?.revision, 4);
       transport.stateBindings.first.add(
         ThreadNotificationFrame(
           threadId: 'thread',
@@ -2461,26 +2474,28 @@ void main() {
 
   for (final closeClient in [false, true]) {
     test(
-      'route resync baseline wait ends on ${closeClient ? 'Client close' : 'Session retire'} while cleanup stays owned',
+      '${closeClient ? 'Client close' : 'Session retire'} rejects pending route resync and owns the late replacement reader',
       () async {
-        final cancelEntered = Completer<void>();
-        final cleanup = Completer<void>();
+        final previousCloseEntered = Completer<void>();
+        final previousCloseGate = Completer<void>();
         final transport = _RouteConflictTransport(
           onCurrentClose: (index) {
-            if (index != 1) return Future.value();
-            cancelEntered.complete();
-            return cleanup.future;
+            if (index != 0) return Future.value();
+            previousCloseEntered.complete();
+            return previousCloseGate.future;
           },
         );
         final client = await _client(transport);
         addTearDown(() {
-          if (!cleanup.isCompleted) cleanup.complete();
+          if (!previousCloseGate.isCompleted) previousCloseGate.complete();
         });
         client.selection.markOpened();
         final session = client.conversations.existingSession('thread')!;
         await session.deliverWorkspace(
           _workspace(revision: 40, routeRevision: 3),
         );
+        final replacementOpen = transport.nextCurrentOpenGate =
+            Completer<void>();
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
           accountId: 'account',
@@ -2499,6 +2514,9 @@ void main() {
         await transport.refreshEntered.future;
         expect(transport.stateBindings, hasLength(2));
         expect(transport.attempts, hasLength(1));
+        expect(transport.readers, hasLength(2));
+        final late = transport.readers[1];
+        expect(late.requestCloseCalls, 0);
         final closing = closeClient
             ? client.close(
                 budget: ClientCloseBudget(const Duration(seconds: 30)),
@@ -2506,23 +2524,19 @@ void main() {
             : client.conversations.close(
                 budget: ClientCloseBudget(Duration.zero),
               );
-        await cancelEntered.future;
+        await previousCloseEntered.future;
         await rejected;
         expect(
           transport.attempts,
           hasLength(1),
           reason: 'Retired observation cannot replay even a known conflict',
         );
-        if (!closeClient) {
-          final report = await closing;
-          expect(report.complete, isFalse);
-          expect(
-            report.unresolved.map((resource) => resource.owner),
-            contains('current-state:thread'),
-            reason: 'the gated state cleanup stays owned for retry',
-          );
-        }
-        cleanup.complete();
+
+        replacementOpen.complete();
+        await late.closeCompleted.future;
+        expect(late.requestCloseCalls, greaterThanOrEqualTo(1));
+        expect(late.closeCalls, 1);
+        previousCloseGate.complete();
         if (closeClient) {
           expect((await closing).complete, isTrue);
         } else {
@@ -2536,52 +2550,6 @@ void main() {
       },
     );
   }
-
-  test(
-    'Client close owns a resync still joining its previous runtime binding',
-    () async {
-      final cancelEntered = Completer<void>();
-      final cleanup = Completer<void>();
-      final transport = _RouteConflictTransport(
-        onCurrentClose: (index) {
-          if (index != 0) return Future.value();
-          cancelEntered.complete();
-          return cleanup.future;
-        },
-      );
-      final client = await _client(transport);
-      addTearDown(() {
-        if (!cleanup.isCompleted) cleanup.complete();
-      });
-      client.selection.markOpened();
-      final session = client.conversations.existingSession('thread')!;
-      await session.deliverWorkspace(
-        _workspace(revision: 40, routeRevision: 3),
-      );
-      final changing = client.threadCommands.setThreadModelRoute(
-        threadId: 'thread',
-        accountId: 'account',
-        modelId: 'alpha',
-      );
-      final rejected = expectLater(changing, throwsA(isA<StudioFailure>()));
-      await cancelEntered.future;
-      await transport.refreshEntered.future;
-      expect(transport.stateBindings, hasLength(2));
-      expect(transport.refreshEntered.isCompleted, isTrue);
-      final closing = client.close(
-        budget: ClientCloseBudget(const Duration(seconds: 30)),
-      );
-      await rejected;
-      expect(transport.attempts, hasLength(1));
-      cleanup.complete();
-      expect((await closing).complete, isTrue);
-      expect(
-        transport.stateBindings,
-        hasLength(2),
-        reason: 'close prevents any further replacement',
-      );
-    },
-  );
 
   test('execution recovery does not gate an explicit stop request', () async {
     final transport = _Transport();

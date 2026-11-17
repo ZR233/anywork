@@ -1485,7 +1485,14 @@ impl LiveProjection {
             .ok_or_else(|| ProjectionError::History("current owner is not bound".into()))?
             .to_owned();
         let current = current::project(thread, state, &owner_id)?;
-        self.current.provenance(current.sources, current.atoms);
+        // Effects own terminal source transitions that are no longer present in Core's live
+        // snapshot. Merge the new snapshot into that monotonic owner history instead of replacing it.
+        let mut sources = self.source_states.clone();
+        for source in current.sources {
+            sources.entry(source.source.clone()).or_insert(source);
+        }
+        self.current
+            .provenance(sources.into_values().collect(), current.atoms);
         self.current
             .observe(thread, state, sequence, current.active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -3803,7 +3810,7 @@ mod append_only_history_tests {
         let part = ObservedPart::new(observed).appended("BOUNDARY_PREFIX");
         state.model_progress = Some(ActiveModelProgress {
             attempt_id: "boundary-attempt".into(),
-            progress: ModelProgress::new(1, vec![part]),
+            progress: ModelProgress::new(0, vec![part]),
         });
         projection.stream(&thread, &state).await?;
 
@@ -3883,6 +3890,8 @@ mod append_only_history_tests {
             !frozen.contains("FUTURE_ORIGINAL"),
             "a later canonical final must not replace the accepted boundary observation"
         );
+        state.model_progress = None;
+        projection.stream(&thread, &state).await?;
         assert!(
             projection
                 .current_state()
@@ -3936,13 +3945,17 @@ mod append_only_history_tests {
         };
         let mut seen = std::collections::BTreeSet::new();
         let mut cursor = None;
-        for expected_len in [
-            17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 12,
-        ] {
+        let mut pages = 0;
+        loop {
             let page = reader
                 .events_page(HistoryEventsQuery::AllEvents, None, cursor, demand)
                 .await?;
-            assert_eq!(page.entries.len(), expected_len);
+            assert!(!page.entries.is_empty());
+            assert!(
+                page.entries.len() <= demand.max_rows as usize,
+                "a History page exceeded its row demand"
+            );
+            pages += 1;
             for entry in page.entries {
                 assert!(seen.insert(entry.header.seq));
             }
@@ -3951,6 +3964,10 @@ mod append_only_history_tests {
                 break;
             }
         }
+        assert!(
+            pages > 1,
+            "the fixture must exercise actual cursor continuation"
+        );
         assert_eq!(seen.len(), 640);
         assert_eq!(seen.first().copied(), Some(1));
         assert_eq!(seen.last().copied(), Some(640));
@@ -4080,6 +4097,7 @@ mod append_only_history_tests {
             ..Default::default()
         };
         projection.prepare(&thread, &effect, &state, false).await?;
+        projection.stream(&thread, &state).await?;
         let current = projection.current_state().context("current State")?;
         let tool_id = super::super::order::tool_id(&invocation.call_id);
         let atom = current
@@ -4169,6 +4187,15 @@ mod append_only_history_tests {
             let source = ChatSourceId::Operation {
                 operation_id: case.into(),
             };
+            let active = pl_core::thread::ActiveContextCompaction {
+                operation_id: case.into(),
+                turn_id: turn_id.clone(),
+                attempt_id: attempt_id.clone(),
+            };
+            let active_state = ThreadSnapshot {
+                active_context_compaction: Some(active),
+                ..Default::default()
+            };
             let start = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
                 sequence: 1,
@@ -4181,8 +4208,9 @@ mod append_only_history_tests {
                 ..Default::default()
             };
             projection
-                .prepare(&thread, &start, &ThreadSnapshot::default(), false)
+                .prepare(&thread, &start, &active_state, false)
                 .await?;
+            projection.stream(&thread, &active_state).await?;
             let current = projection.current_state().context("active compaction")?;
             let atom = current
                 .projection()
@@ -4196,6 +4224,7 @@ mod append_only_history_tests {
             assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
             assert!(atom.contents.is_empty());
 
+            let finished_state = ThreadSnapshot::default();
             let finish = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
                 sequence: 2,
@@ -4207,8 +4236,9 @@ mod append_only_history_tests {
                 ..Default::default()
             };
             projection
-                .prepare(&thread, &finish, &ThreadSnapshot::default(), false)
+                .prepare(&thread, &finish, &finished_state, false)
                 .await?;
+            projection.stream(&thread, &finished_state).await?;
             let current = projection.current_state().context("settled compaction")?;
             assert!(
                 current

@@ -1396,7 +1396,16 @@ extension TimelineSessionAccess on TimelineSessionOwner {
     _olderInFlight = null;
     await next._admitCurrentProject(currentView);
     if (previous != null) _retire(previous);
-    _publishState(isLoadingOlder: false, olderError: null, hasNewOutput: false);
+    if (!_ownsRead(read) || !identical(_current, next) || next.isRetired) {
+      return;
+    }
+    _publishState(
+      connection: TimelineConnectionPhase.ready,
+      connectionError: null,
+      isLoadingOlder: false,
+      olderError: null,
+      hasNewOutput: false,
+    );
   }
 
   void _markPresentedInputs(

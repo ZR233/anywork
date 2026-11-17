@@ -62,10 +62,6 @@ void main() {
       );
       final controller = tester.widget<Expansible>(disclosure).controller;
       expect(tester.widget(header), isNot(isA<TimelineActivityRow>()));
-      expect(
-        timelineWorkHeaderExpanded(tester, header, 'observed-work'),
-        isFalse,
-      );
       expect(controller.isExpanded, isFalse);
       final label = timelineGroupTitleFinder(tester, header);
       expect(label, findsOneWidget);
@@ -89,18 +85,10 @@ void main() {
       expect(find.textContaining('执行了'), findsOneWidget);
       await tester.tap(header);
       await tester.pump(const Duration(milliseconds: 300));
-      expect(
-        timelineWorkHeaderExpanded(tester, header, 'observed-work'),
-        isTrue,
-      );
       expect(controller.isExpanded, isTrue);
       expect(find.text('exact Work body'), findsOneWidget);
       await tester.tap(header);
       await tester.pump(const Duration(milliseconds: 300));
-      expect(
-        timelineWorkHeaderExpanded(tester, header, 'observed-work'),
-        isFalse,
-      );
       expect(controller.isExpanded, isFalse);
       expect(find.text('exact Work body'), findsNothing);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -115,6 +103,10 @@ void main() {
         final header = find.byKey(
           const ValueKey('completion-run-header:observed-work'),
         );
+        final disclosure = find.byKey(
+          const ValueKey('completion-run-disclosure:observed-work'),
+        );
+        final controller = tester.widget<Expansible>(disclosure).controller;
         final label = timelineGroupTitleFinder(tester, header);
         expect(label, findsOneWidget);
         expect(
@@ -136,10 +128,7 @@ void main() {
           ),
           location == WorkDisplayLocation.live ? findsOneWidget : findsNothing,
         );
-        expect(
-          timelineWorkHeaderExpanded(tester, header, 'observed-work'),
-          isFalse,
-        );
+        expect(controller.isExpanded, isFalse);
         await tester.pumpWidget(const SizedBox.shrink());
       },
     );

@@ -321,13 +321,13 @@ void main() {
       final resources = TimelineImageResources(threadId: 'thread');
       addTearDown(resources.release);
       final receipt = artifacts([readyFile('a', 'old.md', 'archive')]);
-      const reference = HistoryEventBodyRef(
+      final reference = HistoryEventBodyRef(
         databaseId: 'db',
         ownerEventId: 'files-call',
         bodyKey: 'tool.output-artifacts',
         bodyId: 'files-call:tool.output-artifacts',
         byteStart: 0,
-        byteLength: 0,
+        byteLength: utf8.encode(receipt).length,
       );
       final late = Completer<ContentWindow>();
       var count = 0;
@@ -354,8 +354,11 @@ void main() {
         ),
       );
       await tester.pumpWidget(build(fileItem(receipt, reference: reference)));
-      await tester.pump();
-      expect(find.textContaining('read denied'), findsOneWidget);
+      await pumpClientUntil(
+        tester,
+        () => find.textContaining('read denied').evaluate().isNotEmpty,
+        'deferred receipt failure',
+      );
       await tester.tap(find.text('重试'));
       await tester.pump();
       expect(count, 2);

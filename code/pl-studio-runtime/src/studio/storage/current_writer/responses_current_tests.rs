@@ -244,7 +244,7 @@ async fn responses_http_sse_current_saves_partial_and_final_handoff() -> Result<
     let exercise = timeout(DEADLINE, async {
         let mut model = ModelInfo::compatible("current-model");
         model.binding.set_transport(ModelTransportProfile::responses_http());
-        let factory = ModelFactory::new(ThreadModel::new_current(ModelRuntime::new_with_account_id(
+        let factory = ModelFactory::new(ThreadModel::new(ModelRuntime::new_with_account_id(
             "fixture", ProtocolEndpoint::compatible("fixture", fixture.base_url()), model,
         )?, None));
         let handle = ThreadHandle::start_current(THREAD.into(), factory.open_session().await?)?;

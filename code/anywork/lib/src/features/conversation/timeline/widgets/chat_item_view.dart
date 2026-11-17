@@ -59,7 +59,37 @@ class ChatItemView extends StatefulWidget {
 }
 
 class _ChatItemViewState extends State<ChatItemView> {
+  final Object _unitVisibility = Object();
+  TimelineExpansionIntent? _visibleUnitExpansion;
+
   ChatItemPresentation get item => widget.item;
+  @override
+  void initState() {
+    super.initState();
+    _syncUnitVisibility();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatItemView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncUnitVisibility();
+  }
+
+  void _syncUnitVisibility() {
+    final unit = item.displayUnit;
+    final next = unit?.body is SingleDisplayBlock ? unit!.expansion : null;
+    if (identical(next, _visibleUnitExpansion)) return;
+    _visibleUnitExpansion?.setBodyVisible(_unitVisibility, false);
+    _visibleUnitExpansion = next;
+    next?.setBodyVisible(_unitVisibility, true);
+  }
+
+  @override
+  void dispose() {
+    _visibleUnitExpansion?.setBodyVisible(_unitVisibility, false);
+    super.dispose();
+  }
+
   Set<int> get _sensitiveQuestions {
     final input = item.data['userInput'];
     if (item.type != 'tool' || input is! Map<String, Object?>) return const {};
@@ -184,13 +214,16 @@ class _ChatItemViewState extends State<ChatItemView> {
     if (unit != null && item.type == 'displayUnit') {
       if (unit.body is SingleDisplayBlock) {
         final atom = unit.atom!;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (atom.contents.isEmpty) const Text('内容状态未知'),
-            for (var index = 0; index < atom.contents.length; index++)
-              _declaredContent(atom, index),
-          ],
+        return TimelineGroupBodyIntent(
+          intent: unit.expansion,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (item.currentContents.isEmpty) const Text('内容状态未知'),
+              for (var index = 0; index < item.currentContents.length; index++)
+                _declaredContent(atom, index),
+            ],
+          ),
         );
       }
       return KeyedSubtree(
@@ -768,6 +801,9 @@ class _ChatItemViewState extends State<ChatItemView> {
       contentKey: content.reference.contentKey,
       label: '查看内容',
       currentReference: content.reference,
+      disclosed:
+          content.role == ChatContentRole.body &&
+          (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input),
       witness: _contentWitness,
     );
     return content.role == ChatContentRole.body &&
@@ -818,6 +854,7 @@ class _ChatItemViewState extends State<ChatItemView> {
     final onLayout = widget.onContentLayout;
     final onCurrentLayout = widget.onCurrentContentLayout;
     final onCurrentUnmounted = widget.onCurrentContentUnmounted;
+    final currentItemId = item.displayRecord?.atom.id ?? item.id;
     if (text.trim().isEmpty ||
         clock == null ||
         (onLayout == null && onCurrentLayout == null)) {
@@ -829,11 +866,11 @@ class _ChatItemViewState extends State<ChatItemView> {
       onContentLayout: (itemId, micros) {
         onLayout?.call(itemId, micros);
         if (item.displayRecord?.contentSource is CurrentAtomSource) {
-          onCurrentLayout?.call(itemId, micros);
+          onCurrentLayout?.call(currentItemId, micros);
         }
       },
       onContentUnmounted: item.displayRecord?.contentSource is CurrentAtomSource
-          ? onCurrentUnmounted
+          ? (_) => onCurrentUnmounted?.call(currentItemId)
           : null,
       isDisplayActive: widget.isDisplayActive,
       child: child,

@@ -2,14 +2,13 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_activity_row.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/timeline_markdown.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_reasoning_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_resting_cat.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/models.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import '../../integration_test/support/timeline_observation.dart';
 
 Widget _host(Widget child, {double width = 720, double scale = 1}) =>
     MaterialApp(
@@ -233,9 +232,14 @@ void main() {
       final header = find.byKey(const ValueKey('completion-run-header:narrow'));
       expect(find.byType(TimelineReasoningSummary), findsOneWidget);
       expect(find.text('执行了 2 分 5 秒'), findsOneWidget);
-      final paragraph = timelineGroupTitleParagraph(tester, _workTitle(header));
-      expect(paragraph.maxLines, 1);
-      expect(paragraph.overflow, TextOverflow.ellipsis);
+      final summary = tester.widget<TimelineMarkdown>(
+        find.descendant(
+          of: _workTitle(header),
+          matching: find.byType(TimelineMarkdown),
+        ),
+      );
+      expect(summary.maxLines, 1);
+      expect(summary.overflow, TextOverflow.ellipsis);
       expect(find.byType(TimelineRestingCat), findsOneWidget);
       await tester.tap(_workTitle(header));
       await tester.pump(const Duration(milliseconds: 300));

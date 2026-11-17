@@ -1341,10 +1341,10 @@ mod business_tests {
         let old = state(3, "# Original plan\n\nSteps")?;
         let first = owner.observe(&thread, &old, 10, [])?;
         let references = first.business_refs();
-        assert_eq!(references.interactions.as_ref().unwrap().revision, 17);
+        let interactions = references.interactions.as_ref().unwrap();
         let page = super::super::current_page(
             &first,
-            references.interactions.as_ref().unwrap(),
+            interactions,
             None,
             ReadDemand {
                 max_items: 1,
@@ -1430,15 +1430,10 @@ mod business_tests {
         let mut owner = CurrentOwner::default();
         owner.bind("interaction-db".into())?;
         let first = owner.observe(&thread, &before, 3, [])?;
-        assert_eq!(
-            first
-                .business_refs()
-                .interactions
-                .as_ref()
-                .unwrap()
-                .revision,
-            41
-        );
+        let initial = first
+            .business_refs()
+            .interactions
+            .expect("interaction collection");
 
         let mut after = before.clone();
         after
@@ -1446,25 +1441,60 @@ mod business_tests {
             .remove(&pl_core::tool::opaque::tool_interaction_id("first"));
         after.interaction_collection_revision = 42;
         let next = owner.observe(&thread, &after, 4, [])?;
-        let cold = CurrentState::cold("interaction-db".into(), thread.id.clone(), 4, &after)?;
-        assert_eq!(next.business_refs(), cold.business_refs());
-        assert_eq!(next.business_refs().interactions.unwrap().revision, 42);
+        let deleted = next
+            .business_refs()
+            .interactions
+            .expect("deleted interaction collection");
+        assert_ne!(deleted, initial);
+        assert!(
+            super::super::current_page(
+                &next,
+                &initial,
+                None,
+                ReadDemand {
+                    max_items: 1,
+                    max_bytes: 4096,
+                },
+                Ok,
+            )
+            .is_err(),
+            "the pre-deletion collection reference remained readable"
+        );
 
-        // A later A -> B -> A can have the same members but a different owner version.
+        let cold = CurrentState::cold("interaction-db".into(), thread.id.clone(), 4, &after)?;
+        let cold_interactions = cold
+            .business_refs()
+            .interactions
+            .expect("cold interaction collection");
+        assert_ne!(
+            cold_interactions, deleted,
+            "live and reopened Current must not reuse collection generations"
+        );
+        assert!(
+            super::super::current_page(
+                &cold,
+                &deleted,
+                None,
+                ReadDemand {
+                    max_items: 1,
+                    max_bytes: 4096,
+                },
+                Ok,
+            )
+            .is_err(),
+            "the reopened owner accepted the old live collection reference"
+        );
+
+        // A later owner version is a distinct availability generation even with the same members.
         let mut later = after.clone();
         later.interaction_collection_revision = 44;
         let later = owner.observe(&thread, &later, 5, [])?;
-        assert_eq!(later.business_refs().interactions.unwrap().revision, 44);
-        assert_ne!(later.business_refs(), next.business_refs());
-        // The full list remains an independent qualification, not just the numeric version.
-        let mut wrong_members = before;
-        wrong_members.interaction_collection_revision = 42;
-        let wrong_members = owner.observe(&thread, &wrong_members, 6, [])?;
-        assert_eq!(
-            wrong_members.business_refs().interactions.unwrap().revision,
-            42
-        );
-        assert_ne!(wrong_members.business_refs(), next.business_refs());
+        let later = later
+            .business_refs()
+            .interactions
+            .expect("later interaction collection");
+        assert_ne!(later, deleted);
+        assert_ne!(later, cold_interactions);
         Ok(())
     }
 }

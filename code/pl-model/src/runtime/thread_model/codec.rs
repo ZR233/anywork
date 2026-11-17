@@ -18,21 +18,6 @@ pub(super) const FRAME_FORMAT: &str = "pl.model.assistant";
 pub const FRAME_VERSION: u32 = 6;
 pub(in crate::runtime) const LEGACY_FRAME_VERSION: u32 = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum FrameContract {
-    Legacy,
-    Current,
-}
-
-impl FrameContract {
-    fn version(self) -> u32 {
-        match self {
-            Self::Legacy => LEGACY_FRAME_VERSION,
-            Self::Current => FRAME_VERSION,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 enum ArgumentKind {
     Json,
@@ -339,7 +324,6 @@ fn tool_scheduling_rules(request: &ModelRequest) -> Result<Vec<String>, ModelErr
 pub(super) fn request(
     request: &ModelRequest,
     runtime: &super::ModelRuntime,
-    contract: FrameContract,
 ) -> Result<CompletionRequest, ModelError> {
     request
         .context
@@ -465,7 +449,7 @@ pub(super) fn request(
                 })
                 .collect::<Vec<_>>();
             if let [payload] = frames.as_slice() {
-                if payload.version() != contract.version() {
+                if payload.version() != FRAME_VERSION {
                     return Err(invalid(
                         "assistant contract requires explicit migration with actual source-attempt context",
                     ));
@@ -701,7 +685,6 @@ pub(super) struct ResponseContext<'a> {
     pub marker: OpaquePayload,
     pub binding: super::receipt::ModelCallBinding,
     pub compatibility_family: Option<String>,
-    pub contract: FrameContract,
 }
 
 pub(super) fn response(
@@ -739,7 +722,6 @@ fn response_inner(
         marker,
         binding,
         compatibility_family,
-        contract,
     } = context;
     let replay = response
         .replay
@@ -808,14 +790,10 @@ fn response_inner(
                 ),
             };
             Ok(ModelToolCall {
-                call_id: if contract == FrameContract::Current {
-                    crate::completion::stream::current::scoped_call_id(
-                        &request.attempt_id,
-                        &call.call_id,
-                    )
-                } else {
-                    call.call_id.clone()
-                },
+                call_id: crate::completion::stream::current::scoped_call_id(
+                    &request.attempt_id,
+                    &call.call_id,
+                ),
                 tool_id,
                 arguments,
                 rejection,
@@ -839,34 +817,32 @@ fn response_inner(
         compatibility_family,
         source: None,
     };
-    let encoded = if contract == FrameContract::Current {
-        let source = FrameSource {
-            source_attempt_id: request.attempt_id.clone(),
-            call_bindings: frame
-                .receipt
-                .response
-                .tool_calls
-                .iter()
-                .map(|call| {
-                    crate::completion::ModelCallIdentity::new(
-                        &request.attempt_id,
-                        &call.call_id,
-                        &call.id,
-                    )
-                })
-                .collect(),
-        };
-        serde_json::to_string(&CurrentAssistantFrame { frame, source })
-    } else {
-        serde_json::to_string(&frame)
-    }
-    .map_err(|error| ModelError {
-        details: None,
-        kind: ModelFailureKind::InvalidResponse,
-        usage: Box::new(observed_usage.clone()),
-        source: Some(Box::new(error)),
-    })?;
-    let payload = OpaquePayload::new(FRAME_FORMAT, contract.version(), encoded)
+    let source = FrameSource {
+        source_attempt_id: request.attempt_id.clone(),
+        call_bindings: frame
+            .receipt
+            .response
+            .tool_calls
+            .iter()
+            .map(|call| {
+                crate::completion::ModelCallIdentity::new(
+                    &request.attempt_id,
+                    &call.call_id,
+                    &call.id,
+                )
+            })
+            .collect(),
+    };
+    let encoded =
+        serde_json::to_string(&CurrentAssistantFrame { frame, source }).map_err(|error| {
+            ModelError {
+                details: None,
+                kind: ModelFailureKind::InvalidResponse,
+                usage: Box::new(observed_usage.clone()),
+                source: Some(Box::new(error)),
+            }
+        })?;
+    let payload = OpaquePayload::new(FRAME_FORMAT, FRAME_VERSION, encoded)
         .map_err(|error| failure(ModelFailureKind::InvalidResponse, error))?;
     decode_frame(&payload)?;
     content.push(ContextContent::Opaque { payload });

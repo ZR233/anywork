@@ -856,10 +856,8 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         model("provider-a", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let source_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
-        source_runtime,
-        None,
-    ));
+    let source_factory =
+        ModelFactory::new(pl_model::runtime::ThreadModel::new(source_runtime, None));
     let thread = ThreadHandle::start_current(
         "cross-provider-thread".into(),
         source_factory.open_session().await.unwrap(),
@@ -888,10 +886,8 @@ async fn restored_cross_provider_native_reasoning_fails_before_send_without_losi
         model("provider-b", ModelTransportProfile::responses_http()),
     )
     .unwrap();
-    let target_factory = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
-        target_runtime,
-        None,
-    ));
+    let target_factory =
+        ModelFactory::new(pl_model::runtime::ThreadModel::new(target_runtime, None));
     let restored =
         ThreadHandle::restore_current(saved, Some(source_factory.open_session().await.unwrap()))
             .unwrap();
@@ -958,7 +954,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+    let source = ModelFactory::new(pl_model::runtime::ThreadModel::new(
         ModelRuntime::new_with_account_id("fixture", endpoint.clone(), source_model).unwrap(),
         None,
     ));
@@ -988,7 +984,7 @@ async fn restored_current_uses_new_model_configuration_for_plain_text_history() 
     {
         options.max_tokens_field = pl_model::model::ResponsesMaxTokensField::MaxOutputTokens;
     }
-    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new_current(
+    let target = ModelFactory::new(pl_model::runtime::ThreadModel::new(
         ModelRuntime::new_with_account_id("fixture", endpoint, target_model).unwrap(),
         None,
     ));
@@ -4243,7 +4239,7 @@ async fn attempt_scoped_calls_replay_original_ids_for_responses_and_chat() {
             model("identity-model", transport),
         )
         .unwrap();
-        let mut session = ModelFactory::new(ThreadModel::new_current(runtime, None))
+        let mut session = ModelFactory::new(ThreadModel::new(runtime, None))
             .open_session()
             .await
             .unwrap();

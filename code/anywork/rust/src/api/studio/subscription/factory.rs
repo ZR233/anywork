@@ -123,12 +123,12 @@ pub(crate) mod tests {
                     *selected = route.clone();
                 }
                 ConfigStore::new(ConfigPaths::from_config_dir(&home)).save(&config)?;
-                Box::pin(StudioRuntime::initialize(StudioRuntimeOptions {
+                Ok(Box::pin(StudioRuntime::initialize(StudioRuntimeOptions {
                     studio_home: Some(home),
                     host: StudioHostKind::Test,
                     ..StudioRuntimeOptions::desktop()
                 }))
-                .await
+                .await?)
             }
             .await;
             let runtime = match initialized {
@@ -496,7 +496,7 @@ pub(crate) mod tests {
                 "completed turn was not recovered from durable history"
             );
             history.request_close();
-            history.close().await?;
+            history.close().await;
             Ok(())
         })
         .await

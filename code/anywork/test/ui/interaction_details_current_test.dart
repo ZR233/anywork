@@ -118,7 +118,14 @@ void main() {
     expect(find.text('秘密问题'), findsNothing);
     expect(find.textContaining('秘密详情'), findsNothing);
     expect(find.textContaining('秘密答案'), findsNothing);
-    expect(find.text('敏感内容已隐藏'), findsOneWidget);
+    expect(
+      find.text(
+        AppLocalizations.of(
+          tester.element(find.byType(InteractionDetailsConnector)),
+        ).interactionDetailsSecretQuestionHidden,
+      ),
+      findsOneWidget,
+    );
     expect(tester.takeException(), isNull);
   });
 

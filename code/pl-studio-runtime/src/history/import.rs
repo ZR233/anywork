@@ -559,8 +559,7 @@ impl HistoryBodySource for V24ColumnReader {
         let predicates = self
             .key_columns
             .iter()
-            .enumerate()
-            .map(|_| "?".to_owned())
+            .map(|column| format!("{column}=?"))
             .collect::<Vec<_>>()
             .join(" AND ");
         let mut values = Vec::with_capacity(self.key_values.len() + 2);

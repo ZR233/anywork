@@ -8,7 +8,38 @@ import 'package:flutter_chat_core/flutter_chat_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../support/completion_fixtures.dart';
+import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
+
+FixtureCompletion _mutableTextEntry(
+  String id,
+  int seq,
+  String text, {
+  required bool active,
+}) {
+  final base = completionEntry(id, seq, isText: true, text: text).atom;
+  return FixtureCompletion(
+    recordId: id,
+    completionSeq: seq,
+    atom: ChatAtom(
+      id: base.id,
+      source: base.source,
+      sourceOrder: base.sourceOrder,
+      kind: base.kind,
+      delivery: base.delivery,
+      lifecycle: active
+          ? const ActiveChatAtom(
+              started: ChatFactPosition(effectSeq: 1, suborder: 0),
+              status: ChatActiveStatus.running,
+            )
+          : base.lifecycle,
+      textChannel: base.textChannel,
+      contentPresent: base.contentPresent,
+      contents: base.contents,
+      payload: base.payload,
+    ),
+  );
+}
 
 // Placement, Run composition and work counters are covered by
 // completion_run_controller_test. These assertions preserve the original
@@ -94,20 +125,20 @@ void main() {
   });
 
   test(
-    'real Flyer serializes apply and row-key replacement in call order',
+    'real Flyer serializes apply and row-key reconcile in call order',
     () async {
       final stock = InMemoryChatController();
       final adapter = TimelineMessageController(stock, generation: 11);
       final first = displaySingle(
-        completionEntry('row', 1, isText: true, text: 'first'),
+        _mutableTextEntry('row', 1, 'first', active: true),
       );
       final terminal = displaySingle(
-        completionEntry('row', 1, isText: true, text: 'terminal'),
+        _mutableTextEntry('row', 1, 'terminal', active: false),
       );
 
       final set = adapter.applyBlocks([first], TimelineApplyPlacement.set);
-      final replace = adapter.replaceBlocks([terminal]);
-      await Future.wait([set, replace]);
+      final reconcile = adapter.reconcileBlocks([terminal]);
+      await Future.wait([set, reconcile]);
 
       final card = chatItemPresentationOf(stock.messages.single)!;
       expect(stock.messages.single.id, 'row');
@@ -123,15 +154,15 @@ void main() {
       final stock = _CommitThenFailController();
       final oldGeneration = TimelineMessageController(stock, generation: 12);
       final active = displaySingle(
-        completionEntry('row', 1, isText: true, text: 'active'),
+        _mutableTextEntry('row', 1, 'active', active: true),
       );
       final terminal = displaySingle(
-        completionEntry('row', 1, isText: true, text: 'terminal'),
+        _mutableTextEntry('row', 1, 'terminal', active: false),
       );
       await oldGeneration.applyBlocks([active], TimelineApplyPlacement.set);
       stock.failAfterUpdate = true;
       await expectLater(
-        oldGeneration.replaceBlocks([terminal]),
+        oldGeneration.reconcileBlocks([terminal]),
         throwsStateError,
       );
 
@@ -153,16 +184,14 @@ void main() {
       final adapter = TimelineMessageController(stock, generation: 14);
       await adapter.applyBlocks([
         displaySingle(completionEntry('a', 2, isText: true, text: 'a')),
-        displaySingle(completionEntry('c', 3, isText: true, text: 'active c')),
+        displaySingle(_mutableTextEntry('c', 3, 'active c', active: true)),
       ], TimelineApplyPlacement.set);
 
       final older = adapter.applyBlocks([
         displaySingle(completionEntry('b', 1, isText: true, text: 'older b')),
       ], TimelineApplyPlacement.prepend);
       final terminal = adapter.replaceBlocks([
-        displaySingle(
-          completionEntry('c', 3, isText: true, text: 'terminal c'),
-        ),
+        displaySingle(_mutableTextEntry('c', 3, 'terminal c', active: false)),
       ]);
       await Future.wait([older, terminal]);
 
@@ -204,7 +233,7 @@ void main() {
       );
 
       await adapter.applyBlocks([boundary], TimelineApplyPlacement.set);
-      await adapter.replaceBlocks([later]);
+      await adapter.reconcileBlocks([later]);
 
       final card = chatItemPresentationOf(stock.messages.single)!;
       expect(card.displayRecord?.contentSource, isA<FrozenObservation>());

@@ -921,7 +921,9 @@ mod tests {
             let paths = env.runtime.store.registered_session_paths(&thread.id)?;
             env.runtime.shutdown_runtime().await?;
             let mut current = ThreadCurrent::new(thread.id.clone(), RuntimeEpoch::new());
-            let document = "已批准的计划正文\n".repeat(5000);
+            // Keep the plan within its 64 KiB domain limit while still exceeding the 2 KiB
+            // State inline threshold, so the test exercises deferred Current bodies.
+            let document = "已批准的计划正文\n".repeat(2400);
             let plan = crate::plan_tool::AgentSessionPlanState {
                 revision: 3,
                 state: crate::plan_tool::AgentSessionPlanPhase::Approved,

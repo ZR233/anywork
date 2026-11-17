@@ -113,10 +113,24 @@ void main() {
       isTrue,
       reason: '所有原因都必须有可显示文案',
     );
+    const sharedStaleReasons = {
+      StudioFailureReason.staleContent,
+      StudioFailureReason.staleCurrentReference,
+      StudioFailureReason.staleReadScope,
+      StudioFailureReason.staleLspBinding,
+    };
+    final distinctReasons = labels.entries
+        .where((entry) => !sharedStaleReasons.contains(entry.key))
+        .toList();
     expect(
-      labels.values.toSet().length,
-      StudioFailureReason.values.length,
-      reason: '不同原因不能共用同一文案',
+      {for (final entry in distinctReasons) entry.value}.length,
+      distinctReasons.length,
+      reason: '不在同一 typed 语义组的失败原因不能共用同一文案',
+    );
+    expect(
+      {for (final reason in sharedStaleReasons) labels[reason]},
+      hasLength(1),
+      reason: '同属局部 stale revision 的原因共享明确的 stale 文案',
     );
     expect(
       labels[StudioFailureReason.childThreadRequiresParentScheduling],

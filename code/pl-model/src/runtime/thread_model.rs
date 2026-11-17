@@ -44,7 +44,6 @@ pub struct ThreadModel {
     reasoning: Option<ReasoningConfig>,
     purpose: String,
     hosted_tools: Arc<[super::HostedTool]>,
-    contract: codec::FrameContract,
 }
 
 struct EncodedRequest {
@@ -60,16 +59,6 @@ impl ThreadModel {
             reasoning,
             purpose: "turn".into(),
             hosted_tools: Vec::new().into(),
-            contract: codec::FrameContract::Legacy,
-        }
-    }
-
-    /// Builds the independent current contract without switching existing production factories.
-    /// This factory consumes only explicitly upgraded assistant frames and emits version 6.
-    pub fn new_current(runtime: ModelRuntime, reasoning: Option<ReasoningConfig>) -> Self {
-        Self {
-            contract: codec::FrameContract::Current,
-            ..Self::new(runtime, reasoning)
         }
     }
     /// Stable route provenance, independent of instruction, tool and execution revisions.
@@ -91,7 +80,7 @@ impl ThreadModel {
     /// One encoding path for execution, previews and reduction, including every tool and media.
     async fn encode_request(&self, request: &ModelRequest) -> Result<EncodedRequest, ModelError> {
         self.validate_context_origin(&request.context)?;
-        let mut encoded = codec::request(request, &self.runtime, self.contract)?;
+        let mut encoded = codec::request(request, &self.runtime)?;
         encoded.reasoning = self.reasoning.clone();
         if self.runtime.endpoint().chatgpt_session.is_none() {
             encoded.max_tokens = self.runtime.model().max_output_tokens;
@@ -169,7 +158,6 @@ impl Model for ThreadModel {
             observed: Arc::new(Mutex::new(None)),
             prompt: super::ThreadPromptMetadata::default(),
             last_compaction_id: None,
-            contract: self.contract,
         };
         async move { Ok(DynModelSession::new(session)) }
     }
@@ -184,7 +172,6 @@ struct ThreadModelSession {
     observed: Arc<Mutex<Option<OpaquePayload>>>,
     prompt: super::ThreadPromptMetadata,
     last_compaction_id: Option<String>,
-    contract: codec::FrameContract,
 }
 
 impl CoreModelSession for ThreadModelSession {
@@ -194,7 +181,6 @@ impl CoreModelSession for ThreadModelSession {
             reasoning: self.reasoning.clone(),
             purpose: self.purpose.clone(),
             hosted_tools: self.hosted_tools.clone(),
-            contract: self.contract,
         };
         let EncodedRequest {
             completion: encoded,
@@ -313,18 +299,8 @@ impl CoreModelSession for ThreadModelSession {
             .with_progress(request.progress.clone())
             .with_members(request.members.clone())
             .with_prompt_cache_scope(super::PromptCacheScope::thread(&request.thread_id));
-        let contract = self.contract;
-        let (capture, current) = if contract == codec::FrameContract::Current {
-            let (handle, current) = super::current::CurrentInvocation::channel(&request.attempt_id);
-            (Some(handle), Some(current))
-        } else {
-            (None, None)
-        };
-        let invocation = if let Some(current) = &current {
-            invocation.with_current(current.clone())
-        } else {
-            invocation
-        };
+        let (capture, current) = super::current::CurrentInvocation::channel(&request.attempt_id);
+        let invocation = invocation.with_current(current.clone());
         let work = async move {
             *observed
                 .lock()
@@ -351,22 +327,17 @@ impl CoreModelSession for ThreadModelSession {
                         .capabilities
                         .native_context_family
                         .clone(),
-                    contract,
                 },
                 response,
             )?;
             Ok(output)
         };
-        let call = if let Some(capture) = capture {
-            PreparedModelCall::new_with_current(async move {
-                let result = work.await;
-                let current = current.expect("current factory").take_final();
-                pl_core::model::ModelCallExit { result, current }
-            })
-            .with_current_capture(capture)
-        } else {
-            PreparedModelCall::new(work)
-        };
+        let call = PreparedModelCall::new_with_current(async move {
+            let result = work.await;
+            let current = current.take_final();
+            pl_core::model::ModelCallExit { result, current }
+        })
+        .with_current_capture(capture);
         let call = call
             .with_tool_projection(tool_projection)
             .with_request_metadata(request_metadata)
@@ -422,4 +393,55 @@ pub(super) fn failure(
 
 fn usage(report: &crate::model::UsageReport) -> ModelUsage {
     crate::model::usage::model_usage(report)
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn ordinary_thread_model_exposes_the_current_producer_endpoint() {
+        use pl_core::context::{ContextContent, ContextRecord, ContextSnapshot};
+
+        let runtime = ModelRuntime::new_with_account_id(
+            "fixture",
+            crate::protocol::ProtocolEndpoint::compatible("fixture", "http://127.0.0.1:1/v1"),
+            crate::model::ModelInfo::compatible("contract-model"),
+        )
+        .expect("isolated model runtime");
+        let mut session = ThreadModel::new(runtime, None)
+            .open_session()
+            .await
+            .expect("open isolated model session");
+        let prepared = session
+            .prepare(ModelRequest {
+                thread_id: "contract-thread".into(),
+                turn_id: "contract-turn".into(),
+                attempt_id: "contract-attempt".into(),
+                context: ContextSnapshot {
+                    revision: 0,
+                    records: vec![ContextRecord {
+                        id: "input".into(),
+                        turn_id: Some("contract-turn".into()),
+                        source: pl_core::context::ContextSource::User,
+                        content: vec![ContextContent::Text {
+                            text: "current producer".into(),
+                        }],
+                        tool_calls: Vec::new(),
+                    }]
+                    .into(),
+                },
+                tools: Arc::from([]),
+                tool_call_mode: pl_core::model::ToolCallMode::Parallel,
+                solo_tool_ids: Arc::from([]),
+                committed_private_context: None,
+                resources: None,
+                cancellation: pl_core::model::CancellationToken::new(),
+                progress: None,
+                members: None,
+            })
+            .await
+            .expect("prepare isolated model request");
+        assert!(prepared.current_capture().is_some());
+    }
 }

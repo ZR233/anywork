@@ -21,7 +21,6 @@ import 'package:flutter_test/flutter_test.dart';
 import '../../../anywork_client/test/support/timeline_transport.dart'
     show TestHistoryReader;
 import '../support/chat_fixtures.dart';
-import '../support/display_fixtures.dart';
 import '../support/pump_client_future.dart';
 import '../support/recording_demo_transport.dart';
 import '../support/test_statistics_feed.dart';
@@ -42,20 +41,102 @@ class _AttachmentTransport extends RecordingDemoTransport {
     String threadId, {
     required int historyProtocolVersion,
   }) async {
-    final reader = TestHistoryReader(
+    final reader = _FileHistoryReader(
       threadId: threadId,
       cut: HistoryCut('file-cut:$threadId'),
     );
-    reader.onTimeline = (_, _, _) async => historyFixturePage(
-      displayBatch([
-        displaySingle(
-          statusItem(_markdownFile(), completionSeq: 5),
-          blockOrder: 5,
+    reader.onTimeline = (_, _, _) async => HistoryTimelinePage(
+      cut: reader.cut,
+      entries: [
+        HistoryTimelineEntry(
+          rowKey: 'files-call',
+          anchorSeq: 5,
+          headSeq: 5,
+          head: SingleHistoryRow(
+            HistoryEntityHead(
+              entityId: 'files-call',
+              source: const ReceiptChatSource(receiptId: 'files-call'),
+              kind: ChatAtomKind.receipt,
+              delivery: ChatDeliveryKind.independent,
+              state: const HistoryEntityState(
+                kind: HistoryEntityStateKind.knownTerminal,
+                outcome: ChatTerminalOutcome.completed,
+              ),
+              observation: const HistoryObservation(
+                kind: HistoryObservationKind.original,
+              ),
+              contentPresent: true,
+              detailEventId: 'files-call',
+              bodyManifestEventId: 'files-call',
+            ),
+          ),
         ),
-      ]),
+      ],
     );
     reader.onWaitChanged = (_) => changed.future;
     return reader;
+  }
+}
+
+final class _FileHistoryReader extends TestHistoryReader {
+  _FileHistoryReader({required super.threadId, required super.cut});
+
+  static final List<int> _payload = switch (_markdownFile().payload) {
+    InlinePayload(:final bytes) => List.unmodifiable(bytes),
+    _ => throw StateError('The file fixture payload must stay inline'),
+  };
+
+  static final HistoryEventBodyRef _payloadReference = HistoryEventBodyRef(
+    databaseId: 'file-db',
+    ownerEventId: 'files-call',
+    bodyKey: 'canonical_payload',
+    bodyId: 'files-call:canonical_payload',
+    byteStart: 0,
+    byteLength: _payload.length,
+  );
+
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) async {
+    return HistoryEventDetail(
+      header: HistoryEventHeader(
+        seq: 5,
+        eventId: eventId,
+        kind: 'original',
+        entityId: 'files-call',
+        callId: 'files-call',
+        recordedAt: 5,
+      ),
+      payloadRef: _payloadReference,
+    );
+  }
+
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) async {
+    if (reference.databaseId != _payloadReference.databaseId ||
+        reference.ownerEventId != _payloadReference.ownerEventId ||
+        reference.bodyKey != _payloadReference.bodyKey ||
+        reference.bodyId != _payloadReference.bodyId ||
+        reference.byteStart != _payloadReference.byteStart ||
+        reference.byteLength != _payload.length) {
+      throw StateError('Unexpected canonical History body reference');
+    }
+    if (offset < 0 || offset > _payload.length || maxBytes < 0) {
+      throw RangeError('Invalid canonical History body range');
+    }
+    final end = (offset + maxBytes).clamp(0, _payload.length).toInt();
+    return HistoryBodyWindow(
+      offset: offset,
+      bytes: _payload.sublist(offset, end),
+      totalLength: _payload.length,
+      mediaType: 'application/json',
+    );
   }
 }
 
@@ -135,12 +216,19 @@ void main() {
         await pumpClientUntil(
           tester,
           () =>
+              graph.client.conversations.visibleThreadId.value ==
+                  'thread-main' &&
               graph.client.conversations
-                  .existingSession('thread-main')
-                  ?.state
-                  .hasSnapshot ==
-              true,
-          'snapshot',
+                      .existingSession('thread-main')
+                      ?.state
+                      .hasSnapshot ==
+                  true,
+          'visible snapshot',
+        );
+        await pumpClientFuture(
+          tester,
+          timelineReady(graph.timeline, 'thread-main'),
+          'timeline ready',
         );
         var width = 1100.0;
         var threadId = 'thread-main';

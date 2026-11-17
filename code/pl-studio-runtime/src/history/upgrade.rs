@@ -134,6 +134,24 @@ struct WriterLease {
     _file: File,
 }
 
+/// The caller holds its maintenance admission gate while deciding whether
+/// existing writers must retire. Reading an already current store never does.
+pub(crate) async fn requires_history_upgrade(path: &Path, thread_id: &str) -> Result<bool> {
+    let read = schema::connect(path, true, false).await?;
+    let required = match classify_source(&read).await? {
+        SourceFormat::Schema24 => {
+            legacy_identity(&read, thread_id).await?;
+            true
+        }
+        SourceFormat::Schema25 => {
+            schema::identity(&read, thread_id).await?;
+            false
+        }
+    };
+    read.close().await?;
+    Ok(required)
+}
+
 pub async fn upgrade_history(
     history_path: impl AsRef<Path>,
     thread_id: &str,
@@ -1478,6 +1496,7 @@ fn display_member_event_id(block_id: &str, member_key: &str) -> String {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LifecycleRow {
     identity: String,
     kind: crate::ChatAtomKind,
@@ -1512,8 +1531,8 @@ struct TurnRow {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SourceRow {
     source_key: String,
-    started_at: Option<i64>,
-    ended_at: Option<i64>,
+    started_effect: Option<i64>,
+    ended_effect: Option<i64>,
     active_observed: Option<u64>,
     outcome: Option<crate::ChatTerminalOutcome>,
 }
@@ -1737,7 +1756,12 @@ async fn import_lifecycle<C: ConnectionTrait>(
                 &[value.identity.clone().into()],
                 "observation",
             );
-            let kind = if value.ended.is_some()
+            // Schema 24 did not persist the runtime epoch that qualifies an
+            // attempt. Retain its real evidence in an explicit legacy event
+            // rather than inventing a run or publishing an unqualified event.
+            let kind = if value.attempt_id.is_some() {
+                HistoryEventKind::LegacyObserved
+            } else if value.ended.is_some()
                 || value.outcome.is_some()
                 || value.finished_at.is_some()
             {
@@ -1912,7 +1936,7 @@ async fn import_sources<C: ConnectionTrait>(
     loop {
         let rows = source
             .query_all(
-                "SELECT source_key,started_at,ended_at,active_observed,ended_observed,outcome FROM conversation_sources WHERE source_key>? ORDER BY source_key LIMIT 128",
+                "SELECT source_key,started_effect,ended_effect,active_observed,ended_observed,outcome FROM conversation_sources WHERE source_key>? ORDER BY source_key LIMIT 128",
                 vec![after.clone().into()],
             )
             .await?;
@@ -1922,8 +1946,8 @@ async fn import_sources<C: ConnectionTrait>(
         for row in rows {
             let source_row = SourceRow {
                 source_key: row.try_get("", "source_key")?,
-                started_at: row.try_get("", "started_at")?,
-                ended_at: row.try_get("", "ended_at")?,
+                started_effect: row.try_get("", "started_effect")?,
+                ended_effect: row.try_get("", "ended_effect")?,
                 active_observed: row.try_get("", "active_observed")?,
                 outcome: row
                     .try_get::<Option<String>>("", "outcome")?
@@ -1934,21 +1958,26 @@ async fn import_sources<C: ConnectionTrait>(
             let source_id: HistorySource = serde_json::from_str(&source_row.source_key)?;
             let lifecycle = if let Some(outcome) = source_row.outcome {
                 ChatSourceLifecycle::Ended { outcome }
-            } else if source_row.active_observed.is_some() {
+            } else if source_row.started_effect.is_some() || source_row.active_observed.is_some() {
                 ChatSourceLifecycle::Active
             } else {
                 ChatSourceLifecycle::Unknown
             };
-            let kind = match &lifecycle {
-                ChatSourceLifecycle::Ended { .. } => HistoryEventKind::SourceEnded,
-                ChatSourceLifecycle::Active => HistoryEventKind::SourceStarted,
-                ChatSourceLifecycle::Unknown => HistoryEventKind::LegacyObserved,
+            let kind = match (
+                &lifecycle,
+                source_row.started_effect,
+                source_row.ended_effect,
+            ) {
+                (ChatSourceLifecycle::Ended { .. }, _, Some(_)) => HistoryEventKind::SourceEnded,
+                (ChatSourceLifecycle::Active, Some(_), _) => HistoryEventKind::SourceStarted,
+                _ => HistoryEventKind::LegacyObserved,
             };
             let head = HistoryRowHead::Source(super::HistorySourceHead {
                 source: source_id.clone(),
                 lifecycle,
-                started_at: milliseconds(source_row.started_at)?,
-                ended_at: milliseconds(source_row.ended_at)?,
+                // The frozen table stores effect positions, never wall-clock times.
+                started_at: None,
+                ended_at: None,
                 observed_at: None,
                 detail_event_id: None,
             });
@@ -2148,9 +2177,11 @@ async fn import_tool_resource_observation<C: ConnectionTrait>(
         &[call_id.into(), effect.into(), reference.id().into()],
         "resource",
     );
+    // This preserves proof already present in a legacy task; migration does
+    // not observe a new business mutation in the current runtime.
     let mut event = HistoryEvent::new(
         event_id.clone(),
-        HistoryEventKind::BusinessChanged,
+        HistoryEventKind::LegacyObserved,
         recorded_at,
     );
     event.header.entity_id = Some(reference.id().into());
@@ -2441,7 +2472,7 @@ async fn import_fact_receipts<C: ConnectionTrait>(
                 &kind,
             );
             let mut event =
-                HistoryEvent::new(id.clone(), HistoryEventKind::BusinessChanged, recorded_at);
+                HistoryEvent::new(id.clone(), HistoryEventKind::LegacyObserved, recorded_at);
             event.header.entity_id = Some(business_id);
             event.header.source = Some(HistorySource::Receipt {
                 receipt_id: item_id.clone(),
@@ -2583,7 +2614,7 @@ async fn import_display<C: ConnectionTrait>(
     loop {
         let rows = source
             .query_all(
-                "SELECT block_id,block_order,sealed,unfinished FROM conversation_display_blocks WHERE block_order>? ORDER BY block_order LIMIT 128",
+                "SELECT block_id,block_order,sealed FROM conversation_display_blocks WHERE block_order>? ORDER BY block_order LIMIT 128",
                 vec![db::number(after)?.into()],
             )
             .await?;
@@ -2633,7 +2664,7 @@ async fn import_display<C: ConnectionTrait>(
                     )?;
                     let execution_present = source
                         .query_one(
-                            "SELECT 1 FROM conversation_display_members WHERE block_id=? AND json_extract(metadata,'$.record.atom.kind') IN ('toolCall','inference','reasoning') LIMIT 1",
+                            "SELECT 1 FROM conversation_display_members WHERE block_id=? AND json_extract(metadata,'$.head.record.atom.kind') IN ('toolCall','inference','reasoning') LIMIT 1",
                             vec![block_id.clone().into()],
                         )
                         .await?
@@ -4071,8 +4102,12 @@ mod migration_tests {
                 },
             }];
             db.execute_raw(statement(
-                "UPDATE conversation_items SET metadata=? WHERE item_id=?",
-                vec![serde_json::to_vec(&atom)?.into(), item_id.clone().into()],
+                "UPDATE conversation_items SET payload=?,metadata=? WHERE item_id=?",
+                vec![
+                    source_payload.clone().into(),
+                    serde_json::to_vec(&atom)?.into(),
+                    item_id.clone().into(),
+                ],
             ))
             .await?;
             canonical_payloads.insert(item_id.clone(), source_payload);
@@ -4087,7 +4122,7 @@ mod migration_tests {
         db.execute_raw(statement(
             "INSERT INTO history_turns(
                 turn_id,turn_order,admitted_effect,updated_effect,terminal_effect,payload,context_disposition
-             ) VALUES(?,50,NULL,NULL,NULL,?,?)",
+             ) VALUES(?,?,NULL,NULL,NULL,?,?)",
             vec![
                 "turn-rollback".into(),
                 50i64.into(),
@@ -4415,6 +4450,45 @@ mod migration_tests {
     }
 
     #[tokio::test]
+    async fn unadopted_legacy_original_stops_upgrade_without_discarding_its_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-unadopted-original";
+        write_v24_fixture(&history_path, thread_id, false).await?;
+        let payload = serde_json::to_string(&serde_json::json!({
+            "itemId":"unadopted-original", "appendSeq":2, "turnId":"turn-1",
+            "sourceEffectSeq":null, "sealedAt":null,
+            "meta":serde_json::to_vec(&serde_json::json!({
+                "id":"unadopted-original", "threadId":thread_id, "turnId":"turn-1",
+                "descriptor":{"kind":"text","data":{}}
+            }))?,
+            "fields":[{"identity":{"kind":"body"},"text":"unique original bytes"}]
+        }))?;
+        let db = schema::connect(&history_path, false, false).await?;
+        db.execute_raw(statement(
+            "INSERT INTO timeline_records(append_seq,record_id,turn_id,source_effect_seq,sealed_at,kind,payload) VALUES(2,'unadopted-original','turn-1',NULL,NULL,'text',?)",
+            vec![payload.clone().into()],
+        )).await?;
+        db.close().await?;
+        let error = upgrade_history(&history_path, thread_id, directory.path())
+            .await
+            .expect_err("an original without a canonical adoption cannot be discarded");
+        assert!(error.to_string().contains("absent from conversation_items"));
+        assert_eq!(schema_version(&history_path).await?, 24);
+        let source = schema::connect(&history_path, true, false).await?;
+        let original = source
+            .query_one_raw(statement(
+                "SELECT payload FROM timeline_records WHERE record_id='unadopted-original'",
+                Vec::new(),
+            ))
+            .await?
+            .expect("original container is retained");
+        assert_eq!(original.try_get::<String>("", "payload")?, payload);
+        source.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn real_schema24_upgrade_preserves_canonical_current_and_display_facts() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let history_path = directory.path().join("history.sqlite");
@@ -4714,14 +4788,16 @@ mod migration_tests {
         let cases = [
             (
                 "ended-with-attempt",
+                Some("actual-attempt"),
                 true,
                 true,
                 Some(crate::ChatTerminalOutcome::Cancelled),
                 None,
-                HistoryEventKind::EntityEnded,
+                HistoryEventKind::LegacyObserved,
             ),
             (
-                "started-with-attempt",
+                "started-without-attempt",
+                None,
                 true,
                 false,
                 None,
@@ -4730,14 +4806,16 @@ mod migration_tests {
             ),
             (
                 "attempt-association-only",
+                Some("actual-attempt"),
                 false,
                 false,
                 None,
                 None,
-                HistoryEventKind::BoundaryObserved,
+                HistoryEventKind::LegacyObserved,
             ),
             (
                 "ended-known-time",
+                None,
                 false,
                 false,
                 Some(crate::ChatTerminalOutcome::Completed),
@@ -4746,13 +4824,14 @@ mod migration_tests {
             ),
         ];
         let db = schema::connect(&history_path, false, false).await?;
-        for (id, started, ended, outcome, finished_at, _) in &cases {
+        for (id, attempt, started, ended, outcome, finished_at, _) in &cases {
             db.execute_raw(statement(
-                "INSERT INTO execution_lifecycle(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,delivery,started_effect,started_suborder,ended_effect,ended_suborder,started_at,finished_at,outcome,last_write_seq) VALUES(?,?,'operation',?,'turn-1','actual-attempt',?,'fixture-tool',?,?,?,?,?,NULL,?,?,1)",
+                "INSERT INTO execution_lifecycle(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,delivery,started_effect,started_suborder,ended_effect,ended_suborder,started_at,finished_at,outcome,last_write_seq) VALUES(?,?,'operation',?,'turn-1',?,?,'fixture-tool',?,?,?,?,?,NULL,?,?,1)",
                 vec![
                     (*id).into(),
                     serde_json::to_string(&crate::ChatAtomKind::ToolCall)?.into(),
                     format!("operation:{id}").into(),
+                    (*attempt).into(),
                     (*id).into(),
                     serde_json::to_string(&crate::ChatDeliveryKind::Foreground)?.into(),
                     started.then_some(1i64).into(),
@@ -4770,7 +4849,7 @@ mod migration_tests {
         let store =
             CurrentHistoryStore::open(&history_path, thread_id, HistoryLimits::default()).await?;
         let reader = store.reader();
-        for (id, started, ended, outcome, finished_at, expected_kind) in &cases {
+        for (id, attempt, started, ended, outcome, finished_at, expected_kind) in &cases {
             let page = reader
                 .events_page(
                     HistoryEventsQuery::Entity {
@@ -4788,7 +4867,11 @@ mod migration_tests {
             );
             let event = &page.entries[0];
             assert_eq!(&event.header.kind, expected_kind, "{id}");
-            assert_eq!(event.header.attempt_id.as_deref(), Some("actual-attempt"));
+            assert_eq!(event.header.attempt_id.as_deref(), *attempt);
+            assert!(
+                event.header.run_id.is_none(),
+                "{id}: no invented runtime epoch"
+            );
             assert_eq!(
                 event.header.occurred_at,
                 finished_at.map(|at| at * 1000),
@@ -4801,6 +4884,7 @@ mod migration_tests {
                 )
                 .await?,
             )?;
+            assert_eq!(payload["attemptId"], serde_json::to_value(attempt)?, "{id}");
             assert_eq!(payload["started"].is_object(), *started, "{id}");
             assert_eq!(payload["ended"].is_object(), *ended, "{id}");
             assert!(
@@ -5055,14 +5139,14 @@ mod migration_tests {
         let target = schema::connect(&history_path, true, false).await?;
         let counts = target
             .query_one_raw(statement(
-                "SELECT count(*) AS total,count(DISTINCT event_id) AS unique FROM history_events",
+                "SELECT count(*) AS total,count(DISTINCT event_id) AS unique_count FROM history_events",
                 Vec::new(),
             ))
             .await?
             .ok_or_else(|| HistoryError::Integrity("retry event count failed".into()))?;
         assert_eq!(
             counts.try_get::<i64>("", "total")?,
-            counts.try_get::<i64>("", "unique")?
+            counts.try_get::<i64>("", "unique_count")?
         );
         target.close().await?;
         Ok(())

@@ -1367,6 +1367,18 @@ void main() {
         '准备时编辑的下一条草稿',
       );
       final createdThreadId = graph.client.selection.state.selectedThreadId!;
+      await pumpClientUntil(
+        tester,
+        () =>
+            graph.client.conversations.visibleThreadId.value ==
+                createdThreadId &&
+            graph.client.conversations
+                    .existingSession(createdThreadId)
+                    ?.state
+                    .workspace !=
+                null,
+        'created Thread visible conversation',
+      );
       await pumpClientFuture(
         tester,
         timelineReady(graph.timeline, createdThreadId),

@@ -935,6 +935,19 @@ mod mixed_tests {
         assert!(host.send(call(&host, &caller, "closed-native-send"), AgentMessage {
             id: "after-close".into(), target: agent.to_string(), message: "must not run".into(),
         }).await.is_err());
+        // The ACP root is not a Native session entry. Once its Native child is fully
+        // closed, release the shared connection explicitly and prove the owner has no
+        // descendant obligation left before fixture-wide runtime shutdown.
+        owner.close(identity.thread_id.as_str()).await?;
+        assert!(owner.observed_thread(identity.thread_id.as_str()).is_none());
+        let parent_close = parent_resources.close().await;
+        assert!(
+            parent_close.local_complete,
+            "ACP root cleanup retained local resources: {parent_close:?}"
+        );
+        assert!(parent_close.worker_error.is_none(), "{parent_close:?}");
+        assert!(parent_close.driver_error.is_none(), "{parent_close:?}");
+        assert!(owner.close_session().await.is_empty());
         Ok(())
     }).catch_unwind().await;
         let provider_cleanup = match provider {

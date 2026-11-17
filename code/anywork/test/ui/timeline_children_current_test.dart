@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_children_connector.dart';
+import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork_client/conversation.dart';
@@ -10,6 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../../../anywork_client/test/support/timeline_transport.dart'
     show ConversationFixture, TestHistoryReader;
+import '../support/pump_client_future.dart';
 
 HistoryEventDetail _detail(String id, int seq) => HistoryEventDetail(
   header: HistoryEventHeader(
@@ -57,8 +59,16 @@ Widget _host(ConversationFixture fixture, {required String parentId}) =>
     );
 
 List<String> _rowIds(WidgetTester tester) => tester
-    .widgetList<ChatItemView>(find.byType(ChatItemView))
-    .map((view) => view.item.id)
+    .widgetList<Widget>(
+      find.byWidgetPredicate(
+        (widget) => widget is ChatItemView || widget is TimelineMemberAtom,
+      ),
+    )
+    .map(
+      (widget) => widget is ChatItemView
+          ? widget.item.id
+          : (widget as TimelineMemberAtom).displayId,
+    )
     .toList();
 
 void main() {
@@ -95,7 +105,10 @@ void main() {
     };
 
     await tester.pumpWidget(_host(fixture, parentId: 'parent-a'));
-    await tester.pumpAndSettle();
+    await pumpClientUntil(tester, () {
+      final ids = _rowIds(tester);
+      return ids.length == 1 && ids.single == 'row:A-initial';
+    }, 'first children page');
     expect(_rowIds(tester), ['row:A-initial']);
     await tester.tap(
       find.byKey(const ValueKey('timeline-children-load-older')),
@@ -103,7 +116,10 @@ void main() {
     await tester.pump();
 
     await tester.pumpWidget(_host(fixture, parentId: 'parent-b'));
-    await tester.pumpAndSettle();
+    await pumpClientUntil(tester, () {
+      final ids = _rowIds(tester);
+      return ids.length == 1 && ids.single == 'row:B-initial';
+    }, 'replacement children page');
     expect(_rowIds(tester), ['row:B-initial']);
 
     olderA.complete(

@@ -34,28 +34,21 @@ void main() {
       stock.messages[index].metadata![timelineDisplayUnitKey]
           as TimelineDisplayUnit;
 
-  test(
-    'a frozen Work head is one synchronous Main operation without members',
-    () async {
-      final accepted = adapter.applyFixtureUpdate(
-        displayBatch([displayWork('large', 3)]),
-      );
-      expect(
-        stock.messages.single.id,
-        'large',
-        reason: 'mutation precedes Future/paint',
-      );
-      expect(unit(0).timing!.startedAt, 0);
-      expect(unit(0).expansion.members, isNull);
-      await accepted;
-      await Future<void>.delayed(Duration.zero);
-      expect(operations.single.type, ChatOperationType.set);
-      expect(operations.single.animated, isFalse);
-    },
-  );
+  test('a frozen Work head is one Main operation without members', () async {
+    final accepted = adapter.applyFixtureUpdate(
+      displayBatch([displayWork('large', 3)]),
+    );
+    await accepted;
+    expect(stock.messages.single.id, 'large');
+    expect(unit(0).timing!.startedAt, 0);
+    expect(unit(0).expansion.members, isNull);
+    await Future<void>.delayed(Duration.zero);
+    expect(operations.single.type, ChatOperationType.set);
+    expect(operations.single.animated, isFalse);
+  });
 
   test(
-    'Set/Prepend/Append each batch once and never update an old tail block',
+    'Set/Prepend/Append each batch once and never update an older block',
     () async {
       await adapter.applyFixtureUpdate(
         displayBatch([displayWork('middle', 3)]),

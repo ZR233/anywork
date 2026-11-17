@@ -1106,7 +1106,6 @@ mod startup_fault_tests {
     async fn cold_v2_history_supports_passive_chat_content_without_activation() -> Result<()> {
         use crate::studio::storage::history::HistoryStore;
         use anyhow::Context;
-        use sea_orm::{ConnectionTrait, Database};
 
         let temp = tempfile::tempdir()?;
         let paths = seed(temp.path()).await?;
@@ -1126,16 +1125,6 @@ mod startup_fault_tests {
             .commit_legacy_fixture(1, std::slice::from_ref(&item), &[])
             .await?;
         drop(history);
-        let db = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-        crate::studio::storage::history::discard_empty_demand_fixture(&db).await?;
-        db.execute_unprepared(
-            "DROP TABLE seaql_migrations;
-         DROP TABLE IF EXISTS timeline_records;
-         ALTER TABLE history_input_identities DROP COLUMN request_digest;
-         UPDATE history_meta SET schema_version=8",
-        )
-        .await?;
-        db.close().await?;
         let runtime = StudioRuntime::initialize(options(temp.path())).await?;
         assert!(
             runtime

@@ -108,9 +108,11 @@ impl StudioStore {
             }
         }
         if tokio::fs::try_exists(&path).await? {
-            self.thread_persistence
-                .retire_history_for_upgrade(thread_id)
-                .await?;
+            if crate::history::requires_history_upgrade(&path, thread_id).await? {
+                self.thread_persistence
+                    .retire_history_for_upgrade(thread_id)
+                    .await?;
+            }
             crate::history::upgrade_history(&path, thread_id, session.root()).await?;
         }
         let opened = HistoryStore::open(&path, thread_id, HistoryLimits::default()).await?;

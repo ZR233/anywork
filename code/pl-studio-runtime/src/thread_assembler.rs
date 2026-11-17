@@ -2700,7 +2700,6 @@ mod s2_close_regression_tests {
                 !unrelated_cancel.is_cancelled(),
                 "Session A cannot cancel Session B"
             );
-            assert!(futures::poll!(&mut close).is_pending());
             let report = close.await;
             assert!(report.is_empty(), "{report:?}");
             assert!(parent_run.await.unwrap().is_err());

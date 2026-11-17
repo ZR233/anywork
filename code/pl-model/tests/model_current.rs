@@ -52,7 +52,7 @@ fn endpoint_factory(base_url: impl Into<String>) -> ModelFactory {
     model
         .binding
         .set_transport(ModelTransportProfile::responses_http());
-    ModelFactory::new(ThreadModel::new_current(
+    ModelFactory::new(ThreadModel::new(
         ModelRuntime::new_with_account_id(
             "fixture",
             ProtocolEndpoint::compatible("fixture", base_url),
@@ -128,7 +128,7 @@ fn recovery_factory_with_endpoint(
         .responses_tools
         .programmatic_tool_calling = info.binding.request.supports_programmatic_tool_calling();
     ModelFactory::new(
-        ThreadModel::new_current(
+        ThreadModel::new(
             ModelRuntime::new_with_account_id("fixture", endpoint, info).unwrap(),
             reasoning,
         )

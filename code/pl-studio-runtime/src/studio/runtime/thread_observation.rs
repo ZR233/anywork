@@ -1033,10 +1033,16 @@ impl ThreadObservations {
             }
             // Parent recovery explicitly prepares its cold children's storage before projecting
             // their facts. It never activates a child, rebuilds its workspace or asks a model.
-            let Some(current) = crate::studio::thread_factory::recovery::load_current_for_recovery(
-                &services.store,
-                &child,
-            )
+            // A complete Current can retain large domain state. Keep its
+            // recovery result on the heap across directory/delivery awaits.
+            let Some(current) = Box::pin(async {
+                crate::studio::thread_factory::recovery::load_current_for_recovery(
+                    &services.store,
+                    &child,
+                )
+                .await
+                .map(|current| current.map(Box::new))
+            })
             .await?
             else {
                 continue;
