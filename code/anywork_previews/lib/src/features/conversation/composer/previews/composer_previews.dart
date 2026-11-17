@@ -1,4 +1,5 @@
 import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/model_directory.dart';
 import 'package:flutter/widget_previews.dart';
 import 'package:material_ui/material_ui.dart';
 
@@ -11,10 +12,78 @@ import 'package:anywork/src/features/conversation/composer/state/composer_input_
 import 'package:anywork/src/features/conversation/composer/view_models/composer_actions.dart';
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
 import 'package:anywork/src/features/conversation/composer/views/composer_submission_body.dart';
+import 'package:anywork/src/features/conversation/composer/views/composer_route_selectors.dart';
+import 'package:anywork/src/features/status/session_selectors.dart';
+import 'package:anywork/src/shared/composer_action_button.dart';
 
 @Preview(name: 'Composer / 可编辑纯输入', group: 'Composer', size: Size(760, 340))
 @Preview(name: 'Composer / 窄窗', group: 'Composer', size: Size(360, 460))
 Widget composerInputPreview() => _composerPreviewHost(const _PreviewInput());
+
+@Preview(name: 'Composer / 运行中停止', group: 'Composer', size: Size(1040, 220))
+Widget composerStopPreview() => _composerPreviewHost(
+  const _PreviewInput(
+    initialText: '',
+    execution: AgentExecutionView(
+      id: 'preview-run',
+      phase: AgentExecutionPhase.running,
+    ),
+  ),
+);
+
+@Preview(name: 'Composer / 主操作全部状态', group: 'Composer', size: Size(760, 180))
+Widget composerActionStatesPreview() => _composerPreviewHost(
+  Builder(
+    builder: (context) {
+      final l10n = context.l10n;
+      final states = [
+        (ComposerActionButtonState.send, l10n.composerSend, true),
+        (
+          ComposerActionButtonState.sendAndContinue,
+          l10n.composerSendAndContinue,
+          true,
+        ),
+        (ComposerActionButtonState.stop, l10n.composerStop, true),
+        (
+          ComposerActionButtonState.continueConversation,
+          l10n.composerContinueTooltip,
+          true,
+        ),
+        (ComposerActionButtonState.busy, l10n.composerStopping, true),
+        (ComposerActionButtonState.send, l10n.composerSend, false),
+        (
+          ComposerActionButtonState.readOnly,
+          l10n.composerAgentReadOnlyTitle,
+          false,
+        ),
+      ];
+      return Wrap(
+        spacing: 24,
+        runSpacing: 16,
+        children: [
+          for (final (state, label, enabled) in states)
+            Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ComposerActionButton(
+                  state: state,
+                  tooltip: label,
+                  onPressed: enabled ? () {} : null,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  !enabled && state == ComposerActionButtonState.send
+                      ? '$label（禁用）'
+                      : label,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
+            ),
+        ],
+      );
+    },
+  ),
+);
 
 @Preview(name: 'Composer / 失败正文可选择复制', group: 'Composer', size: Size(760, 640))
 Widget composerSubmissionPreview() =>
@@ -39,8 +108,14 @@ Widget _composerPreviewHost(Widget child) => MaterialApp(
 );
 
 class _PreviewInput extends StatefulWidget {
-  const _PreviewInput({this.showSubmission = false});
+  const _PreviewInput({
+    this.showSubmission = false,
+    this.initialText = '输入下一条消息',
+    this.execution,
+  });
   final bool showSubmission;
+  final String initialText;
+  final AgentExecutionView? execution;
   @override
   State<_PreviewInput> createState() => _PreviewInputState();
 }
@@ -48,7 +123,7 @@ class _PreviewInput extends StatefulWidget {
 // Preview-only editing data, not another production draft owner.
 class _PreviewInputState extends State<_PreviewInput>
     implements ComposerActions {
-  String _text = '输入下一条消息';
+  late String _text = widget.initialText;
 
   @override
   Widget build(BuildContext context) => Column(
@@ -81,10 +156,38 @@ class _PreviewInputState extends State<_PreviewInput>
           composer: ComposerThreadState.idle(draft: _text),
           enabled: true,
           nowMs: 0,
+          execution: widget.execution,
           inputCapabilities: const [
             ModelInputCapabilityView(
               modality: ModelModalityView.image,
               sources: [ModelInputSourceView.local],
+            ),
+          ],
+        ),
+        selectorBar: Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 2,
+          runSpacing: 4,
+          children: [
+            SessionModeSelector(
+              catalog: const ThreadModeCatalogView(),
+              mode: ThreadModeId.task,
+              enabled: widget.execution == null,
+              onSelected: (_) {},
+            ),
+            ...modelRouteSelectorChildren(
+              accounts: _previewAccounts,
+              pending: false,
+              accountId: 'preview-account',
+              modelId: 'preview-model',
+              effort: 'high',
+              blockedReason: widget.execution == null
+                  ? null
+                  : context.l10n.statusModelSwitchWhileRunning,
+              unavailableReason:
+                  context.l10n.statusModelRouteUnavailableFallback,
+              onModelSelected: (_, _) {},
+              onEffortSelected: (_) {},
             ),
           ],
         ),
@@ -119,3 +222,19 @@ class _PreviewInputState extends State<_PreviewInput>
     if (textPaste.isCurrent()) textPaste.invoke();
   }
 }
+
+final _previewAccounts = [
+  ModelSelectionAccount(
+    id: 'preview-account',
+    name: '预览账号',
+    billingKind: null,
+    models: const [
+      AccountModelView(
+        modelId: 'preview-model',
+        displayName: '预览模型',
+        reasoningEfforts: ['low', 'high'],
+        typeSupport: [ModelTypeSupportView(modelType: ModelType.text)],
+      ),
+    ],
+  ),
+];

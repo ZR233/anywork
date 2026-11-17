@@ -35,6 +35,26 @@ Widget acpTestApp(Widget child) => MaterialApp(
   home: Scaffold(body: child),
 );
 
+void expectAcpPrimaryGeometry(WidgetTester tester, Finder button) {
+  final surface = find.descendant(
+    of: button,
+    matching: find.byWidgetPredicate(
+      (widget) => widget is Material && widget.shape is CircleBorder,
+    ),
+  );
+  expect(surface, findsOneWidget);
+  final surfaceRect = tester.getRect(surface);
+  expect(surfaceRect.size, const Size.square(34));
+  final visual = find.descendant(
+    of: button,
+    matching: find.byWidgetPredicate(
+      (widget) => widget is Icon || widget is CircularProgressIndicator,
+    ),
+  );
+  expect(visual, findsOneWidget);
+  expect(tester.getCenter(visual), surfaceRect.center);
+}
+
 /// Only controls source frames and records calls. All reduction is production.
 final class AcpComponentHarness {
   AcpComponentHarness(

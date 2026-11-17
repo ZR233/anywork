@@ -8,6 +8,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../composer/widgets/composer_attachments.dart';
 import '../../../../shared/composer_input_frame.dart';
+import '../../../../shared/composer_action_button.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
 import '../../composer/widgets/composer_paste_action.dart';
 import '../state/acp_view_state.dart';
@@ -234,16 +235,29 @@ class _AcpConversationComposerViewState
         onPickLocal: widget.onPickLocalAttachments,
         onAddUrl: () => _promptRemoteUrl(context),
       ),
-      primaryAction: _PrimaryComposerButton(
-        key: ValueKey(AcpViewKeyValues.composerPrimaryAction(state.threadId)),
-        isRunning: state.isRunning,
-        canInterrupt: state.canInterrupt,
-        canSend: canSubmitNow,
-        submitting: state.submitting,
-        interrupting: state.interrupting,
-        disabledTooltip: blockerText,
-        onSend: _submit,
-        onInterrupt: widget.onInterrupt,
+      primaryAction: ComposerActionButton(
+        buttonKey: ValueKey(
+          AcpViewKeyValues.composerPrimaryAction(state.threadId),
+        ),
+        state: state.submitting || state.interrupting
+            ? ComposerActionButtonState.busy
+            : state.isRunning
+            ? ComposerActionButtonState.stop
+            : ComposerActionButtonState.send,
+        tooltip: state.interrupting
+            ? l10n.acpStatusStopping
+            : state.isRunning
+            ? l10n.acpComposerInterruptTooltip
+            : state.submitting
+            ? l10n.acpComposerBlockerSending
+            : blockerText ?? l10n.acpComposerSendTooltip,
+        onPressed: state.isRunning
+            ? state.canInterrupt
+                  ? widget.onInterrupt
+                  : null
+            : canSubmitNow
+            ? _submit
+            : null,
       ),
       body: [
         if (state.attachments.isNotEmpty)
@@ -266,84 +280,6 @@ class _AcpConversationComposerViewState
             color: colors.error,
           ),
       ],
-    );
-  }
-}
-
-class _PrimaryComposerButton extends StatelessWidget {
-  const _PrimaryComposerButton({
-    super.key,
-    required this.isRunning,
-    required this.canInterrupt,
-    required this.canSend,
-    required this.submitting,
-    required this.interrupting,
-    this.disabledTooltip,
-    required this.onSend,
-    required this.onInterrupt,
-  });
-
-  final bool isRunning;
-  final bool canInterrupt;
-  final bool canSend;
-  final bool submitting;
-  final bool interrupting;
-  final String? disabledTooltip;
-  final VoidCallback onSend;
-  final VoidCallback onInterrupt;
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = context.l10n;
-    return SizedBox.square(
-      dimension: 34,
-      child: IconButton.filled(
-        tooltip: interrupting
-            ? l10n.acpStatusStopping
-            : isRunning
-            ? l10n.acpComposerInterruptTooltip
-            : submitting
-            ? l10n.acpComposerBlockerSending
-            : disabledTooltip ?? l10n.acpComposerSendTooltip,
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints.tightFor(width: 34, height: 34),
-        style: IconButton.styleFrom(
-          shape: const CircleBorder(),
-          minimumSize: const Size.square(34),
-          maximumSize: const Size.square(34),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          backgroundColor: isRunning
-              ? context.colors.surfaceContainerHighest
-              : null,
-          foregroundColor: isRunning ? context.colors.onSurface : null,
-        ),
-        onPressed: submitting || interrupting
-            ? null
-            : isRunning
-            ? canInterrupt
-                  ? onInterrupt
-                  : null
-            : canSend
-            ? onSend
-            : null,
-        icon: submitting || interrupting
-            ? SizedBox.square(
-                dimension: 15,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: context.colors.onSurfaceVariant,
-                ),
-              )
-            : Icon(
-                isRunning ? Icons.stop_rounded : Icons.arrow_upward_rounded,
-                size: 18,
-                color: isRunning
-                    ? context.colors.onSurface
-                    : canSend
-                    ? context.colors.onPrimary
-                    : context.colors.onSurfaceVariant.withValues(alpha: 0.38),
-              ),
-      ),
     );
   }
 }

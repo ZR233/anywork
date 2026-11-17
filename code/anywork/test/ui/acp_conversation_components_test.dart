@@ -28,9 +28,7 @@ IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
   final primary = find.byKey(
     ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId)),
   );
-  return tester.widget<IconButton>(
-    find.descendant(of: primary, matching: find.byType(IconButton)),
-  );
+  return tester.widget<IconButton>(primary);
 }
 
 void main() {
@@ -129,6 +127,7 @@ void main() {
   });
 
   testWidgets('ACP 发送中提示仅保留无障碍图标，停止原位切换且错误不丢失', (tester) async {
+    var submissions = 0;
     var interrupts = 0;
     Widget composer(AcpComposerViewState state) => acpTestApp(
       SizedBox(
@@ -136,7 +135,7 @@ void main() {
         child: AcpConversationComposerView(
           state: state,
           onDraftChanged: (_) {},
-          onSubmit: () {},
+          onSubmit: () => submissions++,
           onInterrupt: () => interrupts++,
           onPickLocalAttachments: (_) async {},
           onAddRemoteAttachment: (_) async {},
@@ -154,13 +153,11 @@ void main() {
         ),
       ),
     );
-    final primary = find.descendant(
-      of: find.byKey(
-        ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
-      ),
-      matching: find.byType(IconButton),
+    final primary = find.byKey(
+      ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
     );
     final button = tester.widget<IconButton>(primary);
+    expectAcpPrimaryGeometry(tester, primary);
     expect(button.onPressed, isNull);
     expect(find.text(button.tooltip!), findsNothing);
     expect(
@@ -171,6 +168,9 @@ void main() {
     );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.text('attachment could not be read'), findsOneWidget);
+    await tester.tap(primary);
+    expect(submissions, 0);
+    expect(interrupts, 0);
     final sendingRect = tester.getRect(primary);
     await tester.pumpWidget(
       composer(
@@ -182,6 +182,7 @@ void main() {
       ),
     );
     final stop = tester.widget<IconButton>(primary);
+    expectAcpPrimaryGeometry(tester, primary);
     expect(tester.getRect(primary).size, sendingRect.size);
     expect(tester.getRect(primary).left, sendingRect.left);
     expect(find.text(stop.tooltip!), findsNothing);
@@ -191,6 +192,20 @@ void main() {
       ),
       findsOne,
     );
+    await tester.tap(primary);
+    expect(interrupts, 1);
+    await tester.pumpWidget(
+      composer(
+        const AcpComposerViewState(
+          threadId: 'thread',
+          isRunning: true,
+          canInterrupt: true,
+          interrupting: true,
+        ),
+      ),
+    );
+    expectAcpPrimaryGeometry(tester, primary);
+    expect(tester.widget<IconButton>(primary).onPressed, isNull);
     await tester.tap(primary);
     expect(interrupts, 1);
     expect(tester.takeException(), isNull);

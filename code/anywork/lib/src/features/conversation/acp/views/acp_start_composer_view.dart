@@ -6,6 +6,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../composer/widgets/composer_attachments.dart';
 import '../../../../shared/composer_input_frame.dart';
+import '../../../../shared/composer_action_button.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
 import '../state/acp_view_state.dart';
 
@@ -96,26 +97,17 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
           if (widget.configurationBar != null) widget.configurationBar!,
         ],
       ),
-      primaryAction: IconButton.filled(
-        key: ValueKey(AcpViewKeyValues.startSubmit(state.workspaceId)),
+      primaryAction: ComposerActionButton(
+        buttonKey: ValueKey(AcpViewKeyValues.startSubmit(state.workspaceId)),
+        state: state.submitting || state.preparing
+            ? ComposerActionButtonState.busy
+            : ComposerActionButtonState.send,
         tooltip: state.preparing
             ? l10n.acpComposerBlockerInitializing
             : state.submitting
             ? l10n.acpStartCreatingAction
             : l10n.composerSend,
         onPressed: state.canCreate ? _submit : null,
-        padding: EdgeInsets.zero,
-        style: IconButton.styleFrom(
-          shape: const CircleBorder(),
-          minimumSize: const Size.square(34),
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        ),
-        icon: state.submitting || state.preparing
-            ? const SizedBox.square(
-                dimension: 14,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.arrow_upward_rounded, size: 18),
       ),
       body: [
         if (state.stagedAttachments.isNotEmpty)

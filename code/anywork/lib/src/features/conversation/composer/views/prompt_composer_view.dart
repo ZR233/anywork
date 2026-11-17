@@ -6,6 +6,7 @@ import '../../../../l10n/studio_l10n.dart';
 import '../../../../platform/desktop_drop_adapter.dart';
 import '../../../../platform/dropped_file.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../../../shared/composer_action_button.dart';
 import '../state/composer_input_state.dart';
 import '../view_models/composer_actions.dart';
 import '../widgets/composer_attachments.dart';
@@ -417,7 +418,6 @@ class PromptComposerViewState extends State<PromptComposerView> {
     BuildContext context,
     ComposerPrimaryAction action,
   ) {
-    final colors = Theme.of(context).colorScheme;
     final sendKind =
         action.kind == ComposerPrimaryActionKind.send ||
         action.kind == ComposerPrimaryActionKind.sendAndContinue;
@@ -447,38 +447,28 @@ class PromptComposerViewState extends State<PromptComposerView> {
       ComposerPrimaryActionKind.continuing => context.l10n.composerContinuing,
       ComposerPrimaryActionKind.continueConversation =>
         context.l10n.composerContinueTooltip,
-      ComposerPrimaryActionKind.readOnly => context.l10n.composerStopping,
+      ComposerPrimaryActionKind.readOnly =>
+        context.l10n.composerAgentReadOnlyTitle,
     };
-    final busy = action.busy;
-    return IconButton.filled(
-      key: key,
+    return ComposerActionButton(
+      buttonKey: key,
+      progressKey: StudioDriverKeys.composerPending,
       tooltip: tooltip,
-      style: IconButton.styleFrom(
-        fixedSize: const Size.square(40),
-        shape: const CircleBorder(),
-        backgroundColor: action.kind == ComposerPrimaryActionKind.stop
-            ? colors.surfaceContainerHighest
-            : colors.primary,
-        foregroundColor: action.kind == ComposerPrimaryActionKind.stop
-            ? colors.onSurface
-            : colors.onPrimary,
-        disabledBackgroundColor: colors.surfaceContainerHighest,
-        disabledForegroundColor: colors.onSurface.withValues(alpha: 0.32),
-      ),
-      icon: busy
-          ? const SizedBox.square(
-              key: StudioDriverKeys.composerPending,
-              dimension: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          : Icon(
-              action.kind == ComposerPrimaryActionKind.stop
-                  ? Icons.stop_rounded
-                  : action.kind ==
-                        ComposerPrimaryActionKind.continueConversation
-                  ? Icons.play_arrow_rounded
-                  : Icons.arrow_upward_rounded,
-            ),
+      state: action.busy
+          ? ComposerActionButtonState.busy
+          : switch (action.kind) {
+              ComposerPrimaryActionKind.send => ComposerActionButtonState.send,
+              ComposerPrimaryActionKind.sendAndContinue =>
+                ComposerActionButtonState.sendAndContinue,
+              ComposerPrimaryActionKind.stop => ComposerActionButtonState.stop,
+              ComposerPrimaryActionKind.continueConversation =>
+                ComposerActionButtonState.continueConversation,
+              ComposerPrimaryActionKind.stopping ||
+              ComposerPrimaryActionKind.continuing =>
+                ComposerActionButtonState.busy,
+              ComposerPrimaryActionKind.readOnly =>
+                ComposerActionButtonState.readOnly,
+            },
       onPressed: !enabled
           ? null
           : action.kind == ComposerPrimaryActionKind.stop
