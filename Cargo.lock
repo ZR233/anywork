@@ -4508,6 +4508,7 @@ dependencies = [
  "futures",
  "mlua",
  "pl-agent-tool",
+ "pl-output",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
