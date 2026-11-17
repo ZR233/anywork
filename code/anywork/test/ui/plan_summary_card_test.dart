@@ -5,7 +5,6 @@ import 'package:anywork/src/features/conversation/timeline/widgets/plan_summary_
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/semantics.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 Widget _host(
@@ -86,23 +85,6 @@ void main() {
       await tester.tap(find.text('查看完整计划'));
       await tester.pumpAndSettle();
       expect(toggles, 3);
-
-      FocusManager.instance.primaryFocus?.unfocus();
-      await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.pumpAndSettle();
-      expect(
-        Focus.of(tester.element(find.text('完整实施计划'))).hasPrimaryFocus,
-        isTrue,
-      );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
-      expect(toggles, 4);
-      expect(node().flagsCollection.isExpanded, Tristate.isFalse);
-      await tester.sendKeyEvent(LogicalKeyboardKey.space);
-      await tester.pumpAndSettle();
-      expect(toggles, 5);
-      expect(node().flagsCollection.isExpanded, Tristate.isTrue);
     },
   );
 

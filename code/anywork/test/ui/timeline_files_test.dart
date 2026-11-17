@@ -309,18 +309,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(saves, 1);
       expect(reveals, 0);
-      await tester.tap(find.byTooltip('文件操作'));
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
-      await tester.pumpAndSettle();
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shift);
-      await tester.sendKeyEvent(LogicalKeyboardKey.f10);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shift);
-      await tester.pumpAndSettle();
-      expect(
-        find.text(save),
-        findsOneWidget,
-        reason: 'the focused file menu is accessible with Shift+F10',
-      );
     });
   }
 

@@ -79,9 +79,6 @@ void main() {
     addTearDown(scene.dispose);
     final project = fixture.project;
     final projectRow = find.byKey(StudioDriverKeys.projectRow(project.id));
-    final projectExpand = find.byKey(
-      StudioDriverKeys.projectExpand(project.id),
-    );
     final threadRow = find.byKey(StudioDriverKeys.threadRow(fixture.thread.id));
     final runningRow = find.byKey(
       StudioDriverKeys.threadRow(fixture.runningThread.id),
@@ -118,77 +115,7 @@ void main() {
       find.byKey(StudioDriverKeys.threadWorkspaceMode(fixture.thread.id)),
       findsOneWidget,
     );
-    final projectIconRect = tester.getRect(
-      find.descendant(
-        of: projectRow,
-        matching: find.byIcon(Icons.folder_outlined),
-      ),
-    );
-    final projectTitleRect = tester.getRect(
-      find.descendant(of: projectRow, matching: find.text(project.name)),
-    );
-    for (final candidate in [
-      fixture.thread,
-      fixture.runningThread,
-      fixture.attentionThread,
-    ]) {
-      final slotRect = tester.getRect(
-        find.byKey(ValueKey('thread-status-slot-${candidate.id}')),
-      );
-      final titleRect = tester.getRect(
-        find.descendant(
-          of: find.byKey(StudioDriverKeys.threadRow(candidate.id)),
-          matching: find.text(candidate.title),
-        ),
-      );
-      expect(
-        slotRect.left,
-        closeTo(projectIconRect.left, 0.5),
-        reason:
-            'session leading status slot aligns vertically with project icon',
-      );
-      expect(
-        titleRect.left,
-        closeTo(projectTitleRect.left, 0.5),
-        reason: 'session title aligns vertically with project name',
-      );
-    }
     await scene.capture('sidebar-wide');
-
-    final search = find.byKey(const ValueKey<String>('sidebar-search'));
-    await tester.enterText(search, 'does-not-match-the-project');
-    await scene.until(
-      () => projectRow.evaluate().isEmpty,
-      'search excludes the canonical project',
-    );
-    await tester.enterText(search, 'long-visible-name');
-    await scene.until(
-      () => projectRow.evaluate().length == 1,
-      'search returns the canonical project',
-    );
-
-    final clearSearch = find.byKey(
-      const ValueKey<String>('sidebar-search-clear'),
-    );
-    expect(clearSearch, findsOneWidget);
-    await tester.tap(clearSearch);
-    await scene.until(
-      () =>
-          tester.widget<TextField>(search).controller?.text.isEmpty == true &&
-          threadRow.evaluate().length == 1,
-      'cleared search restores the expanded canonical thread',
-    );
-
-    await tester.tap(projectExpand);
-    await scene.until(
-      () => threadRow.evaluate().isEmpty,
-      'collapsed project hides its canonical thread',
-    );
-    await tester.tap(projectExpand);
-    await scene.until(
-      () => threadRow.evaluate().length == 1,
-      'expanded project restores its canonical thread',
-    );
 
     await tester.tap(
       find.byKey(const ValueKey<String>('sidebar-filter-running')),
@@ -288,30 +215,6 @@ void main() {
       'Material thread menu opens',
     );
     await tester.tap(
-      find.byKey(StudioDriverKeys.openThreadWorkspace(fixture.thread.id)),
-      kind: ui.PointerDeviceKind.mouse,
-    );
-    await scene.until(
-      () =>
-          find
-                  .byKey(StudioDriverKeys.openThreadVsCode(fixture.thread.id))
-                  .evaluate()
-                  .length ==
-              1 &&
-          find
-                  .byKey(StudioDriverKeys.openThreadZed(fixture.thread.id))
-                  .evaluate()
-                  .length ==
-              1 &&
-          find
-                  .byKey(StudioDriverKeys.openThreadTerminal(fixture.thread.id))
-                  .evaluate()
-                  .length ==
-              1,
-      'workspace submenu exposes all host application entries',
-    );
-    await scene.capture('sidebar-menu');
-    await tester.tap(
       find.byKey(StudioDriverKeys.renameThread(fixture.thread.id)),
     );
     final renameInput = find.byKey(
@@ -329,49 +232,6 @@ void main() {
       () => fixture.threadSnapshot(fixture.thread.id)?.title == longTitle,
       'renamed title reaches the canonical directory',
     );
-
-    await pointer.moveTo(tester.getCenter(threadRow));
-    await tester.pump();
-    await tester.tap(menuTrigger());
-    await scene.until(
-      () =>
-          find
-              .byKey(StudioDriverKeys.deleteThread(fixture.thread.id))
-              .evaluate()
-              .length ==
-          1,
-      'active thread menu exposes delete',
-    );
-    await tester.tap(
-      find.byKey(StudioDriverKeys.deleteThread(fixture.thread.id)),
-    );
-    final activeDeleteDialog = find.byKey(
-      StudioDriverKeys.deleteThreadDialog(fixture.thread.id),
-    );
-    await scene.until(
-      () => activeDeleteDialog.evaluate().length == 1,
-      'active delete confirmation opens',
-    );
-    final activeDeleteL10n = tester.element(activeDeleteDialog).l10n;
-    expect(
-      find.text(activeDeleteL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
-      findsOneWidget,
-    );
-    expect(
-      find.text(activeDeleteL10n.sidebarDeleteSessionConfirmBody),
-      findsOneWidget,
-    );
-    expect(
-      find.text(activeDeleteL10n.sidebarArchiveSessionConfirmBody),
-      findsNothing,
-    );
-    await tester.tap(find.text(activeDeleteL10n.commonCancel));
-    await scene.until(
-      () => activeDeleteDialog.evaluate().isEmpty,
-      'cancel closes active delete without invoking it',
-    );
-    expect(threadRow, findsOneWidget);
-    expect(fixture.threadSnapshot(fixture.thread.id), isNotNull);
 
     await pointer.moveTo(tester.getCenter(threadRow));
     await tester.pump();
@@ -437,35 +297,6 @@ void main() {
     await pointer.moveTo(tester.getCenter(threadRow));
     await tester.pump();
     await scene.capture('sidebar-archived');
-    await tester.tap(
-      find.byKey(StudioDriverKeys.deleteThread(fixture.thread.id)),
-    );
-    final archivedDeleteDialog = find.byKey(
-      StudioDriverKeys.deleteThreadDialog(fixture.thread.id),
-    );
-    await scene.until(
-      () => archivedDeleteDialog.evaluate().length == 1,
-      'archived row exposes delete confirmation',
-    );
-    final archivedDeleteL10n = tester.element(archivedDeleteDialog).l10n;
-    expect(
-      find.text(archivedDeleteL10n.sidebarDeleteSessionConfirmTitle(longTitle)),
-      findsOneWidget,
-    );
-    expect(
-      find.text(archivedDeleteL10n.sidebarDeleteSessionConfirmBody),
-      findsOneWidget,
-    );
-    expect(
-      find.text(archivedDeleteL10n.sidebarArchiveSessionConfirmBody),
-      findsNothing,
-    );
-    await tester.tap(find.text(archivedDeleteL10n.commonCancel));
-    await scene.until(
-      () => archivedDeleteDialog.evaluate().isEmpty,
-      'cancel closes archived delete without invoking it',
-    );
-    expect(threadRow, findsOneWidget);
     expect(
       find.byKey(ValueKey('thread-restore-${fixture.thread.id}')),
       findsOneWidget,

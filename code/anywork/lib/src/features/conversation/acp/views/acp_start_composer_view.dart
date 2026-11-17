@@ -88,7 +88,6 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
 
     return ComposerInputFrame(
       creationCard: true,
-
       configuration: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.end,
@@ -130,13 +129,11 @@ class _AcpStartComposerViewState extends State<AcpStartComposerView> {
           child: TextField(
             key: ValueKey(AcpViewKeyValues.startInput(state.workspaceId)),
             controller: _controller,
-
             autofocus: true,
             enabled: state.canEditDraft,
             minLines: 3,
             maxLines: 8,
             textInputAction: TextInputAction.send,
-
             onChanged: widget.onDraftChanged,
             onSubmitted: (_) => _submit(),
             style: context.text.bodyMedium?.copyWith(height: 1.5),
