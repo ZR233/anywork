@@ -85,31 +85,23 @@ enum DelegationModelCapability {
 class ListDelegationModelsRequest {
   const ListDelegationModelsRequest({
     this.capabilities = const [],
-    this.taskCategory,
     this.accountId,
     this.billingKind,
     this.minContextWindow,
-    this.limit,
-    this.cursor,
   });
   final List<DelegationModelCapability> capabilities;
-  final AgentTaskCategory? taskCategory;
   final String? accountId;
   final BillingKind? billingKind;
   final int? minContextWindow;
-  final int? limit;
-  final String? cursor;
 }
 
 class DelegationModelList {
   const DelegationModelList({
     required this.models,
     required this.catalogRevision,
-    this.nextCursor,
   });
   final List<DelegationModelListItem> models;
   final int catalogRevision;
-  final String? nextCursor;
 }
 
 class DelegationModelListItem {
@@ -122,10 +114,7 @@ class DelegationModelListItem {
     this.contextWindow,
     required this.capabilities,
     required this.reasoningEfforts,
-    this.pricing,
     required this.billingKind,
-    required this.performance,
-    required this.evaluations,
   });
   final DelegationModelKey key;
   final String accountName;
@@ -135,10 +124,7 @@ class DelegationModelListItem {
   final int? contextWindow;
   final DelegationModelCapabilities capabilities;
   final List<String> reasoningEfforts;
-  final ModelPricingView? pricing;
   final BillingKind billingKind;
-  final LocalModelPerformanceSummary performance;
-  final AgentEvaluationSummary evaluations;
 }
 
 class DelegationModelCapabilities {

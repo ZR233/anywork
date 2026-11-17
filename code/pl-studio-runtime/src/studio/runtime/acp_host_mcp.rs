@@ -553,7 +553,7 @@ fn bindings(host: &AgentHost, is_root: bool) -> Result<BTreeMap<String, HostBind
             &mut tools,
             ToolDefinition::json(
                 "list_delegation_models",
-                "Query enabled Native child model candidates; ACP does not use modelSelection.",
+                "Read all qualified Native child model candidates and short descriptions in one call, without pagination. Shortlist then compare recent task feedback with get_delegation_models before choosing; ACP does not use modelSelection.",
                 pl_agent_tool::typed::input_schema_for::<pl_protocol::ListDelegationModelsRequest>(
                 ),
             )?,
@@ -569,14 +569,14 @@ fn bindings(host: &AgentHost, is_root: bool) -> Result<BTreeMap<String, HostBind
         bind(
             &mut tools,
             ToolDefinition::json(
-                "get_delegation_model",
-                "Read a Native child model's current eligibility and supported effort.",
-                pl_agent_tool::typed::input_schema_for::<pl_protocol::GetDelegationModelRequest>(),
+                "get_delegation_models",
+                "Read 1-10 exact Native account/model details with recent evaluations, prices, supported effort and measured speed. Proactively compare suitable candidates using same-task comments and instruction following before automatic dispatch; preserve uncertainty for empty or small samples.",
+                pl_agent_tool::typed::input_schema_for::<pl_protocol::GetDelegationModelsRequest>(),
             )?,
             |host, arguments, context| {
                 Box::pin(async move {
                     encoded(
-                        host.get_delegation_model(context, decode(arguments)?)
+                        host.get_delegation_models(context, decode(arguments)?)
                             .await?,
                     )
                 })
@@ -2233,8 +2233,8 @@ mod future_sizes {
             |(host, context, request): (
                 &'static AgentHost,
                 AgentCallContext,
-                pl_protocol::GetDelegationModelRequest,
-            )| host.get_delegation_model(context, request),
+                pl_protocol::GetDelegationModelsRequest,
+            )| host.get_delegation_models(context, request),
         );
         assert!(request <= 16 * 1024, "tool request inlines {request} bytes");
     }

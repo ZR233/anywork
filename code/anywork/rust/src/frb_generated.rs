@@ -16132,11 +16132,9 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeDelegationModelL
         let mut var_models = <Vec<
             crate::api::studio::types::delegation::BridgeDelegationModelListItem,
         >>::sse_decode(deserializer);
-        let mut var_nextCursor = <Option<String>>::sse_decode(deserializer);
         let mut var_catalogRevision = <u64>::sse_decode(deserializer);
         return crate::api::studio::types::delegation::BridgeDelegationModelList {
             models: var_models,
-            next_cursor: var_nextCursor,
             catalog_revision: var_catalogRevision,
         };
     }
@@ -16159,20 +16157,8 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeDelegationModelL
                 deserializer,
             );
         let mut var_reasoningEfforts = <Vec<String>>::sse_decode(deserializer);
-        let mut var_pricing =
-            <Option<crate::api::studio::types::settings::BridgeModelPricing>>::sse_decode(
-                deserializer,
-            );
         let mut var_billingKind =
             <crate::api::studio::types::delegation::BridgeBillingKind>::sse_decode(deserializer);
-        let mut var_performance =
-            <crate::api::studio::types::delegation::BridgeLocalModelPerformanceSummary>::sse_decode(
-                deserializer,
-            );
-        let mut var_evaluations =
-            <crate::api::studio::types::delegation::BridgeAgentEvaluationSummary>::sse_decode(
-                deserializer,
-            );
         return crate::api::studio::types::delegation::BridgeDelegationModelListItem {
             account_id: var_accountId,
             account_name: var_accountName,
@@ -16183,10 +16169,7 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeDelegationModelL
             context_window: var_contextWindow,
             capabilities: var_capabilities,
             reasoning_efforts: var_reasoningEfforts,
-            pricing: var_pricing,
             billing_kind: var_billingKind,
-            performance: var_performance,
-            evaluations: var_evaluations,
         };
     }
 }
@@ -16893,25 +16876,17 @@ impl SseDecode for crate::api::studio::types::delegation::BridgeListDelegationMo
         let mut var_capabilities = <Vec<
             crate::api::studio::types::delegation::BridgeDelegationModelCapability,
         >>::sse_decode(deserializer);
-        let mut var_taskCategory = <Option<
-            crate::api::studio::types::delegation::BridgeAgentTaskCategory,
-        >>::sse_decode(deserializer);
         let mut var_accountId = <Option<String>>::sse_decode(deserializer);
         let mut var_billingKind =
             <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_decode(
                 deserializer,
             );
         let mut var_minContextWindow = <Option<u64>>::sse_decode(deserializer);
-        let mut var_limit = <Option<u8>>::sse_decode(deserializer);
-        let mut var_cursor = <Option<String>>::sse_decode(deserializer);
         return crate::api::studio::types::delegation::BridgeListDelegationModelsRequest {
             capabilities: var_capabilities,
-            task_category: var_taskCategory,
             account_id: var_accountId,
             billing_kind: var_billingKind,
             min_context_window: var_minContextWindow,
-            limit: var_limit,
-            cursor: var_cursor,
         };
     }
 }
@@ -25995,21 +25970,6 @@ impl SseDecode for Option<crate::api::studio::types::runtime::BridgeAgentExecuti
         if (<bool>::sse_decode(deserializer)) {
             return Some(
                 <crate::api::studio::types::runtime::BridgeAgentExecution>::sse_decode(
-                    deserializer,
-                ),
-            );
-        } else {
-            return None;
-        }
-    }
-}
-
-impl SseDecode for Option<crate::api::studio::types::delegation::BridgeAgentTaskCategory> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        if (<bool>::sse_decode(deserializer)) {
-            return Some(
-                <crate::api::studio::types::delegation::BridgeAgentTaskCategory>::sse_decode(
                     deserializer,
                 ),
             );
@@ -36415,7 +36375,6 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.models.into_into_dart().into_dart(),
-            self.next_cursor.into_into_dart().into_dart(),
             self.catalog_revision.into_into_dart().into_dart(),
         ]
         .into_dart()
@@ -36449,10 +36408,7 @@ impl flutter_rust_bridge::IntoDart
             self.context_window.into_into_dart().into_dart(),
             self.capabilities.into_into_dart().into_dart(),
             self.reasoning_efforts.into_into_dart().into_dart(),
-            self.pricing.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
-            self.performance.into_into_dart().into_dart(),
-            self.evaluations.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -37520,12 +37476,9 @@ impl flutter_rust_bridge::IntoDart
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
         [
             self.capabilities.into_into_dart().into_dart(),
-            self.task_category.into_into_dart().into_dart(),
             self.account_id.into_into_dart().into_dart(),
             self.billing_kind.into_into_dart().into_dart(),
             self.min_context_window.into_into_dart().into_dart(),
-            self.limit.into_into_dart().into_dart(),
-            self.cursor.into_into_dart().into_dart(),
         ]
         .into_dart()
     }
@@ -52243,7 +52196,6 @@ impl SseEncode for crate::api::studio::types::delegation::BridgeDelegationModelL
             self.models,
             serializer,
         );
-        <Option<String>>::sse_encode(self.next_cursor, serializer);
         <u64>::sse_encode(self.catalog_revision, serializer);
     }
 }
@@ -52266,20 +52218,8 @@ impl SseEncode for crate::api::studio::types::delegation::BridgeDelegationModelL
             serializer,
         );
         <Vec<String>>::sse_encode(self.reasoning_efforts, serializer);
-        <Option<crate::api::studio::types::settings::BridgeModelPricing>>::sse_encode(
-            self.pricing,
-            serializer,
-        );
         <crate::api::studio::types::delegation::BridgeBillingKind>::sse_encode(
             self.billing_kind,
-            serializer,
-        );
-        <crate::api::studio::types::delegation::BridgeLocalModelPerformanceSummary>::sse_encode(
-            self.performance,
-            serializer,
-        );
-        <crate::api::studio::types::delegation::BridgeAgentEvaluationSummary>::sse_encode(
-            self.evaluations,
             serializer,
         );
     }
@@ -52847,18 +52787,12 @@ impl SseEncode for crate::api::studio::types::delegation::BridgeListDelegationMo
             self.capabilities,
             serializer,
         );
-        <Option<crate::api::studio::types::delegation::BridgeAgentTaskCategory>>::sse_encode(
-            self.task_category,
-            serializer,
-        );
         <Option<String>>::sse_encode(self.account_id, serializer);
         <Option<crate::api::studio::types::delegation::BridgeBillingKind>>::sse_encode(
             self.billing_kind,
             serializer,
         );
         <Option<u64>>::sse_encode(self.min_context_window, serializer);
-        <Option<u8>>::sse_encode(self.limit, serializer);
-        <Option<String>>::sse_encode(self.cursor, serializer);
     }
 }
 
@@ -59823,18 +59757,6 @@ impl SseEncode for Option<crate::api::studio::types::runtime::BridgeAgentExecuti
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
             <crate::api::studio::types::runtime::BridgeAgentExecution>::sse_encode(
-                value, serializer,
-            );
-        }
-    }
-}
-
-impl SseEncode for Option<crate::api::studio::types::delegation::BridgeAgentTaskCategory> {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <bool>::sse_encode(self.is_some(), serializer);
-        if let Some(value) = self {
-            <crate::api::studio::types::delegation::BridgeAgentTaskCategory>::sse_encode(
                 value, serializer,
             );
         }

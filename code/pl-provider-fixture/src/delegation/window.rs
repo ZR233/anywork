@@ -143,9 +143,8 @@ fn check_details(
 ) -> Progress<()> {
     flow.discover()?;
     for (suffix, route) in [("a", a), ("b", b)] {
-        let detail: Detail = flow.read(
+        let detail: Detail = flow.model(
             &format!("{label}-detail-{suffix}"),
-            "get_delegation_model",
             json!({"accountId":route.account_id,"modelId":route.model_id}),
         )?;
         let mut expected: Vec<_> = records

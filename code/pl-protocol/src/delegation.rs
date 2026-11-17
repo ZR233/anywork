@@ -1,6 +1,6 @@
 //! 会话分发模式、模型查询与最终评价的共享 wire 类型。
 //!
-//! 这些类型只表达接口契约：候选资格、授权、分页实现与持久化由 Studio 运行时拥有。
+//! 这些类型只表达接口契约：候选资格、授权与持久化由 Studio 运行时拥有。
 //! 查询结果是本地准入与参考资料的投影，不证明远端健康、订阅有效或额度充足。
 //!
 //! 完整模型选择复用 [`crate::studio::NewThreadModelRoute`]（`accountId`/`modelId`/`effort`），
@@ -10,14 +10,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::account_catalog::{BillingKind, ModelCapabilitiesDto, ModelDescriptor, ModelPricingDto};
-use crate::labeled::LabeledEnum;
+use crate::account_catalog::{BillingKind, ModelCapabilitiesDto, ModelDescriptor};
 use crate::studio::NewThreadModelRoute;
 
-/// 查询列表默认返回条数。
-pub const DELEGATION_MODEL_PAGE_DEFAULT: u8 = 5;
-/// 查询列表单页最大条数；超出不静默截断，由调用方修正请求。
-pub const DELEGATION_MODEL_PAGE_MAX: u8 = 10;
+/// 单次详情查询的模型数量上限；完整候选目录没有分页或条数限制。
+pub const DELEGATION_MODEL_DETAILS_MAX: usize = 10;
 /// 评价评论的 Unicode 字符上限；超长提交被拒绝，不静默截断。
 pub const AGENT_EVALUATION_COMMENT_MAX_CHARS: usize = 300;
 /// 评价详情与摘要统计的有效样本窗口。
@@ -98,80 +95,21 @@ pub enum DelegationModelCapability {
     Streaming,
 }
 
-/// 查询的过滤条件；同时是游标绑定的查询身份。
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DelegationModelFilter {
-    /// 已排序去重的硬能力条件。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<DelegationModelCapability>,
-    /// 任务参考上下文，不改变资格或排序；缺少标注不等于不支持。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_category: Option<AgentTaskCategory>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub billing_kind: Option<BillingKind>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min_context_window: Option<u64>,
-}
-
-/// 有界模型资格查询输入。
+/// 完整候选目录的硬条件过滤；省略条件时返回全部合格模型。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListDelegationModelsRequest {
-    /// 必须同时成立的声明能力条件。
     #[serde(default)]
     pub capabilities: Vec<DelegationModelCapability>,
-    /// 任务参考上下文，不改变候选资格或稳定排序。
-    #[serde(default)]
-    pub task_category: Option<AgentTaskCategory>,
     #[serde(default)]
     pub account_id: Option<String>,
     #[serde(default)]
     pub billing_kind: Option<BillingKind>,
     #[serde(default)]
     pub min_context_window: Option<u64>,
-    /// 省略时使用 [`DELEGATION_MODEL_PAGE_DEFAULT`]。
-    #[serde(default)]
-    pub limit: Option<u8>,
-    #[serde(default)]
-    pub cursor: Option<String>,
 }
 
-impl ListDelegationModelsRequest {
-    /// 归一化的查询身份：能力条件排序去重，其余条件原样保留。
-    pub fn filter(&self) -> DelegationModelFilter {
-        let mut capabilities = self.capabilities.clone();
-        capabilities.sort_by_key(|capability| capability.label());
-        capabilities.dedup();
-        DelegationModelFilter {
-            capabilities,
-            task_category: self.task_category,
-            account_id: self.account_id.clone(),
-            billing_kind: self.billing_kind,
-            min_context_window: self.min_context_window,
-        }
-    }
-
-    /// 生效的单页条数。
-    ///
-    /// # Errors
-    /// 请求超过 [`DELEGATION_MODEL_PAGE_MAX`] 或为 0 时失败，不静默截断。
-    pub fn page_limit(&self) -> crate::Result<u8> {
-        match self.limit {
-            None => Ok(DELEGATION_MODEL_PAGE_DEFAULT),
-            Some(limit) if limit == 0 || limit > DELEGATION_MODEL_PAGE_MAX => {
-                Err(crate::PureError::Protocol(format!(
-                    "delegation model page limit must be between 1 and {DELEGATION_MODEL_PAGE_MAX}"
-                )))
-            }
-            Some(limit) => Ok(limit),
-        }
-    }
-}
-
-/// 列表一行：紧凑资料、价格/计费、本地速度样本与评价窗口摘要。
+/// 完整目录的一行；价格、性能和评价按候选批量读取，不在索引中重复展开。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DelegationModelListItem {
@@ -193,22 +131,15 @@ pub struct DelegationModelListItem {
     /// 该模型声明的 effort 候选；空表示没有 effort 参数。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_efforts: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pricing: Option<ModelPricingDto>,
     pub billing_kind: BillingKind,
-    pub performance: LocalModelPerformanceSummary,
-    pub evaluations: AgentEvaluationSummary,
 }
 
-/// 查询结果页。
+/// 一次读取的完整合格候选目录。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DelegationModelList {
     pub models: Vec<DelegationModelListItem>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<String>,
-    /// 本页消费的目录水位，与 opaque 分页游标绑定同一身份，
-    /// 即 canonical 模型目录快照 revision；不用第二套哈希域。
+    /// 本次读取的 canonical 模型目录快照 revision。
     pub catalog_revision: u64,
 }
 
@@ -218,6 +149,67 @@ pub struct DelegationModelList {
 pub struct GetDelegationModelRequest {
     pub account_id: String,
     pub model_id: String,
+}
+
+/// 按精确账号模型身份批量读取详情；单项查询使用长度为一的数组。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetDelegationModelsRequest {
+    pub models: Vec<GetDelegationModelRequest>,
+}
+
+impl GetDelegationModelsRequest {
+    /// 校验数量、非空身份和重复项；无效整批输入不会开始读取。
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.models.is_empty() || self.models.len() > DELEGATION_MODEL_DETAILS_MAX {
+            return Err(crate::PureError::Protocol(format!(
+                "model details require 1 to {DELEGATION_MODEL_DETAILS_MAX} models"
+            )));
+        }
+        let mut identities = std::collections::BTreeSet::new();
+        for model in &self.models {
+            if model.account_id.trim().is_empty() || model.model_id.trim().is_empty() {
+                return Err(crate::PureError::Protocol(
+                    "model details require nonempty accountId and modelId".into(),
+                ));
+            }
+            if !identities.insert((&model.account_id, &model.model_id)) {
+                return Err(crate::PureError::Protocol(
+                    "model details require distinct account/model identities".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 同一目录快照上的批量详情，结果顺序与输入相同。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DelegationModelDetails {
+    pub results: Vec<DelegationModelResult>,
+    pub catalog_revision: u64,
+}
+
+/// 单项失败保留身份和安全的类型化错误，不丢弃同批其他候选。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum DelegationModelResult {
+    Found {
+        account_id: String,
+        model_id: String,
+        detail: Box<DelegationModelDetail>,
+    },
+    Error {
+        account_id: String,
+        model_id: String,
+        error: crate::studio::StudioError,
+    },
 }
 
 /// 单个账号模型的完整资料与最近评价窗口。

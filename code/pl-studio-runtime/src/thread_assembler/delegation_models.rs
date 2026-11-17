@@ -1,16 +1,15 @@
 //! Read-only candidate projections over the config, performance and evaluation owners.
-mod cursor;
 
 use anyhow::{Context, Result};
-use cursor::{DelegationModelCursor, DelegationModelKey};
 use pl_model::{
-    config::{AccountId, AccountModelEntry, ModelRouteConfig, ReasoningEffort},
+    config::{AccountId, AccountModelEntry, AccountModelKey, ModelRouteConfig, ReasoningEffort},
     model::ModelType,
 };
 use pl_protocol::{
-    DelegationModelCapability as Capability, DelegationModelDetail, DelegationModelList,
-    DelegationModelListItem, GetDelegationModelRequest, ListDelegationModelsRequest,
-    LocalModelPerformanceSummary, ModelCapabilitiesDto, ModelModalityDto,
+    DelegationModelCapability as Capability, DelegationModelDetail, DelegationModelDetails,
+    DelegationModelList, DelegationModelListItem, DelegationModelResult, GetDelegationModelRequest,
+    GetDelegationModelsRequest, ListDelegationModelsRequest, LocalModelPerformanceSummary,
+    ModelCapabilitiesDto, ModelModalityDto,
 };
 
 #[derive(Clone)]
@@ -25,27 +24,8 @@ impl DelegationModels {
         &self,
         request: ListDelegationModelsRequest,
     ) -> Result<DelegationModelList> {
-        let limit = usize::from(request.page_limit().map_err(|error| {
-            pl_protocol::studio::StudioError::invalid_argument(error.to_string())
-        })?);
-        let filter = request.filter();
+        let filter = request;
         let (snapshot, catalog) = self.config.read_with_catalog()?;
-        let cursor = request
-            .cursor
-            .as_deref()
-            .map(|value| {
-                DelegationModelCursor::decode(value).ok_or_else(|| {
-                    pl_protocol::studio::StudioError::invalid_argument(
-                        "invalid delegation model cursor",
-                    )
-                })
-            })
-            .transpose()?;
-        if let Some(cursor) = &cursor
-            && (cursor.filter != filter || cursor.catalog_watermark != catalog.revision)
-        {
-            return Err(stale_cursor(catalog.revision));
-        }
         let mut candidates = Vec::new();
         for (account_id, account) in &snapshot.config.models.accounts {
             if filter
@@ -81,7 +61,7 @@ impl DelegationModels {
                     continue;
                 }
                 candidates.push((
-                    DelegationModelKey {
+                    AccountModelKey {
                         account_id: account_id.to_string(),
                         model_id: entry.model.model_id.clone(),
                     },
@@ -90,26 +70,6 @@ impl DelegationModels {
             }
         }
         candidates.sort_by(|left, right| left.0.cmp(&right.0));
-        if let Some(cursor) = &cursor {
-            if !candidates.iter().any(|(key, _)| key == &cursor.after) {
-                return Err(stale_cursor(catalog.revision));
-            }
-            candidates.retain(|(key, _)| key > &cursor.after);
-        }
-        let more = candidates.len() > limit;
-        candidates.truncate(limit);
-        let next_cursor = more.then(|| {
-            DelegationModelCursor::new(
-                filter,
-                catalog.revision,
-                candidates
-                    .last()
-                    .expect("nonempty page before continuation")
-                    .0
-                    .clone(),
-            )
-            .encode()
-        });
         let mut models = Vec::with_capacity(candidates.len());
         for (key, entry) in candidates {
             let account = snapshot
@@ -135,18 +95,11 @@ impl DelegationModels {
                 context_window: entry.context.context_window,
                 capabilities: descriptor.capabilities,
                 reasoning_efforts: entry.model.supported_efforts(),
-                pricing: descriptor.pricing,
                 billing_kind: account.billing_kind()?,
-                performance: performance_summary(&self.performance, &key).await,
-                evaluations: self
-                    .store
-                    .agent_evaluation_summary(&key.account_id, &key.model_id)
-                    .await?,
             });
         }
         Ok(DelegationModelList {
             models,
-            next_cursor,
             catalog_revision: catalog.revision,
         })
     }
@@ -156,22 +109,56 @@ impl DelegationModels {
         request: GetDelegationModelRequest,
     ) -> Result<DelegationModelDetail> {
         let snapshot = self.config.read()?;
+        self.detail(&snapshot.config, request).await
+    }
+
+    pub(crate) async fn get_delegation_models(
+        &self,
+        request: GetDelegationModelsRequest,
+    ) -> Result<DelegationModelDetails> {
+        request.validate().map_err(|error| {
+            pl_protocol::studio::StudioError::invalid_argument(error.to_string())
+        })?;
+        let (snapshot, catalog) = self.config.read_with_catalog()?;
+        let mut results = Vec::with_capacity(request.models.len());
+        for model in request.models {
+            let account_id = model.account_id.clone();
+            let model_id = model.model_id.clone();
+            results.push(match self.detail(&snapshot.config, model).await {
+                Ok(detail) => DelegationModelResult::Found {
+                    account_id,
+                    model_id,
+                    detail: Box::new(detail),
+                },
+                Err(error) => DelegationModelResult::Error {
+                    account_id,
+                    model_id,
+                    error: crate::studio_error_from_anyhow(error),
+                },
+            });
+        }
+        Ok(DelegationModelDetails {
+            results,
+            catalog_revision: catalog.revision,
+        })
+    }
+
+    async fn detail(
+        &self,
+        config: &crate::StudioConfig,
+        request: GetDelegationModelRequest,
+    ) -> Result<DelegationModelDetail> {
         let account_id = AccountId::new(request.account_id.clone())?;
-        let account = snapshot
-            .config
-            .models
-            .accounts
-            .get(&account_id)
-            .ok_or_else(|| {
-                pl_protocol::studio::StudioError::not_found("Delegation model account")
-            })?;
+        let account = config.models.accounts.get(&account_id).ok_or_else(|| {
+            pl_protocol::studio::StudioError::not_found("Delegation model account")
+        })?;
         let entry = account
             .effective_catalog(None)?
             .into_iter()
             .find(|entry| entry.model.model_id == request.model_id)
             .ok_or_else(|| pl_protocol::studio::StudioError::not_found("Current account model"))?;
-        let availability = admission(&snapshot.config, &account_id, &entry);
-        let key = DelegationModelKey {
+        let availability = admission(config, &account_id, &entry);
+        let key = AccountModelKey {
             account_id: request.account_id,
             model_id: request.model_id,
         };
@@ -222,16 +209,6 @@ fn admission(
     )
 }
 
-fn stale_cursor(revision: u64) -> anyhow::Error {
-    pl_protocol::studio::StudioError::new(
-        pl_protocol::studio::StudioErrorCode::StaleRevision,
-        "Delegation model cursor is stale or belongs to another query; restart the query",
-        true,
-    )
-    .with_details(serde_json::json!({"catalogRevision":revision}))
-    .into()
-}
-
 fn supports(model: &ModelCapabilitiesDto, capability: Capability) -> bool {
     let modality = match capability {
         Capability::ImageInput => Some(ModelModalityDto::Image),
@@ -260,7 +237,7 @@ fn supports(model: &ModelCapabilitiesDto, capability: Capability) -> bool {
 
 async fn performance_summary(
     owner: &crate::studio::ModelPerformanceOwner,
-    key: &DelegationModelKey,
+    key: &AccountModelKey,
 ) -> LocalModelPerformanceSummary {
     let Some((updated_at, summary)) = owner.model_summary(&key.account_id, &key.model_id).await
     else {

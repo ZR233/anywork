@@ -244,9 +244,8 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         late_review_eval.write == "created" && late_review_eval.evaluation.revision == 1,
         "late reviewer did not receive its own new revision-one record",
     )?;
-    let detail: Detail = flow.read(
+    let detail: Detail = flow.model(
         "updated-detail",
-        "get_delegation_model",
         json!({"accountId":executor.model.account_id,"modelId":executor.model.model_id}),
     )?;
     check_evaluations(&detail, &[&updated.evaluation])?;
@@ -255,9 +254,8 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str, environment: &Environment) -> P
         &repair_review_eval.evaluation,
         &late_review_eval.evaluation,
     ];
-    let review_detail: Detail = flow.read(
+    let review_detail: Detail = flow.model(
         "reviewers-detail",
-        "get_delegation_model",
         json!({"accountId":review_route.account_id,"modelId":review_route.model_id}),
     )?;
     check_evaluations(&review_detail, &reviewer_evaluations)?;
@@ -412,15 +410,13 @@ fn cold(flow: &Flow<'_>) -> Progress<Decision> {
         Lifecycle::Closed,
     )?;
     flow.discover()?;
-    let detail: Detail = flow.read(
+    let detail: Detail = flow.model(
         "cold-detail",
-        "get_delegation_model",
         json!({"accountId":executor.model.account_id,"modelId":executor.model.model_id}),
     )?;
     check_evaluations(&detail, &[&evaluation.evaluation])?;
-    let review_detail: Detail = flow.read(
+    let review_detail: Detail = flow.model(
         "cold-reviewers-detail",
-        "get_delegation_model",
         json!({"accountId":late_reviewer.model.account_id,"modelId":late_reviewer.model.model_id}),
     )?;
     check_evaluations(

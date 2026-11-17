@@ -44,7 +44,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
     let routes = if preference == "fixed" {
         require(
             !flow.request.declared("list_delegation_models")
-                && !flow.request.declared("get_delegation_model"),
+                && !flow.request.declared("get_delegation_models"),
             "fixed mode loaded automatic selection tools",
         )?;
         vec![None]
@@ -52,7 +52,7 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
         let models = flow.models()?;
         require(
             models.len() > 10,
-            "routing inventory needs multiple real bounded query pages",
+            "routing inventory needs more than ten real candidates",
         )?;
         require(
             models.iter().all(|model| {
@@ -67,41 +67,18 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
             }),
             "production query included an ineligible synthetic boundary model",
         )?;
-        let ten: ModelList = flow.read(
-            "models-ten",
-            "list_delegation_models",
-            json!({"limit":10,"taskCategory":"coding"}),
-        )?;
+        let complete: ModelList =
+            flow.read("models-complete", "list_delegation_models", json!({}))?;
         require(
-            ten.models.len() == 10 && ten.next_cursor.is_some(),
-            "maximum page was not bounded at ten, or unknown task suitability incorrectly excluded candidates",
+            complete.models.len() == models.len(),
+            "one inventory query omitted qualified candidates",
         )?;
-        let first: ModelList = flow.read("models-0", "list_delegation_models", json!({}))?;
-        require(
-            first.models.len() == 5,
-            "omitted limit did not return exactly five models on the qualified first page",
-        )?;
-        let cursor = first
-            .next_cursor
-            .context("first bounded query page has no cursor")?;
-        flow.rejected(
-            "cursor-filter-conflict",
-            "list_delegation_models",
-            json!({"cursor":cursor,"minContextWindow":42}),
-            "stale or belongs to another query",
-        )?;
-        flow.rejected(
-            "invalid-limit-zero",
-            "list_delegation_models",
-            json!({"limit":0}),
-            "between 1 and 10",
-        )?;
-        flow.rejected(
-            "invalid-limit-eleven",
-            "list_delegation_models",
-            json!({"limit":11}),
-            "between 1 and 10",
-        )?;
+        for (label, arguments) in [
+            ("removed-limit", json!({"limit":10})),
+            ("removed-cursor", json!({"cursor":"old"})),
+        ] {
+            flow.rejected(label, "list_delegation_models", arguments, "unknown field")?;
+        }
         let a = select(&models, "-a", SHARED_MODEL)?;
         let other = select(&models, "-a", OTHER_MODEL)?;
         let b = select(&models, "-b", SHARED_MODEL)?;
@@ -132,9 +109,8 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
         }
         let max_only: ModelList = flow.read(
             "max-only-context", "list_delegation_models",
-            json!({"accountId":a.account_id,"billingKind":"subscription","minContextWindow":900000,"limit":10}),
+            json!({"accountId":a.account_id,"billingKind":"subscription","minContextWindow":900000}),
         )?;
-        // Fetch this exact model separately: the account has more than ten stable members.
         let max_only_route = models
             .iter()
             .find(|item| item.account_id == other.account_id && item.model_id == OTHER_MODEL)
@@ -143,24 +119,14 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
             max_only_route.context_window == Some(1_000_000),
             "max-only context did not project the model owner's effective capacity",
         )?;
-        let mut context_models = max_only.models;
-        let mut cursor = max_only.next_cursor;
-        while let Some(next) = cursor {
-            let page: ModelList = flow.read(
-                &format!("max-only-context-{}", context_models.len()), "list_delegation_models",
-                json!({"accountId":a.account_id,"billingKind":"subscription","minContextWindow":900000,"limit":10,"cursor":next}),
-            )?;
-            context_models.extend(page.models);
-            cursor = page.next_cursor;
-        }
+        let context_models = max_only.models;
         require(
             select(&context_models, "-a", OTHER_MODEL)? == other,
             "minimum context rejected max-only capacity or substituted the compaction threshold",
         )?;
         for (label, route) in [("a", &other), ("b", &b)] {
-            let detail: Detail = flow.read(
+            let detail: Detail = flow.model(
                 &format!("detail-{label}"),
-                "get_delegation_model",
                 json!({"accountId":route.account_id,"modelId":route.model_id}),
             )?;
             require(
@@ -191,16 +157,15 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
                 })
                 .context("detail model missing from query")?;
             require(
-                item.pricing.as_ref().is_some_and(|price| {
+                detail.descriptor.pricing.as_ref().is_some_and(|price| {
                     price.currency == "USD"
                         && price.tiers.len() == 1
                         && price.tiers[0].input_per_mtok == 2.0
                         && price.tiers[0].output_per_mtok == 8.0
                         && price.tiers[0].cache_read_per_mtok == Some(0.5)
                         && price.tiers[0].cache_write_per_mtok == Some(3.0)
-                }) && item.pricing == detail.descriptor.pricing
-                    && item.billing_kind == detail.billing_kind
-                    && item.performance.ttft_sample_count <= item.performance.sample_count,
+                }) && item.billing_kind == detail.billing_kind
+                    && detail.performance.ttft_sample_count <= detail.performance.sample_count,
                 "list/detail erased reference pricing or invented billing/performance",
             )?;
         }
@@ -210,9 +175,8 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
             "delegation-unknown-context",
             "delegation-no-tools",
         ] {
-            let detail: Detail = flow.read(
+            let detail: Detail = flow.model(
                 &format!("unavailable-{model_id}"),
-                "get_delegation_model",
                 json!({"accountId":a.account_id,"modelId":model_id}),
             )?;
             require(
@@ -230,9 +194,8 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
                 .strip_suffix("-a")
                 .context("synthetic account suffix missing")?
         );
-        let missing: Detail = flow.read(
+        let missing: Detail = flow.model(
             "missing-credentials-detail",
-            "get_delegation_model",
             json!({"accountId":missing_account,"modelId":"delegation-no-credentials"}),
         )?;
         require(
@@ -243,12 +206,19 @@ pub(super) fn run(flow: &Flow<'_>, prompt: &str) -> Progress<Decision> {
                     .is_some_and(|reason| !reason.is_empty()),
             "missing credentials were silently considered routable",
         )?;
-        // Exact model not in this account's effective catalog must remain absent.
-        flow.rejected(
-            "withdrawn-detail",
-            "get_delegation_model",
-            json!({"accountId":a.account_id,"modelId":"delegation-withdrawn"}),
-            "not found",
+        let batch: serde_json::Value = flow.read(
+            "mixed-details",
+            "get_delegation_models",
+            json!({"models":[
+                {"accountId":a.account_id,"modelId":"delegation-withdrawn"},
+                {"accountId":b.account_id,"modelId":b.model_id}
+            ]}),
+        )?;
+        require(
+            batch["results"][0]["status"] == "error"
+                && batch["results"][0]["error"]["code"] == "notFound"
+                && batch["results"][1]["status"] == "found",
+            "missing model discarded another batch detail or lost its typed error",
         )?;
         vec![Some(a), Some(other), Some(b)]
     };

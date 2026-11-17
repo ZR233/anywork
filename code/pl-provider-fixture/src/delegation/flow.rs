@@ -358,14 +358,14 @@ impl<'a> Flow<'a> {
     pub fn discover(&self) -> Progress<()> {
         let discovered = self.discovered("discover", "delegation_model")?;
         require(
-            ["list_delegation_models", "get_delegation_model"]
+            ["list_delegation_models", "get_delegation_models"]
                 .iter()
                 .all(|tool| discovered.tool_ids.iter().any(|id| id == tool)),
             "automatic model queries were absent from the real discovery result",
         )?;
         require(
             self.request.declared("list_delegation_models")
-                && self.request.declared("get_delegation_model"),
+                && self.request.declared("get_delegation_models"),
             "automatic model queries were not revealed by discovery",
         )?;
         Ok(())
@@ -403,57 +403,30 @@ impl<'a> Flow<'a> {
         Ok(result)
     }
 
-    /// Walk production cursor pages, never reconstruct the qualification chain.
-    /// Page limits and stable identities are checked as observable contracts.
+    /// Read the complete production inventory without rebuilding its qualification rules.
     pub fn models(&self) -> Progress<Vec<Model>> {
         self.discover()?;
-        let mut cursor: Option<String> = None;
-        let mut models = Vec::new();
-        let mut revision = None;
-        for index in 0..8 {
-            let mut arguments = json!({});
-            if let Some(value) = cursor.as_ref() {
-                arguments["cursor"] = value.clone().into();
-            }
-            let page: ModelList = self.read(
-                &format!("models-{index}"),
-                "list_delegation_models",
-                arguments,
-            )?;
-            require(page.models.len() <= 5, "default query exceeded five models")?;
-            if index == 0 && page.next_cursor.is_some() {
-                require(
-                    page.models.len() == 5,
-                    "default first page with further candidates must contain exactly five models",
-                )?;
-            }
-            require(
-                revision.is_none_or(|revision| revision == page.catalog_revision),
-                "cursor pages changed canonical catalog revision",
-            )?;
-            revision = Some(page.catalog_revision);
-            models.extend(page.models);
-            cursor = page.next_cursor;
-            if cursor.is_none() {
-                let keys: Vec<_> = models
-                    .iter()
-                    .map(|model| (&model.account_id, &model.model_id))
-                    .collect();
-                require(
-                    keys.windows(2).all(|keys| keys[0] < keys[1]),
-                    "model query did not use unique stable account/model order",
-                )?;
-                require(
-                    !models.is_empty(),
-                    "no eligible models; fixture must not fall back to a fixed route",
-                )?;
-                return Ok(models);
-            }
-        }
-        Err(
-            anyhow::anyhow!("delegation model query exceeded the bounded eight-page journey")
-                .into(),
-        )
+        let inventory: ModelList = self.read("models-0", "list_delegation_models", json!({}))?;
+        let keys: Vec<_> = inventory
+            .models
+            .iter()
+            .map(|model| (&model.account_id, &model.model_id))
+            .collect();
+        require(
+            keys.windows(2).all(|keys| keys[0] < keys[1]),
+            "model inventory did not use unique stable account/model order",
+        )?;
+        require(
+            !inventory.models.is_empty(),
+            "no eligible models; fixture must not fall back to a fixed route",
+        )?;
+        Ok(inventory.models)
+    }
+
+    pub fn model<T: DeserializeOwned>(&self, label: &str, identity: Value) -> Progress<T> {
+        let batch: Value =
+            self.read(label, "get_delegation_models", json!({"models":[identity]}))?;
+        decode_model(batch)
     }
 
     pub fn spawn(
@@ -750,9 +723,8 @@ impl<'a> Flow<'a> {
             check.close.succeeded_for(&check.child.agent_id),
             "closed-send probe lacks the real explicit close receipt",
         )?;
-        let route: Detail = self.read(
+        let route: Detail = self.model(
             &format!("{}-route", check.label),
-            "get_delegation_model",
             json!({"accountId":check.child.model.account_id,"modelId":check.child.model.model_id}),
         )?;
         require(
@@ -1065,4 +1037,16 @@ pub(super) fn evaluation_arguments(
 pub(super) fn select(models: &[Model], suffix: &str, model_id: &str) -> Result<Route> {
     models.iter().find(|model| model.account_id.ends_with(suffix) && model.model_id == model_id)
         .map(Model::route).context("requested synthetic identity was not returned by the production model query; no fallback")
+}
+
+/// Decode a real one-item batch response; failures remain explicit fixture failures.
+pub(super) fn decode_model<T: DeserializeOwned>(batch: Value) -> Progress<T> {
+    let results = batch["results"]
+        .as_array()
+        .context("batch details have no results")?;
+    require(
+        results.len() == 1 && results[0]["status"] == "found",
+        "expected one found model detail",
+    )?;
+    Ok(serde_json::from_value(results[0]["detail"].clone()).context("decode model detail")?)
 }
