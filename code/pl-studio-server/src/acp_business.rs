@@ -19,6 +19,7 @@ use frames::OpenFrames;
 pub(crate) fn routes() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(open))
+        .routes(routes!(commit_draft))
         .routes(routes!(prompt))
         .routes(routes!(replace))
         .routes(routes!(interrupt))
@@ -28,6 +29,17 @@ pub(crate) fn routes() -> OpenApiRouter<AppState> {
         .routes(routes!(list))
         .routes(routes!(snapshot))
         .routes(routes!(close))
+}
+
+#[utoipa::path(post, path = "/api/v1/acp/sessions/commit-draft", operation_id = "acpSessions.commitDraft",
+    request_body = AcpSessionTarget,
+    responses(StudioApiErrors, (status = 200), (status = 502, body = AcpBusinessFailure)))]
+async fn commit_draft(
+    State(state): State<AppState>,
+    ApiJson(target): ApiJson<AcpSessionTarget>,
+) -> Result<Json<()>, AcpApiError> {
+    state.runtime.commit_acp_draft(target).await?;
+    Ok(Json(()))
 }
 
 /// Preserve business diagnostics, including original RPC data and auth methods.
@@ -616,7 +628,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id,
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             }
         }
 

@@ -334,8 +334,10 @@ final class ProductionStudioScene {
 
     final metadata = File('${harness.artifacts.path}/$safeName.json');
     final sidebar = find.byKey(StudioDriverKeys.sidebar);
-    final sidebarContext = tester.element(sidebar);
-    final textScaler = MediaQuery.textScalerOf(sidebarContext);
+    final hasSidebar = sidebar.evaluate().isNotEmpty;
+    final textScaler = MediaQuery.textScalerOf(
+      tester.element(find.byKey(StudioDriverKeys.shell)),
+    );
     final sidebarFontSizes =
         find
             .descendant(of: sidebar, matching: find.byType(Text))
@@ -357,7 +359,10 @@ final class ProductionStudioScene {
         'logicalHeight': view.physicalSize.height / view.devicePixelRatio,
         'renderedLogicalWidth': boundary.size.width,
         'renderedLogicalHeight': boundary.size.height,
-        'sidebarLogicalWidth': tester.getSize(sidebar).width,
+        'sidebarVisible': hasSidebar,
+        'sidebarLogicalWidth': hasSidebar
+            ? tester.getSize(sidebar).width
+            : null,
         'scaledFont14': textScaler.scale(14),
         'sidebarExplicitFontSizes': sidebarFontSizes,
         'sidebarScaledFontSizes': sidebarFontSizes

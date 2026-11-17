@@ -120,7 +120,9 @@ impl AcpBusinessOwner {
             definition,
             session_record: member.session,
             previous: Some(member.agent.clone()),
-            intent: AcpOpenIntent::Load(reference.acp_session_id.clone()),
+            intent: AcpOpenIntent::Load {
+                session_id: reference.acp_session_id.clone(),
+            },
             cwd: Some(cwd),
             business_root,
             role: member.agent.role,
@@ -219,7 +221,7 @@ impl AcpBusinessOwner {
             previous,
             intent,
             cwd,
-            business_root,
+            mut business_root,
             role,
             title,
             usage,
@@ -232,7 +234,8 @@ impl AcpBusinessOwner {
         let completion = AcpSessionCompletion {
             publication: published,
         };
-        let resources = AcpResources::new(project.id.clone(), completion.clone());
+        let draft = matches!(&intent, AcpOpenIntent::Draft { .. });
+        let resources = AcpResources::new(project.id.clone(), completion.clone(), draft);
         let preparation =
             owner.prepare_acp(identity.clone(), definition.id.clone(), resources.clone())?;
         let accepted = AcpSessionTarget {
@@ -254,6 +257,14 @@ impl AcpBusinessOwner {
             let mut started = Some(started);
             let operation = {
                 let operation = std::panic::AssertUnwindSafe(async {
+                    let draft_worktree = if draft && session_record.workspace_mode == pl_protocol::ThreadWorkspaceMode::Worktree {
+                        resources.retain_draft_worktree(factory.clone(), thread_id.clone()).await;
+                        let lease = factory.prepare_acp_root_worktree(&thread_id, &project).await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                        business_root = lease.path.clone();
+                        session_record.workspace_path = business_root.clone();
+                        Some(lease)
+                    } else { None };
                     let usage = match usage {
                         Some(usage) => usage,
                         None => factory
@@ -308,6 +319,10 @@ impl AcpBusinessOwner {
                                 projection::preparation("ACP workspace identity is unavailable")
                             })?;
                     }
+                    if let Some(lease) = &draft_worktree {
+                        factory.confirm_acp_worktree(lease, &usage, &preparation).await
+                            .map_err(|error| projection::preparation(&error.to_string()))?;
+                    }
                     let account = connections.connection(&definition).map_err(|_| projection::preparation("ACP account connection is closing or stale"))?;
                     let prepared = tokio::select! {
                         biased;
@@ -315,9 +330,9 @@ impl AcpBusinessOwner {
                         result = account.ready_business() => result?,
                     };
                     let intent = match intent {
-                        AcpOpenIntent::New => sdk::Open::New,
-                        AcpOpenIntent::Load(id) => sdk::Open::Load(id.into()),
-                        AcpOpenIntent::Resume(id) => sdk::Open::Resume(id.into()),
+                        AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => sdk::Open::New,
+                        AcpOpenIntent::Load { session_id: id } => sdk::Open::Load(id.into()),
+                        AcpOpenIntent::Resume { session_id: id } => sdk::Open::Resume(id.into()),
                     };
                     let observer = resources
                         .observe(sdk::OpenRequest {
@@ -513,8 +528,9 @@ impl StudioRuntime {
                 });
             }
             let id = match &request.intent {
-                AcpOpenIntent::Load(id) | AcpOpenIntent::Resume(id) => id,
-                AcpOpenIntent::New => {
+                AcpOpenIntent::Load { session_id: id }
+                | AcpOpenIntent::Resume { session_id: id } => id,
+                AcpOpenIntent::New | AcpOpenIntent::Draft { .. } => {
                     anyhow::bail!("existing ACP association requires Load or Resume")
                 }
             };
@@ -539,6 +555,22 @@ impl StudioRuntime {
             let agent_id = crate::studio::ids::new_id("agent");
             let thread_id = crate::studio::ids::new_id("acp");
             let delegation = self.config_runtime.read()?.config.delegation;
+            let (workspace_mode, delegation_mode, delegation_preference) = match &request.intent {
+                AcpOpenIntent::Draft {
+                    workspace_mode,
+                    delegation_mode,
+                    delegation_preference,
+                } => (
+                    *workspace_mode,
+                    delegation_mode.unwrap_or(delegation.mode),
+                    delegation_preference.unwrap_or(delegation.preference),
+                ),
+                _ => (
+                    pl_protocol::ThreadWorkspaceMode::Local,
+                    delegation.mode,
+                    delegation.preference,
+                ),
+            };
             (
                 SessionDirectoryRecord {
                     session_id: session_id.clone(),
@@ -546,9 +578,9 @@ impl StudioRuntime {
                     workspace_id: request.workspace_id.clone(),
                     title: request.account_id.clone(),
                     native_mode: None,
-                    workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
-                    delegation_mode: delegation.mode,
-                    delegation_preference: delegation.preference,
+                    workspace_mode,
+                    delegation_mode,
+                    delegation_preference,
                     workspace_path: project.path.clone(),
                     created_at: now,
                     updated_at: now,
@@ -653,12 +685,27 @@ impl StudioRuntime {
             })
     }
 
+    pub async fn commit_acp_draft(
+        &self,
+        target: AcpSessionTarget,
+    ) -> Result<(), AcpBusinessFailure> {
+        let resources = self.business_resources(&target)?;
+        resources.completion.wait().await?;
+        resources
+            .commit_draft(&self.agent_facility.product_events)
+            .await
+            .map_err(|error| projection::preparation(&error.to_string()))
+    }
+
     pub async fn prompt_acp_session(
         &self,
         target: AcpSessionTarget,
         content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        if resources.is_draft().await {
+            return Err(projection::failure(sdk::Error::NotReady));
+        }
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
@@ -846,6 +893,13 @@ impl StudioRuntime {
                     .unwrap_or_default(),
             )
         };
+        if let Some(lease) = self.agent_facility.worktrees.get(&target.thread_id)
+            && lease.state
+                == crate::studio::agent_host::worktree_lease::WorktreeLeaseState::Preserved
+        {
+            self.publish_worktree_recovery(Some("unused ACP draft worktree retained"), &lease)
+                .await;
+        }
         let mut result = projection::close(resources.outcome().await);
         result.owner_failures = report
             .iter()

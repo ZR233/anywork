@@ -115,9 +115,20 @@ impl From<BridgeError> for BridgeAcpBusinessError {
         Self::Runtime(value)
     }
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BridgeAcpWorkspaceMode {
+    Local,
+    Worktree,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum BridgeAcpOpenIntent {
     New,
+    Draft {
+        workspace_mode: BridgeAcpWorkspaceMode,
+        delegation_mode: Option<super::BridgeDelegationMode>,
+        delegation_preference: Option<super::BridgeDelegationPreference>,
+    },
     Load {
         session_id: BridgeAcpRemoteSessionId,
     },

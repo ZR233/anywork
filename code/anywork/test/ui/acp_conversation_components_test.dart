@@ -356,8 +356,6 @@ void main() {
     field.controller!.selection = const TextSelection.collapsed(offset: 2);
     final configuration = Completer<void>();
     harness.port.configureResult = configuration;
-    await tester.tap(find.byTooltip('更多设置'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byType(Switch));
     await tester.pump();
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
@@ -457,16 +455,13 @@ void main() {
       );
       final originalRect = tester.getRect(action);
       expect(originalRect.size, const Size(34, 34));
-      final tuning = find.descendant(
-        of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
-        matching: find.byType(TextButton),
-      );
+      final tuning = find.byType(Switch);
       final tuningSize = tester.getSize(tuning);
       await tester.tap(action);
       await tester.pump();
       expect(tester.widget<TextField>(input).enabled, isNot(false));
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       await tester.enterText(input, '下一条草稿');
       await tester.pump();
       final controller = tester.widget<TextField>(input).controller!;
@@ -483,7 +478,7 @@ void main() {
       expect(controller.selection.baseOffset, 3);
       expect(tester.getRect(action), originalRect);
       expect(tester.getSize(tuning), tuningSize);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       await tester.testTextInput.receiveAction(TextInputAction.send);
       expect(
         harness.port.calls.where((call) => call.$1 == 'prompt'),
@@ -523,7 +518,7 @@ void main() {
       }
       await tester.pump();
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       expect(tester.getRect(action), originalRect);
       if (completionFirst) {
         interrupting.complete();
@@ -533,7 +528,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(harness.owner.state.activeRun, isNull);
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNotNull);
-      expect(tester.widget<TextButton>(tuning).onPressed, isNotNull);
+      expect(tester.widget<Switch>(tuning).onChanged, isNotNull);
       expect(draft.state.draft, '停止时继续编辑');
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
@@ -559,8 +554,6 @@ void main() {
     );
     await tester.pumpAndSettle();
     harness.port.commandError = StateError('server rejected config');
-    await tester.tap(find.byTooltip('更多设置'));
-    await tester.pumpAndSettle();
     await tester.tap(find.byType(Switch));
     await tester.pumpAndSettle();
     expect(find.textContaining('配置失败：'), findsWidgets);
@@ -569,7 +562,7 @@ void main() {
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 
-  testWidgets('ACP 输入不因相同草稿刷新而重置选择和输入法组合', (tester) async {
+  testWidgets('ACP 输入保留编辑值并遵循平台提交与焦点行为', (tester) async {
     var submissions = 0;
     Widget input() => acpTestApp(
       AcpConversationComposerView(
@@ -599,16 +592,17 @@ void main() {
     await tester.pumpWidget(input());
     expect(controller.selection.baseOffset, 3);
     expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    await tester.testTextInput.receiveAction(TextInputAction.send);
-    expect(submissions, 0);
-    expect(controller.value.composing, const TextRange(start: 1, end: 3));
-    controller.value = controller.value.copyWith(composing: TextRange.empty);
+    // The platform confirms composition before reporting a send action.
+    tester.testTextInput.updateEditingValue(
+      controller.value.copyWith(composing: TextRange.empty),
+    );
     await tester.testTextInput.receiveAction(TextInputAction.send);
     expect(submissions, 1);
     expect(
       tester.widget<EditableText>(find.byType(EditableText)).focusNode.hasFocus,
-      isTrue,
+      isFalse,
     );
+    await tester.showKeyboard(find.byType(TextField));
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);

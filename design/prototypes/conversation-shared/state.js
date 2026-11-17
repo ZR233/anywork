@@ -215,10 +215,10 @@
           if (spec.id === 'start-acp-ssh-blocked') {
             this.state.projectId = 'pure-lang-remote';
             this.state.workspaceMode = 'local';
-            this.note('SSH 远端项目选中本地 ACP · 输入卡上方提示兼容性阻塞并提供一键恢复');
+            this.note('SSH 项目使用宿主 ACP 与原远程工作区绑定');
           } else if (spec.acpDeferred) {
             this.state.workspaceMode = 'worktree';
-            this.note('起始页 · ACP 待首次连接（未预探测模型列表时仅显示智能体入口，发送即一键握手）');
+            this.note('起始页 · ACP 草稿准备中，等待连接及真实配置后开放发送');
           } else {
             const acc = this.currentAcpAccount();
             this.note(`起始页 · 模型菜单已选中外部智能体 ${acc?.name || ''}（ACP），右下角槽位同步适配`);
@@ -455,6 +455,14 @@
       this.state.backendKind = 'acp';
       this.state.acpAccountId = account.id;
       this.state.acpDeferredProbe = Boolean(options.deferred);
+      if (options.deferred) {
+        clearTimeout(this.acpPendingTimer);
+        this.acpPendingTimer = setTimeout(() => {
+          if (this.disposed || this.state.acpAccountId !== account.id) return;
+          this.state.acpDeferredProbe = false;
+          this.emit('config');
+        }, 1000);
+      }
       this.state.acpValues = clone(account.defaults || {});
       this.state.acpConfigState = account.resolveConfig(this.state.acpValues);
       this.state.acpConfigPending = null;
@@ -534,33 +542,12 @@
 
       if (Array.isArray(cfg?.configOptions)) {
         const opts = cfg.configOptions;
-        const rawMode = opts.find(o => o.category === 'mode' && o.type === 'select') || null;
-        const rawModel = opts.find(o => o.category === 'model' && o.type === 'select') || null;
-        const rawThought = opts.find(o => o.category === 'thought_level' && o.type === 'select') || null;
-        const consumed = new Set([rawMode?.id, rawModel?.id, rawThought?.id].filter(Boolean));
-        const extraOptions = opts.filter(o => !consumed.has(o.id));
-
-        const enrichSelect = opt => {
-          if (!opt) return null;
-          const flat = flattenSelectOptions(opt);
-          const matched = flat.find(item => item.value === opt.currentValue) || flat[0];
-          return {
-            ...opt,
-            kind: 'acp',
-            flatOptions: flat,
-            currentLabel: matched ? matched.name : String(opt.currentValue ?? '')
-          };
-        };
-
         return {
-          kind: 'acp',
-          deferred: false,
-          account,
-          modeSlot: enrichSelect(rawMode),
-          modelSlot: enrichSelect(rawModel),
-          thoughtSlot: enrichSelect(rawThought),
-          extraOptions,
-          imageSupported
+          kind: 'acp', deferred: false, account,
+          modeSlot: null, modelSlot: null, thoughtSlot: null,
+          dynamicOptions: opts.map(opt => ({ ...opt,
+            flatOptions: opt.type === 'select' ? flattenSelectOptions(opt) : [] })),
+          extraOptions: opts, imageSupported
         };
       }
 
@@ -592,27 +579,14 @@
         modeSlot,
         modelSlot: null,
         thoughtSlot: null,
-        extraOptions: [],
+        extraOptions: modeSlot ? [modeSlot] : [],
+        dynamicOptions: modeSlot ? [{...modeSlot, type: 'select'}] : [],
         imageSupported
       };
     }
 
     getAcpCompatibilityIssue() {
-      const s = this.state;
-      if (s.stage !== 'start' || s.backendKind !== 'acp' || s.targetType !== 'project') return null;
-      const proj = this.currentProject();
-      const acc = this.currentAcpAccount();
-      if (proj?.sshAlias && acc && !acc.supportsRemote) {
-        return {
-          blocker: true,
-          code: 'ssh-acp-unsupported',
-          projectName: proj.name,
-          sshAlias: proj.sshAlias,
-          accountName: acc.name,
-          message: `${acc.name} 暂不支持远程 SSH 项目`,
-          detail: `外部智能体「${acc.name}」(ACP) 仅支持在本地目录运行，暂无法在 SSH 远端项目「${proj.name}」(${proj.sshAlias}) 启动会话。`
-        };
-      }
+      // ACP runs on the host; SSH business tools retain the selected workspace binding.
       return null;
     }
 
@@ -645,7 +619,7 @@
       const isSubagent = !isStart && s.activeAgentId !== 'root';
       const prepRunning = isStart && s.preparation?.status === 'running';
       const turnBusy = !isStart && (Boolean(s.live) || Boolean(s.pending) || s.transitionPhase !== 'none');
-      const configPending = !isStart && s.backendKind === 'acp' && Boolean(s.acpConfigPending);
+      const configPending = s.backendKind === 'acp' && Boolean(s.acpConfigPending);
       const schema = this.getComposerSchema();
       const acpIssue = this.getAcpCompatibilityIssue();
       const isAcp = s.backendKind === 'acp';
@@ -653,7 +627,7 @@
 
       const projectEditable = isStart && !prepRunning;
       const workspaceEditable = isStart && s.targetType === 'project' && !prepRunning;
-      const delegationEditable = isStart && !prepRunning && !isAcp;
+      const delegationEditable = isStart && !prepRunning;
 
       const modeSupported = Boolean(schema.modeSlot);
       const modelSupported = isAcp ? Boolean(schema.modelSlot) : true;
@@ -669,7 +643,7 @@
         modeReason = '正在准备新会话环境，首轮工作模式已按提交快照锁定。';
       } else if (schema.deferred) {
         modeEditable = false;
-        modeReason = '当前处于待首次连接状态，发送首条消息完成 ACP 握手后即可显示并配置服务端模式。';
+        modeReason = '正在按当前工作区准备 ACP 草稿，准备完成后即可调整服务端配置。';
       } else if (!modeSupported) {
         modeEditable = false;
         modeReason = `智能体「${schema.account?.name || '当前'}」未提供可配置模式。`;
@@ -773,7 +747,7 @@
       const hasContent = Boolean(s.draft.trim() || s.attachments.length);
 
       if (s.stage === 'start') {
-        const prepRunning = s.preparation?.status === 'running';
+        const prepRunning = s.preparation?.status === 'running' || (s.backendKind === 'acp' && (s.acpDeferredProbe || s.acpConfigPending));
         const acpIssue = this.getAcpCompatibilityIssue();
         return {
           kind: 'send',
@@ -883,6 +857,7 @@
       } else {
         this.note(`新会话目标切换为项目「${proj.name}」· 可在外层选择本地目录或新建工作树`);
       }
+      this.prepareCurrentAcpDraft();
       this.emit('reset');
     }
 
@@ -946,15 +921,25 @@
       }, 500);
     }
 
+    prepareCurrentAcpDraft() {
+      if (this.state.stage !== 'start' || this.state.backendKind !== 'acp') return;
+      const values = clone(this.state.acpValues);
+      const config = clone(this.state.acpConfigState);
+      this.applyAcpPreset(this.state.acpAccountId, { deferred: true });
+      this.state.acpValues = values;
+      this.state.acpConfigState = config;
+    }
+
     setWorkspaceMode(mode) {
       const locks = this.getLockState();
       if (!locks.workspaceEditable) return;
       this.state.workspaceMode = mode;
+      this.prepareCurrentAcpDraft();
       if (mode === 'local' && this.state.preparation?.status === 'failed') {
         this.state.preparation = null;
       }
       this.note(mode === 'worktree'
-        ? '已切换为「新建工作树」· 首条消息提交时将从 HEAD 检出并冻结'
+        ? (this.state.backendKind === 'acp' ? '已切换为「新建工作树」· 正在准备新的 ACP 草稿' : '已切换为「新建工作树」· 首条消息提交时将从 HEAD 检出并冻结')
         : '已切换为「本地目录」· 直接在项目目录协作');
       this.emit('config');
     }
@@ -962,6 +947,7 @@
     setDelegationMode(val) {
       if (!this.getLockState().delegationEditable) return;
       this.state.delegationModeOverride = val === 'default' ? null : val;
+      this.prepareCurrentAcpDraft();
       this.note(`子智能体分发更新为「${this.delegationSummaryText()}」`);
       this.emit('config');
     }
@@ -969,6 +955,7 @@
     setDelegationPref(val) {
       if (!this.getLockState().delegationEditable) return;
       this.state.delegationPrefOverride = val === 'default' ? null : val;
+      this.prepareCurrentAcpDraft();
       this.note(`自动选模偏好更新为「${this.delegationSummaryText()}」`);
       this.emit('config');
     }
@@ -1024,7 +1011,7 @@
       const acc = this.findAcpAccount(accountId);
       if (!acc) return;
       this.applyAcpPreset(acc.id, {
-        deferred: Boolean(options.deferred)
+        deferred: options.deferred !== false
       });
       this.state.lockNotice = null;
       this.syncRootAgentStatus();
@@ -1032,7 +1019,7 @@
       if (acpIssue) {
         this.note(`已选择外部智能体「${acc.name}」· 但当前选中的远端 SSH 项目暂不支持 ACP`);
       } else if (this.state.acpDeferredProbe) {
-        this.note(`已选定外部智能体「${acc.name}」· 该智能体将在发出首条消息时加载子模型与配置项`);
+        this.note(`已选定外部智能体「${acc.name}」· 正在用当前工作区准备真实草稿并获取配置项`);
       } else {
         const schema = this.getComposerSchema();
         this.note(`主智能体切换为外部 ACP「${acc.name}」${schema.modelSlot ? ' · 默认模型 ' + schema.modelSlot.currentLabel : ''}`);

@@ -201,15 +201,19 @@ Open 在发送 new/load/resume 前交付本次观察入口，同一流保留回�
 
 准备 owner 通过 `Session::opened() -> Result<schema::SessionId, Error>` 取得同一次 open 的最终结算，结算只保留真实对端 ID 或真实失败，不复制内容更新或配置列表。它由原有序 setup/fail_open 写入口完成，观察窗口失效不丢结算，重复等待返回原结果，等待者取消不撤销 open；连接先断开或关闭等未成功路径也必须结束等待。观察入口仍在请求前交付，owner 不能消费或转发显示 Observer 来等待 Ready，显示缺口也不能驱动目录提交。这个结算只证明协议打开结果，不证明产品发布、进程或租约已收束。
 
-Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及 `completion: AcpSessionCompletion`；`completion.wait()` 可重复等待原 Preparation 的产品发布结果，不另建协议结算或第二结果状态机。并发冷重开共享同一准备结果，已发布实例返回已完成句柄；`observation=None` 只表示没有新观察流，不能推断发布成功或触发重新 new。接收方先取得完整 open 返回并开始消费回放，不先等待 completion 再开放观察；等待取消不撤销已受理准备，失败仍返回原准备错误。
+Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及 `completion: AcpSessionCompletion`；`completion.wait()` 可重复等待原 Preparation 的结算结果：普通 New/Load/Resume 为产品发布，Draft 为可配置草稿准备就绪，不另建协议结算或第二结果状态机。并发冷重开共享同一准备结果，已发布实例返回已完成句柄；`observation=None` 只表示没有新观察流，不能推断发布成功或触发重新 new。接收方先取得完整 open 返回并开始消费回放，不先等待 completion 再开放观察；等待取消不撤销已受理准备，失败仍返回原准备错误。
 
-传输使用 `AcpSessionFrame` 薄封装：首帧 `Accepted { target, has_observation }`，原准备结果只映射一次 `Settled { result }`，原观察逐项映射 `Event { event }`。`Settled` 表示产品发布完成，不冒充带官方 setup 载荷的 Ready；回放事件可早于 Settled。HTTP open 直接返回同次 POST 的 SSE 流，不另建观察注册表、内容缓存或先返回 ID 再重开连接；其他控制和查询使用 target 的独立类型化请求。FRB open 返回持有同一准备与观察资源的具体句柄，逐次读取上述帧；并发 next 明确 Busy，不建立转发生产任务或无界队列。关闭/丢弃观察只释放该观察与等待，不等同于关闭业务成员；真正关闭仍须显式调用原 Session close。无新观察的 resident 流仍交 Accepted 和原准备 Settled，不制造回放或 Ready。Client 归约相同帧、原结果和资格，不建设第二业务状态机。
+传输使用 `AcpSessionFrame` 薄封装：首帧 `Accepted { target, has_observation }`，原准备结果只映射一次 `Settled { result }`，原观察逐项映射 `Event { event }`。`Settled` 表示原产品准备已结算（Draft 暂不发布目录），不冒充带官方 setup 载荷的 Ready；回放事件可早于 Settled。HTTP open 直接返回同次 POST 的 SSE 流，不另建观察注册表、内容缓存或先返回 ID 再重开连接；其他控制和查询使用 target 的独立类型化请求。FRB open 返回持有同一准备与观察资源的具体句柄，逐次读取上述帧；并发 next 明确 Busy，不建立转发生产任务或无界队列。关闭/丢弃观察只释放该观察与等待，不等同于关闭业务成员；真正关闭仍须显式调用原 Session close。无新观察的 resident 流仍交 Accepted 和原准备 Settled，不制造回放或 Ready。Client 归约相同帧、原结果和资格，不建设第二业务状态机。
 
 业务启动失败保留安全且可操作的类型分类：`InstallRequired`（模板尚未准备）、`InstallationInvalid`、`UnsupportedPlatform`、`MissingExecutable`、`InvalidWorkingDirectory`、`InvalidDefinition`、`Io` 和 `Cancelled`。原启动边界的 `Template(PreparationRequired)` 对应 `InstallRequired`，其他模板准备及普通 command 错误分别映射上述类别，不能全部压成 `Preparation`；后者仍表示未进一步分类的产品准备失败。HTTP、FRB 与 SDK-only Client 保留同一类别和固定安全说明，不暴露原始路径、env、凭据或错误输入，不自动安装、重试或重新打开。
 
 ### 提交、控制与完成
 
-新会话的产品入口是发送首条消息：用户动作冻结本次目标、服务和输入，先执行一次 `session/new`，同次观察 Ready 后沿已有 prompt 通路提交一次首条内容。空输入不创建会话，目录读取和选择服务不触发连接或探测。已创建但 prompt 失败保留原会话供用户处理，不再次 new；创建或发送结果未知不自动重放。草稿、附件交接与迟到导航边界见 [25.2.1](./25-frontend-state.md#2521-acp-协议内容与目录消费)。这项产品编排不合并 ACP 的 new 与 prompt 协议，也不承诺对端没有提供的原子事务。
+打开意图 `kind=draft` 显式携带 `workspaceMode` 与可空的 `delegationMode` / `delegationPreference`；它不占用远端 `sessionId` 字段。HTTP `/api/v1/acp/sessions/commit-draft`、FRB `commit_acp_draft` 和 Client `commitDraft` 接收原 target，作为首次提交前的正式目录发布边界。未提交草稿不能 prompt；提交可按同一 target 重复确认，不执行第二次 session/new。
+
+新会话先由选择 ACP 服务的显式意图准备草稿：以已选项目目录或立即准备的新工作树执行一次 session/new，取得真实配置但暂不发布产品目录。Draft 准备沿原 SessionRuntime 注册、观察与关闭边界执行，Ready 仍只证明协议打开，Settled 在该分支证明草稿准备已就绪；业务 New/Load/Resume 的原发布语义不变。目录、服务或冻结设置改变时旧草稿失去发送资格，收束后创建替代 session，迟到结果只结算原资源。只读目录查询与组件重建仍不启动探测。
+
+首次非空提交显式 commit 同一草稿的产品关联，再经原 prompt 通路提交一次输入；未 commit 的草稿不能 prompt。空输入可持有配置草稿但不发布正式会话。commit 与关闭通过原资源所有者串行，普通关闭不发布未使用草稿；一旦进入正式发布责任，失败仍保留同一关联供原路径结算。配置、prompt 或创建结果未知不自动重放，已发布但发送失败保留原会话。外部 session/close 按能力执行，其失败不等于本地责任未释放，也不承诺删除供应商历史。
 
 普通 submit 消费正式 `ContentBlock`，按对端 prompt 能力校验，最多一个活动 prompt，busy 明确拒绝。独立业务驱动同时推进更新、有限命令、控制请求完成和 EOF；配置/权限 RPC 的等待不持有整个会话锁，权限只保留 SDK responder、合法选项及当前请求资格，回答后释放，cancel/close 按协议回答 Cancelled。待决权限独立受最多 64 项、保留数据合计 8 MiB 的资源上限约束，消费观察事件不会释放仍待回答的权限额度；回答后归还额度，超限请求立即回答 Cancelled。权限事件无法交付或观察已失效时，取消失去有效观察通路的待决权限，后续请求不再积存；活动 prompt 与其他控制仍按实际协议结果继续。
 
@@ -223,7 +227,7 @@ Studio 的 `AcpSessionOpen` 同时交付 target、可选的唯一观察入口及
 
 ### 会话配置与旧模式
 
-模型、思考强度和其他选项只来自当前 session 的正式 `configOptions`，保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。
+所有选项只来自当前 session 的正式 `configOptions`，界面完全按协议类型与服务端顺序动态渲染，不按名称、ID 或类别填充固定槽位；保留 ID、名称、描述、类别、select/分组选择/boolean 类型、候选值、currentValue 和顺序；缺失与明确空数组不同。setup、set 成功结果及 config_option_update 都是完整列表，按上述入站顺序接纳，不把 load 响应前的通知滞后应用。配置变化不写用户服务文件、Profile、目录或 Native 模型路由。
 
 set 的 `configId` 是选项 ID，select 使用原字符串值、boolean 保留 bool；权限响应才使用 optionId。一次最多一个配置修改在途，prompt/权限/控制继续处理；失败只清本次 pending，保留等待期间已接纳的推送，不恢复发起前快照、不重发、不增加配置 revision、ACK 或回读事务。只有跨桥、请求与实际显示闭环完整时才广告 boolean 能力，不因预留类型而提前声明。未知类别原样保留，未知类型沿 SDK 按项容错，不另写配置 schema parser。
 

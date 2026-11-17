@@ -612,7 +612,9 @@ mod mixed_tests {
                         expected_connection_revision: fixture.revision,
                         workspace_id: fixture.workspace.id.clone(),
                         thread_id: Some(identity.thread_id.to_string()),
-                        intent: AcpOpenIntent::Load("remote-one".into()),
+                        intent: AcpOpenIntent::Load {
+                            session_id: "remote-one".into(),
+                        },
                     })
                     .await?;
                 assert!(
@@ -1077,6 +1079,228 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draft_is_configurable_without_publication_and_commits_the_same_session() -> Result<()>
+    {
+        let fixture = Fixture::new("config").await?;
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        let snapshot = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        assert!(snapshot.config_options.is_some());
+        fixture
+            .runtime
+            .configure_acp_session(
+                open.target.clone(),
+                "format".into(),
+                pl_protocol::studio::SessionConfigOptionValue::value_id("json"),
+            )
+            .await?;
+        let configured = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        let config = serde_json::to_value(configured.config_options)?;
+        assert_eq!(config[0]["currentValue"], "json");
+        let error = fixture
+            .runtime
+            .prompt_acp_session(open.target.clone(), vec![])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, AcpBusinessFailureKind::NotReady);
+        fixture
+            .runtime
+            .commit_acp_draft(open.target.clone())
+            .await?;
+        assert_eq!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .len(),
+            1
+        );
+        let committed = fixture
+            .runtime
+            .acp_session_snapshot(open.target.clone())
+            .await?;
+        assert_eq!(snapshot.acp_session_id, committed.acp_session_id);
+        fixture.runtime.close_acp_session(open.target).await?;
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closing_unused_draft_does_not_publish_it() -> Result<()> {
+        let fixture = Fixture::new("normal").await?;
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: pl_protocol::ThreadWorkspaceMode::Local,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        let closed = fixture.runtime.close_acp_session(open.target).await?;
+        assert!(closed.local_complete, "{closed:?}");
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn closing_worktree_draft_preserves_checkout_and_exposes_recovery() -> Result<()> {
+        use crate::studio::agent_host::worktree_lease::WorktreeLeaseState;
+        let fixture = Fixture::new("config").await?;
+        for args in [
+            vec!["init", "--quiet"],
+            vec![
+                "-c",
+                "user.name=ACP fixture",
+                "-c",
+                "user.email=acp@example.invalid",
+                "commit",
+                "--allow-empty",
+                "--quiet",
+                "-m",
+                "fixture",
+            ],
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&fixture.workspace.path)
+                .args(args)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let mut open = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: pl_protocol::ThreadWorkspaceMode::Worktree,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut open).await?;
+        let lease = fixture
+            .runtime
+            .agent_facility
+            .worktrees
+            .get(&open.target.thread_id)
+            .context("draft worktree lease")?;
+        assert_eq!(lease.state, WorktreeLeaseState::Active);
+        assert!(
+            fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&open.target.thread_id)
+        );
+        assert_ne!(lease.path, fixture.workspace.path);
+        let opened: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(fixture.home.path().join("sessions"))?
+                .lines()
+                .next()
+                .context("peer cwd record")?,
+        )?;
+        assert_eq!(opened["cwd"], lease.path);
+        let closed = fixture
+            .runtime
+            .close_acp_session(open.target.clone())
+            .await?;
+        assert!(closed.local_complete, "{closed:?}");
+        let retained = fixture
+            .runtime
+            .agent_facility
+            .worktrees
+            .get(&open.target.thread_id)
+            .context("retained worktree lease")?;
+        assert_eq!(retained.state, WorktreeLeaseState::Preserved);
+        assert!(
+            !fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&open.target.thread_id)
+        );
+        assert!(std::path::Path::new(&retained.path).is_dir());
+        assert!(
+            fixture
+                .runtime
+                .recovery
+                .snapshot()
+                .iter()
+                .any(|issue| issue.thread_id.as_deref() == Some(open.target.thread_id.as_str()))
+        );
+        assert!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .is_empty()
+        );
+        let mut committed = fixture
+            .open_intent(AcpOpenIntent::Draft {
+                workspace_mode: pl_protocol::ThreadWorkspaceMode::Worktree,
+                delegation_mode: None,
+                delegation_preference: None,
+            })
+            .await?;
+        Fixture::ready(&mut committed).await?;
+        fixture
+            .runtime
+            .commit_acp_draft(committed.target.clone())
+            .await?;
+        assert!(
+            !fixture
+                .runtime
+                .agent_facility
+                .worktrees
+                .is_creating(&committed.target.thread_id)
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .store
+                .directory_members_for_project(&fixture.workspace.id)?
+                .len(),
+            1
+        );
+        assert!(
+            fixture
+                .runtime
+                .close_acp_session(committed.target)
+                .await?
+                .local_complete
+        );
+        fixture.runtime.shutdown_runtime().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn factory_stream_publication_prompt_and_real_reclamation() -> Result<()> {
         let fixture = Fixture::new("replay").await?;
         assert!(
@@ -1088,7 +1312,9 @@ mod tests {
         );
         assert!(!fixture.home.path().join("pid").exists());
         let mut open = fixture
-            .open_intent(AcpOpenIntent::Load("remote-one".into()))
+            .open_intent(AcpOpenIntent::Load {
+                session_id: "remote-one".into(),
+            })
             .await?;
         let observer = open.observation.as_mut().unwrap();
         let first = timeout(Duration::from_secs(15), observer.recv()).await?;
@@ -1325,7 +1551,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id: Some(original.thread_id.clone()),
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             })
             .await?;
         Fixture::ready(&mut reopened).await?;
@@ -1358,7 +1586,9 @@ mod tests {
     async fn observation_gap_does_not_lose_product_publication_or_remote_identity() -> Result<()> {
         let fixture = Fixture::new("gap").await?;
         let mut open = fixture
-            .open_intent(AcpOpenIntent::Load("remote-one".into()))
+            .open_intent(AcpOpenIntent::Load {
+                session_id: "remote-one".into(),
+            })
             .await?;
         let observation = open.observation.as_mut().unwrap();
         timeout(Duration::from_secs(15), open.completion.wait()).await??;
@@ -1543,7 +1773,9 @@ mod tests {
                 expected_connection_revision: fixture.revision,
                 workspace_id: fixture.workspace.id.clone(),
                 thread_id: Some(original.target.thread_id.clone()),
-                intent: AcpOpenIntent::Load("remote-one".into()),
+                intent: AcpOpenIntent::Load {
+                    session_id: "remote-one".into(),
+                },
             };
             let (first, second) = tokio::join!(
                 fixture.runtime.open_acp_session(request.clone()),

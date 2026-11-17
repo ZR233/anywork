@@ -30,6 +30,8 @@ abstract interface class StartSessionDraftOwner {
   ValueObservation<Map<String, List<ComposerSubmission>>> get submissions;
   void updateDraft(String workspaceId, String text);
   void setAcpService(String workspaceId, String? accountId);
+  Future<void> prepareAcp(String workspaceId, {bool retry = false});
+  void acceptAcpConfiguration(String workspaceId);
   void setMode(String workspaceId, ThreadModeId mode);
   void setWorkspaceMode(String workspaceId, ThreadWorkspaceMode mode);
   void setDelegationModeOverride(String workspaceId, DelegationMode? mode);

@@ -33,6 +33,8 @@ pub(crate) struct AcpCloseOutcome {
 }
 
 struct Owned {
+    draft: bool,
+    draft_worktree: Option<(crate::studio::StudioThreadFactory, String)>,
     driver: Option<Driver>,
     join: Option<JoinHandle<Exit>>,
     exit: Option<Exit>,
@@ -67,6 +69,7 @@ pub(crate) struct AcpResources {
     pub(crate) cancellation: CancellationToken,
     cleanup: pl_acp::auth::CleanupBudget,
     owned: Mutex<Owned>,
+    association_gate: Mutex<()>,
     obligations: AtomicBool,
     host_mcp: Mutex<Option<HostMcp>>,
     pub(in crate::studio::runtime) workspace_tools:
@@ -92,7 +95,11 @@ impl std::fmt::Debug for AcpResources {
 }
 
 impl AcpResources {
-    pub(crate) fn new(workspace_id: String, completion: super::AcpSessionCompletion) -> Arc<Self> {
+    pub(crate) fn new(
+        workspace_id: String,
+        completion: super::AcpSessionCompletion,
+        draft: bool,
+    ) -> Arc<Self> {
         let cleanup = pl_acp::auth::CleanupBudget::new(Duration::from_secs(5));
         Arc::new(Self {
             instance: NEXT_INSTANCE.fetch_add(1, Ordering::Relaxed),
@@ -103,6 +110,8 @@ impl AcpResources {
             cancellation: CancellationToken::new(),
             cleanup,
             owned: Mutex::new(Owned {
+                draft,
+                draft_worktree: None,
                 driver: None,
                 join: None,
                 exit: None,
@@ -115,6 +124,7 @@ impl AcpResources {
                 workspace_closed: false,
             }),
             obligations: AtomicBool::new(true),
+            association_gate: Mutex::new(()),
             host_mcp: Mutex::new(None),
             workspace_tools: OnceLock::new(),
             workspace_close: Mutex::new(None),
@@ -130,6 +140,19 @@ impl AcpResources {
 
     pub(crate) fn session(&self) -> Result<&Session> {
         self.session.get().context("ACP process is not initialized")
+    }
+
+    pub(crate) async fn is_draft(&self) -> bool {
+        self.owned.lock().await.draft
+    }
+
+    pub(crate) async fn retain_draft_worktree(
+        &self,
+        factory: crate::studio::StudioThreadFactory,
+        id: String,
+    ) {
+        self.owned.lock().await.draft_worktree = Some((factory, id));
+        self.obligations.store(true, Ordering::Release);
     }
 
     pub(crate) async fn prepare_host_mcp(
@@ -389,6 +412,22 @@ impl AcpResources {
         &self,
         events: &crate::studio::ProductEventBus,
     ) -> Result<()> {
+        let _gate = self.association_gate.lock().await;
+        if self.owned.lock().await.draft {
+            return Ok(());
+        }
+        self.publish_association(events).await
+    }
+
+    /// Explicit first-submission boundary; ordinary shutdown never publishes an unused draft.
+    pub(crate) async fn commit_draft(&self, events: &crate::studio::ProductEventBus) -> Result<()> {
+        let _gate = self.association_gate.lock().await;
+        ensure!(!self.cancellation.is_cancelled(), "ACP draft is closed");
+        self.owned.lock().await.draft = false;
+        self.publish_association(events).await
+    }
+
+    async fn publish_association(&self, events: &crate::studio::ProductEventBus) -> Result<()> {
         let association = self.owned.lock().await.association.clone();
         if let Some(Association {
             session,
@@ -419,7 +458,11 @@ impl AcpResources {
                     })
                     .await?;
             }
-            self.owned.lock().await.association = None;
+            let mut owned = self.owned.lock().await;
+            owned.association = None;
+            if let Some((factory, id)) = owned.draft_worktree.take() {
+                factory.complete_acp_draft_worktree(&id);
+            }
         }
         Ok(())
     }
@@ -438,9 +481,19 @@ impl AcpResources {
     /// cannot take it from this owner; Pending keeps worker and usage for retry.
     pub(crate) async fn close(&self) -> AcpCloseOutcome {
         self.cancel();
+        let _gate = self.association_gate.lock().await;
         // Releases only the original observation; SDK cancellation settles pending permissions.
         self.retained_observation.lock().await.take();
         let mut owned = self.owned.lock().await;
+        if owned.draft {
+            owned.association = None;
+            if let Some((factory, id)) = &owned.draft_worktree {
+                match factory.preserve_acp_draft_worktree(id).await {
+                    Ok(()) => owned.draft_worktree = None,
+                    Err(error) => owned.driver_error = Some(error.to_string()),
+                }
+            }
+        }
         // No driver was launched: dropping it settles SDK opened() waiters.
         drop(owned.driver.take());
         if owned.join.is_some() {
@@ -536,6 +589,7 @@ impl AcpResources {
             }
         }
         let local_complete = owned.join.is_none()
+            && owned.draft_worktree.is_none()
             && owned.association.is_none()
             && owned.report_join.is_none()
             && host_mcp.is_none()
@@ -581,6 +635,7 @@ mod tests {
         let resources = AcpResources::new(
             "status-workspace".into(),
             super::super::AcpSessionCompletion { publication },
+            false,
         );
         let calls = Arc::new(AtomicU64::new(7));
         resources.mcp_calls.set(calls.clone()).unwrap();

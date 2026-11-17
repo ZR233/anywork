@@ -314,7 +314,11 @@ final class _Phases {
         };
         await record('explicit-acp-close-returned');
         expect(close.localComplete, isTrue);
-        expect(close.sdkFinished, isTrue);
+        expect(
+          close.sdkFinished,
+          isFalse,
+          reason: '关闭会话成员不关闭账号共享的 SDK 连接，连接由应用退出统一回收',
+        );
         expect(close.cleanupTimedOut, isFalse);
         expect(close.unfinishedControls, isFalse);
         expect(close.unfinishedPrompt, isNull);

@@ -919,6 +919,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDelegationMode dco_decode_box_autoadd_bridge_delegation_mode(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationPreference
+  dco_decode_box_autoadd_bridge_delegation_preference(dynamic raw);
+
+  @protected
   BridgeDeleteMcpDocumentInput
   dco_decode_box_autoadd_bridge_delete_mcp_document_input(dynamic raw);
 
@@ -2127,6 +2136,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpUsageState dco_decode_bridge_acp_usage_state(dynamic raw);
+
+  @protected
+  BridgeAcpWorkspaceMode dco_decode_bridge_acp_workspace_mode(dynamic raw);
 
   @protected
   BridgeActiveTurn dco_decode_bridge_active_turn(dynamic raw);
@@ -4547,6 +4559,15 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDelegationMode? dco_decode_opt_box_autoadd_bridge_delegation_mode(
+    dynamic raw,
+  );
+
+  @protected
+  BridgeDelegationPreference?
+  dco_decode_opt_box_autoadd_bridge_delegation_preference(dynamic raw);
+
+  @protected
   BridgeDeleteThreadCommandReply?
   dco_decode_opt_box_autoadd_bridge_delete_thread_command_reply(dynamic raw);
 
@@ -5804,6 +5825,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeDegradedResource sse_decode_box_autoadd_bridge_degraded_resource(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationMode sse_decode_box_autoadd_bridge_delegation_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationPreference
+  sse_decode_box_autoadd_bridge_delegation_preference(
     SseDeserializer deserializer,
   );
 
@@ -7426,6 +7458,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpUsageState sse_decode_bridge_acp_usage_state(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpWorkspaceMode sse_decode_bridge_acp_workspace_mode(
     SseDeserializer deserializer,
   );
 
@@ -10424,6 +10461,17 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeDelegationMode? sse_decode_opt_box_autoadd_bridge_delegation_mode(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeDelegationPreference?
+  sse_decode_opt_box_autoadd_bridge_delegation_preference(
+    SseDeserializer deserializer,
+  );
+
+  @protected
   BridgeDeleteThreadCommandReply?
   sse_decode_opt_box_autoadd_bridge_delete_thread_command_reply(
     SseDeserializer deserializer,
@@ -11920,6 +11968,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_degraded_resource(
     BridgeDegradedResource self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_delegation_mode(
+    BridgeDelegationMode self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_box_autoadd_bridge_delegation_preference(
+    BridgeDelegationPreference self,
     SseSerializer serializer,
   );
 
@@ -13789,6 +13849,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_usage_state(
     BridgeAcpUsageState self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_workspace_mode(
+    BridgeAcpWorkspaceMode self,
     SseSerializer serializer,
   );
 
@@ -17410,6 +17476,18 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_current_plan_head(
     BridgeCurrentPlanHead? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_delegation_mode(
+    BridgeDelegationMode? self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_opt_box_autoadd_bridge_delegation_preference(
+    BridgeDelegationPreference? self,
     SseSerializer serializer,
   );
 

@@ -37,6 +37,7 @@ pub use permission_projection::{PermissionProjectionError, project_execution_per
 pub(crate) use plan_confirmation::document_identity as plan_confirmation_document_identity;
 pub use plan_confirmation::{PlanInteractionError, project_plan_confirmation};
 mod child_resources;
+pub(crate) use child_resources::WorkspaceBindingAdmission;
 pub use child_resources::WorkspacePreparationOwner;
 mod children;
 mod close_storage;

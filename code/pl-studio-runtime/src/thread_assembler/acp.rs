@@ -14,6 +14,28 @@ pub(crate) struct AcpPreparation {
     pub(crate) resources: Arc<AcpResources>,
 }
 
+impl super::WorkspaceBindingAdmission for AcpPreparation {
+    fn with_binding_admission<T>(
+        &self,
+        id: &str,
+        handoff: impl FnOnce() -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        let state = self.owner.0.state();
+        if self.identity.thread_id.as_str() != id
+            || state.closing
+            || state.sealed_agents.contains_key(id)
+            || self.resources.cancellation.is_cancelled()
+            || !state.creating.get(id).is_some_and(|preparation| {
+                matches!(&preparation.resources, PreparedResources::Acp(acp)
+                    if Arc::ptr_eq(acp, &self.resources))
+            })
+        {
+            return Err(ThreadAssemblyError::Closed.into());
+        }
+        handoff()
+    }
+}
+
 impl AcpPreparation {
     /// Publication returns product membership, never a fabricated Native handle.
     pub(crate) fn publish(&self) -> Result<pl_protocol::AgentThreadIdentity, ThreadAssemblyError> {
