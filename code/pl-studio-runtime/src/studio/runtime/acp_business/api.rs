@@ -234,6 +234,9 @@ impl AcpBusinessOwner {
         };
         let draft = matches!(&intent, AcpOpenIntent::Draft { .. });
         let resources = AcpResources::new(project.id.clone(), completion.clone(), draft);
+        if identity.parent_agent_id.is_some() && previous.is_none() {
+            resources.begin_initial_configuration();
+        }
         let preparation =
             owner.prepare_acp(identity.clone(), definition.id.clone(), resources.clone())?;
         let accepted = AcpSessionTarget {
@@ -281,41 +284,31 @@ impl AcpBusinessOwner {
                         )
                         .await
                         .map_err(|error| projection::preparation(&error.to_string()))?;
-                    if project.ssh_alias.is_some() {
+                    {
+                        let workspace_config = config.read()
+                            .map_err(|error| projection::preparation(&error.to_string()))?
+                            .config;
                         let binding = factory
-                            .prepare_acp_workspace(
-                                &thread_id,
-                                &project,
-                                &business_root,
-                                &usage,
-                                session_record.workspace_mode,
-                                &resources.cancellation,
-                            )
+                            .prepare_acp_workspace(crate::studio::thread_factory::AcpWorkspaceRequest {
+                                id: &thread_id,
+                                project: &project,
+                                business_root: &business_root,
+                                usage: &usage,
+                                session_mode: session_record.workspace_mode,
+                                config: &workspace_config,
+                                cancellation: &resources.cancellation,
+                            })
                             .await
                             .map_err(|error| projection::preparation(&error.to_string()))?;
                         let tools = super::super::acp_workspace_tools::WorkspaceTools::new(
                             thread_id.clone(),
                             binding,
-                            &config
-                                .read()
-                                .map_err(|error| projection::preparation(&error.to_string()))?
-                                .config,
+                            &workspace_config,
                         );
                         resources
                             .retain_workspace_tools(tools, usage.clone())
                             .await
                             .map_err(|error| projection::preparation(&error.to_string()))?;
-                    } else {
-                        factory
-                            .assign_workspace_use(
-                                &usage,
-                                &project,
-                                std::path::Path::new(&business_root),
-                            )
-                            .await
-                            .map_err(|_| {
-                                projection::preparation("ACP workspace identity is unavailable")
-                            })?;
                     }
                     if let Some(lease) = &draft_worktree {
                         factory.confirm_acp_worktree(lease, &usage, &preparation).await
@@ -701,6 +694,9 @@ impl StudioRuntime {
         content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
         if resources.is_draft().await {
             return Err(projection::failure(sdk::Error::NotReady));
         }
@@ -719,6 +715,9 @@ impl StudioRuntime {
         content: Vec<ContentBlock>,
     ) -> Result<AcpRunId, AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
@@ -757,6 +756,9 @@ impl StudioRuntime {
     ) -> Result<(), AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
         resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
+        resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?
             .set_config(id, value)
@@ -769,6 +771,9 @@ impl StudioRuntime {
         mode: SessionModeId,
     ) -> Result<(), AcpBusinessFailure> {
         let resources = self.business_resources(&target)?;
+        resources
+            .ensure_input_ready()
+            .map_err(projection::failure)?;
         resources
             .session()
             .map_err(|_| projection::failure(sdk::Error::NotReady))?

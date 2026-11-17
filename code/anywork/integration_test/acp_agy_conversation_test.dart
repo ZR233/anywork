@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
-import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
+import 'package:anywork/src/features/conversation/composer/views/start_model_selector_view.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp.dart';
 import 'package:anywork_client/acp_sessions.dart';
@@ -276,13 +276,13 @@ void main() {
         sshAlias: remote?.alias,
       );
       await scene.until(
-        () => find.byType(StartModelSelector).evaluate().length == 1,
+        () => find.byType(StartModelSelectorView).evaluate().length == 1,
         'project start page exposes the unified model selector',
       );
       await scene.capture('ordinary-start-card');
       await tester.tap(
         find.descendant(
-          of: find.byType(StartModelSelector),
+          of: find.byType(StartModelSelectorView),
           matching: find.byType(TextButton),
         ),
       );

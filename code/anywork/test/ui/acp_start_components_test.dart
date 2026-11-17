@@ -36,6 +36,7 @@ void main() {
       ValueKey(AcpViewKeyValues.startSubmit('workspace')),
     );
     final size = tester.getSize(send);
+    expectAcpPrimaryGeometry(tester, send);
     expect(
       tester.getRect(find.byType(AcpStartComposerView)).right -
           tester.getRect(send).right,
@@ -43,6 +44,8 @@ void main() {
       reason: 'The primary action stays at the trailing edge of the input card',
     );
     expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.tap(send);
+    expect(sends, 0);
     await tester.enterText(find.byType(TextField), '   ');
     await tester.pump();
     expect(tester.widget<IconButton>(send).onPressed, isNull);
@@ -51,7 +54,10 @@ void main() {
     await tester.tap(send);
     await tester.pump();
     expect(sends, 1);
+    expectAcpPrimaryGeometry(tester, send);
     expect(tester.widget<IconButton>(send).onPressed, isNull);
+    await tester.tap(send);
+    expect(sends, 1);
     expect(tester.getSize(send), size);
     expect(tester.widget<TextField>(find.byType(TextField)).enabled, isTrue);
     await tester.enterText(find.byType(TextField), '接下来检查错误处理');

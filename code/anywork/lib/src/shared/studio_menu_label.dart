@@ -16,6 +16,30 @@ class StudioMenuLabel extends StatelessWidget {
   final bool enabled;
   final double maxWidth;
 
+  static const _horizontalPadding = 8.0;
+  static const _leadingGap = 6.0;
+  static const _labelGap = 5.0;
+  static const _arrowSize = 14.0;
+
+  double measureWidth(BuildContext context, {double leadingWidth = 0}) {
+    assert(leading == null || leadingWidth > 0);
+    final textWidth = TextPainter.computeWidth(
+      text: TextSpan(
+        text: label,
+        style: DefaultTextStyle.of(context).style
+            .merge(Theme.of(context).textTheme.labelMedium),
+      ),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      locale: Localizations.maybeLocaleOf(context),
+      maxLines: 1,
+    );
+    return _horizontalPadding * 2 +
+        (leading == null ? 0 : leadingWidth + _leadingGap) +
+        (textWidth + _labelGap).clamp(0.0, maxWidth) +
+        _arrowSize;
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -23,13 +47,13 @@ class StudioMenuLabel extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(minHeight: 32),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
+        padding: const EdgeInsets.symmetric(horizontal: _horizontalPadding),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (leading case final leadingWidget?)
               Padding(
-                padding: const EdgeInsetsDirectional.only(end: 6),
+                padding: const EdgeInsetsDirectional.only(end: _leadingGap),
                 child: IconTheme.merge(
                   data: IconThemeData(size: 15, color: color),
                   child: leadingWidget,
@@ -39,7 +63,7 @@ class StudioMenuLabel extends StatelessWidget {
               child: ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: maxWidth),
                 child: Padding(
-                  padding: const EdgeInsetsDirectional.only(end: 5),
+                  padding: const EdgeInsetsDirectional.only(end: _labelGap),
                   child: Text(
                     label,
                     maxLines: 1,
@@ -50,7 +74,7 @@ class StudioMenuLabel extends StatelessWidget {
                 ),
               ),
             ),
-            Icon(Icons.keyboard_arrow_down, size: 14, color: color),
+            Icon(Icons.keyboard_arrow_down, size: _arrowSize, color: color),
           ],
         ),
       ),

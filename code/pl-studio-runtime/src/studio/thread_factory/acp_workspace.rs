@@ -2,6 +2,8 @@
 use super::StudioThreadFactory;
 use anyhow::{Context, Result, ensure};
 use pl_tool::{
+    command::WorkspaceExecutionBinding,
+    environment::ExecutionEnvironment,
     remote::SshWorkspaceBinding,
     workspace::{AgentWorkspace, ToolWorkspace},
 };
@@ -10,9 +12,26 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 pub(in crate::studio) struct PreparedAcpWorkspace {
     pub workspace: ToolWorkspace,
-    pub remote: SshWorkspaceBinding,
+    pub remote: Option<SshWorkspaceBinding>,
+    pub execution: WorkspaceExecutionBinding,
+    pub environment: ExecutionEnvironment,
+    pub lsp: Option<std::sync::Arc<super::PreparedAcpLsp>>,
+    pub skills: Option<(
+        std::sync::Arc<pl_tool::skill::FrozenSkillCatalog>,
+        pl_tool::skill::SkillDiscoverySources,
+    )>,
     pub store: crate::resource_store::FileResourceStore,
     pub host_scratch: PathBuf,
+}
+
+pub(in crate::studio) struct AcpWorkspaceRequest<'a> {
+    pub id: &'a str,
+    pub project: &'a crate::studio::WorkspaceRecord,
+    pub business_root: &'a str,
+    pub usage: &'a crate::studio::WorkspaceUsageLease,
+    pub session_mode: crate::ThreadWorkspaceMode,
+    pub config: &'a crate::config::StudioConfig,
+    pub cancellation: &'a tokio_util::sync::CancellationToken,
 }
 
 impl StudioThreadFactory {
@@ -137,35 +156,42 @@ impl StudioThreadFactory {
 
     pub(in crate::studio) async fn prepare_acp_workspace(
         &self,
-        id: &str,
-        project: &crate::studio::WorkspaceRecord,
-        business_root: &str,
-        usage: &crate::studio::WorkspaceUsageLease,
-        session_mode: crate::ThreadWorkspaceMode,
-        cancellation: &tokio_util::sync::CancellationToken,
+        request: AcpWorkspaceRequest<'_>,
     ) -> Result<PreparedAcpWorkspace> {
+        let AcpWorkspaceRequest {
+            id,
+            project,
+            business_root,
+            usage,
+            session_mode,
+            config,
+            cancellation,
+        } = request;
         let remote = self
             .open_remote_workspace(project, Path::new(business_root))
-            .await?
-            .context("ACP workspace tools require an SSH binding")?;
-        let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
-            crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
-                &remote.profile,
-            )),
-            remote.files().canonical_path().into(),
-        )?;
-        if let Some(frozen) = self.services.store.workspace_identity(id).await? {
-            ensure!(
-                identity == frozen,
-                "ACP physical workspace identity changed"
-            );
-        }
+            .await?;
         ensure!(
             !cancellation.is_cancelled(),
             "ACP workspace preparation cancelled"
         );
-        self.assign_workspace_identity(usage, identity.clone())
-            .await?;
+        let identity = if let Some(remote) = &remote {
+            let identity = crate::studio::agent_host::worktree_lease::WorkspaceIdentity::canonical(
+                crate::studio::agent_host::worktree_lease::WorkspaceEndpoint::from_profile(Some(
+                    &remote.profile,
+                )),
+                remote.files().canonical_path().into(),
+            )?;
+            if let Some(frozen) = self.services.store.workspace_identity(id).await? {
+                ensure!(
+                    identity == frozen,
+                    "ACP physical workspace identity changed"
+                );
+            }
+            self.assign_workspace_identity(usage, identity).await?
+        } else {
+            self.assign_workspace_use(usage, project, Path::new(business_root))
+                .await?
+        };
         self.services
             .worktrees
             .preserve_workspace_resources(id, identity);
@@ -178,10 +204,46 @@ impl StudioThreadFactory {
         };
         let workspace =
             super::session_files::bind_thread_session_files(ToolWorkspace::new(workspace), id);
-        super::session_files::prepare_bound_session_files(&workspace, &remote.execution).await?;
+        let execution = match &remote {
+            Some(remote) => remote.execution.clone(),
+            None => {
+                WorkspaceExecutionBinding::new(self.services.local_executor.clone(), business_root)?
+            }
+        };
+        let environment = remote
+            .as_ref()
+            .map(|remote| remote.execution_environment.clone())
+            .unwrap_or_else(ExecutionEnvironment::detect_local);
+        super::session_files::prepare_bound_session_files(&workspace, &execution).await?;
+        let skills = if config.runtime.tool_capabilities.skills && config.skills.enabled {
+            self.services
+                .skills
+                .prepare_thread_catalog(
+                    &project.id,
+                    workspace.root(),
+                    &config.skills,
+                    cancellation.clone(),
+                    Some(std::sync::Arc::new(execution.files())),
+                )
+                .await?
+        } else {
+            None
+        };
+        let lsp = if config.runtime.tool_capabilities.lsp {
+            Some(std::sync::Arc::new(
+                self.prepare_acp_lsp(&workspace, &execution, remote.is_some())
+                    .await?,
+            ))
+        } else {
+            None
+        };
         Ok(PreparedAcpWorkspace {
             workspace,
             remote,
+            execution,
+            environment,
+            lsp,
+            skills,
             store: crate::resource_store::FileResourceStore::new(
                 self.services
                     .store

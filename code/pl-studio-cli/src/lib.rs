@@ -1,8 +1,10 @@
 //! A noninteractive adapter of the production Studio lifecycle, without a second agent loop.
+mod acp;
 mod args;
 mod signals;
 mod text;
 
+pub use acp::{AcpExecutionReport, AcpOptionsArgs, ExecAcpArgs, PreparedAcp, execute_acp};
 pub use args::{Cli, Command, ExecArgs, PreparedExec, PreparedExport};
 pub use signals::SignalListener;
 

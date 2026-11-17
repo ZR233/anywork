@@ -243,6 +243,8 @@ initialize 后，真实声明 `mcpCapabilities.http` 时准备实例独占的 rm
 
 领域端口只交付工具目录和执行调用。目录项与可调用绑定由同一装配结果产生，`HostInvocation` 携带该实例目录中的工具身份和参数，`HostResult` 携带结构化结果及业务错误标记；不维护另一份九项操作枚举或名称白名单。目录直接投影原作者声明，不回解 `ToolDefinition`，不复制 schema；Grammar/Text 输入只在 MCP 边界以明确的字符串字段承载原文。MCP 握手、request ID、通知和结果封装由官方 rmcp server 处理，不跨 IPC 传递 JSON-RPC envelope、HTTP MCP session 或协议控制消息，不进行第二次 MCP 握手。
 
+技能管理的多分支JSON参数在MCP边界使用显式 `input` 对象承载，例如 `{"input":{"action":"delete","name":"example"}}`。封装直接引用原作者的Rust参数类型生成完整schema，保留分支与引用关系；边界严格解开一层后调用原作者，不压平分支、不增加显示元字段、不忽略未知参数，也不改变Native工具输入。该适配避免对端给工具根对象追加显示字段时与内部分支的严格字段校验冲突。
+
 对端工具通知不必回显 HostResult。隔离验收需要核对原返回值时，按 [24](./24-testing.md) 使用原 handler 的定向 TRACE 诊断；它不新增执行通路或产品结果镜像，不修改 ACP 更新，不把宿主 call ID 伪装为 MCP／ACP ID，也不改变任务的受理、取消和关闭语义。普通会话不依赖或读取该日志。
 
 同样，ACP 工具通知的 `rawInput` 与 MCP `arguments` 分属对端报告和宿主执行边界，不能由 SDK 类型相同推导逐字段等值。供应商已核实的展示元字段只可在 [24](./24-testing.md) 指定的窄验收适配中表达，完整原通知仍原样交付 Client；生产映射不删除 `toolSummary` 或其他字段，Host MCP 也不为配合显示而改写实际参数。
@@ -255,7 +257,13 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_models`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
-SSH 项目的同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。本地 ACP 保留已有协作工具和外部代理原本的本机工具，不在本期额外增加宿主文件/命令访问或其审批能力。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
+同一目录按原能力与授权提供可复用的普通对话工具，包括工作区命令、stdin、任务列举/等待/结果读取/取消，以及文件、补丁和 Git。宿主技能发现与读取使用相同的技能目录、来源策略与工具作者，通过 `anywork_` 工具提供，不要求外部代理能直接读取宿主系统技能目录。本地与SSH分别使用实际业务工作区，不从ACP协议cwd猜测执行绑定。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；复用普通会话的路径/符号链接检查、写锁、进程管理和输出归档，不在handler内复制操作算法。
+
+能力对齐以普通对话实际装配与原所有者的资格为依据，不仅比较工具名称。可复用的技能、工作区、扩展工具及协作能力优先共享作者和领域端口；依赖Native轮次、持久化或交互所有者的能力，必须先具备真实ACP适配，不能伪造 `Thread`、`TaskAccess`、保存ACK、工作流或结构化审查。未接入、对端未声明、协议无法等价和实现困难是不同事实，应分别说明限制及用户影响，不把目录存在、注入成功或模型自述当作实测通过。
+
+本地和SSH的语言服务沿原工作区LSP租约、执行端和路径校验提供状态、能力和语义查询；实例关闭等待所属查询结束并释放租约，不创建第二个语言服务注册表。ACP子成员的显式会话配置见 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式)，不能用父会话选模或程序启动参数推定子会话模型。
+
+账户撤代先封闭新的业务准入，但不能因此阻止原session驱动发送内部关闭取消。内部控制按本session已确定的session ID与真实active RunId幂等发出取消，公开提交、配置与中断仍执行原业务准入；发送失败保留关闭诊断。取消通知已发送不代表prompt已结束，仍等待原响应、驱动及进程回收，不清空active或伪造完成，亦不为该路径延长关闭预算。
 
 SSH 工具沿普通会话的远程权限评估与物理后端准入：远程分支不能取得本机 `HOST_WORKSPACE_ACCESS` grant，工作区外请求按原远程策略处理，不转为本机用户审批或自动审查。`RequestApproval`/`AutoReview` 的本机越界审批依赖 Native 执行上下文，不用假 Turn/TaskAccess、另选模型或新增计费 owner 补齐；这些本机能力不属于远程项目接入范围。该限制不改变 Native 已有权限模式，也不声称 Shell 命令受 OS 沙箱隔离。
 

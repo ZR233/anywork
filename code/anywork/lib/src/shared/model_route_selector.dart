@@ -127,6 +127,7 @@ class ModelRouteSelector extends StatefulWidget {
     this.tooltip,
     this.onBlockedTap,
     this.labelMaxWidth = 180,
+    this.inMenu = false,
     this.optionKeyBuilder,
     super.key,
   });
@@ -145,7 +146,37 @@ class ModelRouteSelector extends StatefulWidget {
   /// Caps the quiet trigger label so long model names ellipsize instead of
   /// stretching the surrounding row.
   final double labelMaxWidth;
+  final bool inMenu;
   final ModelSelectionOptionKeyBuilder? optionKeyBuilder;
+
+  ({ModelSelectionOption? selected, bool canSelect, StudioMenuLabel label})
+  _presentation(BuildContext context) {
+    final selected = options
+        .where(
+          (option) =>
+              option.accountId == accountId && option.modelId == modelId,
+        )
+        .firstOrNull;
+    final selectedLabel =
+        selected?.displayName ??
+        unresolvedLabel ??
+        (modelId.isEmpty && options.isEmpty
+            ? context.l10n.modelTextFilterEmpty
+            : modelId);
+    final canSelect = enabled && options.isNotEmpty;
+    return (
+      selected: selected,
+      canSelect: canSelect,
+      label: StudioMenuLabel(
+        label: selectedLabel,
+        enabled: canSelect,
+        maxWidth: labelMaxWidth,
+      ),
+    );
+  }
+
+  double measureInlineWidth(BuildContext context) =>
+      _presentation(context).label.measureWidth(context);
 
   @override
   State<ModelRouteSelector> createState() => _ModelRouteSelectorState();
@@ -167,21 +198,27 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
 
   @override
   Widget build(BuildContext context) {
-    final selected = _findOption(
-      widget.options,
-      widget.accountId,
-      widget.modelId,
-    );
-    final selectedLabel =
-        selected?.displayName ??
-        widget.unresolvedLabel ??
-        (widget.modelId.isEmpty && widget.options.isEmpty
-            ? context.l10n.modelTextFilterEmpty
-            : widget.modelId);
-    final canSelect = widget.enabled && widget.options.isNotEmpty;
+    final presentation = widget._presentation(context);
+    final selected = presentation.selected;
+    final selectedLabel = presentation.label.label;
+    final canSelect = presentation.canSelect;
     final menuSize = _menuSize(context);
     final contentWidth = math.max(0.0, menuSize.width - 32);
 
+    if (widget.inMenu) {
+      return Tooltip(
+        message: widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel,
+        child: SubmenuButton(
+          key: widget.selectorKey,
+          onOpen: _keepSelectedItemVisible,
+          menuStyle: MenuStyle(maximumSize: WidgetStatePropertyAll(menuSize)),
+          menuChildren: canSelect
+              ? _menuChildren(context, contentWidth, selected)
+              : const [],
+          child: Text('${widget.fieldLabel} · $selectedLabel'),
+        ),
+      );
+    }
     return MenuAnchor(
       key: widget.selectorKey,
       childFocusNode: _triggerFocus,
@@ -190,7 +227,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
       onOpen: _keepSelectedItemVisible,
       menuChildren: _menuChildren(context, contentWidth, selected),
       builder: (context, controller, child) =>
-          _buildTrigger(context, controller, canSelect, selectedLabel),
+          _buildTrigger(context, controller, canSelect, presentation.label),
     );
   }
 
@@ -198,7 +235,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
     BuildContext context,
     MenuController controller,
     bool canSelect,
-    String selectedLabel,
+    StudioMenuLabel label,
   ) {
     final tooltip =
         widget.tooltip ?? widget.unresolvedLabel ?? widget.fieldLabel;
@@ -230,11 +267,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
             ),
             side: BorderSide.none,
           ),
-          child: StudioMenuLabel(
-            label: selectedLabel,
-            enabled: canSelect,
-            maxWidth: widget.labelMaxWidth,
-          ),
+          child: label,
         ),
       ),
     );
@@ -256,7 +289,7 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
           // finite width to rows with Expanded content, the same axis Material
           // popup menus use.
           overflowAxis: Axis.vertical,
-          onPressed: () => _select(option),
+          onPressed: widget.enabled ? () => _select(option) : null,
           style: isSelected
               ? ButtonStyle(
                   backgroundColor: WidgetStatePropertyAll(
@@ -340,19 +373,6 @@ class _ModelRouteSelectorState extends State<ModelRouteSelector> {
   Key _optionKey(ModelSelectionOption option) =>
       widget.optionKeyBuilder?.call(option) ??
       StudioDriverKeys.modelOption(option.accountId, option.modelId);
-
-  static ModelSelectionOption? _findOption(
-    List<ModelSelectionOption> options,
-    String accountId,
-    String modelId,
-  ) {
-    return options
-        .where(
-          (option) =>
-              option.accountId == accountId && option.modelId == modelId,
-        )
-        .firstOrNull;
-  }
 
   static Size _menuSize(BuildContext context) {
     final window = MediaQuery.sizeOf(context);

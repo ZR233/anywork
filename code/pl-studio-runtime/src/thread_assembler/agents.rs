@@ -346,12 +346,46 @@ async fn cleanup_spawn_failure(
     }
 }
 
+/// Releases only setup admission on every return path; the session still owns accepted RPCs.
+struct InitialAcpConfiguration<'a>(&'a crate::studio::runtime::acp_business::AcpResources);
+
+impl Drop for InitialAcpConfiguration<'_> {
+    fn drop(&mut self) {
+        self.0.finish_initial_configuration();
+    }
+}
+
+fn acp_config_matches(
+    snapshot: &pl_acp::session::Snapshot,
+    id: &str,
+    value: &crate::acp_schema::SessionConfigOptionValue,
+) -> bool {
+    use crate::acp_schema::{SessionConfigKind, SessionConfigOptionValue};
+    snapshot.config_options.as_ref().is_some_and(|options| {
+        options.iter().any(|option| {
+            option.id.to_string() == id
+                && match (&option.kind, value) {
+                    (
+                        SessionConfigKind::Select(select),
+                        SessionConfigOptionValue::ValueId { value },
+                    ) => select.current_value == *value,
+                    (
+                        SessionConfigKind::Boolean(boolean),
+                        SessionConfigOptionValue::Boolean { value },
+                    ) => boolean.current_value == *value,
+                    _ => false,
+                }
+        })
+    })
+}
+
 impl AgentHost {
     async fn spawn_acp_owned(
         &self,
         owner: SessionRuntime,
         context: AgentCallContext,
         request: AgentSpawn,
+        parent_operation: tokio::sync::OwnedMutexGuard<()>,
     ) -> Result<AgentSpawnResult, ControlError> {
         if request.model_selection.is_some()
             || request.writable_paths.is_some()
@@ -435,6 +469,7 @@ impl AgentHost {
                 .await);
             }
         };
+        let _configuration_admission = InitialAcpConfiguration(&resources);
         let agent = self.target_agent(&owner, &reservation.id)?;
         let mut receipt = SpawnReceipt {
             agent_id: agent.to_string(),
@@ -453,17 +488,74 @@ impl AgentHost {
                 ))),
             });
         }
+        // The child is now published and owns its configuration RPCs. Parent/child close must
+        // not wait for a configuration reply before it can seal and close this session.
+        drop(parent_operation);
         let delivery = async {
             if context.cancellation.is_cancelled() {
                 return Err(ControlError::Closed);
             }
-            let _operation = owner.agent_operation(&reservation.id).await;
+            let session = resources
+                .session()
+                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?;
+            // Config RPCs remain owned by the session driver. Close must be able to acquire
+            // the member operation lock even when the peer never answers a configuration.
+            let configuration = async {
+            let mut requested = Vec::new();
+            for option in request.acp_config {
+                use pl_tool::collaboration::thread::AcpSessionConfigValue;
+                let value = match option.value {
+                    AcpSessionConfigValue::Select(value) => {
+                        crate::acp_schema::SessionConfigOptionValue::ValueId {
+                            value: value.into(),
+                        }
+                    }
+                    AcpSessionConfigValue::Boolean(value) => {
+                        crate::acp_schema::SessionConfigOptionValue::Boolean { value }
+                    }
+                };
+                // The original SDK checks the current declaration before issuing this RPC.
+                session
+                    .set_config(option.id.clone().into(), value.clone())
+                    .await
+                    .map_err(ControlError::service)?;
+                let snapshot = session.snapshot().await.map_err(ControlError::service)?;
+                if !acp_config_matches(&snapshot, &option.id, &value) {
+                    return Err(ControlError::service(std::io::Error::other(
+                        "ACP child configuration readback differs from the request",
+                    )));
+                }
+                requested.retain(|(id, _)| id != &option.id);
+                requested.push((option.id, value));
+            }
+            if !requested.is_empty() {
+                let snapshot = session.snapshot().await.map_err(ControlError::service)?;
+                if requested.iter().any(|(id, value)| !acp_config_matches(&snapshot, id, value)) {
+                    return Err(ControlError::service(std::io::Error::other(
+                        "later ACP child options changed an explicit selection; message not submitted",
+                    )));
+                }
+            }
+            Ok::<_, ControlError>(())
+            };
+            tokio::select! { biased;
+                () = context.cancellation.cancelled() => return Err(ControlError::Closed),
+                () = resources.cancellation.cancelled() => return Err(ControlError::Closed),
+                result = configuration => result?,
+            }
+            let _operation = tokio::select! { biased;
+                () = context.cancellation.cancelled() => return Err(ControlError::Closed),
+                () = resources.cancellation.cancelled() => return Err(ControlError::Closed),
+                permit = owner.agent_operation(&reservation.id) => permit,
+            };
             owner
                 .ensure_agent_admission_open(&reservation.id)
                 .map_err(ControlError::service)?;
-            resources
-                .session()
-                .map_err(|error| ControlError::service(super::agent_services::ServiceError(error)))?
+            self.caller(&context)?;
+            if context.cancellation.is_cancelled() || resources.cancellation.is_cancelled() {
+                return Err(ControlError::Closed);
+            }
+            session
                 .submit(vec![crate::acp_schema::ContentBlock::Text(
                     pl_acp::session::schema::TextContent::new(request.message),
                 )])
@@ -531,7 +623,14 @@ impl AgentHost {
             ));
         }
         if declared.is_some_and(|profile| matches!(profile.binding, crate::AgentBinding::Acp(_))) {
-            return self.spawn_acp_owned(owner, context, request).await;
+            return self
+                .spawn_acp_owned(owner, context, request, _parent_operation)
+                .await;
+        }
+        if !request.acp_config.is_empty() {
+            return Err(ControlError::service(std::io::Error::other(
+                "Native targets reject ACP session configuration",
+            )));
         }
         let admission = factory
             .admit(
@@ -947,6 +1046,9 @@ impl AgentControlHost for AgentHost {
             let session = resources.session().map_err(|error| {
                 ControlError::service(super::agent_services::ServiceError(error))
             })?;
+            resources
+                .ensure_input_ready()
+                .map_err(ControlError::service)?;
             let current = session.snapshot().await.map_err(ControlError::service)?;
             let content = vec![crate::acp_schema::ContentBlock::Text(
                 pl_acp::session::schema::TextContent::new(message.message),
@@ -1647,6 +1749,7 @@ pub(crate) mod archive_tests {
         };
         let request = AgentSpawn {
             profile_id: "fixture".into(),
+            acp_config: Vec::new(),
             model_selection: None,
             task_summary: "archive first write".to_owned().try_into().unwrap(),
             message: "never delivered".into(),
@@ -1688,6 +1791,7 @@ pub(crate) mod archive_tests {
         };
         let request = AgentSpawn {
             profile_id: "acp-profile".into(),
+            acp_config: Vec::new(),
             model_selection: None,
             task_summary: "must reject before review".to_owned().try_into().unwrap(),
             message: "must never be delivered".into(),
@@ -1770,6 +1874,7 @@ pub(crate) mod archive_tests {
             profile_id: "fixture".into(),
             model_selection: None,
             task_summary: "archive publication race".to_owned().try_into().unwrap(),
+            acp_config: Vec::new(),
             message: "must never be delivered".into(),
             writable_paths: None,
             review_target_agent_id: None,
