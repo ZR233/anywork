@@ -37,6 +37,8 @@ Cargo 1.100 的中间产物仍保存在默认 `target/`，但其内部布局已�
 `target/xtask` 和两个远端辅助进程交叉目标分别缓存；同次运行中需要精确复用的
 可执行文件仍通过经校验的构件传递。
 RC 和发布的辅助进程构建恢复相同环境、工具链及依赖的缓存，不修改已保存的缓存。
+Linux 发布构建也恢复工作区、xtask 与 x86_64 musl 目标的依赖缓存；`anywk` CLI
+使用镜像已有的 Zig/cargo-zigbuild 静态构建，并在打包与解包时校验没有动态加载器或共享库导入。
 缓存按工具链、环境、依赖和平台区分；并行作业不会等待同一次运行的缓存写入。
 宿主须支持 Linux amd64 容器、可读写的 checkout 挂载、`/proc` 与子进程 subreaper；
 建议以普通开发用户运行脚本，容器使用相同 UID/GID，避免留下 root 所有的产物。
@@ -133,7 +135,7 @@ bash docker/linux/scripts/run.sh anywork-linux-build:local \
 
 首版成品验证目标为 Ubuntu 22.04、24.04 与 Debian 12、13 的 amd64。构建环境固定
 Ubuntu 22.04，完整 ELF 的 GLIBC 需求不高于 2.35，其他 ABI 需求也须满足最低环境。
-辅助进程使用 musl，不表示 Flutter、GTK 和 Rust bridge 不再依赖 glibc。
+辅助进程与 `anywk` CLI 使用 musl，不表示 Flutter、GTK 和 Rust bridge 不再依赖 glibc。
 
 兼容检查在干净运行环境安装同一 DEB，不能借用本镜像预装的开发库掩盖漏依赖。
 不承诺更旧发行版或全部桌面业务；支持与证据边界见
