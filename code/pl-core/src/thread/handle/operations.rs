@@ -16,12 +16,8 @@ impl ThreadHandle {
     /// Releases immutable exports only after the independent history consumer accepted them.
     /// No current save, dirty notification, execution permission or legacy cold fence is advanced.
     /// The retained window can also be released after the physical owner has closed.
-    pub fn release_history_through(&self, through: u64) -> Result<(), current::CurrentError> {
-        if through > self.snapshot().commit_sequence {
-            return Err(current::CurrentError::InvalidIdentity);
-        }
-        self.effect_window.release_through(through);
-        Ok(())
+    pub fn release_history_through(&self, through: u64) -> Result<(), ThreadError> {
+        self.effect_window.release_export_through(through)
     }
 
     /// Reads a bounded page of the Current owner's original immutable history exports.
@@ -31,9 +27,6 @@ impl ThreadHandle {
         after: u64,
         limit: std::num::NonZeroUsize,
     ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
-        if after > self.snapshot().commit_sequence {
-            return Err(ThreadError::InvalidContext);
-        }
         self.effect_window.current_page(after, limit.get())
     }
 
@@ -1512,4 +1505,52 @@ async fn finish_tool_transfer<T>(
         };
     }
     result
+}
+
+#[cfg(test)]
+mod history_handoff_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn history_handoff_can_finish_before_current_snapshot_is_published() {
+        let handle = ThreadHandle::start_current("history-publication-race".into(), None)
+            .expect("fresh owner");
+        let snapshot = handle.snapshot();
+        let sequence = snapshot.commit_sequence + 1;
+        // Owner::publish exposes the export before publish_snapshot. Hold that
+        // exact gap without adding a hook to the production owner or public API.
+        let mut published = snapshot.clone();
+        published.commit_sequence = sequence;
+        let export = Arc::new(HistoryExport {
+            effect: Arc::new(ThreadEffectBatch {
+                thread_id: handle.thread_id.clone(),
+                sequence,
+                ..Default::default()
+            }),
+            state: published,
+            output_claim: None,
+        });
+        handle.effect_window.push_current(export.clone());
+        assert_eq!(handle.snapshot().commit_sequence, snapshot.commit_sequence);
+        let demand = std::num::NonZeroUsize::new(1).unwrap();
+        let page = handle
+            .history_export_page(snapshot.commit_sequence, demand)
+            .expect("published export");
+        assert!(Arc::ptr_eq(&page[0], &export));
+        handle
+            .release_history_through(sequence)
+            .expect("accepted history handoff");
+        handle
+            .release_history_through(sequence)
+            .expect("idempotent release");
+        assert!(
+            handle
+                .history_export_page(sequence, demand)
+                .expect("released cut")
+                .is_empty()
+        );
+        assert!(handle.release_history_through(sequence + 1).is_err());
+        assert!(handle.history_export_page(sequence + 1, demand).is_err());
+        handle.close().await.expect("close owner");
+    }
 }

@@ -116,3 +116,5 @@ Core 的通用 SQLite 后端仍可独立使用既有 effect、checkpoint 与 dur
 应用关闭分别等待 Current writer、History writer、History readers、Current readers 和调用诊断 owner 的真实结束。Session 的关闭存储责任直接等待独立 Current writer，不依赖产品观察任务恰好先消费最终快照；其后再等待 History writer。仅为报告接收而创建的临时 owner 也必须保存交付标记的最终清理并 join 自己的 Current writer，再释放原登记；History 退出不能代替该责任。显式永久删除也必须 join 原 Current writer、捕获和订阅，但不要求先修复或成功保存即将删除的数据；普通关闭与归档仍必须报告原保存失败。Current 保存失败保留 dirty 与错误；History flush 失败保留 pending 与错误；History reader 关闭失败保留原读取 owner。任何一方成功都不能掩盖另一方未收束。
 
 未知结构版本、身份冲突、损坏资源或缺失必要迁移路径一律 fail-closed 并保留原文件/数据库。历史正文局部损坏明确返回读取错误，不把缺块解释为空内容。只有明确隔离的 v2 前数据可以保持不导入、不激活；正常路径不打开迁移备份、旧 schema 24 表或旧 client fallback。
+
+History 导出发布与 Current 快照发布不构成同一可见点。历史页读取及可靠交付后的释放，只在该物理 owner 的共享导出窗口内校验已发布／已释放边界；不读取可能迟到的 Current snapshot.commit_sequence，也不等待 Current 保存。超过窗口自身已发布范围仍须拒绝，重复释放已交付范围保持幂等。

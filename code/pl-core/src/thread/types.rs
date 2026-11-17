@@ -117,9 +117,10 @@ impl EffectWindow {
         limit: usize,
     ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
         let state = self.read();
-        if state
-            .frontier()
-            .is_some_and(|frontier| after.saturating_add(1) < frontier)
+        if after > state.published_through()
+            || state
+                .frontier()
+                .is_some_and(|frontier| after.saturating_add(1) < frontier)
         {
             return Err(ThreadError::InvalidContext);
         }
@@ -138,20 +139,18 @@ impl EffectWindow {
     /// A consumer that has not consumed them yet observes an explicit gap and resynchronizes from
     /// history instead of reading a stale body or losing the fact.
     pub(super) fn release_through(&self, durable_sequence: u64) {
+        self.write().release_through(durable_sequence);
+    }
+
+    /// Export publication precedes the coalescing Current snapshot. Validate
+    /// and release under the window's own lock so handoff never depends on it.
+    pub(super) fn release_export_through(&self, through: u64) -> Result<(), ThreadError> {
         let mut state = self.write();
-        if durable_sequence > state.durable_through {
-            state.durable_through = durable_sequence;
+        if through > state.published_through() {
+            return Err(ThreadError::InvalidContext);
         }
-        while state
-            .batches
-            .front()
-            .is_some_and(|batch| batch.sequence <= state.durable_through)
-        {
-            state.batches.pop_front();
-        }
-        state
-            .current_exports
-            .retain(|sequence, _| *sequence > durable_sequence);
+        state.release_through(through);
+        Ok(())
     }
 
     /// First commit sequence the window can still serve, or `None` while it can serve everything.
@@ -202,6 +201,25 @@ pub(super) enum WindowPage {
 }
 
 impl EffectWindowState {
+    fn published_through(&self) -> u64 {
+        self.batches.back().map_or(self.durable_through, |batch| {
+            batch.sequence.max(self.durable_through)
+        })
+    }
+
+    fn release_through(&mut self, through: u64) {
+        self.durable_through = self.durable_through.max(through);
+        while self
+            .batches
+            .front()
+            .is_some_and(|batch| batch.sequence <= self.durable_through)
+        {
+            self.batches.pop_front();
+        }
+        self.current_exports
+            .retain(|sequence, _| *sequence > through);
+    }
+
     /// First commit sequence the window can still serve, if anything was ever released.
     fn frontier(&self) -> Option<u64> {
         self.batches
