@@ -5,16 +5,16 @@
 //! SeaORM migration transaction transform the database in one Immediate transaction.
 
 use super::{
-    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBodyRole, HistoryEntityHead, HistoryError,
-    HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation, HistoryRowHead,
-    HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
-    HistoryWaitIntentHead, HistoryWorkHead, Result,
+    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBody, HistoryBodyRole, HistoryEntityHead,
+    HistoryError, HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation,
+    HistoryRowHead, HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
+    HistoryWaitIntentHead, HistoryWorkHead, INPUT_FACT_BODY_KEY, InputAdmission, InputFact, Result,
     db::{self, statement},
     import::{
         HistoryBodySource, HistoryImport, HistoryImportBody, V24Body, V24BodyReader,
         V24HistorySource,
     },
-    schema,
+    input_event, schema,
 };
 use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
 use crate::{
@@ -624,8 +624,7 @@ async fn verify_pending_identities(
             .ok_or_else(|| {
                 HistoryError::Integrity("resident input has no durable schema 24 original".into())
             })?;
-        let durable: crate::studio::storage::state::InputIdentityEntry =
-            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        let durable = decode_legacy_input_identity(&row.try_get::<String>("", "payload")?)?;
         if durable.id != input.input.id
             || durable.digest != input.input.digest()
             || durable.continuation != input.continuation
@@ -1537,31 +1536,41 @@ struct SourceRow {
     outcome: Option<crate::ChatTerminalOutcome>,
 }
 
-/// The frozen schema-24 input identity receipt.
+const LEGACY_INPUT_IDENTITY_FIELDS: &[&str] = &[
+    "digest",
+    "continuation",
+    "delivery",
+    "id",
+    "purpose",
+    "expectedModelRouteRevision",
+    "continuationAdmissionRevision",
+    "ordinal",
+    "revision",
+    "state",
+    "acceptedSequence",
+];
+
+/// Decodes the frozen schema-24 input identity without admitting unknown user content.
 ///
-/// This deliberately mirrors the old writer's payload instead of accepting arbitrary fields: the
-/// row carries content identity and admission metadata, but never the accepted body itself.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct InputIdentityPayload {
-    digest: String,
-    #[serde(default, rename = "continuation")]
-    _continuation: Option<pl_core::thread::input::InputContinuation>,
-    #[serde(rename = "delivery")]
-    _delivery: pl_core::thread::input::InputDelivery,
-    id: String,
-    #[serde(default, rename = "purpose")]
-    _purpose: pl_core::thread::input::InputPurpose,
-    #[serde(default, rename = "expectedModelRouteRevision")]
-    _expected_model_route_revision: Option<u64>,
-    #[serde(default, rename = "continuationAdmissionRevision")]
-    _continuation_admission_revision: Option<u64>,
-    ordinal: u64,
-    revision: u64,
-    #[serde(rename = "state")]
-    _state: pl_core::thread::input::InputState,
-    #[serde(rename = "acceptedSequence")]
-    _accepted_sequence: u64,
+/// The old row type intentionally tolerates fields added over its lifetime, so the migration
+/// boundary checks the key set before decoding that type. Newer unknown fields stop the upgrade
+/// instead of being silently copied or discarded.
+fn decode_legacy_input_identity(
+    payload: &str,
+) -> Result<crate::studio::storage::state::InputIdentityEntry> {
+    let value: serde_json::Value = serde_json::from_str(payload)?;
+    let object = value.as_object().ok_or_else(|| {
+        HistoryError::Integrity("schema 24 input identity payload is not an object".into())
+    })?;
+    if let Some(unknown) = object
+        .keys()
+        .find(|key| !LEGACY_INPUT_IDENTITY_FIELDS.contains(&key.as_str()))
+    {
+        return Err(HistoryError::Integrity(format!(
+            "schema 24 input identity contains unsupported field {unknown}"
+        )));
+    }
+    Ok(serde_json::from_value(value)?)
 }
 
 async fn read_legacy_product_blob(
@@ -1672,7 +1681,7 @@ async fn import_supplements<C: ConnectionTrait>(
     import_turns(import, source, recorded_at, counts).await?;
     import_sources(import, source, recorded_at, counts).await?;
     import_tool_tasks(import, source, recorded_at, counts).await?;
-    import_input_identities(source, counts).await?;
+    import_input_identities(import, source, recorded_at, counts).await?;
     import_message_identities(source, counts).await?;
     import_fact_receipts(import, source, thread_id, recorded_at, counts).await?;
     import_costs(import, source, recorded_at, counts).await?;
@@ -2212,8 +2221,10 @@ async fn import_tool_resource_observation<C: ConnectionTrait>(
     Ok(())
 }
 
-async fn import_input_identities(
+async fn import_input_identities<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
     source: &V24HistorySource,
+    recorded_at: i64,
     counts: &mut ImportCounts,
 ) -> Result<()> {
     let mut after = String::new();
@@ -2239,34 +2250,65 @@ async fn import_input_identities(
                 "history_input_identities.revision",
             )?;
             let digest: String = row.try_get("", "digest")?;
-            let presentation: Option<String> = row.try_get("", "presentation")?;
-            let payload: InputIdentityPayload =
-                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-            if payload.id != item_id
-                || payload.digest != digest
-                || payload.ordinal != ordinal
-                || payload.revision != revision
+            let request_digest: Option<String> = row.try_get("", "request_digest")?;
+            let durable = decode_legacy_input_identity(&row.try_get::<String>("", "payload")?)?;
+            if durable.id != item_id
+                || durable.digest != digest
+                || durable.ordinal != ordinal
+                || durable.revision != revision
             {
                 return Err(HistoryError::Integrity(
                     "schema 24 input identity row conflicts with its payload".into(),
                 ));
             }
-            if presentation.as_deref() != Some("visible") {
-                counts.backup_only("history_input_identities_non_visible", 1);
-                continue;
-            }
-            if source
-                .query_one(
-                    "SELECT 1 FROM conversation_items WHERE item_id=?",
-                    vec![item_id.clone().into()],
+            let admission = InputAdmission {
+                id: durable.id,
+                digest: durable.digest,
+                request_digest,
+                continuation: durable.continuation,
+                delivery: durable.delivery,
+                purpose: durable.purpose,
+                ordinal: durable.ordinal,
+                accepted_sequence: durable.accepted_sequence,
+                admission_revision: durable.continuation_admission_revision,
+                expected_model_route_revision: durable.expected_model_route_revision,
+                revision: durable.revision,
+                state: durable.state,
+            };
+            let event_id = format!("legacy:v24:input:{item_id}:accepted");
+            let body_id = deterministic_body_id(&event_id, INPUT_FACT_BODY_KEY);
+            let (mut event, body) = input_event(
+                event_id,
+                None,
+                recorded_at,
+                &InputFact::Admission(admission),
+                body_id,
+            )?;
+            event.bodies.clear();
+            let HistoryBody {
+                body_id,
+                body_key,
+                role,
+                media_type,
+                bytes,
+            } = body;
+            import
+                .copy_body(
+                    HistoryImportBody {
+                        body_id,
+                        owner_event_id: event.header.event_id.clone(),
+                        ordinal: 0,
+                        body_key,
+                        role,
+                        media_type,
+                    },
+                    &VecSource {
+                        bytes: bytes.as_ref().to_vec(),
+                    },
                 )
-                .await?
-                .is_some()
-            {
-                counts.backup_only("history_input_identities_covered_by_original", 1);
-                continue;
-            }
-            counts.backup_only("history_input_identities_identity_receipt_only", 1);
+                .await?;
+            import.insert_event(event).await?;
+            counts.imported("history_input_identities", 1);
         }
     }
     Ok(())
@@ -4900,17 +4942,20 @@ mod migration_tests {
     }
 
     #[tokio::test]
-    async fn identity_receipts_stay_in_backup_and_unknown_user_content_stops_upgrade() -> Result<()>
-    {
+    async fn identity_receipts_become_input_facts_and_unknown_user_content_stops_upgrade()
+    -> Result<()> {
         for unknown_content in [false, true] {
             let directory = tempfile::tempdir()?;
             let history_path = directory.path().join("history.sqlite");
             let thread_id = format!("migration-input-receipt-{unknown_content}");
             write_v24_fixture(&history_path, &thread_id, false).await?;
             let mut payload = serde_json::json!({
-                "digest": "sha256:identity-only", "delivery": {"kind":"nextTurn"},
-                "id":"identity-only", "ordinal":3, "revision":1,
-                "state":{"kind":"discarded"}, "acceptedSequence":1,
+                "digest": "sha256:identity-only",
+                "continuation": {"pointId":"point-1", "sourceTurnId":"turn-1"},
+                "delivery": {"kind":"currentTurn", "value":{"turnId":"turn-1"}},
+                "id":"identity-only", "ordinal":3, "purpose":"continuation",
+                "expectedModelRouteRevision":7, "continuationAdmissionRevision":2,
+                "revision":3, "state":{"kind":"discarded"}, "acceptedSequence":5,
             });
             if unknown_content {
                 payload["userBody"] = serde_json::json!("unique user text must not be discarded");
@@ -4918,7 +4963,7 @@ mod migration_tests {
             let original = serde_json::to_string(&payload)?;
             let db = schema::connect(&history_path, false, false).await?;
             db.execute_raw(statement(
-                "INSERT INTO history_input_identities(item_id,ordinal,revision,digest,presentation,payload,last_write_seq) VALUES('identity-only',3,1,'sha256:identity-only','visible',?,1)",
+                "INSERT INTO history_input_identities(item_id,ordinal,revision,digest,request_digest,presentation,payload,last_write_seq) VALUES('identity-only',3,3,'sha256:identity-only','sha256:request','visible',?,1)",
                 vec![original.clone().into()],
             )).await?;
             db.close().await?;
@@ -4930,28 +4975,34 @@ mod migration_tests {
                 );
                 assert_eq!(schema_version(&history_path).await?, 24);
             } else {
-                let report = result?;
-                assert_eq!(
-                    report.backup_only_categories["history_input_identities_identity_receipt_only"],
-                    1
-                );
+                result?;
                 let store =
                     CurrentHistoryStore::open(&history_path, &thread_id, HistoryLimits::default())
                         .await?;
                 let reader = store.reader();
-                let events = reader
-                    .events_page(
-                        HistoryEventsQuery::Entity {
-                            entity_id: "identity-only".into(),
-                        },
-                        None,
-                        None,
-                        HistoryDemand::default(),
-                    )
-                    .await?;
-                assert!(
-                    events.entries.is_empty(),
-                    "identity metadata is not a user-content event"
+                let admission =
+                    crate::history::read_input_admission(&reader, "identity-only").await?;
+                let admission = admission.expect("migrated input admission");
+                assert_eq!(admission.id, "identity-only");
+                assert_eq!(admission.digest, "sha256:identity-only");
+                assert_eq!(admission.request_digest.as_deref(), Some("sha256:request"));
+                assert_eq!(
+                    admission.continuation,
+                    Some(pl_core::thread::input::InputContinuation {
+                        point_id: "point-1".into(),
+                        source_turn_id: Some("turn-1".into()),
+                    })
+                );
+                assert_eq!(
+                    admission.purpose,
+                    pl_core::thread::input::InputPurpose::Continuation
+                );
+                assert_eq!(admission.accepted_sequence, 5);
+                assert_eq!(admission.admission_revision, Some(2));
+                assert_eq!(admission.expected_model_route_revision, Some(7));
+                assert_eq!(
+                    admission.state,
+                    pl_core::thread::input::InputState::Discarded
                 );
                 reader.close().await;
                 store.close().await?;

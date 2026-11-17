@@ -37,7 +37,7 @@ use pl_core::{
 use super::ProjectionError;
 use crate::history::{
     HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead, HistoryTurnHead,
-    HistoryTurnState,
+    HistoryTurnState, InputFact, PreparedInputFact,
 };
 use crate::studio::runtime::chat_item::{
     BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft, static_state,
@@ -316,6 +316,8 @@ pub(in crate::studio) struct PreparedEffect {
     pub(in crate::studio) history_turns: Arc<[HistoryTurnHead]>,
     pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, crate::Turn>>,
     pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
+    /// Input admissions and transitions frozen from this effect's original observation cut.
+    pub(in crate::studio) history_inputs: Arc<[PreparedInputFact]>,
     pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
@@ -380,6 +382,29 @@ fn prepared_turns(
         );
     }
     Ok((heads, details))
+}
+
+fn history_input_facts(
+    thread: &crate::Thread,
+    effect: &ThreadEffectBatch,
+    state: &ThreadSnapshot,
+) -> Arc<[PreparedInputFact]> {
+    // The route is optional evidence: a missing or undecodable saved Profile cannot be replaced by
+    // the current extension later in the writer, so the admission fact keeps `None`.
+    let expected_model_route_revision =
+        crate::studio::model_route::route_record(state, thread.parent_thread_id.is_some())
+            .ok()
+            .flatten()
+            .map(|(record, _)| record.revision);
+    effect
+        .inputs
+        .iter()
+        .map(|change| PreparedInputFact {
+            fact: InputFact::from_change(change, expected_model_route_revision),
+            body_id: uuid::Uuid::new_v4().to_string(),
+        })
+        .collect::<Vec<_>>()
+        .into()
 }
 
 fn history_entity_change(
@@ -605,6 +630,10 @@ impl PreparedEffect {
             .saturating_add(
                 (self.history_sources.len() as u64)
                     .saturating_mul(std::mem::size_of::<HistorySourceHead>() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.history_inputs.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(
                 serde_json::to_vec(self.retained_resources.as_ref())
@@ -1699,6 +1728,7 @@ impl LiveProjection {
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
+            history_inputs: history_input_facts(thread, effect, state),
         });
         if let Some(events) = events.as_mut()
             && let Some(canonical) = super::prepared_terminal_turn(&prepared)
@@ -1787,6 +1817,7 @@ impl LiveProjection {
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
+            history_inputs: history_input_facts(thread, effect, state),
         });
         self.retain(state);
         Ok(prepared)

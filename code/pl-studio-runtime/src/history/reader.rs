@@ -115,6 +115,17 @@ impl HistoryReader {
     pub async fn capture(&self) -> Result<HistoryCut> {
         self.capture_position().await.map(|(cut, _)| cut)
     }
+    /// Persistence receipts require a committed prefix; accepted RAM events are not a save ACK.
+    pub(crate) async fn capture_committed_position(&self) -> Result<(HistoryCut, u64)> {
+        self.run(move |reader| async move {
+            let tx = reader.inner.store.reader.begin().await?;
+            let head = db::event_head(&tx).await?;
+            let cut = reader.inner.codec.cut(head)?;
+            tx.commit().await?;
+            Ok((cut, head))
+        })
+        .await
+    }
     /// The opaque read cut and its actual event position from one captured RAM/database snapshot.
     pub async fn capture_position(&self) -> Result<(HistoryCut, u64)> {
         self.run(move |reader| async move {

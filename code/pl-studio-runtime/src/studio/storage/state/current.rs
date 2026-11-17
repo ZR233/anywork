@@ -85,7 +85,9 @@ impl StateStore {
         // A failed final write keeps its lease and retained data for an explicit close retry.
         // Deletion releases it only after the actual worker join; stale closes release nothing.
         if current.writer.is_joined()
-            && (result.is_ok() || purpose == crate::thread_assembler::ClosePurpose::Delete)
+            && (result.is_ok()
+                || purpose == crate::thread_assembler::ClosePurpose::Delete
+                || current.writer.snapshot().runtime_epoch.is_none())
         {
             current
                 .coordinator

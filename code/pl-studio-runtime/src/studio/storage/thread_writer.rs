@@ -3833,9 +3833,9 @@ pub(crate) mod storage_fault_tests {
         message: pl_core::thread::inbox::ThreadMessage,
     ) -> Result<()> {
         let saved = saved_current(store, thread).await?;
-        let sequence = saved
-            .as_ref()
-            .map_or(1, |current| current.snapshot_revision + 1);
+        // This is a new History producer incarnation. Its handoff sequence starts at one;
+        // an independent Current revision cannot seed History admission or durability.
+        let sequence = 1;
         let mut snapshot = saved
             .as_ref()
             .map_or_else(ThreadSnapshot::default, |current| {
@@ -3863,7 +3863,12 @@ pub(crate) mod storage_fault_tests {
             output_claim: None,
         });
         let sink = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
-        let mut projection = live_projection(&sink).await?;
+        let mut projection = crate::studio::thread_projection::LiveProjection::new();
+        projection.bind_execution_history(
+            sink.0.channel.order_index(),
+            RuntimeEpoch::new(),
+            store.history(&thread.id).await?,
+        )?;
         let prepared = projection
             .prepare_committed(thread, &terminal.effect, &terminal.state)
             .await?;
@@ -3871,7 +3876,7 @@ pub(crate) mod storage_fault_tests {
         handed.parent_report = Some(Arc::new(message));
         let handed = Arc::new(handed);
         sink.admit(&thread.id, terminal)?;
-        sink.0.channel.prepare(handed);
+        sink.0.channel.accept_prepared(None, handed)?;
         sink.0
             .channel
             .await_handoff_durable(&thread.id, sequence)

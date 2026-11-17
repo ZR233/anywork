@@ -71,16 +71,11 @@ impl SessionRuntime {
         }
         // Initialization/attachment stays retained across cancellation. Closing a core before
         // attachment succeeded would strand the pending sink on an unattachable, closed core.
-        let binding = self.close_storage_core(id).await?;
+        self.close_storage_core(id).await?;
         self.drain_observation(id).await?;
-        binding
-            .channel
-            .stop_and_join()
-            .await
-            .map_err(|source| ThreadAssemblyError::Resource {
-                operation: "join temporary report receiver history",
-                source: source.into_boxed_dyn_error(),
-            })?;
+        // The recipient's accepted marker and its cleanup live in Current. Joining History alone
+        // neither saves that cleanup nor releases the original Current writer and capture owner.
+        self.join_close_storage(id).await?;
         let removed = {
             let mut state = self.0.state();
             if state.entries.get(id).is_some_and(|entry| {

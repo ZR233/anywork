@@ -669,7 +669,7 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
                     tool_calls: vec![],
                 },
                 ContextRecord {
-                    id: "assistant".into(),
+                    id: "source-attempt:output".into(),
                     turn_id: None,
                     source: ContextSource::Assistant,
                     content: vec![
@@ -699,5 +699,18 @@ async fn assistant_request_reconstruction_requires_explicit_producer_preparation
             .is_err()
     );
     let upgraded = migrate_payload(&payload).unwrap().unwrap();
-    assert!(model.estimate_input(&request(upgraded), None).await.is_ok());
+    assert!(
+        model
+            .estimate_input(&request(upgraded.clone()), None)
+            .await
+            .is_err(),
+        "payload-only migration cannot supply the source attempt identity"
+    );
+    let prepared =
+        pl_model::runtime::migration::upgrade_assistant_frame(&upgraded, "source-attempt", &[])
+            .unwrap();
+    model
+        .estimate_input(&request(prepared.payload), None)
+        .await
+        .expect("contextual producer preparation makes the assistant usable");
 }

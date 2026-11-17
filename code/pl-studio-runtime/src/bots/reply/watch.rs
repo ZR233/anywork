@@ -387,8 +387,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bot_input_retry_rejects_expired_identity_and_new_message_keeps_its_identity()
-    -> anyhow::Result<()> {
+    async fn bot_input_retry_uses_history_and_new_message_keeps_its_identity() -> anyhow::Result<()>
+    {
         use crate::StudioPromptInput;
         use crate::runtime_test_support as support;
         use crate::studio::{StudioSubmitPromptOptions, StudioSubmitPromptRequest};
@@ -424,21 +424,30 @@ mod tests {
                 options: StudioSubmitPromptOptions::default(),
             };
             let cancellation = CancellationToken::new();
-            env.runtime
+            let accepted = env
+                .runtime
                 .submit_queued_prompt(request(&original, BODY), &cancellation)
                 .await?;
             let first_turn = completed_input(&env.runtime, &id, &original).await?;
-            // Current receipts are not a global idempotence cache. Once the accepted input
-            // has left Current, replaying its frozen identity is explicitly rejected.
-            let stale = env
+            env.runtime.synchronize_thread_observation(&id).await?;
+            let replay = env
                 .runtime
                 .submit_queued_prompt(request(&original, BODY), &cancellation)
-                .await
-                .expect_err("expired bot input identity was accepted again");
-            let stale = stale
-                .downcast_ref::<crate::StudioError>()
-                .expect("expired input conflict remains typed");
-            anyhow::ensure!(stale.code == crate::StudioErrorCode::Conflict);
+                .await?;
+            anyhow::ensure!(
+                replay == accepted,
+                "bot retry changed its original admission receipt"
+            );
+            anyhow::ensure!(
+                env.runtime
+                    .submit_queued_prompt(
+                        request(&original, "changed platform message"),
+                        &cancellation
+                    )
+                    .await
+                    .is_err(),
+                "same bot identity accepted changed content"
+            );
             env.runtime
                 .submit_queued_prompt(request(&second, BODY), &cancellation)
                 .await?;

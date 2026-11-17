@@ -508,30 +508,6 @@ mod standalone_tests {
         }
     }
 
-    async fn await_projected_history_durable(
-        runtime: &StudioRuntime,
-        id: &str,
-        sequence: u64,
-    ) -> Result<()> {
-        let channel = runtime.store.thread_persistence().history_channel(id);
-        let mut status = channel.subscribe();
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while channel.handoff_ticket() < sequence {
-                if let Some(error) = status.borrow_and_update().error.clone() {
-                    anyhow::bail!("History projection failed before handoff: {error}");
-                }
-                status
-                    .changed()
-                    .await
-                    .context("History projection progress channel closed")?;
-            }
-            Ok::<_, anyhow::Error>(())
-        })
-        .await
-        .context("History projection did not reach its committed handoff")??;
-        channel.await_handoff_durable(id, sequence).await
-    }
-
     #[tokio::test]
     async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
     -> Result<()> {
@@ -2464,9 +2440,7 @@ mod standalone_tests {
         use crate::{
             studio::{
                 agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
-                storage_fault_test_support::{
-                    ThreadStorageSink, close_factory, spawn_live_projection_for_thread,
-                },
+                storage_fault_test_support::{ThreadStorageSink, close_factory},
                 store::{
                     thread_archive::{ArchivePhase, ArchiveScope},
                     thread_preparation::{
@@ -2483,7 +2457,6 @@ mod standalone_tests {
         use pl_core::thread::{
             ThreadHandle,
             current::{RuntimeEpoch, ThreadCurrent},
-            history_sink::HistorySinkHandle,
         };
         use sea_orm::ConnectionTrait;
         use std::{sync::Arc, time::Duration};
@@ -2823,9 +2796,10 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
+            eprintln!("private crash seed: directory committed");
             // A real older incarnation leaves durable earlier Current before private attachment.
-            let old = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
-            let projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
+            // This predecessor supplies only complete Current. Its seed has no historical
+            // originals or writer obligations; ordinary History is created by the later owner.
             let previous = ThreadHandle::restore_current(
                 ThreadCurrent::new(protocol.id.clone(), RuntimeEpoch::new()),
                 None,
@@ -2844,7 +2818,7 @@ mod standalone_tests {
                     ),
                 )
                 .await?;
-            previous.attach_history(HistorySinkHandle::new(old)).await?;
+            eprintln!("private crash seed: Current registered");
             previous
                 .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                     id: "fixture.private-seed".into(),
@@ -2852,22 +2826,14 @@ mod standalone_tests {
                     payload: pl_core::context::OpaquePayload::text("durable earlier Current"),
                 }])
                 .await?;
-            current_store
-                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
-                .await?;
-            await_projected_history_durable(
-                &runtime,
-                &protocol.id,
-                previous.snapshot().commit_sequence,
+            eprintln!("private crash seed: extension changed");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                current_store.close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve),
             )
-            .await?;
-            runtime
-                .store
-                .thread_persistence()
-                .history_channel(&protocol.id)
-                .stop_and_join()
-                .await?;
-            projection.await?;
+            .await
+            .context("seed previous Current final handoff stalled")??;
+            eprintln!("private crash seed: Current closed");
             runtime.shutdown_runtime().await?;
             eprintln!("private crash seed: earlier checkpoint durable and seed runtime shut down");
             Ok(())
@@ -2948,7 +2914,6 @@ mod standalone_tests {
                     .await?;
             }
             let sink = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
-            let _projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
             if !receipt {
                 let path = runtime
                     .store
@@ -2974,18 +2939,12 @@ mod standalone_tests {
             );
             eprintln!("private crash fixture: attach and close the original owner");
             let session = runtime.session_for_roots(&["required-root".to_owned()])?;
-            let owner = session.assemble(spec).await?;
+            session.assemble(spec).await?;
             let close = session.close(&protocol.id).await;
             ensure!(
                 close.is_err(),
                 "the original private close must retain its real failure"
             );
-            await_projected_history_durable(
-                &runtime,
-                &protocol.id,
-                owner.snapshot().commit_sequence,
-            )
-            .await?;
             eprintln!("private crash fixture: original failure retained");
             let record = runtime
                 .store
@@ -3526,11 +3485,7 @@ mod standalone_tests {
                 thread_preparation::PreparationIdentity,
             },
         };
-        use pl_core::thread::{
-            ThreadHandle,
-            current::{RuntimeEpoch, ThreadCurrent},
-            history_sink::HistorySinkHandle,
-        };
+        use pl_core::thread::ThreadHandle;
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
@@ -3953,30 +3908,32 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            let sink = ThreadStorageSink::new(runtime.store.clone(), child.clone()).await?;
-            let projection = spawn_live_projection_for_thread(runtime.store.clone(), &child.id);
-            let owner = ThreadHandle::restore_current(
-                ThreadCurrent::new(child.id.clone(), RuntimeEpoch::new()),
-                None,
-            )?;
-            owner.attach_history(HistorySinkHandle::new(sink)).await?;
+            // This cold member needs an independent Current and an empty History store. A
+            // Current-only extension has no historical original and owes no History checkpoint.
+            runtime.store.history(&child.id).await?;
+            let owner = ThreadHandle::start_current(child.id.clone(), None)?;
+            let epoch = owner.runtime_epoch();
+            let mut current = runtime.store.state_for(&child.workspace_id, &child.id)?;
+            current
+                .attach_current(
+                    runtime.store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        owner.clone(),
+                    ),
+                )
+                .await?;
             owner
                 .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                     id: "fixture.cold-child".into(),
                     expected_revision: None,
-                    payload: pl_core::context::OpaquePayload::text("durable cold history"),
+                    payload: pl_core::context::OpaquePayload::text("durable cold Current"),
                 }])
                 .await?;
-            owner.close().await?;
-            await_projected_history_durable(runtime, &child.id, owner.snapshot().commit_sequence)
+            current
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
                 .await?;
-            runtime
-                .store
-                .thread_persistence()
-                .history_channel(&child.id)
-                .stop_and_join()
-                .await?;
-            projection.await?;
             // S1 archive belongs to the Session, not independently to a child. The caller exercises
             // both active and archived Session trees while this child stays cold in either case.
             Ok(child)

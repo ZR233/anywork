@@ -797,7 +797,6 @@ mod storage_fault_tests {
         store: StudioStore,
         live: LiveOwners,
         closes: Arc<Mutex<Vec<WorkspaceRelease>>>,
-        fail_sync: Arc<AtomicBool>,
         fail_drain: Arc<AtomicBool>,
         fail_drain_after_writer: Arc<AtomicBool>,
     }
@@ -811,8 +810,6 @@ mod storage_fault_tests {
             let observing = store.clone();
             let messages = store.clone();
             let closes = Arc::new(Mutex::new(Vec::new()));
-            let fail_sync = Arc::new(AtomicBool::new(false));
-            let sync_fault = fail_sync.clone();
             let fail_drain = Arc::new(AtomicBool::new(false));
             let drain_fault = fail_drain.clone();
             let fail_drain_after_writer = Arc::new(AtomicBool::new(false));
@@ -887,15 +884,7 @@ mod storage_fault_tests {
                 |_, _, _| Box::pin(async { Ok(()) }),
                 move |id| {
                     let owners = syncing.clone();
-                    let fault = sync_fault.clone();
-                    Box::pin(async move {
-                        if id == "parent" && fault.load(Ordering::SeqCst) {
-                            return Err(storage_error(anyhow::anyhow!(
-                                "injected report ACK failure"
-                            )));
-                        }
-                        barrier(owners, id).await
-                    })
+                    Box::pin(async move { barrier(owners, id).await })
                 },
             )?;
             Ok(Self {
@@ -903,7 +892,6 @@ mod storage_fault_tests {
                 store,
                 live,
                 closes,
-                fail_sync,
                 fail_drain,
                 fail_drain_after_writer,
             })
@@ -1397,6 +1385,43 @@ mod storage_fault_tests {
             Ok(())
         }
 
+        /// Seed the explicit Current obligation left before recipient admission. History's
+        /// immutable report alone does not authorize recovery to infer or re-send a delivery.
+        async fn save_pending_report(
+            store: &StudioStore,
+            parent: &crate::Thread,
+            message: &pl_core::thread::inbox::ThreadMessage,
+        ) -> Result<()> {
+            let mut state = store.state_for(&parent.workspace_id, &parent.id)?;
+            let saved = state
+                .load_current()
+                .await?
+                .context("saved parent Current")?;
+            let owner = ThreadHandle::restore_current(saved, None)?;
+            let epoch = owner.runtime_epoch();
+            state
+                .attach_current(
+                    store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        owner.clone(),
+                    ),
+                )
+                .await?;
+            let pending = crate::thread_assembler::pending_delivery::PendingNativeDelivery::from_terminal_message(message.clone(), false)?;
+            owner
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: pending.extension_id(),
+                    expected_revision: None,
+                    payload: pending.encode()?,
+                }])
+                .await?;
+            state
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+        }
+
         #[derive(Clone, Copy)]
         enum RecoveryPath {
             Uninterrupted,
@@ -1543,12 +1568,13 @@ mod storage_fault_tests {
                     kind: AgentMessageKind::Report,
                     id: crate::studio::agent_close::terminal_report_id("child", sequence),
                     source_id: "studio.child:child".into(),
-                    payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+                    payload: OpaquePayload::new("pl.studio.turn-report", 3, content.clone())?,
                     context: vec![ContextContent::Text {
                         text: content.into(),
                     }],
                 };
                 save_terminal_report(&store, &child, message.clone()).await?;
+                save_pending_report(&store, &parent, &message).await?;
                 let resources = close_factory(&store)?;
                 let current = store
                     .state_for("project-test", "child")?
@@ -1568,7 +1594,6 @@ mod storage_fault_tests {
                         .await?
                         .is_none()
                 );
-                fixture.fail_sync.store(inject_failure, Ordering::SeqCst);
                 fixture.fail_drain.store(inject_failure, Ordering::SeqCst);
                 let first = tokio::time::timeout(
                     std::time::Duration::from_secs(10),
@@ -1583,9 +1608,9 @@ mod storage_fault_tests {
                     .context("original report was durably received even when cleanup failed")?;
                 assert_eq!(first_digest, message.digest());
                 if inject_failure {
-                    let failure = first.expect_err("both delivery ACK and receiver drain fail");
+                    let failure = first
+                        .expect_err("receiver drain fails after the real Current delivery ACK");
                     let diagnostic = format!("{failure:#}");
-                    assert!(diagnostic.contains("injected report ACK failure"));
                     assert!(diagnostic.contains("injected receiver drain failure"));
                     assert!(
                         !store
@@ -1613,7 +1638,6 @@ mod storage_fault_tests {
                             .unwrap()
                             .ready
                     );
-                    fixture.fail_sync.store(false, Ordering::SeqCst);
                     fixture.fail_drain.store(false, Ordering::SeqCst);
                     if matches!(path, RecoveryPath::ActivateParent) {
                         // Normal activation itself must release the retained receiver, never return the
@@ -1717,12 +1741,13 @@ mod storage_fault_tests {
                 kind: AgentMessageKind::Report,
                 id: crate::studio::agent_close::terminal_report_id("child", sequence),
                 source_id: "studio.child:child".into(),
-                payload: OpaquePayload::new("pl.studio.turn-report", 1, content.clone())?,
+                payload: OpaquePayload::new("pl.studio.turn-report", 3, content.clone())?,
                 context: vec![ContextContent::Text {
                     text: content.into(),
                 }],
             };
             save_terminal_report(store, &child, message.clone()).await?;
+            save_pending_report(store, &parent, &message).await?;
             Ok(SavedClose {
                 child,
                 message,
@@ -1737,7 +1762,7 @@ mod storage_fault_tests {
                     .owner
                     .acknowledge_parent_reports(store, &saved.child)
                     .await?,
-                ParentReportAcknowledgement::Proven
+                ParentReportAcknowledgement::Absent
             );
             let child_history = store.history("child").await?;
             assert_eq!(
@@ -1824,12 +1849,13 @@ mod storage_fault_tests {
                 .close_storage_binding("parent")?
                 .context("retained exact binding after attachment and close")?;
             assert!(binding.channel.is_stopping());
-            assert!(
-                store
+            assert!(Arc::ptr_eq(
+                &store
                     .thread_persistence()
                     .retained_history_channel("parent")
-                    .is_none()
-            );
+                    .context("Current cleanup still owns the original registration")?,
+                &binding.channel,
+            ));
             assert!(
                 fixture
                     .owner
@@ -1863,12 +1889,13 @@ mod storage_fault_tests {
                 .context("same receipt after exact-binding cleanup")?;
             assert_eq!(receipt_sequence, first_sequence);
             assert_eq!(receipt_digest, first_digest);
-            assert!(
-                store
+            assert!(Arc::ptr_eq(
+                &store
                     .thread_persistence()
                     .retained_history_channel("parent")
-                    .is_none()
-            );
+                    .context("Current cleanup still owns the original registration")?,
+                &binding.channel,
+            ));
             prove_report_and_reactivate(&fixture, &saved).await?;
             resources.shutdown().await
         }

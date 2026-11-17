@@ -22,6 +22,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:path/path.dart' as path;
 
+import 'support/history_turns.dart';
 import 'support/timeline_observation.dart';
 
 void main() {
@@ -105,31 +106,29 @@ void main() {
     await tester.tap(find.byKey(StudioDriverKeys.composerSubmit));
 
     String? threadId;
-    StudioTurnView? completed;
+    await _until(tester, () {
+      final selected = graph.client.selection.state.selectedThreadId;
+      if (selected == null ||
+          graph.client.conversations.visibleThreadId.value != selected) {
+        return false;
+      }
+      threadId = selected;
+      return true;
+    }, 'selected wait Thread');
+    final completed = await waitForCompletedHistoryTurn(
+      conversations: graph.client.conversations,
+      threadId: threadId!,
+      matches: (head) =>
+          head.inputId != null &&
+          (threadId != priorThreadId || head.turnId != priorTurnId),
+      description: 'completed wait Turn in History',
+      timeout: const Duration(minutes: 2),
+    );
+    expect(completed.inputId, isNotNull);
     await _until(
       tester,
-      () {
-        final selected = graph.client.selection.state.selectedThreadId;
-        if (selected == null ||
-            graph.client.conversations.visibleThreadId.value != selected) {
-          return false;
-        }
-        final turn = graph.client.conversations
-            .existingSession(selected)
-            ?.state
-            .lastTurn;
-        if (turn == null ||
-            selected == priorThreadId && turn.turnId == priorTurnId ||
-            turn.state.status != StudioTurnStatus.completed ||
-            graph.timeline.lease(selected) == null) {
-          return false;
-        }
-        threadId = selected;
-        completed = turn;
-        return true;
-      },
-      'completed wait Turn',
-      timeout: const Duration(minutes: 2),
+      () => graph.timeline.lease(threadId!) != null,
+      'timeline for the completed wait Turn',
     );
 
     final lease = graph.timeline.lease(threadId!)!;
@@ -239,7 +238,7 @@ void main() {
     expect(result['timedOut'], isFalse);
     expect(result['tasks'], isA<List>());
 
-    expect(completed!.state, isA<CompletedStudioTurnState>());
+    expect(completed.state, HistoryTurnState.completed);
     graph.setConversationPageVisible(false);
     await tester.pumpWidget(const SizedBox.shrink());
     await _until(tester, () => lease.isReleased, 'timeline released');

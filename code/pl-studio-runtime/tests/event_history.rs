@@ -1271,8 +1271,7 @@ async fn usage_is_folded_once_and_unknown_cost_or_cache_baselines_stay_unknown()
         .read_body(original_usage.payload_ref.unwrap(), 0, 65_536)
         .await?;
     assert_eq!(
-        serde_json::from_slice::<HistoryUsageFact>(&raw_usage.bytes)?
-            .record
+        serde_json::from_slice::<pl_studio_runtime::InferenceBillingRecord>(&raw_usage.bytes)?
             .recorded_at,
         20
     );

@@ -31,6 +31,7 @@ import 'package:integration_test/integration_test.dart';
 
 import 'support/presentation_capture.dart';
 import 'support/fixture_gate.dart';
+import 'support/history_turns.dart';
 import 'support/timeline_observation.dart';
 
 const _prompt =
@@ -191,7 +192,7 @@ void main() {
         'fixtureStage': stage,
         'coverage': coverage,
         'threadId': threadId,
-        'turnId': state.lastTurn?.turnId,
+        'turnId': state.activeTurn?.turnId ?? state.lastTurn?.turnId,
         'interactionIds': state.interactions.map((value) => value.id).toList(),
         'receiptAtomId': ?receiptId,
         'receiptBlockId': ?receiptBlockId,
@@ -226,19 +227,30 @@ void main() {
     await fixtureGate(tester, Uri.parse(provider), 'questions-pending');
     String? questionThreadId;
     String? questionTurnId;
+    String? questionInputId;
     await _until(tester, () {
       final threadId = graph.client.selection.state.selectedThreadId;
       if (threadId == null) return false;
-      final turn = graph.client.conversations.session(threadId).state.lastTurn;
+      final turn = graph.client.conversations
+          .session(threadId)
+          .state
+          .activeTurn;
       if (turn == null ||
           turn.threadId != threadId ||
+          turn.inputId == null ||
           (threadId == priorThreadId && turn.turnId == priorTurnId)) {
         return false;
       }
       questionThreadId = threadId;
       questionTurnId = turn.turnId;
+      questionInputId = turn.inputId;
       return true;
     }, 'accepted first input selects its real Thread and Turn');
+    final admittedQuestionTurnId = questionTurnId;
+    final admittedQuestionInputId = questionInputId;
+    if (admittedQuestionTurnId == null || admittedQuestionInputId == null) {
+      throw StateError('Accepted question Turn lost its identity');
+    }
     await tester.pump();
     final draftInput = find.byKey(const ValueKey('composer-input'));
     await _until(
@@ -264,24 +276,21 @@ void main() {
       'questions-pending',
       release: true,
     );
-    StudioTurnView? questionTurn;
     try {
+      final completedQuestionTurn = await waitForCompletedHistoryTurn(
+        conversations: graph.client.conversations,
+        threadId: draftThread,
+        matches: (head) => head.turnId == admittedQuestionTurnId,
+        description: 'completed question-request Turn in History',
+        timeout: const Duration(minutes: 2),
+      );
+      expect(completedQuestionTurn.inputId, admittedQuestionInputId);
       await _until(
         tester,
         () {
           if (graph.client.selection.state.selectedThreadId != draftThread) {
             return false;
           }
-          final turn = graph.client.conversations
-              .session(draftThread)
-              .state
-              .lastTurn;
-          if (turn?.threadId != draftThread ||
-              turn?.turnId != questionTurnId ||
-              turn?.state is! CompletedStudioTurnState) {
-            return false;
-          }
-          questionTurn = turn;
           return find
               .byKey(StudioDriverKeys.userInputSubmit)
               .evaluate()
@@ -370,7 +379,12 @@ void main() {
       'InteractionAnswers continuation completed',
       'Real continuation answer and restored original unsent draft.',
     );
-    final receipt = await _questionReceipt(tester, graph, questionTurn!);
+    final receipt = await _questionReceipt(
+      tester,
+      graph,
+      draftThread,
+      admittedQuestionTurnId,
+    );
     final receiptRoot = find.byKey(
       StudioDriverKeys.timelineUserInput(receipt.id),
     );
@@ -684,7 +698,7 @@ Future<void> _reportMissingQuestionControls({
     AsyncData(:final value) => value.thread,
     _ => null,
   };
-  final latestTurn = session?.workspace?.latestTurn;
+  final latestTurn = session?.workspace?.lastTurn;
   int questionsIn(InteractionPayload payload) => switch (payload) {
     UserInputInteractionPayload(:final questions) => questions.length,
     _ => 0,
@@ -789,25 +803,23 @@ Future<void> _reportMissingQuestionControls({
 Future<ChatItemPresentation> _questionReceipt(
   WidgetTester tester,
   AppGraph graph,
-  StudioTurnView questionTurn,
+  String threadId,
+  String questionTurnId,
 ) async {
-  final threadId = questionTurn.threadId;
-  expect(questionTurn.state, isA<CompletedStudioTurnState>());
   final observed = TimelineObservation(tester, () {
     expect(graph.client.selection.state.selectedThreadId, threadId);
     return graph.timeline.lease(threadId)!;
   });
   // Answer submission creates a continuation Turn. Its real terminal state
   // must not be confused with the earlier Turn that requested the interaction.
-  await _until(tester, () {
-    if (graph.client.selection.state.selectedThreadId != threadId) return false;
-    final turn = graph.client.conversations.session(threadId).state.lastTurn;
-    return turn != null &&
-        turn.threadId == threadId &&
-        turn.turnId != questionTurn.turnId &&
-        turn.state is CompletedStudioTurnState;
-  }, 'completed real question continuation Turn');
-  final source = ForegroundTurnChatSource(turnId: questionTurn.turnId);
+  await waitForCompletedHistoryTurn(
+    conversations: graph.client.conversations,
+    threadId: threadId,
+    matches: (head) => head.turnId != questionTurnId,
+    description: 'completed real question continuation Turn in History',
+    timeout: const Duration(minutes: 3),
+  );
+  final source = ForegroundTurnChatSource(turnId: questionTurnId);
   TimelineDisplayUnit? target;
   await _until(tester, () {
     final matches = observed.main

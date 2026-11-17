@@ -901,25 +901,39 @@ mod tests {
         ) -> Result<PreparedModelCall, ModelError> {
             let first = std::mem::replace(&mut self.first, false);
             let entered = self.entered.clone();
-            Ok(PreparedModelCall::new(async move {
+            let (capture, mut captures) = pl_core::model::CurrentCaptureHandle::channel();
+            Ok(PreparedModelCall::new_with_current(async move {
+                let accepted = OpaquePayload::text("saved answer");
                 if !first {
                     if let Some(entered) = entered.lock().unwrap().take() {
                         let _ = entered.send(());
                     }
-                    request.cancellation.cancelled().await;
+                    loop {
+                        tokio::select! {
+                            () = request.cancellation.cancelled() => break,
+                            capture = captures.recv() => {
+                                let Some(capture) = capture else { break; };
+                                let _ = capture.reply.send(Ok(accepted.clone()));
+                            }
+                        }
+                    }
                 }
-                Ok(ModelStepOutput {
-                    turn_action: Default::default(),
-                    attempt_id: request.attempt_id,
-                    base_context_revision: request.context.revision,
-                    content: vec![ContextContent::Text {
-                        text: Arc::from("saved answer"),
-                    }],
-                    tool_calls: vec![],
-                    private_context: None,
-                    usage: Default::default(),
-                })
-            }))
+                pl_core::model::ModelCallExit {
+                    result: Ok(ModelStepOutput {
+                        turn_action: Default::default(),
+                        attempt_id: request.attempt_id,
+                        base_context_revision: request.context.revision,
+                        content: vec![ContextContent::Text {
+                            text: Arc::from("saved answer"),
+                        }],
+                        tool_calls: vec![],
+                        private_context: None,
+                        usage: Default::default(),
+                    }),
+                    current: Some(accepted),
+                }
+            })
+            .with_current_capture(capture))
         }
         async fn close(&mut self) -> Result<(), ModelError> {
             Ok(())
@@ -1071,7 +1085,7 @@ mod tests {
                 }),
             )
             .await?;
-            assert_eq!(next.history_through_seq, saved.0);
+            assert_eq!(next.history_through_seq, first.history_through_seq);
             assert_eq!(next.items, page.items[1..2]);
             assert!(
                 query(&tool, serde_json::json!({"target":"root", "limit":0}),)
@@ -1096,7 +1110,8 @@ mod tests {
             matches!(execution, Err(pl_core::thread::ThreadError::Cancelled)),
             "the deliberately cancelled model must finish through the typed cancellation path"
         );
-        assert!(owner.close_session().await.is_empty());
+        let closed = owner.close_session().await;
+        assert!(closed.is_empty(), "{closed:?}");
         projection.abort();
         let _ = projection.await;
         blocker.close().await?;

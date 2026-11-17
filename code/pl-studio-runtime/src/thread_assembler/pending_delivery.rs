@@ -43,7 +43,7 @@ pub(super) enum PendingNativeDeliverySource {
     },
     AcpResult {
         agent_id: String,
-        generation: u64,
+        generation: String,
         completion_sequence: u64,
     },
 }
@@ -333,6 +333,8 @@ impl PendingNativeDelivery {
             ) => {
                 ensure!(
                     !agent_id.is_empty()
+                        && !generation.is_empty()
+                        && *completion_sequence > 0
                         && self.message.id
                             == format!(
                                 "studio.acp.{}:{agent_id}:{generation}:{completion_sequence}",
@@ -369,7 +371,7 @@ fn parse_acp_source(message: &ThreadMessage) -> Result<PendingNativeDeliverySour
     let generation = sequence
         .next()
         .context("ACP result has no generation")?
-        .parse::<u64>()?;
+        .to_owned();
     let completion_sequence = sequence
         .next()
         .context("ACP result has no completion sequence")?

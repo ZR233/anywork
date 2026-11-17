@@ -1214,20 +1214,7 @@ mod tests {
 
     #[tokio::test]
     async fn acp_close_joins_owned_workspace_commands_before_releasing_usage() -> Result<()> {
-        use crate::studio::runtime::acp_workspace_tools::WorkspaceTools;
-        use crate::studio::thread_factory::PreparedAcpWorkspace;
-        use pl_tool::{
-            command::WorkspaceExecutionBinding,
-            environment::{ExecutionEnvironment, ExecutionOs, ShellDialect},
-            remote::{SshServerProfile, SshWorkspaceBinding},
-            workspace::{AgentWorkspace, ToolWorkspace},
-        };
-        use std::{sync::Arc, time::Duration};
-
         let fixture = Fixture::new("replay").await?;
-        let (client, server) = tokio::io::duplex(64 * 1024);
-        let helper = tokio::spawn(pl_remote_helper::serve_connection(server));
-        let executor = pl_remote_helper::Executor::remote(client).await?;
         let mut target = None;
         let mut service = None;
         let result = async {
@@ -1251,70 +1238,20 @@ mod tests {
                 &fixture.runtime.config_runtime.agent_profiles_snapshot()?,
                 fixture.runtime.config_runtime.read()?.config.delegation,
             )?;
-            // The fixture substitutes only the SSH channel. Product membership, root and ACP process
-            // remain real; close must settle actual helper processes and archived results.
-            let tools = WorkspaceTools::new(
-                open.target.thread_id.clone(),
-                PreparedAcpWorkspace {
-                    workspace: ToolWorkspace::new(
-                        AgentWorkspace::local(&fixture.workspace.path)
-                            .with_session_id(&open.target.thread_id),
-                    ),
-                    execution: WorkspaceExecutionBinding::new(
-                        executor.clone(),
-                        &fixture.workspace.path,
-                    )?,
-                    environment: ExecutionEnvironment::for_ssh(
-                        ExecutionOs::Linux,
-                        ShellDialect::Bash,
-                        "/bin/bash",
-                    ),
-                    skills: None,
-                    lsp: None,
-                    remote: Some(SshWorkspaceBinding {
-                        profile: Arc::new(SshServerProfile {
-                            alias: "helper-channel".into(),
-                            host_name: "fixture".into(),
-                            port: 22,
-                            username: "fixture".into(),
-                            identity_file: None,
-                        }),
-                        execution: WorkspaceExecutionBinding::new(
-                            executor.clone(),
-                            &fixture.workspace.path,
-                        )?,
-                        execution_environment: ExecutionEnvironment::for_ssh(
-                            ExecutionOs::Linux,
-                            ShellDialect::Bash,
-                            "/bin/bash",
-                        ),
-                    }),
-                    store: crate::resource_store::FileResourceStore::new(
-                        fixture.runtime.store.session_resources_dir_for(
-                            &fixture.workspace.id,
-                            &open.target.thread_id,
-                        )?,
-                    ),
-                    host_scratch: fixture
-                        .runtime
-                        .store
-                        .session_scratch_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
-                },
-                &fixture.runtime.config_runtime.read()?.config,
-            );
-            let usage = fixture
-                .runtime
-                .thread_factory
-                .reserve_workspace_use(&open.target.thread_id, &fixture.workspace)
-                .await?;
-            resources.retain_workspace_tools(tools, usage).await?;
+            // Borrow the tools installed by ordinary ACP preparation. Their original resource
+            // owner must join the actual command before releasing its workspace use.
+            let tools = resources
+                .workspace_tools
+                .get()
+                .cloned()
+                .context("ordinary ACP workspace tools")?;
             let (transport, definition) = HostMcp::start_bound(
                 host,
                 identity.agent_id,
                 resources.cancellation.clone(),
                 true,
                 None,
-                resources.workspace_tools.get().cloned(),
+                Some(tools),
             )
             .await?;
             service = Some(transport);
@@ -1363,13 +1300,9 @@ mod tests {
                 Err(error) => cleanup = cleanup.and(Err(error)),
             }
         }
-        let closed = executor.close().await;
-        let helper = tokio::time::timeout(Duration::from_secs(5), helper).await;
         let shutdown = fixture.runtime.shutdown_runtime().await;
         result?;
         cleanup?;
-        closed?;
-        helper???;
         shutdown?;
         Ok(())
     }

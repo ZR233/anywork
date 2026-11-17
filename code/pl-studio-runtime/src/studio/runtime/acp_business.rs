@@ -100,17 +100,12 @@ mod mixed_tests {
     }
 
     async fn native_inbox_report(
-        _runtime: &crate::studio::StudioRuntime,
-        owner: &SessionRuntime,
+        runtime: &crate::studio::StudioRuntime,
         caller: &crate::AgentThreadIdentity,
         child: &crate::AgentThreadIdentity,
         resources: &super::AcpResources,
         completed: &pl_acp::session::Completed,
     ) -> Result<String> {
-        let parent = owner
-            .observed_thread(caller.thread_id.as_str())
-            .context("Native parent")?;
-        let mut changes = parent.subscribe();
         let expected_id = format!(
             "studio.acp.{}:{}:{}:{}",
             child.agent_id.as_str().len(),
@@ -118,58 +113,59 @@ mod mixed_tests {
             resources.generation,
             completed.completion_sequence
         );
+        let text = serde_json::to_string(&serde_json::json!({
+            "agentId": child.agent_id, "backend": "acp", "generation": resources.generation,
+            "run": {"instance": completed.run.instance, "sequence": completed.run.sequence},
+            "completionSequence": completed.completion_sequence,
+            "result": completed.result.as_ref().map_err(|error| anyhow::anyhow!("ACP completion failed: {error}"))?,
+            "summary": completed.summary, "truncated": completed.truncated,
+        }))?;
+        let expected = pl_core::thread::inbox::ThreadMessage {
+            kind: pl_core::context::AgentMessageKind::Report,
+            id: expected_id.clone(),
+            source_id: format!("agent:{}", child.thread_id),
+            payload: pl_core::context::OpaquePayload::text(text.clone()),
+            context: vec![pl_core::context::ContextContent::Text { text: text.into() }],
+        };
+        let parent = runtime
+            .ensure_thread_owner(caller.thread_id.as_str())
+            .await?;
+        let mut changes = parent.subscribe();
+        // ACP completion reaches the Native recipient's ordinary inbox. A child report has no
+        // public parent-message original: verify its actual acceptance, even if already consumed.
         tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            let snapshot = parent.snapshot();
-            let records = snapshot
-                .inbox
-                .iter()
-                .filter(|record| record.message.id == expected_id)
-                .collect::<Vec<_>>();
-            if let Some(record) = records.first() {
+            while let Some(snapshot) = changes.next().await {
+                let pending = snapshot
+                    .inbox
+                    .iter()
+                    .filter(|entry| entry.message.id == expected_id)
+                    .collect::<Vec<_>>();
+                let consumed = snapshot
+                    .consumed_message_identities
+                    .iter()
+                    .filter(|entry| entry.id == expected_id)
+                    .collect::<Vec<_>>();
+                if pending.is_empty() && consumed.is_empty() {
+                    continue;
+                }
                 assert_eq!(
-                    records.len(),
+                    pending.len() + consumed.len(),
                     1,
-                    "stable completion identity was duplicated"
+                    "duplicate stable ACP report"
                 );
-                assert_eq!(
-                    record.message.source_id,
-                    format!("agent:{}", child.thread_id)
-                );
-                assert_eq!(
-                    record.message.kind,
-                    pl_core::context::AgentMessageKind::Report
-                );
-                let body: serde_json::Value =
-                    serde_json::from_str(record.message.payload.content())?;
-                assert_eq!(body["agentId"], child.agent_id.as_str());
-                assert_eq!(body["backend"], "acp");
-                assert_eq!(body["generation"], resources.generation);
-                assert_eq!(body["completionSequence"], completed.completion_sequence);
-                assert_eq!(
-                    body["run"],
-                    serde_json::json!({
-                        "instance": completed.run.instance, "sequence": completed.run.sequence,
-                    })
-                );
-                assert_eq!(body["summary"], completed.summary);
-                assert_eq!(body["truncated"], completed.truncated);
-                assert_eq!(
-                    body["result"],
-                    serde_json::to_value(completed.result.as_ref().unwrap())?
-                );
-                eprintln!(
-                    "Native inbox durable report: id={expected_id}, acceptedSequence={}, run={:?}",
-                    record.sequence, completed.run
-                );
-                return Ok::<_, anyhow::Error>(expected_id.clone());
+                if let Some(record) = pending.first() {
+                    assert_eq!(record.message, expected);
+                    assert!(record.sequence > 0);
+                } else {
+                    assert_eq!(consumed[0].digest, expected.digest());
+                    assert!(consumed[0].sequence > 0);
+                }
+                return Ok::<_, anyhow::Error>(expected_id);
             }
-            drop(snapshot);
-            changes.next().await.context("Native parent closed")?;
-        }
-    })
-    .await
-    .context("Native parent Current did not receive the ACP result")?
+            anyhow::bail!("Native recipient closed before accepting the ACP result")
+        })
+        .await
+        .context("Native inbox did not accept the exact ACP result")?
     }
 
     async fn close_fixture(
@@ -419,17 +415,9 @@ mod mixed_tests {
             assert_eq!(latest.reports[0]["result"], serde_json::to_value(&completed.result)?);
             assert!(latest.cursor.is_some());
             assert_ne!(latest.cursor.as_deref(), Some(old_cursor.as_str()));
-            let new_message_id = native_inbox_report(&runtime, &owner, caller, child,
+            let new_message_id = native_inbox_report(&runtime, caller, child,
                 &restored, &completed).await?;
             assert_ne!(new_message_id, old_message_id);
-            assert!(
-                parent
-                    .snapshot()
-                    .inbox
-                    .iter()
-                    .any(|record| record.message.id == new_message_id),
-                "new generation report is absent from parent Current"
-            );
             eprintln!("full StudioRuntime reconstruction: oldGeneration={old_generation}, newGeneration={}, completionSequence={}, oldMessage={old_message_id}, newMessage={new_message_id}, staleCursorRejected=true, sameProcess=true",
                 restored.generation, completed.completion_sequence);
 
@@ -509,7 +497,6 @@ mod mixed_tests {
                     Some(
                         native_inbox_report(
                             &fixture.runtime,
-                            &owner,
                             &caller,
                             &identity,
                             &resources,
@@ -554,15 +541,8 @@ mod mixed_tests {
                 assert!(send.sequence.is_none());
                 let second = completion(&resources, first.completion_sequence).await?;
                 if native {
-                    native_inbox_report(
-                        &fixture.runtime,
-                        &owner,
-                        &caller,
-                        &identity,
-                        &resources,
-                        &second,
-                    )
-                    .await?;
+                    native_inbox_report(&fixture.runtime, &caller, &identity, &resources, &second)
+                        .await?;
                 }
                 assert!(
                     host.interrupt(call(&host, &caller, "stop-idle"), agent.as_str())
@@ -677,7 +657,6 @@ mod mixed_tests {
                 let latest_message_id = if native {
                     let new_id = native_inbox_report(
                         &fixture.runtime,
-                        &owner,
                         &caller,
                         &identity,
                         &restored,

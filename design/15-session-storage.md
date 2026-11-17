@@ -52,6 +52,8 @@ Current writer 订阅 Core owner 的小型 dirty 变化，每 2 秒检查是否�
 
 每个 Native Thread 只有一个 schema 25 History writer。`history_store_meta` 保存数据库、Thread 与 schema 身份；`history_events`、`history_bodies`、`history_body_chunks` 是唯一业务表，均由数据库触发器禁止更新和删除。当前 wire 只使用 `HistoryEventHeader`、类型化 `HistoryRowHead` 与 `HistoryEventBodyRef`。旧 v24 wire 只允许出现在冻结迁移 schema。
 
+普通输入与 Continue 的原受理身份、请求摘要、路由版本及后续状态写入独立的 `InputAccepted`／`InputConsumed`／`InputDiscarded` 事件；它们不建立 UI 行，不复制用户正文。受理元数据由原 effect 冻结，正文 ID 在运行期冻结时生成，writer 重试沿用原候选。重复请求按输入身份索引读取一个固定的已提交历史切面，只有原事实可证明的回执才可重放；不会为了重放激活会话、访问工作区、认领继续点或清除后来发出的 Stop。RAM 接纳尚未落盘时只报告可重试的等待，不能冒充保存成功。
+
 事件身份 `event_id` 是幂等键；canonical 完成事件在迁移时直接使用旧 `draft.item_id`，正常新事件也沿用原业务身份，不另建永久映射。`seq` 由唯一 History writer 在接纳批次时分配，同一业务批次全部取得序号后才公开完整批次，不发布中间切点。事件头最多 16 KiB，保存 typed 小头和查询索引；大正文写入不可变 body，body 身份在正常写入中为 UUIDv4，legacy import 除外。
 
 `HistoryEntityHead` 是 Single 与 member 的小型 metadata，记录实体、run、attempt、来源、kind、delivery、状态、真实时间、工具身份、wait、内容存在性、`HistorySingleVisibility`、观察、展示契约和按需引用。canonical payload 是 `anywork.chat/1` 的不可变正文，普通产品 payload/metadata 中的旧引用在迁移时改写为新 `HistoryEventBodyRef`，producer opaque 字节保持不变。
@@ -109,6 +111,6 @@ Core 的通用 SQLite 后端仍可独立使用既有 effect、checkpoint 与 dur
 
 ## 15.6 关闭与冷失败
 
-应用关闭分别等待 Current writer、History writer、History readers、Current readers 和调用诊断 owner 的真实结束。Session 的关闭存储责任直接等待独立 Current writer，不依赖产品观察任务恰好先消费最终快照；其后再等待 History writer。显式永久删除也必须 join 原 Current writer、捕获和订阅，但不要求先修复或成功保存即将删除的数据；普通关闭与归档仍必须报告原保存失败。Current 保存失败保留 dirty 与错误；History flush 失败保留 pending 与错误；History reader 关闭失败保留原读取 owner。任何一方成功都不能掩盖另一方未收束。
+应用关闭分别等待 Current writer、History writer、History readers、Current readers 和调用诊断 owner 的真实结束。Session 的关闭存储责任直接等待独立 Current writer，不依赖产品观察任务恰好先消费最终快照；其后再等待 History writer。仅为报告接收而创建的临时 owner 也必须保存交付标记的最终清理并 join 自己的 Current writer，再释放原登记；History 退出不能代替该责任。显式永久删除也必须 join 原 Current writer、捕获和订阅，但不要求先修复或成功保存即将删除的数据；普通关闭与归档仍必须报告原保存失败。Current 保存失败保留 dirty 与错误；History flush 失败保留 pending 与错误；History reader 关闭失败保留原读取 owner。任何一方成功都不能掩盖另一方未收束。
 
 未知结构版本、身份冲突、损坏资源或缺失必要迁移路径一律 fail-closed 并保留原文件/数据库。历史正文局部损坏明确返回读取错误，不把缺块解释为空内容。只有明确隔离的 v2 前数据可以保持不导入、不激活；正常路径不打开迁移备份、旧 schema 24 表或旧 client fallback。

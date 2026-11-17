@@ -96,9 +96,13 @@ impl HistoryEntityChange {
         } else {
             HistoryPlacement::Single
         };
+        let entity = HistoryEntityHead::from_atom(atom, Some(run.to_string()))?;
+        // Boundary bodies are frozen before classification. Their provenance must already carry
+        // this entity's owner, rather than inheriting an unqualified event header.
+        set_entity(&mut event, &entity);
         Ok(Self {
             event,
-            entity: HistoryEntityHead::from_atom(atom, Some(run.to_string()))?,
+            entity,
             placement,
             boundary_observations: Vec::new(),
             public_summary: None,
