@@ -55,4 +55,4 @@ MCP 固定原 server/raw name/generation/turn lease，已接受请求继续等�
 
 跨语言回执测试使用生产序列化的实际封装，核对外层标签、版本及内层编码。`OpaquePayload.content` 是 UTF-8 字符串，即使内容是 JSON，也不能在客户端夹具中直接替换成对象；专用解码器先验证字符串，再按所属格式解析。分别手写两端看似一致的对象夹具不能证明互通。
 
-人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不以固定延时、放宽断言或强制生产前台化制造成功。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。
+人工 fixture 区分 accepted 与终态，按精确任务身份等待结果，不把后台操作强制前台化来绕过交付语义。工程入口见 AGENTS.md；真实 provider 操作仍需显式授权。

@@ -19,7 +19,7 @@ Flutter／FRB／Rust 跨层分工与客户端写入责任使用 `flutter-frb-rus
 
 允许有意采用语义合适的公共依赖类型，并精确重导出、明确版本与类型身份责任；内部实现依赖继续隔离。这不改变 `pl-core` 的产品无关性和项目规定的禁止依赖。
 
-跨执行上下文的接口同时使用 `rust-concurrency-safety`；要求调用方维护内存安全前置条件的接口同时使用 `rust-unsafe-safety`。接口验证按 `test-quality` 选择完整行为边界。
+跨执行上下文的接口同时使用 `rust-concurrency-safety`；要求调用方维护内存安全前置条件的接口同时使用 `rust-unsafe-safety`。
 
 ## 验收
 
