@@ -82,7 +82,11 @@ mod tests {
                 )
                 .await?;
             let state = factory
-                .open_conversation_state(env.thread_id.clone())
+                .open_current(
+                    env.thread_id.clone(),
+                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    demand,
+                )
                 .await?;
             let timeline = factory
                 .open_timeline(env.thread_id.clone(), 6, 1, demand)
@@ -133,10 +137,7 @@ mod tests {
 
     #[tokio::test]
     async fn closing_bridge_observations_keeps_admitted_execution_and_persistence() -> Result<()> {
-        use pl_protocol::{
-            ChatAtomKind, ChatScope, ReadDemand, ThreadNotification, ThreadSubscriptionUpdate,
-            TurnState,
-        };
+        use pl_protocol::{ChatAtomKind, ChatScope, ReadDemand, ThreadNotification, TurnState};
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
         use pl_studio_runtime::{
             ConversationEvent, StudioHostKind, StudioRuntime, StudioRuntimeOptions,
@@ -157,13 +158,30 @@ mod tests {
                 .open_product_topic(BridgeProductTopic::Updater)
                 .await?;
             let bridge_state = factory
-                .open_conversation_state(env.thread_id.clone())
+                .open_current(
+                    env.thread_id.clone(),
+                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    ReadDemand {
+                        max_items: 16,
+                        max_bytes: 64 * 1024,
+                    },
+                )
                 .await?;
             // 独立状态读取只用于核对原业务执行，不属于待关闭的桥接作用域。
-            let mut state = env
+            let demand = ReadDemand {
+                max_items: 16,
+                max_bytes: 64 * 1024,
+            };
+            let state = env
                 .runtime
-                .open_conversation_state_feed(&env.thread_id)
+                .open_current_reader(
+                    &env.thread_id,
+                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    demand,
+                )
                 .await?;
+            let baseline = state.snapshot(demand).await?;
+            let mut state = state.watch(Some(baseline.revision), demand).await?;
             env.submit_followup().await?;
             stage.wait_reached().await;
             let before = env.runtime.thread_snapshot(&env.thread_id).await?;
@@ -192,15 +210,16 @@ mod tests {
                 .await?;
             stage.release();
             let completed_id = loop {
-                let update = state.recv().await?.context("state feed ended")?;
+                let update = state.next().await?.context("Current watch ended")?;
                 let turn = match update {
-                    ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => snapshot.active_turn,
-                    ThreadSubscriptionUpdate::Notification { notification } => {
+                    pl_protocol::CurrentFrame::Reset { view } => view.state.active_turn,
+                    pl_protocol::CurrentFrame::Notification { notification, .. } => {
                         match notification.notification {
                             ThreadNotification::TurnCompleted { turn } => Some(turn),
                             _ => None,
                         }
                     }
+                    pl_protocol::CurrentFrame::Projection { .. } => None,
                 };
                 if let Some(turn) = turn
                     && turn.id == active.id
@@ -210,6 +229,7 @@ mod tests {
                     break turn.id;
                 }
             };
+            state.request_close();
             state.close().await?;
             env.runtime
                 .synchronize_thread_observation(&env.thread_id)

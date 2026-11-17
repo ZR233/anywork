@@ -381,7 +381,7 @@ class _Content extends Fake implements ConversationContent {
 
 class _LiveHarness {
   final content = _Content();
-  final live = ValueNotifier<TailSnapshot?>(null);
+  final live = ValueNotifier<CurrentRunSnapshot?>(null);
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = [];
@@ -391,7 +391,7 @@ class _LiveHarness {
   DateTime Function()? now;
   int revision = 0;
   Widget host() {
-    live.value = TailSnapshot(
+    live.value = CurrentRunSnapshot(
       currentWorkId: currentWorkId,
       revision: ++revision,
       layoutRevision: revision,

@@ -2,27 +2,41 @@
 
 use super::{integer, statement};
 use anyhow::{Context, Result, ensure};
+#[cfg(test)]
 use pl_core::chat::{
-    ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatItem, ChatItemHeader, ChatKey,
-    ChatPageItem, ChatPublicationSeed, PayloadData, PayloadMode, select_payload,
+    ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatPageItem, ChatPublicationSeed,
+    PayloadData, PayloadMode, select_payload,
 };
-use sea_orm::{ConnectionTrait, QueryResult, Value};
-use std::{collections::BTreeMap, sync::Arc};
+use pl_core::chat::{ChatItem, ChatItemHeader, ChatKey};
+#[cfg(test)]
+use sea_orm::Value;
+use sea_orm::{ConnectionTrait, QueryResult};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
-pub(in crate::studio) mod completed;
+/// Frozen schema-24 current/effect codec retained for explicit legacy imports.
+#[cfg(test)]
+pub(super) mod completed;
 #[path = "conversation/content.rs"]
 pub(in crate::studio::storage::history) mod content;
+#[cfg(test)]
 #[path = "conversation/current.rs"]
 pub(in crate::studio) mod current;
 pub(in crate::studio) mod display;
 #[path = "conversation/migration.rs"]
 pub(super) mod migration;
+#[cfg(test)]
 #[path = "conversation/range.rs"]
 mod range;
 
-pub(super) use content::{list_contents, read_contents, write_contents};
+pub(super) use content::read_contents;
+#[cfg(test)]
+pub(super) use content::{list_contents, write_contents};
+#[cfg(test)]
 pub(super) use range::read_content;
 
+#[cfg(test)]
 pub(super) async fn validate_content(
     db: &impl ConnectionTrait,
     content: &pl_core::chat::ChatContent,
@@ -59,6 +73,7 @@ pub(super) async fn latest_append_seq(db: &impl ConnectionTrait) -> Result<u64> 
         .unwrap_or(Ok(0))
 }
 
+#[cfg(test)]
 pub(super) async fn publication_seed(db: &impl ConnectionTrait) -> Result<ChatPublicationSeed> {
     Ok(ChatPublicationSeed {
         head_seq: latest_append_seq(db).await?,
@@ -98,6 +113,7 @@ pub(super) async fn append_records<'a>(
 
 /// The owning transaction reads its append baseline once and advances it locally.
 /// New suffix rows use SQLite's identity constraints; only actual replay reads old bytes.
+#[cfg(test)]
 pub(super) async fn append_records_at_head<'a>(
     db: &impl ConnectionTrait,
     records: impl IntoIterator<Item = &'a ChatItem>,
@@ -186,6 +202,7 @@ pub(super) async fn append_records_at_head<'a>(
 
 /// Explicit detail demand: one indexed lightweight header, then only its budgeted payload.
 /// Unlike the publication idempotency port this never reads a content manifest or body.
+#[cfg(test)]
 pub(super) async fn read_selected_item(
     db: &impl ConnectionTrait,
     request: &pl_core::chat::ChatHistoryItemRequest,
@@ -225,6 +242,7 @@ pub(super) async fn read_selected_item(
 }
 
 /// First fetch only indexed headers and BLOB lengths. Deferred records never fetch their payload.
+#[cfg(test)]
 pub(super) async fn page(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -234,6 +252,7 @@ pub(super) async fn page(
     page_filtered(db, request, budget, ascending, false).await
 }
 
+#[cfg(test)]
 pub(super) async fn page_filtered(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -286,6 +305,7 @@ pub(super) async fn page_filtered(
     materialize(db, request, budget, ascending, &rows, natural_end).await
 }
 
+#[cfg(test)]
 async fn materialize(
     db: &impl ConnectionTrait,
     request: &ChatHistoryRequest,
@@ -488,7 +508,7 @@ pub(in crate::studio) mod record_read_tests {
                 CAST(json_set(metadata,'$.id','record-'||i,'$.completionItemId','record-'||i) AS BLOB)
                 FROM n CROSS JOIN conversation_items WHERE seq=1",vec![integer(size)?.into()])).await?;
             let sampler = sqlite_work::Sampler::install(&db).await?;
-            let budget = crate::studio::runtime::conversation_reader::JsonBudget::new(
+            let budget = crate::studio::storage::history::legacy_read::JsonBudget::new(
                 "fixture".into(),
                 String::new(),
             )
@@ -668,20 +688,17 @@ pub(in crate::studio) mod record_read_tests {
             &[super::super::execution_lifecycle::ExecutionLifecycle::from_atom(&a, 2)?],
         )
         .await?;
-        let first = store.recovery_atom_starts(None, 1).await?;
+        let first = super::super::execution_lifecycle::active(&connection.db, None, 1).await?;
         assert_eq!(first, [b.clone()]);
-        assert_eq!(store.recovery_atom_starts(Some(&b.id), 1).await?, [c]);
-        assert!(store.recovery_atom_starts(Some("c"), 1).await?.is_empty());
+        assert_eq!(
+            super::super::execution_lifecycle::active(&connection.db, Some(&b.id), 1).await?,
+            [c]
+        );
         assert!(
-            store
-                .cold_current_state()
+            super::super::execution_lifecycle::active(&connection.db, Some("c"), 1)
                 .await?
-                .unwrap()
-                .projection()
-                .atoms
                 .is_empty()
         );
-        assert!(store.recovery_atom_starts(None, 129).await.is_err());
         store.close_for_deletion().await?;
         Ok(())
     }
@@ -1412,54 +1429,6 @@ pub(in crate::studio::storage::history) mod tests {
                 .header
                 .append_seq,
             1
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cold_scope_budget_fits_completions_without_reserving_state() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store =
-            super::super::HistoryStore::open(&dir.path().join("history.sqlite"), "cold-budget")
-                .await?;
-        store.prepare_write().await?;
-        let record = Arc::new(item(1, "conversation", &[255; 2048]));
-        let current = super::super::test_current(1);
-        store
-            .commit_effect(
-                1,
-                super::super::EffectCommit {
-                    turns: &[],
-                    execution_order: 0,
-                    completions: std::slice::from_ref(&record),
-                    current: &current,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &[],
-                    deliveries: &[],
-                    delivery_repairs: &[],
-                    attempt: None,
-                },
-            )
-            .await?;
-        let query = ChatQuery::new("conversation", None);
-        let exact = store
-            .cold_conversation(query.clone(), ReadDemand::new(1, 64), &Budget)
-            .await?
-            .unwrap();
-        assert_eq!(exact.page.items.len(), 1);
-        assert_eq!(exact.page.items[0].header, record.header);
-        assert!(matches!(
-            exact.page.items[0].payload,
-            PayloadData::Deferred { .. }
-        ));
-        assert!(
-            store
-                .cold_conversation(query, ReadDemand::new(1, 63), &Budget)
-                .await
-                .is_err()
         );
         Ok(())
     }

@@ -21,13 +21,15 @@ void main() {
     testWidgets(
       'Main reveal waits for its ${work ? 'Work' : 'Single'} renderer while another scrollable has the fragment',
       (tester) async {
-        final content = _NoQueries();
+        final history = _NoHistory();
+        final current = _NoCurrent();
         final lease = (await tester.runAsync(
           () async => TimelineDisplayLease(
             threadId: 'pending-main-renderer',
             generation: 11,
             demand: chatDemand,
-            reader: content,
+            history: history,
+            current: current,
           ),
         ))!..bind();
         final projection = TimelineMessageController(
@@ -181,7 +183,8 @@ void main() {
   testWidgets(
     'Main reveal ignores offscreen keepalives in both directions and never scrolls Atoms',
     (tester) async {
-      final content = _NoQueries();
+      final history = _NoHistory();
+      final current = _NoCurrent();
       var memberOpens = 0;
       // The lease's release Completer and controller stream must belong to the
       // same real-async zone in which their close is joined below.
@@ -190,7 +193,8 @@ void main() {
           threadId: 'main-reveal',
           generation: 7,
           demand: chatDemand,
-          reader: content,
+          history: history,
+          current: current,
         ),
       ))!..bind();
       final controller = lease.controller;
@@ -614,14 +618,14 @@ final class _FrameDelayedRendererState extends State<_FrameDelayedRenderer> {
   }
 }
 
-final class _NoQueries extends Fake implements TimelineReader {
-  int calls = 0;
-
+final class _NoHistory extends Fake implements HistoryReader {
   @override
-  dynamic noSuchMethod(Invocation invocation) {
-    calls++;
-    return super.noSuchMethod(invocation);
-  }
+  String get threadId => 'main-reveal';
+}
+
+final class _NoCurrent extends Fake implements CurrentReader {
+  @override
+  String get threadId => 'main-reveal';
 }
 
 final class _KeptMainRow extends StatefulWidget {

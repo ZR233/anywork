@@ -69,26 +69,40 @@ _open() async {
 
 void main() {
   test(
-    'I17 readCompleted does not wait for consumer acceptance or feed credit',
+    'I17 History readEvent does not wait for content acceptance or feed credit',
     () async {
       final (fixture, consumer, feed) = await _open();
-      final scope = fixture.session().content.openScope(generation: 1);
+      final history = await fixture.repository.openHistoryReader(
+        'thread',
+      ) as TestHistoryReader;
+      addTearDown(history.close);
       final acceptance = Completer<void>();
       consumer.onApply = (_) => acceptance.future;
       final entry = completedFixture('next', seq: 2);
       feed.send(ConversationChatEvent(batch: _append(1, 2, [entry])));
       await consumer.waitForCount(2);
-      final response = Completer<CompletedEntry>();
+      final response = Completer<HistoryEventDetail>();
       final entered = Completer<void>();
-      feed.reader.onCompleted = (recordId, demand) {
-        expect(recordId, 'detail');
-        expect(demand, same(_demand));
+      history.onEvent = (String eventId, HistoryDemand demand) {
+        expect(eventId, 'detail');
+        expect(demand.maxRows, 1);
+        expect(demand.maxBytes, 16384);
         entered.complete();
         return response.future;
       };
-      final reading = scope.readCompleted(recordId: 'detail', demand: _demand);
+      final reading = history.readEvent(
+        eventId: 'detail',
+        demand: const HistoryDemand(maxRows: 1, maxBytes: 16384),
+      );
       await entered.future;
-      final detail = completedFixture('detail');
+      final detail = HistoryEventDetail(
+        header: HistoryEventHeader(
+          seq: 1,
+          eventId: 'detail',
+          kind: 'entity_ended',
+          recordedAt: 0,
+        ),
+      );
       response.complete(detail);
       expect(await reading, same(detail));
       expect(feed.acknowledgements, [1]);
@@ -204,25 +218,44 @@ void main() {
     expect((await fixture.close()).complete, isTrue);
   });
 
-  test('I20 retiring a scope joins readCompleted and rejects the late original result', () async {
+  test('I20 retiring a History scope rejects its late read without closing the History owner', () async {
     final (fixture, _, feed) = await _open();
-    final content = fixture.session().content;
-    final scope = content.openScope(generation: 1);
-    final response = Completer<CompletedEntry>();
-    feed.reader.onCompleted = (_, _) => response.future;
-    final reading = scope.readCompleted(recordId: 'detail', demand: _demand);
+    final history = await fixture.repository.openHistoryReader(
+      'thread',
+    ) as TestHistoryReader;
+    addTearDown(history.close);
+    final scope = HistoryReadScope(
+      threadId: 'thread',
+      generation: 1,
+      reader: history,
+      isEligible: () => true,
+    );
+    final response = Completer<HistoryEventDetail>();
+    history.onEvent = (String _, HistoryDemand _) => response.future;
+    final reading = scope.readEvent(
+      eventId: 'detail',
+      demand: const HistoryDemand(maxRows: 1, maxBytes: 16384),
+    );
     final rejected = expectLater(
       reading,
       throwsA(isA<StaleConversationScope>()),
     );
-    fixture.repository.setVisibleThread(null);
-    final partial = await content.joinRetired(
-      budget: ClientCloseBudget(Duration.zero),
-    );
+    final partial = await scope.close(budget: ClientCloseBudget(Duration.zero));
     expect(partial.complete, isFalse);
-    response.complete(completedFixture('detail'));
+    response.complete(
+      HistoryEventDetail(
+        header: HistoryEventHeader(
+          seq: 1,
+          eventId: 'detail',
+          kind: 'entity_ended',
+          recordedAt: 0,
+        ),
+      ),
+    );
     await rejected;
-    expect((await content.joinRetired()).complete, isTrue);
+    expect((await scope.close()).complete, isTrue);
+    expect(history.requestCloseCalls, 0);
+    expect(feed.requestCloseCalls, 0);
     expect((await fixture.close()).complete, isTrue);
   });
 
@@ -292,72 +325,4 @@ void main() {
       );
     }
   }
-
-  for (final version in <int?>[null, 0, 1, completedHistoryVersion + 1]) {
-    test(
-      'missing or unsupported completedHistoryVersion=$version fails without decoder fallback or retry',
-      () async {
-        final (fixture, _, feed) = await _open();
-        final state = fixture.stateFeed();
-        final failed = fixture.session().source.waitFor(
-          (value) =>
-              value.sync.phase == DomainSyncPhase.failed &&
-              value.sync.retryExhausted,
-        );
-        state.send(
-          ConversationStateEvent(
-            frame: ThreadSnapshotFrame(
-              schemaVersion: 17,
-              completedHistoryVersion: version,
-              workspace: _workspace(),
-            ),
-          ),
-        );
-        await failed;
-        expect(
-          fixture.session().state.sync.errorMessage,
-          allOf(
-            contains('ProtocolVersionMismatch'),
-            contains('completedHistoryVersion=$version'),
-          ),
-        );
-        expect(fixture.session().state.hasSnapshot, isFalse);
-        expect(state.acknowledgements, isEmpty);
-        expect(feed.acknowledgements, [1]);
-        expect(
-          feed.requestCloseCalls,
-          0,
-          reason: 'a state rejection never retires the content owner',
-        );
-        expect((await fixture.close()).complete, isTrue);
-        expect(fixture.transport.opens, hasLength(1));
-      },
-    );
-  }
 }
-
-ThreadWorkspace _workspace() => ThreadWorkspace(
-  businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
-  thread: StudioThread(
-    id: 'thread',
-    workspaceId: 'workspace',
-    title: 'Thread',
-    mode: ThreadModeId.simple,
-    delegationMode: DelegationMode.profile,
-    delegationPreference: DelegationPreference.balanced,
-    updatedAt: DateTime.utc(2026),
-    workspacePath: '/workspace',
-  ),
-  revision: 1,
-  interactions: [],
-  runtime: const ThreadRuntimeView(
-    modelId: 'model',
-    contextTokens: 0,
-    contextWindow: 1,
-    totalTokens: 0,
-    costLabel: '',
-    activeSkills: [],
-    activeMcpServers: [],
-    activeLspServers: [],
-  ),
-);

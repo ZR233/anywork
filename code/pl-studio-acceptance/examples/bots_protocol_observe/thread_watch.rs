@@ -10,8 +10,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use eventsource_stream::{Event, EventStreamError, Eventsource};
 use futures::{StreamExt, stream::BoxStream};
 use pl_protocol::{
-    ChatBatch, ChatPlacement, ChatScope, ContentOwner, ContentTarget, InteractionRequest,
-    InteractionStatus, ReadDemand, ThreadBusinessRefs, ThreadNotification, ThreadSnapshot,
+    InteractionRequest, InteractionStatus, ThreadBusinessRefs, ThreadNotification, ThreadSnapshot,
     ThreadSubscriptionUpdate,
 };
 use reqwest::redirect::Policy as RedirectPolicy;
@@ -23,11 +22,8 @@ const MAX_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_EVENTS: u32 = 256;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const HEADER_BUDGET: Duration = Duration::from_secs(5);
-const CHAT_DEMAND: ReadDemand = ReadDemand {
-    max_items: 100,
-    max_bytes: 256 * 1024,
-};
-
+const STATE_TRANSPORT_MAX_ITEMS: u32 = 1;
+const STATE_TRANSPORT_MAX_BYTES: u32 = 4096;
 type SseItem = Result<Event, EventStreamError<anyhow::Error>>;
 
 pub(crate) struct ThreadWatch {
@@ -39,7 +35,6 @@ pub(crate) struct ThreadWatch {
     business_refs: Option<ThreadBusinessRefs>,
     revision: Option<u64>,
     saw_snapshot: bool,
-    saw_chat: bool,
 }
 
 impl ThreadWatch {
@@ -59,8 +54,12 @@ impl ThreadWatch {
         let mut url = reqwest::Url::parse(&format!("{origin}/api/v1/threads/{thread_id}/events"))
             .context("invalid thread SSE URL")?;
         url.query_pairs_mut()
-            .append_pair("maxItems", &CHAT_DEMAND.max_items.to_string())
-            .append_pair("maxBytes", &CHAT_DEMAND.max_bytes.to_string());
+            .append_pair("maxItems", &STATE_TRANSPORT_MAX_ITEMS.to_string())
+            .append_pair("maxBytes", &STATE_TRANSPORT_MAX_BYTES.to_string())
+            .append_pair(
+                "queryClass",
+                &serde_json::to_string(&pl_protocol::ChatClassFilter::All {})?,
+            );
         let request = client
             .get(url)
             .header(reqwest::header::ACCEPT, "text/event-stream");
@@ -103,7 +102,6 @@ impl ThreadWatch {
             business_refs: None,
             revision: None,
             saw_snapshot: false,
-            saw_chat: false,
         })
     }
 
@@ -307,31 +305,8 @@ impl ThreadWatch {
                         _ => continue,
                     }
                 }
-                "chat" => {
-                    ensure!(
-                        self.saw_snapshot,
-                        "thread SSE delivered Chat before snapshot"
-                    );
-                    let batch: ChatBatch = decode(&event.data, "chat")?;
-                    batch.validate_for(&ChatScope::conversation(None))?;
-                    ensure!(
-                        batch.entries.len() <= CHAT_DEMAND.max_items as usize
-                            && batch.encoded_len()? <= CHAT_DEMAND.max_bytes as usize,
-                        "thread SSE Chat exceeded its explicit demand"
-                    );
-                    ensure!(
-                        batch.placement
-                            == if self.saw_chat {
-                                ChatPlacement::Append
-                            } else {
-                                ChatPlacement::Set
-                            },
-                        "thread SSE requires first Chat Set and subsequent Chat Append"
-                    );
-                    self.saw_chat = true;
-                    // Chat is validated but never substitutes for adopted State.
-                    continue;
-                }
+                // History/body reads are owned by HistoryReader; State never derives from Chat.
+                "chat" => continue,
                 "stale" => bail!(
                     "thread {} SSE delivered stale although no Last-Event-ID was sent",
                     self.thread_id
@@ -369,18 +344,11 @@ fn validate_business_refs(references: &ThreadBusinessRefs) -> Result<()> {
         && let Some(document) = &plan.document
     {
         ensure!(
-            !document.database_id.is_empty()
-                && matches!(
-                    &document.target,
-                    ContentTarget::Body {
-                        owner: ContentOwner::Current {
-                            domain,
-                            id,
-                            revision,
-                        },
-                        key,
-                    } if domain == "plan" && id == "document" && *revision == plan.revision && key == "document"
-                ),
+            !document.owner_id.is_empty()
+                && document.domain == "plan"
+                && document.entity_id == "document"
+                && document.content_key == "document"
+                && document.generation == plan.revision.to_string(),
             "State Plan reference did not match its exact current document version"
         );
     }

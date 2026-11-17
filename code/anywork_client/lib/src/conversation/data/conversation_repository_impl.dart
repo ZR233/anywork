@@ -8,6 +8,7 @@ import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
+import '../domain/conversation_errors.dart';
 import 'conversation_session_impl.dart';
 import 'conversation_content_impl.dart';
 import 'input_turn_facts.dart';
@@ -50,20 +51,56 @@ final class ConversationRepositoryImpl
   );
 
   @override
-  Future<TimelineReader> openTimelineReader(
+  Future<HistoryReader> openHistoryReader(String threadId) async {
+    if (_closed) throw StateError('Conversation repository is closed');
+    final reader = await transport.openHistoryReader(
+      threadId,
+      historyProtocolVersion: historyProtocolVersion,
+    );
+    if (reader.threadId != threadId ||
+        reader.metadata.readerId.isEmpty ||
+        reader.metadata.historyProtocolVersion != historyProtocolVersion) {
+      try {
+        reader.requestClose();
+        await reader.close();
+      } finally {
+        throw ProtocolVersionMismatch(
+          received: reader.metadata.historyProtocolVersion,
+          supported: historyProtocolVersion,
+          field: 'historyProtocolVersion',
+        );
+      }
+    }
+    return reader;
+  }
+
+  @override
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
     required ReadDemand demand,
-  }) {
+  }) async {
     if (_closed) throw StateError('Conversation repository is closed');
-    final native = transport;
-    if (native is! TimelineTransport)
-      throw StateError('Timeline transport is unavailable');
-    return (native as TimelineTransport).openTimelineReader(
+    final reader = await transport.openCurrentReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
+      currentProtocolVersion: currentProtocolVersion,
       demand: demand,
     );
+    if (reader.threadId != threadId ||
+        reader.metadata.readerId.isEmpty ||
+        reader.metadata.currentOwnerId.isEmpty ||
+        reader.metadata.currentProtocolVersion != currentProtocolVersion) {
+      try {
+        reader.requestClose();
+        await reader.close();
+      } finally {
+        throw ProtocolVersionMismatch(
+          received: reader.metadata.currentProtocolVersion,
+          supported: currentProtocolVersion,
+          field: 'currentProtocolVersion',
+        );
+      }
+    }
+    return reader;
   }
 
   @override
@@ -117,6 +154,8 @@ final class ConversationRepositoryImpl
     final owner = ConversationSessionImpl(
       threadId,
       transport: transport,
+      currentTransport: transport,
+      stateDemand: const ReadDemand(maxItems: 128, maxBytes: 256 * 1024),
       directory: directory,
       inputFacts: _inputFacts,
       scope: _scope.child('conversation-session'),

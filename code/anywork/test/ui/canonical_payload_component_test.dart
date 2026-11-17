@@ -196,7 +196,7 @@ void main() {
             id: 'image-input',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -313,7 +313,7 @@ void main() {
               id: 'invalid-image-input',
               blockOrder: 1,
               body: SingleDisplayBlock(
-                visibility: SingleVisibility.content,
+                visibility: HistorySingleVisibility.content,
                 record: DisplayRecord(
                   atom: _head(),
                   contentSource: CompletedOriginal(completionId: 'completion'),
@@ -349,7 +349,7 @@ void main() {
             id: 'failed-image-input',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: _head(),
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -400,7 +400,7 @@ void main() {
             id: 'single-block-not-record',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),
@@ -595,7 +595,7 @@ void main() {
               id: 'block',
               blockOrder: 1,
               body: SingleDisplayBlock(
-                visibility: SingleVisibility.content,
+                visibility: HistorySingleVisibility.content,
                 record: DisplayRecord(
                   atom: _head(),
                   contentSource: CompletedOriginal(completionId: 'completion'),
@@ -644,7 +644,7 @@ void main() {
             id: 'restricted-block',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: head,
                 contentSource: CompletedOriginal(completionId: 'completion'),

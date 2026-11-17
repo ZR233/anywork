@@ -370,7 +370,7 @@ Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
       for (final collection in display.collections)
         if (collection.isCurrent)
           {
-            'databaseId': collection.reference.databaseId,
+            'ownerId': collection.reference.ownerId,
             'collection': collection.reference.collection,
             'revision': collection.reference.revision,
             'generation': collection.generation,
@@ -387,16 +387,20 @@ Map<String, Object?> _currentDisplayJson(TimelineCurrentDisplay display) {
                   'id': entry.id,
                   'position': entry.position,
                   'payload': switch (entry.payload) {
-                    InlinePayload(:final bytes) => {
+                    InlineCurrentPayload(:final bytes) => {
                       'kind': 'inline',
                       'byteLength': bytes.length,
                       'base64': base64Encode(bytes),
                     },
-                    DeferredPayload(:final reference, :final byteLength) => {
-                      'kind': 'deferred',
-                      'byteLength': byteLength,
-                      'reference': _currentReferenceJson(reference),
-                    },
+                    DeferredCurrentPayload(
+                      :final reference,
+                      :final byteLength,
+                    ) =>
+                      {
+                        'kind': 'deferred',
+                        'byteLength': byteLength,
+                        'reference': _currentContentRefJson(reference),
+                      },
                   },
                 },
             ],
@@ -451,6 +455,14 @@ Map<String, Object?> _currentReferenceJson(ContentRef reference) => {
       },
     },
   },
+};
+
+Map<String, Object?> _currentContentRefJson(CurrentContentRef reference) => {
+  'ownerId': reference.ownerId,
+  'domain': reference.domain,
+  'entityId': reference.entityId,
+  'contentKey': reference.contentKey,
+  'generation': reference.generation,
 };
 
 TimelineItemFacts _timelineMessageFacts(Message message) {

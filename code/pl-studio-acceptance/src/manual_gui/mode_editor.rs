@@ -1,10 +1,6 @@
 //! Mode-editor GUI journey with root Mode/workflow snapshot assertions.
 
 use super::*;
-use sea_orm::sqlx::{
-    Connection as _, Row,
-    sqlite::{SqliteConnectOptions, SqliteConnection},
-};
 
 const MODE_EDITOR_ID: &str = "mode.editor-evidence";
 const MODE_EDITOR_FILE: &str = "mode.editor-evidence.json";
@@ -624,32 +620,14 @@ fn read_mode_observation(home: &Path, thread_id: &str) -> Result<ModeObservation
 }
 
 async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<ModeObservation> {
-    let path = history_lock_database(home)?;
-    let mut connection = SqliteConnection::connect_with(
-        &SqliteConnectOptions::new().filename(&path).read_only(true),
-    )
-    .await?;
-    let owner: String = sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
-        .fetch_one(&mut connection)
-        .await?
-        .try_get("thread_id")?;
-    ensure!(owner == thread_id, "history belongs to another Thread");
-    let checkpoint_payload: String =
-        sea_orm::sqlx::query("SELECT payload FROM session_checkpoint WHERE id=1")
-            .fetch_one(&mut connection)
-            .await?
-            .try_get("payload")?;
-    let checkpoint: serde_json::Value = serde_json::from_str(&checkpoint_payload)?;
-    ensure!(
-        checkpoint["threadId"] == thread_id,
-        "checkpoint belongs to another Thread"
-    );
-    let extensions = &checkpoint["state"]["extensions"];
+    let saved = read_saved_current(home, thread_id)?;
+    let state = serde_json::to_value(&saved.state)?;
+    let extensions = &state["extensions"];
     let mode_record = &extensions["studio.mode"];
     let mode_payload = &mode_record["payload"];
     ensure!(
         mode_payload["format"] == "pl.studio.mode",
-        "checkpoint has no Mode extension"
+        "saved Current has no Mode extension"
     );
     let mode_version = mode_payload["version"]
         .as_u64()
@@ -686,7 +664,7 @@ async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<Mod
     let workflow_payload = &workflow_record["payload"];
     ensure!(
         workflow_payload["format"] == "pl.studio.workflow",
-        "checkpoint has no workflow extension"
+        "saved Current has no workflow extension"
     );
     let workflow = parse_embedded_json(&workflow_payload["content"], "workflow payload content")?;
     let current_run = workflow["currentRun"]
@@ -703,17 +681,9 @@ async fn read_mode_observation_async(home: &Path, thread_id: &str) -> Result<Mod
         current_state_id: required_string(current_run, "currentStateId")?,
         lifecycle: required_string(current_run, "lifecycle")?,
     };
-    let context_rows = sea_orm::sqlx::query("SELECT payload FROM current_context ORDER BY ordinal")
-        .fetch_all(&mut connection)
-        .await?;
-    let history = context_rows
-        .into_iter()
-        .map(|row| {
-            let payload: String = row.try_get("payload")?;
-            Ok(serde_json::from_str::<serde_json::Value>(&payload)?)
-        })
-        .collect::<Result<Vec<_>>>()?;
-    connection.close().await?;
+    let history = state["context"]["records"]
+        .as_array()
+        .context("saved Current context records missing")?;
     Ok(ModeObservation {
         thread_id: thread_id.to_owned(),
         mode_extension_revision: mode_record["revision"]

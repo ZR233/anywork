@@ -97,7 +97,7 @@ pub(crate) fn range(value: BridgeContentRange) -> protocol::ContentRange {
     }
 }
 
-fn payload(value: protocol::PayloadData) -> BridgePayloadData {
+pub(super) fn payload(value: protocol::PayloadData) -> BridgePayloadData {
     match value {
         protocol::PayloadData::Inline { bytes } => BridgePayloadData::Inline { bytes },
         protocol::PayloadData::Deferred {
@@ -142,7 +142,7 @@ pub(super) fn fact_position(value: protocol::ChatFactPosition) -> BridgeChatFact
     }
 }
 
-fn terminal_outcome(value: protocol::ChatTerminalOutcome) -> BridgeChatTerminalOutcome {
+pub(super) fn terminal_outcome(value: protocol::ChatTerminalOutcome) -> BridgeChatTerminalOutcome {
     match value {
         protocol::ChatTerminalOutcome::Completed => BridgeChatTerminalOutcome::Completed,
         protocol::ChatTerminalOutcome::Failed => BridgeChatTerminalOutcome::Failed,
@@ -151,7 +151,7 @@ fn terminal_outcome(value: protocol::ChatTerminalOutcome) -> BridgeChatTerminalO
     }
 }
 
-fn atom_kind(value: protocol::ChatAtomKind) -> BridgeChatAtomKind {
+pub(super) fn atom_kind(value: protocol::ChatAtomKind) -> BridgeChatAtomKind {
     match value {
         protocol::ChatAtomKind::Input => BridgeChatAtomKind::Input,
         protocol::ChatAtomKind::Text => BridgeChatAtomKind::Text,
@@ -171,7 +171,7 @@ fn atom_kind(value: protocol::ChatAtomKind) -> BridgeChatAtomKind {
     }
 }
 
-fn delivery(value: protocol::ChatDeliveryKind) -> BridgeChatDeliveryKind {
+pub(super) fn delivery(value: protocol::ChatDeliveryKind) -> BridgeChatDeliveryKind {
     match value {
         protocol::ChatDeliveryKind::Foreground => BridgeChatDeliveryKind::Foreground,
         protocol::ChatDeliveryKind::BackgroundHandoff => BridgeChatDeliveryKind::BackgroundHandoff,
@@ -179,7 +179,7 @@ fn delivery(value: protocol::ChatDeliveryKind) -> BridgeChatDeliveryKind {
     }
 }
 
-fn text_channel(value: protocol::ThreadTextChannel) -> BridgeThreadTextChannel {
+pub(super) fn text_channel(value: protocol::ThreadTextChannel) -> BridgeThreadTextChannel {
     match value {
         protocol::ThreadTextChannel::User => BridgeThreadTextChannel::User,
         protocol::ThreadTextChannel::ParentAgent => BridgeThreadTextChannel::ParentAgent,
@@ -246,7 +246,7 @@ pub(super) fn atom(value: protocol::ChatAtom) -> BridgeChatAtom {
     }
 }
 
-fn source_state(value: protocol::ChatSourceState) -> BridgeChatSourceState {
+pub(super) fn source_state(value: protocol::ChatSourceState) -> BridgeChatSourceState {
     BridgeChatSourceState {
         source: source_id(value.source),
         lifecycle: match value.lifecycle {
@@ -287,35 +287,6 @@ pub(super) fn placement(value: protocol::ChatPlacement) -> BridgeChatPlacement {
     }
 }
 
-pub(crate) fn activity(value: protocol::ActivitySnapshot) -> BridgeActivitySnapshot {
-    BridgeActivitySnapshot {
-        revision: value.revision,
-        completed_through: value.completed_through,
-        execution_present: value.execution_present,
-        entries: value
-            .entries
-            .into_iter()
-            .map(|entry| BridgeActivityEntry {
-                identity: match entry.identity {
-                    protocol::ActivityIdentity::ModelPart { atom_id } => {
-                        BridgeActivityIdentity::ModelPart { atom_id }
-                    }
-                    protocol::ActivityIdentity::ForegroundTool { call_id } => {
-                        BridgeActivityIdentity::ForegroundTool { call_id }
-                    }
-                    protocol::ActivityIdentity::BackgroundTool { call_id } => {
-                        BridgeActivityIdentity::BackgroundTool { call_id }
-                    }
-                    protocol::ActivityIdentity::Other { domain, id } => {
-                        BridgeActivityIdentity::Other { domain, id }
-                    }
-                },
-                atom: atom(entry.atom),
-            })
-            .collect(),
-    }
-}
-
 pub(crate) fn business_refs(value: protocol::ThreadBusinessRefs) -> BridgeThreadBusinessRefs {
     BridgeThreadBusinessRefs {
         plan: value.plan.map(current_plan_head),
@@ -327,23 +298,19 @@ fn current_plan_head(value: protocol::CurrentPlanHead) -> BridgeCurrentPlanHead 
     BridgeCurrentPlanHead {
         revision: value.revision,
         phase: super::thread_stream::plan_phase(value.phase),
-        document: value.document.map(content_ref),
+        document: value.document.map(|reference| BridgeCurrentContentRef {
+            owner_id: reference.owner_id,
+            domain: reference.domain,
+            entity_id: reference.entity_id,
+            content_key: reference.content_key,
+            generation: reference.generation,
+        }),
     }
 }
 
 fn collection_ref(value: protocol::CurrentCollectionRef) -> BridgeCurrentCollectionRef {
     BridgeCurrentCollectionRef {
-        database_id: value.database_id,
-        collection: value.collection,
-        revision: value.revision,
-    }
-}
-
-pub(crate) fn protocol_collection_ref(
-    value: BridgeCurrentCollectionRef,
-) -> protocol::CurrentCollectionRef {
-    protocol::CurrentCollectionRef {
-        database_id: value.database_id,
+        owner_id: value.owner_id,
         collection: value.collection,
         revision: value.revision,
     }
@@ -368,24 +335,6 @@ pub(crate) fn manifest(value: protocol::ContentManifestPage) -> BridgeContentMan
                 key: entry.key,
                 payload: entry.payload,
                 reference: content_ref(entry.reference),
-            })
-            .collect(),
-        continuation: value.continuation,
-    }
-}
-
-pub(crate) fn collection_page(
-    value: protocol::CurrentCollectionPage,
-) -> BridgeCurrentCollectionPage {
-    BridgeCurrentCollectionPage {
-        revision: value.revision,
-        entries: value
-            .entries
-            .into_iter()
-            .map(|entry| BridgeCurrentCollectionEntry {
-                id: entry.id,
-                position: entry.position,
-                payload: payload(entry.payload),
             })
             .collect(),
         continuation: value.continuation,
@@ -514,7 +463,7 @@ mod tests {
                 document: None,
             }),
             interactions: Some(protocol::CurrentCollectionRef {
-                database_id: "db-1".into(),
+                owner_id: "owner-1".into(),
                 collection: "interactions".into(),
                 revision: 8,
             }),
@@ -527,36 +476,11 @@ mod tests {
         assert_eq!(
             mapped.interactions,
             Some(BridgeCurrentCollectionRef {
-                database_id: "db-1".into(),
+                owner_id: "owner-1".into(),
                 collection: "interactions".into(),
                 revision: 8,
             })
         );
-    }
-
-    #[test]
-    fn activity_keeps_typed_identity() {
-        let snapshot = activity(protocol::ActivitySnapshot {
-            revision: 11,
-            completed_through: 7,
-            execution_present: true,
-            entries: vec![protocol::ActivityEntry {
-                identity: protocol::ActivityIdentity::ForegroundTool {
-                    call_id: "call-1".into(),
-                },
-                atom: atom(protocol::ChatAtomLifecycle::Active {
-                    started: None,
-                    status: protocol::ChatActiveStatus::Running,
-                }),
-            }],
-        });
-        assert_eq!(snapshot.revision, 11);
-        assert_eq!(snapshot.completed_through, 7);
-        assert!(snapshot.execution_present);
-        assert!(matches!(
-            &snapshot.entries[0].identity,
-            BridgeActivityIdentity::ForegroundTool { call_id } if call_id == "call-1"
-        ));
     }
 
     #[test]

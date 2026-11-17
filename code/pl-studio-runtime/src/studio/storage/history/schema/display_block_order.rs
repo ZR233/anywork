@@ -1,7 +1,7 @@
 //! One transactional upgrade from the published schema22 display index.
+use super::v24_presentation::DisplayHeader;
 use super::*;
 use crate::studio::storage::history::conversation::display::validate_header;
-use crate::studio::thread_projection::presentation::DisplayHeader;
 
 pub(super) struct DisplayBlockOrder;
 const MEMBER_COLUMNS: &str = "block_id,member_order,member_key,association_key,terminal,completion_id,updated_effect,metadata";
@@ -229,8 +229,10 @@ pub(super) async fn validate_display(db: &impl ConnectionTrait) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::v24_presentation_types::{DisplayBlockBody, DisplayBlockRef, WorkTiming};
     use super::*;
-    use pl_protocol::{ChatSourceId, DisplayBlockBody, DisplayBlockRef, WorkTiming};
+    use pl_protocol::ChatSourceId;
+    use std::sync::Arc;
 
     const THREAD: &str = "display-snapshot-migration";
 
@@ -316,9 +318,8 @@ mod tests {
             .await?
             .unwrap()
             .try_get::<String>("", "database_id")?;
-        // Produce a real frozen observation, then encode only its header in the
-        // published v4 shape. Original payload/body storage is shared by both schemas.
-        use crate::studio::thread_projection::presentation::{ObservationInput, PresentationState};
+        // Encode the published v4 observation shape directly. Original payload/body storage is
+        // shared by both schemas; the retired runtime fold is intentionally not recreated here.
         use pl_core::chat::{ChatContent, ChatContentKey, ContentData, ContentDescriptor};
         use pl_protocol::{
             ChatActiveStatus, ChatAtom, ChatAtomContent, ChatAtomKind, ChatAtomLifecycle,
@@ -341,9 +342,12 @@ mod tests {
             }),
             status: ChatActiveStatus::Running,
         };
-        let owner = ContentOwner::Item {
-            item_id: atom.id.clone(),
+        let association = super::super::v24_presentation::member_key(&atom)?;
+        let owner = ContentOwner::DisplayObservation {
+            block_id: "waiting-work".into(),
+            member_key: association.clone(),
         };
+        let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)?;
         atom.contents = vec![ChatAtomContent {
             role: ChatContentRole::ToolOutput,
             reference: ContentRef {
@@ -357,7 +361,7 @@ mod tests {
         let content = Arc::new(ChatContent {
             descriptor: ContentDescriptor {
                 key: ChatContentKey {
-                    owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+                    owner: owner_key,
                     key: "tool.result".into(),
                 },
                 byte_length: 6,
@@ -366,42 +370,56 @@ mod tests {
             },
             data: ContentData::Bytes(Arc::from(&b"prefix"[..])),
         });
-        let mut state = PresentationState::default();
-        state.bind(&database)?;
-        state.prepare(1, 10, &[atom.clone()], &[], &[])?;
-        let mut boundary = atom.clone();
-        boundary.id = "boundary-text".into();
-        boundary.kind = ChatAtomKind::Text;
-        boundary.content_present = Some(true);
-        boundary.contents.clear();
-        boundary.lifecycle = ChatAtomLifecycle::Active {
-            started: Some(ChatFactPosition {
+        conversation::content::write_content(&db, &content, true).await?;
+        let waiting_id = "waiting-work";
+        let member = super::super::v24_presentation::DisplayMemberWrite {
+            block_id: waiting_id.into(),
+            association_key: association.clone(),
+            terminal: false,
+            head: super::super::v24_presentation_types::DisplayMemberHead {
+                member_key: association.clone(),
+                member_order: 1,
+                record: super::super::v24_presentation::record(
+                    atom.clone(),
+                    Some(ChatFactPosition {
+                        effect_seq: 1,
+                        suborder: 0,
+                    }),
+                ),
+            },
+        };
+        let member_bytes = serde_json::to_vec(&member)?;
+        let observed_header = work_snapshots::DisplayHeader {
+            version: 4,
+            id: waiting_id.into(),
+            source: atom.source.clone(),
+            block_order: 2,
+            history_pos: None,
+            boundary: Some(ChatFactPosition {
                 effect_seq: 2,
                 suborder: 0,
             }),
-            status: ChatActiveStatus::Running,
+            first_content_at: Some(ChatFactPosition {
+                effect_seq: 1,
+                suborder: 0,
+            }),
+            sealed: true,
+            unfinished: 0,
+            next_member: 1,
+            revision: 1,
+            skip_display: false,
+            thinking_summary: None,
+            body: DisplayBlockBody::Work {
+                timing: WorkTiming {
+                    started_at: Some(10),
+                    finished_at: Some(20),
+                },
+                members: DisplayBlockRef {
+                    database_id: database.clone(),
+                    block_id: waiting_id.into(),
+                },
+            },
         };
-        let observation = state.prepare_capturing(2, 20, &[boundary], &[], &[], |_| {
-            Ok(ObservationInput::for_test(
-                atom.clone(),
-                vec![content.clone()],
-            ))
-        })?;
-        let frozen = observation
-            .blocks
-            .iter()
-            .find(|block| block.header.sealed)
-            .unwrap();
-        let waiting_id = frozen.header.id.as_str();
-        for content in &observation.contents {
-            conversation::content::write_content(&db, content, true).await?;
-        }
-        let member = observation
-            .members
-            .iter()
-            .find(|member| member.block_id == waiting_id)
-            .unwrap();
-        let member_bytes = serde_json::to_vec(member)?;
         for (id, order, published, sealed) in [
             ("published-first", 3, Some(1), true),
             ("published-second", 1, Some(2), true),
@@ -435,7 +453,7 @@ mod tests {
             };
             db.execute_raw(statement("INSERT INTO conversation_display_blocks(block_id,source_key,block_order,history_pos,sealed,updated_effect,header) VALUES(?,?,?,?,?,0,?)",vec![id.into(),serde_json::to_string(&header.source)?.into(),integer(order)?.into(),published.map(integer).transpose()?.into(),i64::from(sealed).into(),serde_json::to_vec(&header)?.into()])).await?;
         }
-        let mut old_header = serde_json::to_value(frozen.header.as_ref())?;
+        let mut old_header = serde_json::to_value(&observed_header)?;
         old_header["version"] = 4.into();
         old_header["block_order"] = 2.into();
         old_header["history_pos"] = serde_json::Value::Null;
@@ -443,7 +461,7 @@ mod tests {
         db.execute_raw(statement(
             "UPDATE conversation_display_blocks SET source_key=?,header=? WHERE block_id=?",
             vec![
-                serde_json::to_string(&frozen.header.source)?.into(),
+                serde_json::to_string(&observed_header.source)?.into(),
                 serde_json::to_vec(&old_header)?.into(),
                 waiting_id.into(),
             ],
@@ -492,7 +510,19 @@ mod tests {
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         super::super::execution_facts::validate(&db).await?;
-        let heads = conversation::display::block_page(&db, 0, 4, 10, true).await?;
+        let heads = db
+            .query_all_raw(statement(
+                "SELECT header FROM conversation_display_blocks ORDER BY block_order",
+                vec![],
+            ))
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok::<_, anyhow::Error>(serde_json::from_slice::<
+                    super::super::v24_presentation::DisplayHeader,
+                >(&row.try_get::<Vec<u8>>("", "header")?)?)
+            })
+            .collect::<Result<Vec<_>>>()?;
         assert_eq!(
             heads
                 .iter()
@@ -505,7 +535,21 @@ mod tests {
                 ("open-tail", 4)
             ]
         );
-        assert_eq!(conversation::display::watermarks(&db).await?, (3, 0));
+        let watermarks = db
+            .query_one_raw(statement(
+                "SELECT display_published_through,display_applied_effect
+                 FROM history_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .context("display watermarks")?;
+        assert_eq!(
+            (
+                u64::try_from(watermarks.try_get::<i64>("", "display_published_through")?)?,
+                u64::try_from(watermarks.try_get::<i64>("", "display_applied_effect")?)?,
+            ),
+            (3, 0)
+        );
         let current = db
             .query_all_raw(statement(
                 "SELECT item_id,seq,payload,metadata FROM conversation_items ORDER BY seq",
@@ -544,22 +588,26 @@ mod tests {
             !member.terminal,
             "frozen observation must remain distinct from a completion"
         );
-        for content in &observation.contents {
-            let expected = content.data.range(0, content.data.len())?;
-            assert_eq!(
-                conversation::content::read_body_bytes(
-                    &db,
-                    &content.descriptor.key,
-                    0,
-                    content.data.len()
-                )
-                .await?,
-                expected.as_bytes()
-            );
-        }
-        let recovery = conversation::display::recovery(&db).await?;
+        let expected = content.data.range(0, content.data.len())?;
+        assert_eq!(
+            conversation::content::read_body_bytes(
+                &db,
+                &content.descriptor.key,
+                0,
+                content.data.len()
+            )
+            .await?,
+            expected.as_bytes()
+        );
         assert!(
-            recovery.unfinished.is_empty(),
+            db.query_one_raw(statement(
+                "SELECT 1 FROM conversation_display_members AS member
+                 JOIN conversation_display_blocks AS block USING(block_id)
+                 WHERE block.sealed=0 AND member.terminal=0 LIMIT 1",
+                vec![],
+            ))
+            .await?
+            .is_none(),
             "frozen nonterminal observations must not resume execution"
         );
         let pending = migrator.get_pending_migrations_read_only(&db).await?;

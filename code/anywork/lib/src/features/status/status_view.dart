@@ -10,7 +10,9 @@ import '../../presentation/providers/observe_client.dart';
 import '../../presentation/providers/thread_directory_store.dart';
 import '../../presentation/providers/thread_session_store.dart';
 import '../../presentation/providers/settings_store.dart';
+import '../../presentation/view_models/timeline_session_owner.dart';
 
+import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/studio_client.dart';
 
 import '../../domain/models/studio_models.dart';
@@ -36,6 +38,8 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   final _errors = <String, String>{};
   void Function()? _closeRetention;
   bool _refreshScheduled = false;
+  CurrentStateField? _skillsField;
+  List<String> _deferredSkills = const [];
   final _displayObservations = <void Function()>{};
 
   @override
@@ -51,12 +55,58 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
       if (!_sameStrings(
         previous?.runtime?.activeSkills ?? const [],
         next.runtime?.activeSkills ?? const [],
-      )) {
+      ) ||
+          _deferredField(previous?.runtime, 'activeSkills') !=
+              _deferredField(next.runtime, 'activeSkills')) {
+        unawaited(_loadDeferredSkills());
         _scheduleRefresh();
       }
     });
     ref.listen(threadMcpProvider(threadId), (_, _) => _scheduleRefresh());
+    unawaited(_loadDeferredSkills());
     return _project();
+  }
+
+  CurrentStateField? _deferredField(
+    ThreadRuntimeView? runtime,
+    String name,
+  ) => runtime?.deferred.where((field) => field.field == name).firstOrNull;
+
+  Future<void> _loadDeferredSkills() async {
+    if (!ref.mounted) return;
+    final runtime = ref.read(threadSessionStoreProvider(threadId)).runtime;
+    final field = _deferredField(runtime, 'activeSkills');
+    if (field == _skillsField) return;
+    if (field == null) {
+      _skillsField = null;
+      _deferredSkills = const [];
+      _scheduleRefresh();
+      return;
+    }
+    final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
+    if (lease == null || lease.isRetired) return;
+    _skillsField = field;
+    final scope = lease.openCurrentScope(generation: lease.generation);
+    var loaded = false;
+    try {
+      final value = await scope.readStateField(field);
+      if (!ref.mounted || _skillsField != field || lease.isRetired) return;
+      if (value is! List || value.any((item) => item is! String)) {
+        throw const FormatException('activeSkills must be a string list');
+      }
+      _deferredSkills = List.unmodifiable(value.cast<String>());
+      _errors.remove('state:activeSkills');
+      loaded = true;
+    } catch (error) {
+      if (ref.mounted && _skillsField == field) {
+        _errors['state:activeSkills'] = error.toString();
+      }
+    } finally {
+      if (!loaded) _skillsField = null;
+      scope.retire();
+      unawaited(scope.close());
+      if (ref.mounted) _scheduleRefresh();
+    }
   }
 
   /// Visibility borrows this VM's observation without extending the business
@@ -123,10 +173,10 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
   }
 
   StartedItemsState _project() {
-    final skills = ref
-        .read(threadSessionStoreProvider(threadId))
-        .runtime
-        ?.activeSkills;
+    final runtime = ref.read(threadSessionStoreProvider(threadId)).runtime;
+    final skills = runtime?.activeSkills;
+    final skillsDeferred =
+        _deferredField(runtime, 'activeSkills') != null;
     final mcp = ref.read(threadMcpProvider(threadId));
     final lspState = ref
         .read(anyworkClientProvider)
@@ -145,7 +195,7 @@ class StartedItemsViewModel extends _$StartedItemsViewModel {
           'lsp:${key.substring('lsp:$bindingId:'.length)}',
     };
     return StartedItemsState(
-      skills: skills ?? const [],
+      skills: skillsDeferred ? _deferredSkills : skills ?? const [],
       mcp: [
         for (final server
             in mcp.value?.servers ?? const <ThreadMcpServerState>[])

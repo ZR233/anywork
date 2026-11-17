@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
-use pl_core::chat::{Session, TimelineEpoch};
+use anyhow::{Context, Result, ensure};
 use pl_core::thread::extensions::{ExtensionChange, ExtensionRecord};
 use pl_core::thread::{ThreadEffectBatch, UsageSummary};
 use pl_protocol::{
@@ -13,21 +12,21 @@ use pl_protocol::{
 use sha2::{Digest, Sha256};
 
 use super::manifest::{validate_output_dir_preflight, write_run_manifest};
-use super::reader::export_completions_range;
+use super::reader::export_history_originals_window;
 use super::types::{
-    EventV2, MAX_QUEUED_BATCHES, RunExportOptions, RunManifestV2, UsageCoverage, UsageMetricKey,
+    EventBodyV3, EventV3, ExportedBlobV3, ExportedContentV3, MAX_QUEUED_BATCHES, RunExportOptions,
+    RunManifestV3, UsageCoverage, UsageMetricKey,
 };
 use super::usage::{UsageAccumulator, fold_next_accounting};
 use super::writer::{ExportCommand, FsContentBlobSink};
 use super::{NewMemberRegistration, RetiredThreadCut, RunExporter};
-use crate::studio::paths::StudioPaths;
-use crate::studio::storage::history::conversation::current::PreparedCurrent;
-use crate::studio::storage::history::{EffectCommit, HistoryStore};
-use crate::studio::store::StudioStore;
-use crate::studio::store::directory::DirectoryDelta;
-use crate::studio::thread_projection::{
-    AuxiliaryBillingReceipt, FrozenCurrentProjection, PreparedAccounting,
+use crate::history::{
+    NativeHistoryEntity,
+    HistoryBody, HistoryBodyRole, HistoryDemand, HistoryEntityChange, HistoryEntityHead,
+    HistoryEntityState, HistoryEvent, HistoryEventKind, HistoryLimits, HistoryOriginalInfo,
+    HistoryPlacement, HistoryRowHead, HistorySingleVisibility, HistoryStore,
 };
+use crate::studio::thread_projection::{AuxiliaryBillingReceipt, CurrentState, PreparedAccounting};
 
 struct ThreadUsageInput<'a> {
     thread_id: &'a str,
@@ -35,6 +34,194 @@ struct ThreadUsageInput<'a> {
     through_effect_seq: u64,
     summary: &'a UsageSummary,
     receipts: &'a [PreparedAccounting],
+}
+
+fn test_current(thread_id: &str, revision: u64) -> Result<Arc<CurrentState>> {
+    CurrentState::cold(
+        "fixture-database".into(),
+        thread_id.into(),
+        revision,
+        &pl_core::thread::ThreadSnapshot::default(),
+    )
+}
+
+fn read_contents_manifest(
+    root: &std::path::Path,
+    manifest: &ExportedBlobV3,
+) -> Result<Vec<ExportedContentV3>> {
+    let bytes = std::fs::read(root.join(&manifest.path))?;
+    ensure!(
+        bytes.len() as u64 == manifest.byte_length,
+        "contents manifest length mismatch"
+    );
+    ensure!(
+        super::sha256_hex(&bytes) == manifest.sha256,
+        "contents manifest hash mismatch"
+    );
+    String::from_utf8(bytes)?
+        .lines()
+        .map(|line| serde_json::from_str(line).map_err(Into::into))
+        .collect()
+}
+
+async fn history_checkpoint(
+    history: &crate::history::HistoryReader,
+) -> Result<super::types::CompletionCursorV3> {
+    let (cut, history_seq) = history.capture_position().await?;
+    Ok(super::types::CompletionCursorV3 { cut, history_seq })
+}
+
+fn text_original(
+    index: u64,
+    channel: pl_protocol::ThreadTextChannel,
+    text: &str,
+) -> Result<HistoryEvent> {
+    let event_id = format!("event-{index}");
+    let entity_id = format!("msg-{index}");
+    let input_id = format!("bot:fixture:dm:om_{index}");
+    let source = pl_protocol::ChatSourceId::InboxMessage {
+        source_id: "om".into(),
+        message_id: format!("om_{index}"),
+    };
+    let turn_id = format!("turn-{index}");
+    let query_class = serde_json::to_string(&pl_protocol::ChatClassFilter::All {})?;
+    let head = HistoryEntityHead {
+        entity_id: entity_id.clone(),
+        run_id: Some("fixture-runtime".into()),
+        attempt_id: None,
+        source: source.clone(),
+        kind: pl_protocol::ChatAtomKind::Text,
+        delivery: pl_protocol::ChatDeliveryKind::Foreground,
+        state: HistoryEntityState::KnownTerminal {
+            outcome: pl_protocol::ChatTerminalOutcome::Completed,
+        },
+        started_at: None,
+        finished_at: None,
+        text_channel: Some(channel),
+        tool: None,
+        wait: None,
+        content_present: Some(true),
+        single_visibility: Some(HistorySingleVisibility::Content),
+        observation: crate::history::HistoryObservation::Original,
+        presentation_contract: None,
+        detail_event_id: Some(event_id.clone()),
+        input_manifest_event_id: None,
+        body_manifest_event_id: Some(event_id.clone()),
+    };
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "contract": "anywork.chat/1",
+        "type": "text",
+        "data": {
+            "channel": channel,
+            "inputId": input_id,
+        },
+        "turnId": turn_id.clone(),
+        "bodies": [{"key": "body", "byteLength": text.len()}],
+    }))?;
+    let payload_body = HistoryBody::new(
+        "canonical_payload",
+        HistoryBodyRole::CanonicalPayload,
+        payload,
+    );
+    let mut event = HistoryEvent::new(
+        event_id.clone(),
+        HistoryEventKind::EntityEnded,
+        index as i64,
+    );
+    event.header.entity_id = Some(entity_id.clone());
+    event.header.run_id = head.run_id.clone();
+    event.header.turn_id = Some(turn_id);
+    event.header.source = Some(source);
+    event.header.message_id = Some(format!("om_{index}"));
+    event.header.row_key = Some(format!("single:{entity_id}"));
+    event.header.original = Some(HistoryOriginalInfo {
+        query_class,
+        parent_id: None,
+        original_kind: pl_protocol::ChatAtomKind::Text,
+        tool_name: None,
+    });
+    event.header.occurred_at = Some(index as i64);
+    event.is_anchor = true;
+    event.head = Some(HistoryRowHead::Single(head.clone()));
+    event.payload_body_id = Some(payload_body.body_id.clone());
+    event.bodies = vec![
+        payload_body,
+        HistoryBody::new(
+            "canonical_metadata",
+            HistoryBodyRole::CanonicalMetadata,
+            serde_json::to_vec(&head)?,
+        ),
+        HistoryBody::new("item:body", HistoryBodyRole::Body, text.as_bytes().to_vec()),
+    ];
+    Ok(event)
+}
+
+fn history_change(
+    event_id: &str,
+    kind: HistoryEventKind,
+    atom: &pl_protocol::ChatAtom,
+    recorded_at: i64,
+) -> Result<HistoryEntityChange> {
+    let entity = HistoryEntityHead::from_atom(atom, None)?;
+    let mut event = HistoryEvent::new(event_id, kind, recorded_at);
+    event.header.entity_id = Some(entity.entity_id.clone());
+    event.header.turn_id = atom.turn_id.clone();
+    Ok(HistoryEntityChange {
+        event,
+        entity,
+        placement: HistoryPlacement::Hidden,
+        boundary_observations: Vec::new(),
+        public_summary: None,
+    })
+}
+
+#[tokio::test]
+async fn history_export_streams_body_directories_larger_than_one_page() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let history = HistoryStore::open(
+        &temp.path().join("manifest-history.sqlite"),
+        "manifest-thread",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let reader = history.reader();
+    let mut event = text_original(
+        1,
+        pl_protocol::ThreadTextChannel::Final,
+        "manifest original",
+    )?;
+    for index in 0..260 {
+        event.bodies.push(HistoryBody::new(
+            format!("item:part.outputText.{index}"),
+            HistoryBodyRole::Body,
+            b"x".to_vec(),
+        ));
+    }
+    let events = [event];
+    history.accept_batch(&events).await?;
+    history.flush().await?;
+    let (cut, history_seq) = reader.capture_position().await?;
+    let mut sink = FsContentBlobSink::new(temp.path().join("manifest-export"));
+    let page = export_history_originals_window(&reader, history_seq, 0, &mut sink).await?;
+    assert_eq!(page.records.len(), 1);
+    assert!(!page.has_more);
+    let manifest = read_contents_manifest(
+        &temp.path().join("manifest-export"),
+        &page.records[0].contents_manifest,
+    )?;
+    assert_eq!(manifest.len(), 263);
+    assert!(
+        manifest
+            .iter()
+            .any(|entry| { entry.history_role == HistoryBodyRole::CanonicalPayload })
+    );
+    assert!(
+        manifest
+            .iter()
+            .any(|entry| { entry.history_role == HistoryBodyRole::CanonicalMetadata })
+    );
+    assert!(!cut.token.is_empty());
+    Ok(())
 }
 
 fn build_and_reconcile_usage(
@@ -66,16 +253,6 @@ fn build_and_reconcile_usage(
         })
         .collect();
     acc.finish(trace_complete, &inputs)
-}
-
-fn test_current(sequence: u64) -> PreparedCurrent {
-    PreparedCurrent::new(
-        FrozenCurrentProjection::new(pl_protocol::CurrentProjection::empty(
-            sequence,
-            pl_protocol::ThreadStatus::Idle,
-        )),
-        Arc::from([]),
-    )
 }
 
 fn aux_effect(
@@ -460,8 +637,13 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     .await?;
 
     let coordinator = exporter.coordinator();
-    let history = HistoryStore::open(&dir.path().join("hist.sqlite"), "t-root").await?;
-    let session = Session::new(history, TimelineEpoch::new("ep-1")?);
+    let history = HistoryStore::open(
+        &dir.path().join("hist.sqlite"),
+        "t-root",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let history_reader = history.reader();
     coordinator.enroll_root("t-root");
     coordinator
         .register_member(NewMemberRegistration {
@@ -474,7 +656,7 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
             workspace_id: "ws-1".into(),
             spawn_tool_call_id: None,
             initial_effect_seq: 0,
-            session: session.clone(),
+            history: history_reader.clone(),
         })
         .await;
 
@@ -526,10 +708,13 @@ async fn writer_bounded_backpressure_drains_on_resume_and_unblocks_on_deadline()
     queue.set_paused(false);
     assert!(tokio::time::timeout(Duration::from_secs(5), producer).await??);
 
+    let history_cut = history_checkpoint(&history_reader).await?;
     let cut = RetiredThreadCut {
         thread_id: "t-root".into(),
         through_effect_seq: 0,
-        session: session.clone(),
+        history: history_reader.clone(),
+        history_cut: history_cut.cut,
+        history_seq: history_cut.history_seq,
         summary: UsageSummary::default(),
         status: Some("retired".into()),
         aborted: false,
@@ -612,8 +797,14 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
     let studio_home = dir.path().join("home");
     std::fs::create_dir_all(&studio_home)?;
     std::fs::write(studio_home.join("config.toml"), "[models]\n")?;
-    let history = HistoryStore::open(&dir.path().join("h.sqlite"), "t-idem").await?;
-    let session = Session::new(history, TimelineEpoch::new("ep-idem")?);
+    let history = HistoryStore::open(
+        &dir.path().join("h.sqlite"),
+        "t-idem",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let history_reader = history.reader();
+    let current = test_current("t-idem", 0)?;
 
     // 1. Identical redelivery & non-billing effect sequence advance stay idempotent & sealed.
     let exporter = RunExporter::start(RunExportOptions {
@@ -643,7 +834,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         workspace_id: "ws-1".into(),
         spawn_tool_call_id: None,
         initial_effect_seq: 0,
-        session: session.clone(),
+        history: history_reader.clone(),
     };
     coord.register_member(make_reg()).await;
     coord.register_member(make_reg()).await; // identical re-registration
@@ -704,10 +895,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         contents: vec![],
         payload: None,
     };
-    let start =
-        crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
-            &atom, 1,
-        )?;
+    let start = history_change("lifecycle-start", HistoryEventKind::EntityStarted, &atom, 1)?;
     atom.lifecycle = pl_protocol::ChatAtomLifecycle::Terminal {
         started: Some(pl_protocol::ChatFactPosition {
             effect_seq: 1,
@@ -719,25 +907,47 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         }),
         outcome: pl_protocol::ChatTerminalOutcome::Cancelled,
     };
-    let end = crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(
-        &atom, 2,
-    )?;
+    let end = history_change("lifecycle-end", HistoryEventKind::EntityEnded, &atom, 2)?;
     let start: Arc<[_]> = Arc::from([start]);
     let end: Arc<[_]> = Arc::from([end]);
     coord
-        .admit_live_handoff("t-idem", &non_billing, &start, &summary, &session, None)
+        .admit_live_handoff(
+            "t-idem",
+            &non_billing,
+            &start,
+            &summary,
+            &current,
+            &history_reader,
+        )
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &end, &summary, &session, None)
+        .admit_live_handoff(
+            "t-idem",
+            &billing,
+            &end,
+            &summary,
+            &current,
+            &history_reader,
+        )
         .await;
     coord
-        .admit_live_handoff("t-idem", &billing, &end, &summary, &session, None)
+        .admit_live_handoff(
+            "t-idem",
+            &billing,
+            &end,
+            &summary,
+            &current,
+            &history_reader,
+        )
         .await; // idempotent redelivery
 
+    let final_history = history_checkpoint(&history_reader).await?;
     coord.record_thread_final_cut(RetiredThreadCut {
         thread_id: "t-idem".into(),
         through_effect_seq: 2,
-        session: session.clone(),
+        history: history_reader.clone(),
+        history_cut: final_history.cut,
+        history_seq: final_history.history_seq,
         summary: summary.clone(),
         status: Some("retired".into()),
         aborted: false,
@@ -753,12 +963,12 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
 
     let events = std::fs::read_to_string(dir.path().join("idem-ok/events.jsonl"))?
         .lines()
-        .map(serde_json::from_str::<EventV2>)
+        .map(serde_json::from_str::<EventV3>)
         .collect::<Result<Vec<_>, _>>()?;
     let facts = events
         .iter()
         .filter_map(|event| match &event.body {
-            super::types::EventBodyV2::ExecutionLifecycle { facts } => Some(facts),
+            super::types::EventBodyV3::ExecutionLifecycle { facts } => Some(facts),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -771,14 +981,18 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         facts
             .iter()
             .flat_map(|facts| facts.iter())
-            .all(|fact| fact.completion_item_id.is_none()
-                && fact.started_at.is_none()
-                && fact.finished_at.is_none()),
+            .all(|fact| !fact.event_id.is_empty()
+                && fact.occurred_at.is_none()
+                && fact.head.started_at.is_none()
+                && fact.head.finished_at.is_none()
+                && fact.head.tool.is_none()),
         "bodyless starts and unknown times cannot become fabricated completions"
     );
     assert_eq!(
-        facts[1][0].outcome,
-        Some(pl_protocol::ChatTerminalOutcome::Cancelled)
+        facts[1][0].head.state,
+        HistoryEntityState::KnownTerminal {
+            outcome: pl_protocol::ChatTerminalOutcome::Cancelled
+        }
     );
     // 2. Conflicting effect at same (threadId, effectSeq) triggers fatal failure + cancellation.
     let exp_conflict = RunExporter::start(RunExportOptions {
@@ -808,7 +1022,7 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         workspace_id: "ws-1".into(),
         spawn_tool_call_id: None,
         initial_effect_seq: 0,
-        session: session.clone(),
+        history: history_reader.clone(),
     })
     .await;
     let changed_billing = aux_effect(
@@ -827,15 +1041,22 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
         },
         PricingOutcome::NoCharge,
     )?;
-    c2.admit_live_handoff("t-idem", &billing, &Arc::from([]), &summary, &session, None)
-        .await;
+    c2.admit_live_handoff(
+        "t-idem",
+        &billing,
+        &Arc::from([]),
+        &summary,
+        &current,
+        &history_reader,
+    )
+    .await;
     c2.admit_live_handoff(
         "t-idem",
         &changed_billing,
         &Arc::from([]),
         &summary,
-        &session,
-        None,
+        &current,
+        &history_reader,
     )
     .await;
     assert!(exp_conflict.cancellation().is_cancelled());
@@ -881,12 +1102,19 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
                 &non_billing,
                 &Arc::from([]),
                 &summary,
-                &session,
-                None,
+                &current,
+                &history_reader,
             )
             .await;
         coordinator
-            .admit_live_handoff("t-idem", &billing, &Arc::from([]), &summary, &session, None)
+            .admit_live_handoff(
+                "t-idem",
+                &billing,
+                &Arc::from([]),
+                &summary,
+                &current,
+                &history_reader,
+            )
             .await;
         let mut final_summary = summary.clone();
         if missing_events {
@@ -910,15 +1138,18 @@ async fn writer_idempotency_and_conflict_matrix() -> Result<()> {
                     &repeated,
                     &Arc::from([]),
                     &final_summary,
-                    &session,
-                    None,
+                    &current,
+                    &history_reader,
                 )
                 .await;
         }
+        let final_history = history_checkpoint(&history_reader).await?;
         coordinator.record_thread_final_cut(RetiredThreadCut {
             thread_id: "t-idem".into(),
             through_effect_seq: final_summary.applied_sequence,
-            session: session.clone(),
+            history: history_reader.clone(),
+            history_cut: final_history.cut,
+            history_seq: final_history.history_seq,
             summary: final_summary,
             status: Some("closed".into()),
             aborted: false,
@@ -1040,75 +1271,26 @@ http_headers = { "Authorization" = "Bearer secret", "X-Custom" = "val" }
 }
 
 #[tokio::test]
-async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages() -> Result<()> {
+async fn retired_child_keeps_history_reader_and_streams_bounded_body_windows() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let studio_home = dir.path().join("home");
-    let exporter_home = studio_home.clone();
-    let paths = StudioPaths::resolve(Some(studio_home))?;
-    std::fs::create_dir_all(paths.data_dir())?;
-    let store = StudioStore::open(paths.database()).await?;
+    std::fs::create_dir_all(&studio_home)?;
     let workspace = dir.path().join("task");
     std::fs::create_dir_all(&workspace)?;
 
     let child_thread_id = "closed-child-thread";
-    let mut delta =
-        DirectoryDelta::upsert_project(crate::studio::store::directory::ProjectDirectoryRecord {
-            id: "ws-closed".into(),
-            kind: pl_protocol::studio::WorkspaceKind::Project,
-            name: "Closed Project".into(),
-            path: workspace.to_string_lossy().into_owned(),
-            ssh_alias: None,
-            created_at: 1,
-            updated_at: 1,
-            last_opened_at: None,
-            closed: false,
-        });
-    let (thread_delta, _session_record, _agent_record) = DirectoryDelta::register_session(
-        child_thread_id.to_string(),
-        "ws-closed",
-        "closed child",
-        pl_protocol::ThreadModeId::simple(),
-        pl_protocol::ThreadWorkspaceMode::Local,
-        workspace.to_string_lossy().into_owned(),
-        crate::config::ROOT_AGENT_ROUTE_KEY,
-    );
-    delta.session_upserts = thread_delta.session_upserts;
-    delta.agent_upserts = thread_delta.agent_upserts;
-    store.persist_directory_summaries(&delta).await?;
-
-    // Initialize HistoryStore SQLite first so conversation_database_id() returns its stable ID.
-    let history = store.history_for("ws-closed", child_thread_id).await?;
-    history
-        .commit_effect(
-            1,
-            EffectCommit {
-                current: &test_current(1),
-                turns: &[],
-                execution_order: 0,
-                completions: &[],
-                rolled_back_turns: &Default::default(),
-                identities: &[],
-                messages: &[],
-                receipts: &[],
-                tasks: &[],
-                deliveries: &[],
-                delivery_repairs: &[],
-                attempt: None,
-            },
-        )
-        .await?;
-    let db_id = history
-        .conversation_database_id()
-        .await?
-        .context("database_id missing after first commit")?;
-    let writer_session = store.chat_session(child_thread_id).await?;
-    let epoch = writer_session.epoch();
-    let weak = writer_session.downgrade();
+    let history = HistoryStore::open(
+        &dir.path().join("closed-history.sqlite"),
+        child_thread_id,
+        HistoryLimits::default(),
+    )
+    .await?;
+    let history_reader = history.reader();
     let exporter = RunExporter::start(RunExportOptions {
         output_dir: dir.path().join("backfill-out"),
         run_id: uuid::Uuid::new_v4().to_string(),
         cwd: workspace.clone(),
-        studio_home: exporter_home,
+        studio_home,
         account_id: None,
         model_id: None,
         reasoning_effort: None,
@@ -1132,140 +1314,147 @@ async fn retired_child_keeps_original_epoch_and_streams_bounded_completion_pages
             workspace_id: "ws-closed".into(),
             spawn_tool_call_id: Some("spawn".into()),
             initial_effect_seq: 0,
-            session: writer_session.clone(),
+            history: history_reader.clone(),
         })
         .await;
-    let huge_text = "中".repeat(110 * 1024);
-
-    let mut drafts = Vec::new();
-    let mut items = Vec::new();
+    let huge_text = "中".repeat(320 * 1024);
+    let mut events = Vec::new();
     for idx in 1..=257u64 {
-        let seq = idx + 1;
         let content = if idx == 257 {
             huge_text.clone()
         } else {
             format!("message-{idx}")
         };
-        let mut item = crate::ExecutionItem::completed_user_message(
-            format!("msg-{idx}"),
-            child_thread_id.to_string(),
-            String::new(),
-            content,
-            Vec::new(),
-            1_763_000_000 + idx as i64,
-        );
-        item.ordinal = idx;
-        item.revision = 1;
-        let draft = crate::studio::runtime::chat_item::completion_draft(&item, seq, &db_id)?;
-        drafts.push(draft);
-        items.push(item);
+        events.push(text_original(
+            idx,
+            pl_protocol::ThreadTextChannel::ParentAgent,
+            &content,
+        )?);
     }
-    let completions: Vec<_> = writer_session
-        .publish_batch(drafts)
-        .await?
-        .iter()
-        .cloned()
-        .collect();
-    history
-        .commit_effect(
-            258,
-            EffectCommit {
-                current: &test_current(258),
-                turns: &[],
-                execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
-                completions: &completions,
-                rolled_back_turns: &Default::default(),
-                identities: &[],
-                messages: &[],
-                receipts: &[],
-                tasks: &[],
-                deliveries: &[],
-                delivery_repairs: &[],
-                attempt: None,
+    history.accept_batch(&events).await?;
+    history.flush().await?;
+    let huge_original = history_reader
+        .original_for_entity(
+            "msg-257".into(),
+            HistoryDemand {
+                max_rows: 1,
+                max_bytes: 1024 * 1024,
             },
         )
-        .await?;
-    writer_session.confirm_durable(257)?;
+        .await?
+        .context("History original msg-257 missing")?;
+    let huge_body = history_reader
+        .list_bodies(
+            huge_original.header.event_id,
+            None,
+            HistoryDemand {
+                max_rows: 128,
+                max_bytes: 1024 * 1024,
+            },
+        )
+        .await?
+        .entries
+        .into_iter()
+        .find(|body| body.body_key == "item:body")
+        .context("huge History body directory entry missing")?
+        .reference;
+    let mut offset = 0_u64;
+    while offset < huge_body.byte_length {
+        let window = history_reader
+            .read_body(huge_body.clone(), offset, 64 * 1024)
+            .await?;
+        assert!(!window.bytes.is_empty() && window.bytes.len() <= 64 * 1024);
+        offset += window.bytes.len() as u64;
+    }
+    assert_eq!(offset, huge_text.len() as u64);
+
+    let final_history = history_checkpoint(&history_reader).await?;
     coord.record_thread_final_cut(RetiredThreadCut {
         thread_id: child_thread_id.into(),
         through_effect_seq: 0,
-        session: writer_session.clone(),
+        history: history_reader.clone(),
+        history_cut: final_history.cut,
+        history_seq: final_history.history_seq,
         summary: UsageSummary::default(),
         status: Some("closed".into()),
         aborted: false,
         error: None,
     });
-    drop(writer_session);
+    // The retained HistoryReader is the only export source here; no live Current owner exists.
     drop(history);
-    let readonly_session = weak
-        .upgrade()
-        .context("export must retain the original completion source")?;
-    assert_eq!(readonly_session.epoch(), epoch);
-    let out_dir = exporter.output_dir().to_path_buf();
-    let mut sink = FsContentBlobSink::new(out_dir.clone());
-    let mut through_seq = 0;
-    let mut records = Vec::new();
-    while through_seq < 257 {
-        let (next, page) = export_completions_range(
-            &readonly_session,
-            Some(&db_id),
-            through_seq,
-            Some(257),
-            &mut sink,
-        )
-        .await?;
-        assert!(page.len() <= 256, "one read must remain bounded");
-        records.extend(page);
-        through_seq = next;
-    }
-    assert_eq!(through_seq, 257);
-    assert_eq!(records.len(), 257);
-    let last = records.last().expect("257th item");
-    assert_eq!(last.header.append_seq, 257);
     let expected_hash = hex::encode(Sha256::digest(huge_text.as_bytes()));
-    let blob_path = out_dir.join(format!("contents/{expected_hash}.bin"));
-    let exported_bytes = std::fs::read(&blob_path)?;
-    assert_eq!(exported_bytes.len(), huge_text.len());
-    assert!(
-        last.contents.iter().any(|c| c.sha256 == expected_hash
-            && c.byte_length == huge_text.len() as u64
-            && c.encoding == "utf-8")
-            || last.payload.byte_length > 300 * 1024
-    );
-
-    drop(readonly_session);
     let report = coord
-        .finalize_internal(Some(store.clone()), true, true, Some(0), None)
+        .finalize_internal(None, true, true, Some(0), None)
         .await;
     assert!(report.trace_complete, "{:?}", report.failure);
-    assert!(
-        weak.upgrade().is_none(),
-        "export sources must be released before store.close"
-    );
-    let events: Vec<EventV2> = std::fs::read_to_string(out_dir.join("events.jsonl"))?
+    let out_dir = exporter.output_dir().to_path_buf();
+    let exported: Vec<EventV3> = std::fs::read_to_string(out_dir.join("events.jsonl"))?
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<_, _>>()?;
-    for event in events.iter().filter(|event| event.source.epoch.is_some()) {
-        assert_eq!(event.source.epoch.as_deref(), Some(epoch.as_str()));
-    }
-    store.close().await?;
+    let completions = exported
+        .iter()
+        .filter_map(|event| match &event.body {
+            EventBodyV3::Completion {
+                atom,
+                payload,
+                contents_manifest,
+                ..
+            } => Some((event, atom, payload, contents_manifest)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(completions.len(), 257);
+    assert!(
+        completions
+            .iter()
+            .all(|(event, atom, ..)| event.source.history_event_id.is_some()
+                && event.source.history_event_seq.is_some()
+                && atom.kind == pl_protocol::ChatAtomKind::Text
+                && atom.started_at.is_none()
+                && atom.finished_at.is_none())
+    );
+    let (_, _, payload, contents_manifest) = completions
+        .iter()
+        .find(|(_, _, _, manifest)| {
+            read_contents_manifest(&out_dir, manifest).is_ok_and(|contents| {
+                contents
+                    .iter()
+                    .any(|content| content.sha256 == expected_hash)
+            })
+        })
+        .context("huge original was not exported")?;
+    let contents = read_contents_manifest(&out_dir, contents_manifest)?;
+    let blob_path = out_dir.join(format!("contents/{expected_hash}.bin"));
+    let exported_bytes = std::fs::read(&blob_path)?;
+    assert_eq!(exported_bytes.len(), huge_text.len());
+    assert_eq!(exported_bytes, huge_text.as_bytes());
+    assert!(
+        contents
+            .iter()
+            .any(|content| content.sha256 == expected_hash
+                && content.byte_length == huge_text.len() as u64
+                && content.encoding == "utf-8")
+    );
+    let payload_bytes = std::fs::read(out_dir.join(&payload.path))?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
+    assert_eq!(payload["contract"], "anywork.chat/1");
     Ok(())
 }
 
 #[test]
 fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
     let fixture_root =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/run-export/v2");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/run-export/v3");
     let run_bytes = std::fs::read(fixture_root.join("run.json"))?;
-    let manifest: RunManifestV2 = serde_json::from_slice(&run_bytes)?;
-    assert_eq!(manifest.schema_version, 2);
+    let manifest: RunManifestV3 = serde_json::from_slice(&run_bytes)?;
+    assert_eq!(manifest.schema_version, 3);
     let expected_manifest_sha = hex::encode(Sha256::digest(&run_bytes));
 
     let events_bytes = std::fs::read(fixture_root.join("events.jsonl"))?;
     let expected_events_sha = hex::encode(Sha256::digest(&events_bytes));
     let events_text = String::from_utf8(events_bytes)?;
-    let events: Vec<EventV2> = events_text
+    let events: Vec<EventV3> = events_text
         .lines()
         .map(serde_json::from_str)
         .collect::<Result<Vec<_>, _>>()?;
@@ -1275,7 +1464,7 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
     }
 
     match &events[0].body {
-        super::types::EventBodyV2::RunStarted {
+        super::types::EventBodyV3::RunStarted {
             manifest_sha256, ..
         } => assert_eq!(manifest_sha256, &expected_manifest_sha),
         other => anyhow::bail!("expected runStarted first, got {other:?}"),
@@ -1283,14 +1472,16 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
 
     // Verify all referenced payload + content blobs exist with matching SHA-256 and byte length.
     for event in &events {
-        if let super::types::EventBodyV2::Completion {
-            payload, contents, ..
+        if let super::types::EventBodyV3::Completion {
+            payload,
+            contents_manifest,
+            ..
         } = &event.body
         {
             let p_bytes = std::fs::read(fixture_root.join(&payload.path))?;
             assert_eq!(p_bytes.len() as u64, payload.byte_length);
             assert_eq!(hex::encode(Sha256::digest(&p_bytes)), payload.sha256);
-            for content in contents {
+            for content in read_contents_manifest(&fixture_root, contents_manifest)? {
                 let c_bytes = std::fs::read(fixture_root.join(&content.path))?;
                 assert_eq!(c_bytes.len() as u64, content.byte_length);
                 assert_eq!(hex::encode(Sha256::digest(&c_bytes)), content.sha256);
@@ -1298,7 +1489,7 @@ fn golden_fixtures_roundtrip_and_sha256_integrity() -> Result<()> {
         }
     }
 
-    let result: super::types::ResultV2 =
+    let result: super::types::ResultV3 =
         serde_json::from_slice(&std::fs::read(fixture_root.join("result.json"))?)?;
     assert!(result.trace_complete);
     assert!(result.usage_complete);

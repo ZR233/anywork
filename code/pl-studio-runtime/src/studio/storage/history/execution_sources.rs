@@ -4,6 +4,8 @@ use pl_protocol::{
     ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatSourceState, ChatTerminalOutcome,
 };
 use sea_orm::QueryResult;
+#[cfg(test)]
+use std::sync::Arc;
 
 pub(in crate::studio::storage::history) const CREATE_SCHEMA: &str = "
 CREATE TABLE conversation_sources (
@@ -189,6 +191,7 @@ pub(crate) async fn apply(
 }
 
 /// A retried effect can observe a later saved end, but must still prove its own start/end fields.
+#[cfg(test)]
 pub(crate) async fn verify(
     db: &impl ConnectionTrait,
     effect: u64,
@@ -331,7 +334,7 @@ mod tests {
     #[tokio::test]
     async fn original_pages_do_not_query_unrelated_or_current_source_rows() -> Result<()> {
         use crate::studio::storage::history::{HistoryStore, conversation};
-        use pl_core::chat::{ChatDraft, ChatItem, ChatKey, ChatQuery, ReadDemand};
+        use pl_core::chat::{ChatDraft, ChatItem, ChatKey};
         let dir = tempfile::tempdir()?;
         let store =
             HistoryStore::open(&dir.path().join("history.sqlite"), "source-snapshot").await?;
@@ -365,17 +368,6 @@ mod tests {
         snapshot.commit().await?;
         writer.db.execute_raw(statement("UPDATE conversation_sources SET ended_observed=2,outcome='invalid lifecycle JSON' WHERE source_key=?",vec![source_key(&origin())?.into()])).await?;
         assert!(store.execution_sources(&[origin()], 2).await.is_err());
-        let cold = store
-            .cold_conversation(
-                ChatQuery::new("conversation", Some(parent)),
-                ReadDemand::new(10, 4096),
-                &conversation::tests::Budget,
-            )
-            .await?
-            .context("original cut")?;
-        assert_eq!(cold.head, 2);
-        assert_eq!(cold.page.items.len(), 1);
-        assert_eq!(cold.page.items[0].header.item_id, "selected");
         store.close_for_deletion().await?;
         Ok(())
     }

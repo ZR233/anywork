@@ -221,7 +221,7 @@ final class CurrentPlanHead {
 
   final int revision;
   final PlanRuntimePhase phase;
-  final ContentRef? document;
+  final CurrentContentRef? document;
   @override
   bool operator ==(Object other) =>
       other is CurrentPlanHead &&
@@ -232,24 +232,51 @@ final class CurrentPlanHead {
   int get hashCode => Object.hash(revision, phase, document);
 }
 
+final class CurrentContentRef {
+  const CurrentContentRef({
+    required this.ownerId,
+    required this.domain,
+    required this.entityId,
+    required this.contentKey,
+    required this.generation,
+  });
+
+  final String ownerId;
+  final String domain;
+  final String entityId;
+  final String contentKey;
+  final String generation;
+  @override
+  bool operator ==(Object other) =>
+      other is CurrentContentRef &&
+      ownerId == other.ownerId &&
+      domain == other.domain &&
+      entityId == other.entityId &&
+      contentKey == other.contentKey &&
+      generation == other.generation;
+  @override
+  int get hashCode =>
+      Object.hash(ownerId, domain, entityId, contentKey, generation);
+}
+
 final class CurrentCollectionRef {
   const CurrentCollectionRef({
-    required this.databaseId,
+    required this.ownerId,
     required this.collection,
     required this.revision,
   });
 
-  final String databaseId;
+  final String ownerId;
   final String collection;
   final int revision;
   @override
   bool operator ==(Object other) =>
       other is CurrentCollectionRef &&
-      databaseId == other.databaseId &&
+      ownerId == other.ownerId &&
       collection == other.collection &&
       revision == other.revision;
   @override
-  int get hashCode => Object.hash(databaseId, collection, revision);
+  int get hashCode => Object.hash(ownerId, collection, revision);
 }
 
 final class ThreadBusinessRefs {
@@ -274,7 +301,26 @@ final class CurrentCollectionEntry {
 
   final String id;
   final int position;
-  final PayloadData payload;
+  final CurrentPayloadData payload;
+}
+
+sealed class CurrentPayloadData {
+  const CurrentPayloadData();
+}
+
+final class InlineCurrentPayload extends CurrentPayloadData {
+  InlineCurrentPayload({required List<int> bytes})
+    : bytes = Uint8List.fromList(bytes).asUnmodifiableView();
+  final Uint8List bytes;
+}
+
+final class DeferredCurrentPayload extends CurrentPayloadData {
+  const DeferredCurrentPayload({
+    required this.reference,
+    required this.byteLength,
+  });
+  final CurrentContentRef reference;
+  final int byteLength;
 }
 
 final class CurrentCollectionPage {

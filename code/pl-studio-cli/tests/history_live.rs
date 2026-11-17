@@ -2,7 +2,7 @@
 //! Explicit real-account/project acceptance; never part of ordinary offline tests.
 use anyhow::{Context, Result, ensure};
 use pl_model::config::{AccountId, ModelRouteConfig, ReasoningEffort};
-use pl_studio_runtime::{ConfigPaths, ConfigStore, ResultV2, export_sha256_hex, history::*};
+use pl_studio_runtime::{ConfigPaths, ConfigStore, ResultV3, export_sha256_hex, history::*};
 use sea_orm::{Database, TransactionTrait};
 use std::{
     path::{Path, PathBuf},
@@ -143,7 +143,7 @@ async fn real_account_project_exports_and_converts_its_history() -> Result<()> {
         result.status.code(),
         output.display()
     );
-    let result: ResultV2 = serde_json::from_slice(&std::fs::read(archive.join("result.json"))?)?;
+    let result: ResultV3 = serde_json::from_slice(&std::fs::read(archive.join("result.json"))?)?;
     let thread = result
         .root_thread_id
         .context("real run has no root Thread")?;

@@ -939,24 +939,24 @@ void main() {
       LiveDisplayBlock block({
         DisplayBlockState state = DisplayBlockState.open,
         ChatAtom? atom,
-        DisplayContentSource contentSource = const CurrentAtom(),
+        DisplayContentSource contentSource = const CurrentAtomSource(),
       }) => LiveDisplayBlock(
         id: 'compact-1',
         blockOrder: 1,
         state: state,
         source: const ForegroundTurnChatSource(turnId: 'turn-1'),
         body: SingleDisplayBlock(
-          visibility: SingleVisibility.content,
+          visibility: HistorySingleVisibility.content,
           record: DisplayRecord(
             atom: atom ?? activeCompaction,
             contentSource: contentSource,
           ),
         ),
       );
-      TailSnapshot window(
+      CurrentRunSnapshot window(
         List<LiveDisplayBlock> blocks, {
         bool executionPresent = true,
-      }) => TailSnapshot(
+      }) => CurrentRunSnapshot(
         revision: 1,
         layoutRevision: 1,
         readyFrontier: 0,
@@ -976,7 +976,7 @@ void main() {
           errorMessage: errorMessage,
         ),
       );
-      bool owns(TailSnapshot? live, {ExecutionLiveNotice? activity}) =>
+      bool owns(CurrentRunSnapshot? live, {ExecutionLiveNotice? activity}) =>
           LiveStatusProjection.hasCurrentOutputRenderer(
             live: live,
             activeTurnId: 'turn-1',
@@ -1349,7 +1349,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
-                    visibility: SingleVisibility.content,
+                    visibility: HistorySingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'text-1',
@@ -1384,7 +1384,7 @@ void main() {
                           ),
                         ),
                       ),
-                      contentSource: const CurrentAtom(),
+                      contentSource: const CurrentAtomSource(),
                     ),
                   ),
                 ),
@@ -1511,7 +1511,7 @@ void main() {
                   state: DisplayBlockState.open,
                   source: const ForegroundTurnChatSource(turnId: 'turn-1'),
                   body: SingleDisplayBlock(
-                    visibility: SingleVisibility.content,
+                    visibility: HistorySingleVisibility.content,
                     record: DisplayRecord(
                       atom: ChatAtom(
                         id: 'compact-1',
@@ -1528,7 +1528,7 @@ void main() {
                         startedAt: 200,
                         contents: const [],
                       ),
-                      contentSource: const CurrentAtom(),
+                      contentSource: const CurrentAtomSource(),
                     ),
                   ),
                 ),
@@ -1807,7 +1807,7 @@ class _ZeroJitterContent extends Fake implements ConversationContent {
 
 class _ZeroJitterHarness {
   final content = _ZeroJitterContent();
-  final live = ValueNotifier<TailSnapshot?>(null);
+  final live = ValueNotifier<CurrentRunSnapshot?>(null);
   final images = TimelineImageResources(threadId: 'thread');
   final expansions = <String, TimelineExpansionIntent>{};
   List<LiveDisplayBlock> blocks = const [];
@@ -1816,7 +1816,7 @@ class _ZeroJitterHarness {
   int revision = 0;
 
   Widget build() {
-    final window = TailSnapshot(
+    final window = CurrentRunSnapshot(
       currentWorkId: currentWorkId,
       revision: ++revision,
       layoutRevision: revision,

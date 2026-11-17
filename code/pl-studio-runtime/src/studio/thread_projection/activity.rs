@@ -175,6 +175,7 @@ fn project_activity_using(
     };
     let step = associated.map_or("preparing", |attempt| attempt.attempt_id.as_str());
     let body = ThreadActivity {
+        deferred: Vec::new(),
         thread_id: thread_id.to_owned(),
         identity: ThreadActivity::identity(origin.source_id, step, kind),
         revision: 0,

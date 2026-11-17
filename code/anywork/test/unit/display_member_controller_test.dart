@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,7 +26,7 @@ void main() {
           memberKey: 'row',
           memberOrder: 1,
           record: DisplayRecord(
-            contentSource: const CurrentAtom(),
+            contentSource: const CurrentAtomSource(),
             atom: ChatAtom(
               id: 'atom',
               source: const ForegroundTurnChatSource(turnId: 'turn'),
@@ -241,7 +242,10 @@ void main() {
         DisplayMemberHead(
           memberKey: 'fresh-key',
           memberOrder: 1,
-          record: DisplayRecord(atom: atom, contentSource: const CurrentAtom()),
+          record: DisplayRecord(
+            atom: atom,
+            contentSource: const CurrentAtomSource(),
+          ),
         ),
       ],
     );

@@ -5,24 +5,25 @@ import '../../../lifecycle.dart' show ClientCloseBudget, ClientResourceId;
 import '../../../conversation_ports.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart';
-import '../../models/chat_models.dart';
+import '../../../models.dart';
+import '../../studio/thread_frames.dart';
 import '../domain/content_lifecycle.dart';
 import '../domain/conversation_errors.dart';
 
-/// Owns the independent state stream: admission, reduction handoff, ACK and
-/// retirement. State never flows through content consumption, and content
-/// events never enter here; the session remains the sole state writer.
+/// Owns the sole Current State observation. There is no delivery ACK or replay.
 final class ConversationStateOwner {
   ConversationStateOwner({
     required this.threadId,
-    required ConversationTransport transport,
+    required CurrentTransport transport,
     required this.onState,
     required this.onFailure,
     required this.onAttempt,
+    required this.demand,
   }) : _transport = transport;
 
   final String threadId;
-  final ConversationTransport _transport;
+  final CurrentTransport _transport;
+  final ReadDemand demand;
   final void Function(AttemptId, ThreadStreamFrame) onState;
   final void Function(AttemptId, Object, bool) onFailure;
   final void Function(AttemptId) onAttempt;
@@ -43,18 +44,16 @@ final class ConversationStateOwner {
   int get ownedAttemptCount => _attempts.length;
 
   void setDemand(bool value) {
-    if (_closed && value) {
+    if (_closed && value)
       throw StateError('Conversation state owner is closed');
-    }
     if (_demand == value) return;
     _demand = value;
     _demandVersion++;
     _retryTimer?.cancel();
     _retryTimer = null;
-    if (!value) {
-      final current = _current;
-      if (current != null) _retire(current);
-    } else {
+    final current = _current;
+    if (current != null) _retire(current);
+    if (value) {
       _retries = 0;
       _open();
     }
@@ -70,208 +69,189 @@ final class ConversationStateOwner {
     if (_demand && !_closed) _open();
   }
 
-  bool _live(_StateAttempt a) =>
-      !_closed && _demand && !a.retired && identical(_current, a);
+  bool _live(_StateAttempt attempt) =>
+      !_closed && _demand && !attempt.retired && identical(_current, attempt);
 
   void _open() {
     if (_closed || !_demand || _current != null) return;
     final id = AttemptId(++_nextAttempt);
-    final a = _StateAttempt(
+    final attempt = _StateAttempt(
       id,
       _demandVersion,
       ClientResourceId(_resourceScopeId, id.value),
     );
-    _attempts[id] = a;
-    _current = a;
+    _attempts[id] = attempt;
+    _current = attempt;
     final done = Completer<void>();
-    a.task = done.future;
-    done.complete(Future<void>.sync(() => _run(a)));
+    attempt.task = done.future;
+    done.complete(Future<void>.sync(() => _run(attempt)));
   }
 
-  Future<void> _run(_StateAttempt a) async {
+  Future<void> _run(_StateAttempt attempt) async {
     try {
-      if (!_live(a)) return;
-      onAttempt(a.id);
-      if (!_live(a)) return;
-      final feed = await _transport.openConversationStateFeed(threadId);
-      a.feed = feed;
-      if (!_live(a)) return;
-      if (feed.threadId != threadId || feed.subscriptionId.isEmpty) {
-        throw const ConversationContinuityError('state feed identity mismatch');
-      }
-      a.subscription = feed.events.listen(
-        (frame) => _receive(a, frame),
-        onError: (Object error, StackTrace stack) => _failAttempt(a, error),
-        onDone: () => _failAttempt(a, const ConversationStreamEnded()),
+      if (!_live(attempt)) return;
+      onAttempt(attempt.id);
+      if (!_live(attempt)) return;
+      final reader = await _transport.openCurrentReader(
+        threadId,
+        currentProtocolVersion: currentProtocolVersion,
+        demand: demand,
       );
-      await a.stopped.future;
-    } catch (error) {
-      if (_live(a)) {
-        _failAttempt(a, error);
+      attempt.reader = reader;
+      if (!_live(attempt)) return;
+      _validateIdentity(reader);
+      final initial = reader.initialView;
+      if (initial.revision.ownerId != reader.metadata.currentOwnerId) {
+        throw const ConversationContinuityError(
+          'current baseline owner mismatch',
+        );
       }
+      _acceptReset(attempt, initial.revision);
+      _admit(attempt, initial.state);
+      final watch = await reader.watch(after: initial.revision, demand: demand);
+      attempt.watch = watch;
+      if (!_live(attempt)) return;
+      attempt.subscription = watch.frames.listen(
+        (frame) => _receive(attempt, frame),
+        onError: (Object error, StackTrace stack) =>
+            _failAttempt(attempt, error),
+        onDone: () => _failAttempt(attempt, const ConversationStreamEnded()),
+      );
+      await attempt.stopped.future;
+    } catch (error) {
+      if (_live(attempt)) _failAttempt(attempt, error);
     } finally {
-      if (identical(_current, a)) _current = null;
-      a.retired = true;
-      await _cleanup(a);
-      if (a.failure != null &&
-          a.retryable &&
+      if (identical(_current, attempt)) _current = null;
+      attempt.retired = true;
+      if (!attempt.stopped.isCompleted) attempt.stopped.complete();
+      await _cleanup(attempt);
+      if (attempt.failure != null &&
+          attempt.retryable &&
           !_closed &&
           _demand &&
-          a.demandVersion == _demandVersion &&
+          attempt.demandVersion == _demandVersion &&
           _current == null &&
-          !_attempts.containsKey(a.id)) {
+          !_attempts.containsKey(attempt.id)) {
         _scheduleRetry();
       }
     }
   }
 
-  void _receive(_StateAttempt a, ConversationFrame frame) {
-    if (!_live(a)) return;
-    final feed = a.feed!;
-    if (frame.threadId != threadId ||
-        frame.subscriptionId != feed.subscriptionId) {
-      _failAttempt(
-        a,
-        const ConversationContinuityError('state frame identity mismatch'),
+  void _validateIdentity(CurrentReader reader) {
+    if (reader.threadId != threadId ||
+        reader.metadata.currentProtocolVersion != currentProtocolVersion ||
+        reader.metadata.readerId.isEmpty ||
+        reader.metadata.currentOwnerId.isEmpty) {
+      throw const ConversationContinuityError(
+        'current reader identity mismatch',
       );
-      return;
     }
-    // Terminal frames reuse the last data sequence (including zero). They are
-    // qualification barriers, not duplicate data and never consume/return credit.
-    if (frame.event is ConversationFailureEvent ||
-        frame.event is ConversationClosedEvent) {
-      if (a.terminal) return;
-      a.terminal = true;
-      _failAttempt(a, switch (frame.event) {
-        ConversationFailureEvent(:final failure) => failure,
-        _ => const ConversationStreamEnded(),
-      });
-      return;
+  }
+
+  void _receive(_StateAttempt attempt, CurrentFrame frame) {
+    if (!_live(attempt)) return;
+    switch (frame) {
+      case ResetCurrentFrame(:final view):
+        _acceptReset(attempt, view.revision);
+        _admit(attempt, view.state);
+        return;
+      case NotificationCurrentFrame(:final revision, :final notification):
+        _validateContinuousRevision(attempt, revision);
+        attempt.revision = revision;
+        _admit(attempt, notification);
+        return;
+      case ProjectionCurrentFrame(:final revision):
+        _validateContinuousRevision(attempt, revision);
+        attempt.revision = revision;
+        return;
     }
-    if (a.terminal) return;
-    if (frame.deliverySequence != a.received + 1 ||
-        a.ledger.length >= (a.acking ? 2 : 1)) {
-      _failAttempt(
-        a,
-        const ConversationContinuityError(
-          'state delivery sequence or credit exceeded',
-        ),
+  }
+
+  void _acceptReset(_StateAttempt attempt, CurrentRevision revision) {
+    if (revision.ownerId.isEmpty) {
+      throw const ConversationContinuityError('current reset has no owner');
+    }
+    attempt.ownerId = revision.ownerId;
+    attempt.revision = revision;
+  }
+
+  void _validateContinuousRevision(
+    _StateAttempt attempt,
+    CurrentRevision revision,
+  ) {
+    final previous = attempt.revision;
+    if (attempt.ownerId == null ||
+        revision.ownerId != attempt.ownerId ||
+        (previous != null &&
+            previous.ownerId == attempt.ownerId &&
+            revision.revision < previous.revision)) {
+      throw const ConversationContinuityError(
+        'current owner changed without Reset or revision moved backwards',
       );
-      return;
     }
-    a.received = frame.deliverySequence;
-    a.ledger[frame.deliverySequence] = false;
-    final sequence = frame.deliverySequence;
-    final work = _enqueue(a, () async {
-      if (!_live(a)) return;
-      switch (frame.event) {
-        case ConversationStateEvent(:final frame):
-          if (frame case ThreadSnapshotFrame(
-            completedHistoryVersion: final historyVersion,
-            :final schemaVersion,
-          )) {
-            if (historyVersion != completedHistoryVersion) {
-              throw ProtocolVersionMismatch(received: historyVersion);
-            }
-            if (schemaVersion != threadSchemaVersion) {
-              throw ProtocolVersionMismatch(
-                received: schemaVersion,
-                supported: threadSchemaVersion,
-                field: 'threadSchemaVersion',
-              );
-            }
-          }
-          onState(a.id, frame);
-          if (_live(a)) {
-            if (frame is ThreadSnapshotFrame) {
-              a.baselineRevision ??= frame.workspace.revision;
-            } else if (frame is ThreadNotificationFrame &&
-                a.baselineRevision != null &&
-                frame.revision > a.baselineRevision!) {
-              // A baseline alone cannot turn a reconnect loop into recovery.
-              // Wait for real forward State progress and its successful ACK.
-              a.recoveryAfterSequence ??= sequence;
-            }
-          }
-        case ConversationChatEvent() ||
-            ConversationActivityEvent() ||
-            ConversationFailureEvent() ||
-            ConversationClosedEvent():
-          // Content belongs to the content feed only; the state feed must not
-          // become a second content admission path.
-          throw const ConversationContinuityError(
-            'content event on state feed',
+  }
+
+  void _admit(_StateAttempt attempt, ThreadStreamFrame? frame) {
+    if (frame == null || !_live(attempt)) return;
+    final work = _enqueue(attempt, () async {
+      if (!_live(attempt)) return;
+      if (frame case ThreadSnapshotFrame(
+        :final schemaVersion,
+        completedHistoryVersion: final historyVersion,
+      )) {
+        if (schemaVersion != threadSchemaVersion) {
+          throw ProtocolVersionMismatch(
+            received: schemaVersion,
+            supported: threadSchemaVersion,
+            field: 'threadSchemaVersion',
           );
+        }
+        if (historyVersion != completedHistoryVersion) {
+          throw ProtocolVersionMismatch(
+            received: historyVersion,
+            supported: completedHistoryVersion,
+            field: 'completedHistoryVersion',
+          );
+        }
       }
-      if (!_live(a)) return;
-      a.ledger[frame.deliverySequence] = true;
-      _flushAck(a);
+      onState(attempt.id, frame);
     });
     unawaited(
-      work.then<void>(
-        (_) {},
-        onError: (Object error, StackTrace stack) {
-          if (_live(a)) _failAttempt(a, error);
+      work.then(
+        (_) {
+          if (_live(attempt)) _retries = 0;
+        },
+        onError: (Object error, StackTrace _) {
+          if (_live(attempt)) _failAttempt(attempt, error);
         },
       ),
     );
   }
 
-  /// The sole admission queue for state reduction. Its ACK never enters the
-  /// content consumption queue and vice versa.
-  Future<void> _enqueue(_StateAttempt a, Future<void> Function() operation) {
-    final work = a.serial.then((_) => operation());
-    // One failed operation must not leave unobserved errors on the queue tail.
-    a.serial = work.then<void>((_) {}, onError: (Object _, StackTrace __) {});
-    a.pending.add(work);
-    unawaited(a.serial.then((_) => a.pending.remove(work)));
+  Future<void> _enqueue(
+    _StateAttempt attempt,
+    Future<void> Function() operation,
+  ) {
+    final work = attempt.serial.then((_) => operation());
+    attempt.serial = work.then<void>(
+      (_) {},
+      onError: (Object _, StackTrace __) {},
+    );
+    attempt.pending.add(work);
+    unawaited(attempt.serial.then((_) => attempt.pending.remove(work)));
     return work;
   }
 
-  void _flushAck(_StateAttempt a) {
-    if (a.acking || !_live(a)) return;
-    a.acking = true;
-    final completion = Completer<void>();
-    final task = completion.future;
-    a.pending.add(task);
-    completion.complete(
-      Future<void>.sync(() async {
-        while (_live(a) && a.ledger[a.acked + 1] == true) {
-          final next = a.acked + 1;
-          await a.feed!.acknowledge(next);
-          if (!_live(a)) return;
-          a.ledger.remove(next);
-          a.acked = next;
-          if (a.recoveryAfterSequence == next) _retries = 0;
-        }
-      }),
-    );
-    unawaited(
-      task.then(
-        (_) {
-          a.pending.remove(task);
-          a.acking = false;
-          if (_live(a) && a.ledger[a.acked + 1] == true) _flushAck(a);
-        },
-        onError: (Object error, StackTrace stack) {
-          a.pending.remove(task);
-          a.acking = false;
-          if (_live(a)) _failAttempt(a, error);
-        },
-      ),
-    );
-  }
-
-  void _failAttempt(_StateAttempt a, Object error) {
-    if (!_live(a)) return;
-    a.failure = error;
+  void _failAttempt(_StateAttempt attempt, Object error) {
+    if (!_live(attempt)) return;
+    attempt.failure = error;
     final versionMismatch = error is ProtocolVersionMismatch;
     final exhausted =
         versionMismatch || _retries >= const RetryPolicy().delays.length;
-    a.retryable = !versionMismatch;
-    onFailure(a.id, error, exhausted);
-    if (!_live(a)) return;
-    _retire(a);
+    attempt.retryable = !versionMismatch;
+    onFailure(attempt.id, error, exhausted);
+    if (!_live(attempt)) return;
+    _retire(attempt);
   }
 
   void _scheduleRetry() {
@@ -284,57 +264,66 @@ final class ConversationStateOwner {
     });
   }
 
-  void _retire(_StateAttempt a) {
-    if (a.retired) return;
-    a.retired = true;
-    if (identical(_current, a)) _current = null;
+  void _retire(_StateAttempt attempt) {
+    if (attempt.retired) return;
+    attempt.retired = true;
+    if (identical(_current, attempt)) _current = null;
     try {
-      a.feed?.requestClose();
+      attempt.watch?.requestClose();
+      attempt.reader?.requestClose();
     } catch (error) {
-      a.error = error;
+      attempt.error = error;
     }
-    if (!a.stopped.isCompleted) a.stopped.complete();
+    if (!attempt.stopped.isCompleted) attempt.stopped.complete();
   }
 
-  Future<void> _cleanup(_StateAttempt a) async {
-    a.cleanupFinished = false;
+  Future<void> _cleanup(_StateAttempt attempt) async {
     Object? error;
     try {
-      a.feed?.requestClose();
-    } catch (e) {
-      error = e;
+      attempt.watch?.requestClose();
+      attempt.reader?.requestClose();
+    } catch (exception) {
+      error = exception;
     }
-    if (!a.feedClosed) {
+    if (!attempt.watchClosed && attempt.watch != null) {
       try {
-        await a.feed?.close();
-        a.feedClosed = true;
-      } catch (e) {
-        error ??= e;
+        await attempt.watch!.close();
+        attempt.watchClosed = true;
+      } catch (exception) {
+        error ??= exception;
       }
     }
-    final subscription = a.subscription;
+    if (!attempt.readerClosed && attempt.reader != null) {
+      try {
+        await attempt.reader!.close();
+        attempt.readerClosed = true;
+      } catch (exception) {
+        error ??= exception;
+      }
+    }
+    final subscription = attempt.subscription;
     if (subscription != null) {
-      final cancel = a.subscriptionCancel ??= Future<void>.sync(
+      final cancel = attempt.subscriptionCancel ??= Future<void>.sync(
         subscription.cancel,
       );
       try {
         await cancel;
-      } catch (e) {
-        error ??= e;
+      } catch (exception) {
+        error ??= exception;
       }
     }
     await Future.wait(
-      List.of(
-        a.pending,
-      ).map((f) => f.then<void>((_) {}, onError: (Object _, StackTrace __) {})),
+      List.of(attempt.pending).map(
+        (future) =>
+            future.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
+      ),
     );
+    attempt.cleanupFinished = true;
     if (error != null) {
-      a.error = error;
-      a.cleanupFinished = true;
+      attempt.error = error;
       return;
     }
-    a.cleanupFinished = true;
-    _attempts.remove(a.id);
+    _attempts.remove(attempt.id);
   }
 
   Future<CloseReport> _join({
@@ -342,12 +331,12 @@ final class ConversationStateOwner {
     bool retiredOnly = false,
   }) async {
     final selected = [
-      for (final a in _attempts.values)
-        if (!retiredOnly || a.retired) a,
+      for (final attempt in _attempts.values)
+        if (!retiredOnly || attempt.retired) attempt,
     ];
     final pending = [
-      for (final a in selected)
-        if (a.task != null) a.task!,
+      for (final attempt in selected)
+        if (attempt.task != null) attempt.task!,
     ];
     if (pending.isNotEmpty) {
       if (budget == null) {
@@ -358,26 +347,26 @@ final class ConversationStateOwner {
           try {
             await Future.wait(pending).timeout(remaining);
           } on TimeoutException {
-            // Only this wait expires; the attempt retains its task.
+            // The attempt retains its task and cleanup obligation.
           }
         }
       }
     }
     return CloseReport(
       unresolved: [
-        for (final a in selected)
-          if (_attempts.containsKey(a.id))
+        for (final attempt in selected)
+          if (_attempts.containsKey(attempt.id))
             UnresolvedResource(
-              resourceId: a.resourceId,
-              owner: 'conversation-state:$threadId',
-              attemptId: a.id,
-              reason: a.error ?? StateError('state feed still retiring'),
+              resourceId: attempt.resourceId,
+              owner: 'current-state:$threadId',
+              attemptId: attempt.id,
+              reason:
+                  attempt.error ?? StateError('current reader still retiring'),
             ),
       ],
     );
   }
 
-  // Background retirement owns cleanup independently of any bounded caller.
   Future<CloseReport> joinRetired({ClientCloseBudget? budget}) =>
       _join(budget: budget, retiredOnly: true);
 
@@ -389,17 +378,19 @@ final class ConversationStateOwner {
     _demand = false;
     _demandVersion++;
     _retryTimer?.cancel();
-    for (final a in List.of(_attempts.values)) {
-      _retire(a);
+    for (final attempt in List.of(_attempts.values)) {
+      _retire(attempt);
     }
     return _join(budget: budget);
   }
 
   Future<CloseReport> retryCleanup({ClientCloseBudget? budget}) async {
-    for (final a in List.of(_attempts.values)) {
-      if (a.cleanupFinished && a.error != null && a.feed != null) {
-        a.error = null;
-        a.task = _cleanup(a);
+    for (final attempt in List.of(_attempts.values)) {
+      if (attempt.cleanupFinished &&
+          attempt.error != null &&
+          (attempt.reader != null || attempt.watch != null)) {
+        attempt.error = null;
+        attempt.task = _cleanup(attempt);
       }
     }
     return _join(budget: budget, retiredOnly: !_closed);
@@ -411,27 +402,23 @@ final class _StateAttempt {
   final AttemptId id;
   final ClientResourceId resourceId;
   final int demandVersion;
-  ConversationStateFeed? feed;
-  // The attempt owns this subscription until _cleanup joins cancel.
+  CurrentReader? reader;
+  CurrentWatch? watch;
   // ignore: cancel_subscriptions
-  StreamSubscription<ConversationFrame>? subscription;
+  StreamSubscription<CurrentFrame>? subscription;
   Future<void>? subscriptionCancel;
-  bool feedClosed = false;
+  bool readerClosed = false;
+  bool watchClosed = false;
   Future<void>? task;
   final Completer<void> stopped = Completer<void>();
-  final Map<int, bool> ledger = {};
   final Set<Future<void>> pending = {};
   Future<void> serial = Future.value();
-  bool terminal = false;
   bool retryable = true;
-  int received = 0;
-  int acked = 0;
-  int? baselineRevision;
-  int? recoveryAfterSequence;
-  bool acking = false;
   bool retired = false;
   Object? error;
   Object? failure;
+  String? ownerId;
+  CurrentRevision? revision;
   bool cleanupFinished = false;
 }
 
@@ -441,5 +428,5 @@ String _newResourceScopeId() {
     16,
     (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0'),
   ).join();
-  return 'conversation-state-$nonce';
+  return 'current-state-$nonce';
 }

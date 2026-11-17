@@ -728,14 +728,14 @@ class _SubmissionTransport extends FrbStudioTransport {
     return result;
   }
 
-  Future<ViewUpdate> deliver(ViewUpdate update) async {
+  Future<HistoryTimelinePage> deliver(HistoryTimelinePage update) async {
     final gate = _feed;
     if (gate != null && !gate.isCompleted) {
       heldFrames++;
-      lastHeldCursor = update.next.value;
+      lastHeldCursor = update.next;
       record('real-response-held', {
-        'after': update.after.value,
-        'next': update.next.value,
+        'cut': update.cut.token,
+        'next': update.next,
       });
       await gate.future;
     }
@@ -743,54 +743,104 @@ class _SubmissionTransport extends FrbStudioTransport {
   }
 
   @override
-  Future<TimelineReader> openTimelineReader(
+  Future<HistoryReader> openHistoryReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required ReadDemand demand,
-  }) async => _SubmissionReader(
-    await super.openTimelineReader(
+    required int historyProtocolVersion,
+  }) async => _SubmissionHistoryReader(
+    await super.openHistoryReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: readerProtocolVersion,
-      demand: demand,
+      historyProtocolVersion: historyProtocolVersion,
     ),
     this,
   );
 }
 
 /// Holds only delivery of the original response. Closing releases that local barrier first.
-class _SubmissionReader implements TimelineReader {
-  _SubmissionReader(this.original, this.owner);
-  final TimelineReader original;
+class _SubmissionHistoryReader implements HistoryReader {
+  _SubmissionHistoryReader(this.original, this.owner);
+  final HistoryReader original;
   final _SubmissionTransport owner;
   @override
-  OpenTimeline get metadata => original.metadata;
+  OpenHistory get metadata => original.metadata;
   @override
-  ConversationReader get reader => original.reader;
+  String get threadId => original.threadId;
   @override
-  Future<ViewUpdate> next({required ViewCursor after}) async =>
-      owner.deliver(await original.next(after: after));
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) async => owner.deliver(
+    await original.timelinePage(cut: cut, cursor: cursor, demand: demand),
+  );
   @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => original.loadTimelineOlder(before: before, demand: demand);
+  Future<HistoryCut> capture() => original.capture();
   @override
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) => original.loadLiveOlder(before: before, demand: demand);
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
-  }) => original.openDisplayMembers(
-    reference: reference,
-    window: window,
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.groupPage(
+    groupId: groupId,
+    cut: cut,
+    cursor: cursor,
     demand: demand,
   );
+  @override
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.turnsPage(cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.eventsPage(
+    query: query,
+    cut: cut,
+    cursor: cursor,
+    demand: demand,
+  );
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) => original.readEvent(eventId: eventId, demand: demand);
+  @override
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.listBodies(
+    eventId: eventId,
+    cursor: cursor,
+    demand: demand,
+  );
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) => original.readBody(
+    reference: reference,
+    offset: offset,
+    maxBytes: maxBytes,
+  );
+  @override
+  Future<HistoryAccounting?> accounting({HistoryCut? cut}) =>
+      original.accounting(cut: cut);
+  @override
+  Future<HistoryTimelinePage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => original.costsPage(cut: cut, cursor: cursor, demand: demand);
+  @override
+  Future<HistoryCut> waitChanged(HistoryCut after) =>
+      original.waitChanged(after);
   @override
   void requestClose() {
     owner.releaseFeed();

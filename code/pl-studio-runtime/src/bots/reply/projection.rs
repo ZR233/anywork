@@ -3,7 +3,7 @@
 use super::content::{
     FinalError, MAX_TURN_BODY_BYTES, MAX_TURN_CONTENT_ITEMS, ReplyItem, ReplyItemKind,
 };
-use pl_protocol::{ChatPlacement, TurnState};
+use pl_protocol::TurnState;
 
 #[derive(Clone)]
 pub(super) struct ReplyProjection {
@@ -12,6 +12,7 @@ pub(super) struct ReplyProjection {
     active: bool,
     previews: Vec<(String, String)>,
     observed_terminal: Option<TurnState>,
+    history_terminal: bool,
 }
 
 impl ReplyProjection {
@@ -22,19 +23,12 @@ impl ReplyProjection {
             active: false,
             previews: Vec::new(),
             observed_terminal: None,
+            history_terminal: false,
         }
     }
 
-    pub(super) fn apply(
-        &mut self,
-        placement: ChatPlacement,
-        items: Vec<ReplyItem>,
-    ) -> Result<(), FinalError> {
-        let existing = if placement == ChatPlacement::Set {
-            &[][..]
-        } else {
-            &self.items[..]
-        };
+    pub(super) fn replace(&mut self, items: Vec<ReplyItem>) -> Result<(), FinalError> {
+        let existing = &[] as &[ReplyItem];
         let bytes = existing
             .iter()
             .chain(&items)
@@ -59,26 +53,17 @@ impl ReplyProjection {
         if existing
             .iter()
             .chain(&items)
-            .filter(|item| matches!(item.kind, ReplyItemKind::Terminal(_)))
+            .filter(|item| matches!(&item.kind, ReplyItemKind::Terminal(_)))
             .count()
             > 1
         {
             return Err(gap("reply target has conflicting terminal messages"));
         }
-        match placement {
-            ChatPlacement::Set => {
-                self.items = items;
-                self.covered = false;
-                self.active = false;
-                self.previews.clear();
-            }
-            ChatPlacement::Append => self.items.extend(items),
-            ChatPlacement::Prepend => {
-                let mut all = items;
-                all.append(&mut self.items);
-                self.items = all;
-            }
-        }
+        self.items = items;
+        self.covered = false;
+        self.active = false;
+        self.previews.clear();
+        self.history_terminal = false;
         Ok(())
     }
 
@@ -136,13 +121,18 @@ impl ReplyProjection {
         })?;
         // State is the real execution outcome. The immutable Turn receipt proves
         // that its completed content prefix has actually reached this consumer.
-        (self.observed_terminal.as_ref() == Some(&receipt)).then_some(receipt)
+        (self.history_terminal || self.observed_terminal.as_ref() == Some(&receipt))
+            .then_some(receipt)
     }
 
     pub(super) fn observe_terminal(&mut self, state: &TurnState) {
         if state.is_terminal() {
             self.observed_terminal = Some(state.clone());
         }
+    }
+
+    pub(super) fn mark_history_terminal(&mut self) {
+        self.history_terminal = true;
     }
 
     pub(super) fn completed(&self) -> Result<&[ReplyItem], FinalError> {

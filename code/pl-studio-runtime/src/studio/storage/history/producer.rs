@@ -274,7 +274,10 @@ mod tests {
         .await?;
         let before = raw(db).await?;
         assert!(
-            store.read_only_checkpoint_with_latest_turn().await.is_err(),
+            store
+                .legacy_test_checkpoint_with_latest_turn()
+                .await
+                .is_err(),
             "normal reads cannot repair pending producer content"
         );
         // Unknown required producer versions fail closed, retaining the exact source bytes.
@@ -427,10 +430,7 @@ mod tests {
         .await?;
         let state =
             super::super::super::state::StateStore::new(import_dir.path().to_owned(), "producer");
-        let result = state
-            .prepare_recovery(&imported)
-            .await?
-            .context("imported")?;
+        let result = state.legacy_prepare(&imported).await?.context("imported")?;
         assert_eq!(result.state.context, current.state.context);
         assert_eq!(result.state.extensions, current.state.extensions);
         assert_eq!(result.history_fence, old.history_fence);

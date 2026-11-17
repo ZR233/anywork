@@ -1,5 +1,5 @@
 //! Shared bounded collection selection over an owner cut, including passive checkpoint-derived cuts.
-use super::CurrentState;
+use super::{CurrentState, current::CurrentPositionIndex};
 use anyhow::{Result, ensure};
 use pl_core::chat as core;
 use pl_protocol::*;
@@ -20,6 +20,26 @@ pub(in crate::studio) fn current_page(
             .any(|current| current == reference),
         core::ChatError::StaleContent
     );
+    page_rows(state.by_position(), reference, after, demand, encode)
+}
+
+/// Live and saved collections share an owner ID but cannot reuse each other's page generations.
+/// Values stay in the signed wire range supported by Dart's native integer representation.
+pub(in crate::studio) fn collection_revision(version: u64, cold: bool) -> Result<u64> {
+    version
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(u64::from(!cold)))
+        .filter(|value| *value <= i64::MAX as u64)
+        .ok_or_else(|| anyhow::anyhow!("Current collection revision exhausted"))
+}
+
+pub(in crate::studio) fn page_rows(
+    rows: &CurrentPositionIndex,
+    reference: &CurrentCollectionRef,
+    after: Option<&str>,
+    demand: ReadDemand,
+    encode: impl Fn(String) -> Result<String>,
+) -> Result<CurrentCollectionPage> {
     let boundary = after
         .map(serde_json::from_str::<(i64, String)>)
         .transpose()?;
@@ -39,7 +59,7 @@ pub(in crate::studio) fn current_page(
         continuation: None,
     };
     let mut selected_bytes = 0usize;
-    for (_, entry) in state.by_position().range((lower, upper)) {
+    for (_, entry) in rows.range((lower, upper)) {
         if page.entries.len() == demand.max_items as usize {
             return Ok(page);
         }

@@ -17,7 +17,6 @@ class TimelineChildrenView extends StatefulWidget {
     super.key,
     required this.controller,
     required this.generation,
-    required this.contentRangeBuilder,
     required this.isDisplayActive,
     this.onLoadOlder,
     this.attachmentBuilder,
@@ -27,7 +26,6 @@ class TimelineChildrenView extends StatefulWidget {
   final InMemoryChatController controller;
   final int generation;
   final Future<void> Function()? onLoadOlder;
-  final ChatContentRangeBuilder contentRangeBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final Widget Function(ChatAtom atom)? atomBuilder;
   final bool Function() isDisplayActive;
@@ -86,7 +84,6 @@ class _TimelineChildrenViewState extends State<TimelineChildrenView> {
               key: ValueKey((widget.generation, message.id)),
               item: chatItemPresentationOf(message)!,
               isDisplayActive: widget.isDisplayActive,
-              contentRangeBuilder: widget.contentRangeBuilder,
               attachmentBuilder: widget.attachmentBuilder,
             );
           },

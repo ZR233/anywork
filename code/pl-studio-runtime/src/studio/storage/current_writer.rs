@@ -100,10 +100,8 @@ fn validate_owner(handle: &ThreadHandle, epoch: RuntimeEpoch) -> Result<()> {
         handle.runtime_epoch() == epoch,
         "Core current source belongs to another runtime epoch"
     );
-    ensure!(
-        !handle.snapshot().persistence.attached,
-        "current source must not attach cold/history storage"
-    );
+    // Schema 25 deliberately allows the independent current owner to observe a Core owner that
+    // also has the append-only history sink attached. The two writers never share a transaction.
     Ok(())
 }
 

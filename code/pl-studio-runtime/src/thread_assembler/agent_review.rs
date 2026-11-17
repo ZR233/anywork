@@ -525,7 +525,13 @@ impl SessionRuntime {
             .agent_services
             .clone()
             .context("review services unavailable")?;
-        let history = services.store.history(target).await?;
+        let paths = services.store.registered_session_paths(target)?;
+        let history = crate::history::HistoryStore::open_reader(
+            paths.history_database(),
+            target,
+            crate::history::HistoryLimits::default(),
+        )
+        .await?;
         services
             .store
             .ensure_agent_execution_allowed(target)
@@ -543,7 +549,7 @@ impl SessionRuntime {
                 after.commit_sequence == before.commit_sequence,
                 "review target changed during history barrier"
             );
-            let turn = history.latest_turn_at(after.commit_sequence).await?;
+            let turn = super::observation::latest_terminal_turn(&history).await?;
             let current = thread.snapshot();
             ensure!(
                 current.commit_sequence == after.commit_sequence,
@@ -551,17 +557,16 @@ impl SessionRuntime {
             );
             (current, turn)
         } else {
-            let (checkpoint, turn) = history
-                .read_only_checkpoint_with_latest_turn()
-                .await?
-                .context(
-                    "review target canonical checkpoint is missing; explicit recovery is required",
-                )?;
-            ensure!(
-                checkpoint.history_fence == checkpoint.state.commit_sequence,
-                "review target checkpoint is not durable"
-            );
-            (checkpoint.state, turn)
+            let record = services.record(target).await?;
+            let protocol: pl_protocol::Thread = record.into();
+            let current = crate::studio::thread_factory::recovery::load_current_read_only(
+                &services.store,
+                &protocol,
+            )
+            .await?
+            .context("review target complete current is missing")?;
+            let turn = super::observation::latest_terminal_turn(&history).await?;
+            (current.state.to_paused_snapshot(), turn)
         };
         validate_idle(&snapshot)?;
         ensure!(

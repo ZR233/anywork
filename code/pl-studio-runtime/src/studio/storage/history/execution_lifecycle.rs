@@ -100,6 +100,7 @@ impl ExecutionLifecycle {
     }
 
     /// 恢复当前执行的局部投影，没有完成原件时不生成空正文或完成项。
+    #[cfg(test)]
     pub(in crate::studio) fn active_atom(self) -> Result<ChatAtom> {
         ensure!(
             self.outcome.is_none() && self.ended.is_none(),
@@ -129,30 +130,6 @@ impl ExecutionLifecycle {
             contents: vec![],
             payload: None,
         })
-    }
-
-    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        let source = match &self.source {
-            ChatSourceId::ForegroundTurn { turn_id } => turn_id.len(),
-            ChatSourceId::Input { input_id } => input_id.len(),
-            ChatSourceId::InboxMessage {
-                source_id,
-                message_id,
-            } => source_id.len() + message_id.len(),
-            ChatSourceId::BackgroundResult { message_id } => message_id.len(),
-            ChatSourceId::Operation { operation_id } => operation_id.len(),
-            ChatSourceId::Receipt { receipt_id } => receipt_id.len(),
-        };
-        let strings = self.identity.len()
-            + source
-            + self.turn_id.as_ref().map_or(0, String::len)
-            + self.attempt_id.as_ref().map_or(0, String::len)
-            + self
-                .tool
-                .as_ref()
-                .map_or(0, |tool| tool.call_id.len() + tool.name.len())
-            + self.completion_item_id.as_ref().map_or(0, String::len);
-        (std::mem::size_of::<Self>() as u64).saturating_add(strings as u64)
     }
 }
 
@@ -314,6 +291,7 @@ pub(super) async fn read(
 }
 
 /// 补充真实接纳输入或父消息的执行归属，不改原件、来源、终态或已知顺序。
+#[cfg(test)]
 pub(super) async fn bind_turn(
     db: &impl ConnectionTrait,
     id: &str,
@@ -370,6 +348,7 @@ pub(super) async fn apply(db: &impl ConnectionTrait, facts: &[ExecutionLifecycle
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn verify(db: &impl ConnectionTrait, facts: &[ExecutionLifecycle]) -> Result<()> {
     for fact in facts {
         let old = read(db, &fact.identity)
@@ -385,6 +364,7 @@ pub(super) async fn verify(db: &impl ConnectionTrait, facts: &[ExecutionLifecycl
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn active(
     db: &impl ConnectionTrait,
     after: Option<&str>,

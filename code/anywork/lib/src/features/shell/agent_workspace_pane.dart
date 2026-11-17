@@ -179,118 +179,122 @@ class _AgentWorkspacePaneState extends ConsumerState<AgentWorkspacePane> {
             threadSessionStoreProvider(threadId)
                 .select((state) => state.businessRefs?.plan),
           );
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final todo = workspace.todo;
-        final pendingPlan = workspace.activeInteraction?.planConfirmation;
-        final referencedPlan = _referencedPlanPresentation(planHead);
-        // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
-        // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
-        final presentedPlan = pendingPlan != null
-            ? _WorkspacePlanPresentation.fromPending(pendingPlan)
-            : referencedPlan;
-        final todoInDrawer =
-            constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
-        final todoExpanded = _todoExpandedByThread[threadId] ?? false;
-        final footerMaxHeight = constraints.hasBoundedHeight
-            ? _footerMaxHeight(constraints.maxHeight)
-            : null;
-        final timelineDisplay = ref
-            .watch(timelineViewModelProvider(threadId))
-            .asData
-            ?.value;
-        return _WorkspaceReading(
-          threadId: threadId,
-          pendingPlan: pendingPlan,
-          presentedPlan: presentedPlan,
-          builder: (context, readingArea, readingOpen, onOpenPlan) {
-            return Scaffold(
-              key: _scaffoldKey,
-              backgroundColor: context.colors.surface,
-              endDrawerEnableOpenDragGesture: false,
-              endDrawer: !readingOpen && todoInDrawer && todo != null
-                  ? Drawer(
-                      width: 328,
-                      backgroundColor: context.colors.surfaceContainer,
-                      child: TodoPanel(
-                        key: const ValueKey('todo-drawer-panel'),
-                        todo: todo,
-                        inDrawer: true,
-                        onClose: () =>
-                            _scaffoldKey.currentState?.closeEndDrawer(),
+    return _DeferredTodoPanel(
+      threadId: threadId,
+      runtime: workspace.runtime,
+      inline: workspace.todo,
+      builder: (todo) => LayoutBuilder(
+        builder: (context, constraints) {
+          final pendingPlan = workspace.activeInteraction?.planConfirmation;
+          final referencedPlan = _referencedPlanPresentation(planHead);
+          // pending 独占确认动作与 interaction 正文；无 pending 时，有 document 的
+          // 起草 / 要求修订 / 已批准映射真实 status 作为只读入口，无文档不伪造。
+          final presentedPlan = pendingPlan != null
+              ? _WorkspacePlanPresentation.fromPending(pendingPlan)
+              : referencedPlan;
+          final todoInDrawer =
+              constraints.maxWidth < _todoPanelWidth + _minimumTimelineWidth;
+          final todoExpanded = _todoExpandedByThread[threadId] ?? false;
+          final footerMaxHeight = constraints.hasBoundedHeight
+              ? _footerMaxHeight(constraints.maxHeight)
+              : null;
+          final timelineDisplay = ref
+              .watch(timelineViewModelProvider(threadId))
+              .asData
+              ?.value;
+          return _WorkspaceReading(
+            threadId: threadId,
+            pendingPlan: pendingPlan,
+            presentedPlan: presentedPlan,
+            builder: (context, readingArea, readingOpen, onOpenPlan) {
+              return Scaffold(
+                key: _scaffoldKey,
+                backgroundColor: context.colors.surface,
+                endDrawerEnableOpenDragGesture: false,
+                endDrawer: !readingOpen && todoInDrawer && todo != null
+                    ? Drawer(
+                        width: 328,
+                        backgroundColor: context.colors.surfaceContainer,
+                        child: TodoPanel(
+                          key: const ValueKey('todo-drawer-panel'),
+                          todo: todo,
+                          inDrawer: true,
+                          onClose: () =>
+                              _scaffoldKey.currentState?.closeEndDrawer(),
+                        ),
+                      )
+                    : null,
+                body: Column(
+                  children: [
+                    // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
+                    // 便于用户直接开始交互或在失败后重试。
+                    if (widget.needsOpen) _OpenThreadBanner(threadId: threadId),
+                    Expanded(
+                      child: StudioWorkspaceBody(
+                        readingArea: readingArea,
+                        overlays: [
+                          if (workspace.loadError case final error?)
+                            _ReadingErrorBanner(
+                              message: error,
+                              onRetry: () => _retryThreadLoad(threadId),
+                            ),
+                          if (workspace.isLoading)
+                            StudioWorkspaceLoading(
+                              key: const ValueKey('agent-workspace-loading'),
+                              hasContent:
+                                  timelineDisplay != null &&
+                                  timelineDisplay.threadId == threadId &&
+                                  timelineDisplay.generation > 0,
+                            ),
+                        ],
+                        footer: _AdaptiveFooter(
+                          threadId: threadId,
+                          maxHeight: footerMaxHeight,
+                          scrollPlan: pendingPlan != null,
+                          showTodo: !readingOpen && todo != null,
+                          todoExpanded: !readingOpen && todoExpanded,
+                          onToggleTodo: readingOpen || todo == null
+                              ? null
+                              : () {
+                                  if (todoInDrawer) {
+                                    _scaffoldKey.currentState?.openEndDrawer();
+                                  } else {
+                                    setState(
+                                      () => _todoExpandedByThread[threadId] =
+                                          !todoExpanded,
+                                    );
+                                  }
+                                },
+                          showPlanEntry:
+                              pendingPlan == null && referencedPlan != null,
+                          onOpenPlan:
+                              pendingPlan != null || referencedPlan == null
+                              ? null
+                              : onOpenPlan,
+                        ),
+                        // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
+                        todoPanel:
+                            !readingOpen &&
+                                !todoInDrawer &&
+                                todo != null &&
+                                todoExpanded
+                            ? TodoPanel(
+                                key: const ValueKey('todo-side-panel'),
+                                todo: todo,
+                                onClose: () => setState(
+                                  () => _todoExpandedByThread[threadId] = false,
+                                ),
+                              )
+                            : null,
                       ),
-                    )
-                  : null,
-              body: Column(
-                children: [
-                  // 首帧后自动打开当前选择；打开前仍保留显式入口与输入区，
-                  // 便于用户直接开始交互或在失败后重试。
-                  if (widget.needsOpen) _OpenThreadBanner(threadId: threadId),
-                  Expanded(
-                    child: StudioWorkspaceBody(
-                      readingArea: readingArea,
-                      overlays: [
-                        if (workspace.loadError case final error?)
-                          _ReadingErrorBanner(
-                            message: error,
-                            onRetry: () => _retryThreadLoad(threadId),
-                          ),
-                        if (workspace.isLoading)
-                          StudioWorkspaceLoading(
-                            key: const ValueKey('agent-workspace-loading'),
-                            hasContent:
-                                timelineDisplay != null &&
-                                timelineDisplay.threadId == threadId &&
-                                timelineDisplay.generation > 0,
-                          ),
-                      ],
-                      footer: _AdaptiveFooter(
-                        threadId: threadId,
-                        maxHeight: footerMaxHeight,
-                        scrollPlan: pendingPlan != null,
-                        showTodo: !readingOpen && todo != null,
-                        todoExpanded: !readingOpen && todoExpanded,
-                        onToggleTodo: readingOpen || todo == null
-                            ? null
-                            : () {
-                                if (todoInDrawer) {
-                                  _scaffoldKey.currentState?.openEndDrawer();
-                                } else {
-                                  setState(
-                                    () => _todoExpandedByThread[threadId] =
-                                        !todoExpanded,
-                                  );
-                                }
-                              },
-                        showPlanEntry:
-                            pendingPlan == null && referencedPlan != null,
-                        onOpenPlan:
-                            pendingPlan != null || referencedPlan == null
-                            ? null
-                            : onOpenPlan,
-                      ),
-                      // 计划详情打开时优先于 Todo 侧栏；关闭后 Todo 按自己的 UI 状态恢复。
-                      todoPanel:
-                          !readingOpen &&
-                              !todoInDrawer &&
-                              todo != null &&
-                              todoExpanded
-                          ? TodoPanel(
-                              key: const ValueKey('todo-side-panel'),
-                              todo: todo,
-                              onClose: () => setState(
-                                () => _todoExpandedByThread[threadId] = false,
-                              ),
-                            )
-                          : null,
                     ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -589,5 +593,129 @@ class _StandalonePreparationFailureView extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Reads the deferred todo value only while the Todo surface is mounted.
+///
+/// The inline field is a size placeholder, never a complete empty todo list.
+/// Each generation owns one Current read scope and retires it when the field,
+/// Thread or widget lifetime changes.
+class _DeferredTodoPanel extends ConsumerStatefulWidget {
+  const _DeferredTodoPanel({
+    required this.threadId,
+    required this.runtime,
+    required this.inline,
+    required this.builder,
+  });
+
+  final String threadId;
+  final ThreadRuntimeView runtime;
+  final TimelineTodoListUpdate? inline;
+  final Widget Function(TimelineTodoListUpdate? todo) builder;
+
+  @override
+  ConsumerState<_DeferredTodoPanel> createState() => _DeferredTodoPanelState();
+}
+
+class _DeferredTodoPanelState extends ConsumerState<_DeferredTodoPanel> {
+  CurrentStateField? _field;
+  CurrentQueryScope? _scope;
+  TimelineTodoListUpdate? _loaded;
+  Object? _error;
+  bool _loading = false;
+  int _epoch = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleSync();
+  }
+
+  @override
+  void didUpdateWidget(covariant _DeferredTodoPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.threadId != widget.threadId ||
+        oldWidget.runtime.deferredField('todo') !=
+            widget.runtime.deferredField('todo')) {
+      _scheduleSync();
+    }
+  }
+
+  void _scheduleSync() {
+    unawaited(Future<void>.microtask(_sync));
+  }
+
+  void _retire() {
+    _epoch++;
+    final scope = _scope;
+    _scope = null;
+    scope?.retire();
+    if (scope != null) unawaited(scope.close());
+  }
+
+  Future<void> _sync() async {
+    if (!mounted) return;
+    final field = widget.runtime.deferredField('todo');
+    if (field == null) {
+      _retire();
+      _field = null;
+      _loaded = null;
+      _error = null;
+      _loading = false;
+      if (mounted) setState(() {});
+      return;
+    }
+    if (_loading && field == _field) return;
+    _retire();
+    _field = field;
+    _loaded = null;
+    _error = null;
+    final lease = ref.read(timelineSessionOwnerProvider).lease(widget.threadId);
+    if (lease == null || lease.isRetired) return;
+    final epoch = ++_epoch;
+    final scope = lease.openCurrentScope(generation: lease.generation);
+    _scope = scope;
+    _loading = true;
+    if (mounted) setState(() {});
+    try {
+      final value = await scope.readStateField(field);
+      final todo = decodeCurrentTodoState(value);
+      if (!mounted || epoch != _epoch || field != _field || lease.isRetired) {
+        return;
+      }
+      _loaded = todo;
+    } catch (error) {
+      if (mounted && epoch == _epoch && field == _field) _error = error;
+    } finally {
+      if (epoch == _epoch) {
+        _loading = false;
+        final current = _scope;
+        if (identical(current, scope)) _scope = null;
+        scope.retire();
+        unawaited(scope.close());
+      }
+      if (mounted) setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    _retire();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final field = widget.runtime.deferredField('todo');
+    final todo = field == null
+        ? widget.inline
+        : field == _field
+        ? _loaded
+        : null;
+    if (field != null && field != _field && !_loading && _error == null) {
+      _scheduleSync();
+    }
+    return widget.builder(todo);
   }
 }

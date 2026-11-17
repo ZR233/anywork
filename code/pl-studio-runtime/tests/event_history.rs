@@ -1,10 +1,22 @@
+#[expect(
+    dead_code,
+    reason = "shared isolated fixtures also serve other integration test binaries"
+)]
+mod support;
+
+use anyhow::{Context, Result, ensure};
+
 use pl_core::thread::current::RuntimeEpoch;
-use pl_protocol::{ChatActiveStatus, ChatTerminalOutcome, RuntimeCostAmount};
+use pl_protocol::{
+    CURRENT_PROTOCOL_VERSION, ChatActiveStatus, ChatTerminalOutcome, ContentRange,
+    CurrentContentRef, CurrentFrame, CurrentProjection, RuntimeCostAmount,
+};
 use pl_studio_runtime::history::*;
 use sea_orm::{
     ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement, TransactionTrait,
 };
 use std::{path::Path, sync::Arc};
+use support::{Environment, current_demand, prompt_step, reached};
 
 fn demand() -> HistoryDemand {
     HistoryDemand::default()
@@ -85,6 +97,332 @@ async fn raw(path: &Path) -> Result<DatabaseConnection> {
             .create_if_missing(true)
     });
     Ok(Database::connect(options).await?)
+}
+
+fn final_text_reference(projection: &CurrentProjection) -> Option<CurrentContentRef> {
+    projection
+        .atoms
+        .iter()
+        .filter(|atom| {
+            atom.kind == pl_protocol::ChatAtomKind::Text
+                && atom.text_channel == Some(pl_protocol::ThreadTextChannel::Final)
+        })
+        .flat_map(|atom| atom.contents.iter())
+        .find(|content| content.role == pl_protocol::ChatContentRole::Body)
+        .map(|content| content.reference.clone())
+}
+
+async fn read_current_body(
+    reader: &pl_studio_runtime::CurrentReader,
+    reference: &CurrentContentRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    loop {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                ContentRange {
+                    offset: bytes.len() as u64,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await?;
+        ensure!(window.offset == bytes.len() as u64);
+        let finished = window.offset + window.bytes.len() as u64 == window.available_through;
+        ensure!(
+            finished || !window.bytes.is_empty(),
+            "Current body did not advance"
+        );
+        bytes.extend(window.bytes);
+        if finished {
+            break;
+        }
+    }
+    Ok(bytes)
+}
+
+async fn read_history_body(
+    reader: &HistoryReader,
+    reference: &HistoryEventBodyRef,
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while bytes.len() as u64 != reference.byte_length {
+        let window = reader
+            .read_body(
+                reference.clone(),
+                bytes.len() as u64,
+                (reference.byte_length - bytes.len() as u64).min(64 * 1024) as u32,
+            )
+            .await?;
+        ensure!(!window.bytes.is_empty(), "history body did not advance");
+        bytes.extend(window.bytes);
+    }
+    Ok(bytes)
+}
+
+#[tokio::test]
+async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_history()
+-> Result<()> {
+    use pl_provider_fixture::ReplyStage;
+
+    let stage = ReplyStage::new();
+    let head = "流".repeat(33_000);
+    let tail = "🎉完整终稿";
+    let expected = format!("{head}{tail}").into_bytes();
+    let mut frames = pl_provider_fixture::responses_text_chunks(
+        &[head.as_str(), tail],
+        "current-history",
+        support::MODEL,
+    );
+    let after: Vec<_> = frames.split_off(3);
+    let reply = ReplyStage::staged(vec![frames, after], &[&stage]);
+    let mut env = Environment::new(vec![prompt_step("current-history", 0, reply)], vec![]).await?;
+    let result = async {
+        let thread = env
+            .start(
+                pl_protocol::ThreadWorkspaceMode::Worktree,
+                "current-history",
+            )
+            .await?;
+        let id = thread.thread.id;
+        let demand = current_demand();
+        let history_demand = HistoryDemand::default();
+        let reader = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
+            .await?;
+        let mut metadata = reader.watch(None, demand).await?;
+        let Some(CurrentFrame::Reset { view }) = metadata.next().await? else {
+            anyhow::bail!("Current watch did not begin with Reset");
+        };
+        ensure!(
+            view.state.schema_version == pl_protocol::THREAD_SCHEMA_VERSION,
+            "Current did not expose the current Thread schema"
+        );
+        ensure!(
+            view.state
+                .runtime
+                .as_ref()
+                .is_none_or(|runtime| runtime.deferred.is_empty()),
+            "small runtime snapshot unexpectedly deferred a State field"
+        );
+        ensure!(
+            view.state
+                .activity
+                .as_ref()
+                .is_none_or(|activity| activity.deferred.is_empty()),
+            "small activity snapshot unexpectedly deferred a State field"
+        );
+        reached(&stage).await?;
+        let mut reference = None;
+        while reference.is_none() {
+            match metadata.next().await? {
+                Some(CurrentFrame::Reset { view }) => {
+                    reference = final_text_reference(&view.projection);
+                }
+                Some(CurrentFrame::Projection { projection, .. }) => {
+                    reference = final_text_reference(&projection);
+                }
+                Some(CurrentFrame::Notification { .. }) => {}
+                None => anyhow::bail!("Current watch ended before the response body appeared"),
+            }
+        }
+        let reference = reference.unwrap();
+        let live_view = reader.snapshot(demand).await?;
+        ensure!(
+            live_view
+                .state
+                .runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.deferred.is_empty()),
+            "live runtime snapshot unexpectedly deferred a State field"
+        );
+        ensure!(
+            live_view
+                .state
+                .activity
+                .as_ref()
+                .is_none_or(|activity| activity.deferred.is_empty()),
+            "live activity snapshot unexpectedly deferred a State field"
+        );
+        let r1 = live_view.revision.owner_id;
+        let mut body = reader
+            .watch_body(
+                reference.clone(),
+                ContentRange {
+                    offset: 65_530,
+                    max_bytes: 40,
+                },
+            )
+            .await?;
+        let live_window = body.next().await?.context("live body watch")?;
+        ensure!(live_window.offset == 65_530);
+        ensure!(live_window.bytes == expected[65_530..65_570]);
+        ensure!(
+            !live_window.sealed,
+            "the held provider attempt was still active"
+        );
+
+        let saved_stream_bytes =
+            tokio::time::timeout(support::integration_test_deadline()?, async {
+                loop {
+                    if let Ok(saved) = support::saved(&env.home, &id).await
+                        && let Some(call) = saved.current.model_call.as_ref()
+                        && let pl_core::thread::current::SavedModelPhase::Streaming { stream } =
+                            &call.phase
+                    {
+                        let stream = pl_model::completion::ModelStreamCurrent::decode(stream)?;
+                        if stream.content_parts.iter().any(|part| part.text == head) {
+                            return Ok::<_, anyhow::Error>(std::fs::read(
+                                saved.root.join("current.json"),
+                            )?);
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .context("periodic Current did not save the held provider prefix")??;
+        stage.release();
+        let terminal = loop {
+            let Some(frame) = metadata.next().await? else {
+                anyhow::bail!("Current watch ended before the provider Turn completed");
+            };
+            if let CurrentFrame::Notification { notification, .. } = frame
+                && let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                    notification.notification
+            {
+                break turn;
+            }
+        };
+        ensure!(terminal.input_id.as_deref() == Some("input-current-history"));
+        loop {
+            match body.next().await {
+                Ok(Some(window)) => {
+                    ensure!(window.bytes == expected[65_530..65_570]);
+                    if window.sealed {
+                        break;
+                    }
+                }
+                Err(error)
+                    if error
+                        .downcast_ref::<pl_protocol::studio::StudioError>()
+                        .is_some_and(|error| error.reason() == Some("staleCurrentReference")) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+                Ok(None) => {
+                    anyhow::bail!("body watch ended without sealing or retiring the live reference")
+                }
+            }
+        }
+        body.close().await?;
+        metadata.close().await?;
+        reader.close().await?;
+
+        env.runtime.synchronize_thread_observation(&id).await?;
+        let saved = support::saved(&env.home, &id).await?;
+        ensure!(saved.current.schema_version == pl_core::thread::current::CURRENT_SCHEMA_VERSION);
+        ensure!(saved.current.saved_runtime_epoch.to_string() == r1);
+
+        let history = env
+            .runtime
+            .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let originals = history
+            .events_page(
+                HistoryEventsQuery::TextOriginals,
+                None,
+                None,
+                history_demand,
+            )
+            .await?;
+        let mut canonical = None;
+        let mut durable = None;
+        for event in originals.entries {
+            let Some(payload_ref) = event.payload_ref.clone() else {
+                continue;
+            };
+            let payload = read_history_body(&history, &payload_ref).await?;
+            let envelope: serde_json::Value = serde_json::from_slice(&payload)?;
+            ensure!(envelope["contract"] == "anywork.chat/1");
+            let bodies = history
+                .list_bodies(event.header.event_id.clone(), None, history_demand)
+                .await?;
+            let body = bodies
+                .entries
+                .into_iter()
+                .find(|entry| entry.role == HistoryBodyRole::Body)
+                .context("text original has no body")?;
+            let bytes = read_history_body(&history, &body.reference).await?;
+            if bytes == expected {
+                ensure!(canonical.is_none(), "final body was stored more than once");
+                canonical = Some((event.header.event_id.clone(), envelope));
+                durable = Some(body.reference);
+            }
+        }
+        let (event_id, envelope) = canonical.context("final text original")?;
+        let durable = durable.context("final text body reference")?;
+        ensure!(envelope["turnId"].is_string());
+        history.close().await;
+        let provider_requests = env.root_provider.recorded().len();
+        ensure!(provider_requests == 1, "fixture prompt made extra requests");
+
+        env.restart().await?;
+        std::fs::write(saved.root.join("current.json"), b"broken current JSON")?;
+        let broken_current_history = env
+            .runtime
+            .open_history_reader(&id, HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let detail = broken_current_history
+            .read_event(event_id.clone(), history_demand)
+            .await?;
+        ensure!(read_history_body(&broken_current_history, &durable).await? == expected);
+        ensure!(detail.header.event_id == event_id);
+        broken_current_history.close().await;
+        ensure!(env.root_provider.recorded().len() == provider_requests);
+
+        std::fs::write(saved.root.join("current.json"), &saved_stream_bytes)?;
+        env.restart().await?;
+        std::fs::write(saved.path, b"broken history; Current must not open it")?;
+        let current = env
+            .runtime
+            .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
+            .await?;
+        let view = current.snapshot(demand).await?;
+        ensure!(
+            view.revision.owner_id == r1 && !view.projection.execution_present,
+            "passive cold reading must retain saved provenance without activating a new Core owner"
+        );
+        let restored = final_text_reference(&view.projection).context("saved streaming body")?;
+        ensure!(
+            read_current_body(&current, &restored).await? == head.as_bytes(),
+            "cold Current borrowed the later final body from History"
+        );
+        let stale = current
+            .read_body(
+                reference,
+                ContentRange {
+                    offset: 0,
+                    max_bytes: 1,
+                },
+            )
+            .await
+            .unwrap_err();
+        ensure!(
+            stale
+                .downcast_ref::<pl_protocol::studio::StudioError>()
+                .and_then(|error| error.reason())
+                == Some("staleCurrentReference")
+        );
+        current.close().await?;
+        ensure!(env.root_provider.recorded().len() == provider_requests);
+        Ok(())
+    }
+    .await;
+    stage.release();
+    env.finish(result).await
 }
 
 #[tokio::test]

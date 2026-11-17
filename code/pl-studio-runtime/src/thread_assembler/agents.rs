@@ -1542,7 +1542,7 @@ pub(crate) mod archive_tests {
             ),
             route,
             model_available: false,
-            checkpoint: None,
+            current: None,
             initial_context: Vec::new(),
             initial_runtime_facts: Vec::new(),
             initial_extensions: BTreeMap::from([(
@@ -1554,7 +1554,7 @@ pub(crate) mod archive_tests {
                 crate::resource_store::FileResourceStore::new(root.join("resources")),
             ),
             capacity: Default::default(),
-            cold_store: None,
+            history_sink: None,
         }
     }
 
@@ -2155,13 +2155,12 @@ pub(crate) mod archive_tests {
         let acknowledged = store.thread_preparation(&protocol.id).await?.unwrap();
         assert_eq!(acknowledged.save, PreparationSave::Confirmed);
         assert!(acknowledged.stopped && acknowledged.retired);
-        let checkpoint = store
-            .history(&protocol.id)
-            .await?
-            .checkpoint()
+        let current = store
+            .state_for(&protocol.workspace_id, &protocol.id)?
+            .load_current()
             .await?
             .unwrap();
-        assert_eq!(checkpoint.state.lifecycle, ThreadLifecycle::Closed);
+        assert_eq!(current.state.lifecycle, ThreadLifecycle::Closed);
         projection.await?;
         factory.shutdown().await?;
         Ok(())

@@ -17,7 +17,7 @@ use crate::bots::owner::BotRuntime;
 use crate::bots::protocol::error::FeishuError;
 use crate::bots::storage::card::{CardBinding, CardLifecycle, CardOperationStatus, CardStream};
 use crate::bots::storage::{ClaimLease, FrozenInbound};
-use crate::studio::{ConversationReader, StudioRuntime};
+use crate::studio::StudioRuntime;
 use pl_core::thread::input::{InputDelivery, InputState};
 use pl_protocol::{TurnCompletion, TurnState};
 use std::collections::BTreeSet;
@@ -81,7 +81,6 @@ pub(super) enum ClaimGuard {
 }
 
 struct ReplyContent<'a> {
-    reader: &'a ConversationReader,
     projection: Option<&'a ReplyProjection>,
     active: bool,
     preview: Option<&'a str>,
@@ -494,7 +493,6 @@ impl BotRuntime {
                 if let Err(error) = selected {
                     return Step::Done(content_failure(error));
                 }
-                let reader = watch.reader();
                 let preview = watch.preview();
                 let observed = watch.observed_state(&turn_id);
                 let terminal = watch.terminal(&turn_id);
@@ -507,7 +505,6 @@ impl BotRuntime {
                             run,
                             &turn_id,
                             ReplyContent {
-                                reader: &reader,
                                 projection: projection.as_ref(),
                                 active: projection.as_ref().is_some_and(ReplyProjection::active),
                                 preview: preview.as_deref(),
@@ -617,7 +614,7 @@ impl BotRuntime {
             };
             let collected = tokio::select! {
                 _ = cancel.cancelled() => return Step::Done(InboundWorkOutcome::Interrupted),
-                collected = collect_complete_turn_text(runtime, content.reader, projection) => collected,
+                collected = std::future::ready(collect_complete_turn_text(projection)) => collected,
             };
             match collected {
                 Ok(text) => Some(text),
@@ -627,15 +624,8 @@ impl BotRuntime {
             None
         };
         if let Some(projection) = content.projection
-            && let Err(outcome) = super::files::deliver_file_displays(
-                runtime,
-                content.reader,
-                run,
-                turn_id,
-                projection,
-                cancel,
-            )
-            .await
+            && let Err(outcome) =
+                super::files::deliver_file_displays(runtime, run, turn_id, projection, cancel).await
         {
             return Step::Done(outcome);
         }

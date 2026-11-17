@@ -9,9 +9,11 @@ use pl_core::{
 use sea_orm::{ConnectionTrait, TransactionTrait};
 
 impl HistoryStore {
-    /// Reads canonical recovery facts and the latest admitted Turn in one strictly read-only
-    /// snapshot, even if a timeline observer still retains this owner's initialized writer.
-    pub(crate) async fn read_only_checkpoint_with_latest_turn(
+    /// Test-only schema-24 snapshot for migration fixtures.
+    ///
+    /// Production recovery reads `ThreadCurrent` from current.json and never calls this adapter.
+    #[cfg(test)]
+    pub(crate) async fn legacy_test_checkpoint_with_latest_turn(
         &self,
     ) -> Result<Option<(ThreadCheckpoint, Option<pl_protocol::Turn>)>> {
         let connection = {
@@ -53,6 +55,7 @@ impl HistoryStore {
     }
 
     /// Advances the same Migrator after the v2 TOML import boundary has finished.
+    #[cfg(test)]
     pub(crate) async fn prepare_model_access(&self) -> Result<Option<ThreadCheckpoint>> {
         super::schema::prepare_with_bot_root(
             &self.writer().await?.db,
@@ -71,6 +74,7 @@ impl HistoryStore {
 
     /// The owner supplies verified Mode/Agent facts; SeaORM commits this named migration and its
     /// completion record together. Candidate construction has no storage or external side effects.
+    #[cfg(test)]
     pub(crate) async fn prepare_execution_identity(
         &self,
         migrate: impl FnOnce(&mut pl_core::thread::ThreadSnapshot) -> Result<()>,
@@ -217,6 +221,8 @@ impl HistoryStore {
             }
             // read() proved that no checkpoint exists while this write transaction is held.
             write(&tx, &checkpoint, None, None).await?;
+            // Keep this marker as migration evidence. Source TOML files and checkpoint bodies are
+            // user-owned originals and are never removed by the importer.
             tx.execute_unprepared("UPDATE session_checkpoint SET legacy_cleanup=1 WHERE id=1")
                 .await?;
         }
@@ -232,35 +238,9 @@ impl HistoryStore {
         );
         Ok(())
     }
-
-    pub(crate) async fn legacy_cleanup_pending(&self) -> Result<bool> {
-        let Some(connection) = self.reader().await? else {
-            return Ok(false);
-        };
-        let row = connection
-            .db
-            .query_one_raw(statement(
-                "SELECT legacy_cleanup FROM session_checkpoint WHERE id=1",
-                vec![],
-            ))
-            .await?;
-        Ok(row
-            .map(|row| row.try_get::<i64>("", "legacy_cleanup"))
-            .transpose()?
-            .unwrap_or(0)
-            != 0)
-    }
-
-    pub(crate) async fn finish_legacy_cleanup(&self) -> Result<()> {
-        self.writer()
-            .await?
-            .db
-            .execute_unprepared("UPDATE session_checkpoint SET legacy_cleanup=0 WHERE id=1")
-            .await?;
-        Ok(())
-    }
 }
 
+#[cfg(test)]
 pub(super) async fn verify_committed(
     tx: &impl ConnectionTrait,
     checkpoint: &ThreadCheckpoint,
@@ -433,6 +413,7 @@ pub(super) async fn read_model_route_head(
 }
 
 /// The transaction's singleton headers, shared by ordered history and context persistence.
+#[cfg(test)]
 pub(super) struct CommitHead {
     pub(super) applied_write_seq: i64,
     pub(super) context: Option<ContextHead>,
@@ -443,6 +424,7 @@ pub(super) struct ContextHead {
     count: i64,
 }
 
+#[cfg(test)]
 pub(super) async fn read_commit_head(db: &impl ConnectionTrait) -> Result<CommitHead> {
     let row = db
         .query_one_raw(statement(
@@ -586,6 +568,7 @@ pub(super) async fn read(
 
 /// Validated original state envelope for product reads. Context records remain with execution
 /// recovery; even a nonempty saved context is never selected or reconstructed here.
+#[cfg(test)]
 pub(super) async fn read_state_envelope(
     tx: &impl ConnectionTrait,
     thread_id: &str,
@@ -739,6 +722,7 @@ async fn read_envelope_with(
 }
 
 /// Accounting is reliable state, independent from the lossy log writer.
+#[cfg(test)]
 pub(super) async fn fold_costs(
     tx: &impl ConnectionTrait,
     accounting: &crate::studio::thread_projection::PreparedAccounting,
@@ -788,6 +772,7 @@ async fn add_cost(
 }
 
 /// A compact absolute projection; no context or historical body is read.
+#[cfg(test)]
 pub(crate) struct SessionAccounting {
     pub revision: u64,
     pub has_unpriced_usage: bool,
@@ -795,6 +780,7 @@ pub(crate) struct SessionAccounting {
 }
 
 impl HistoryStore {
+    #[cfg(test)]
     pub(crate) async fn accounting(&self) -> Result<Option<SessionAccounting>> {
         let Some(connection) = self.reader().await? else {
             return Ok(None);
@@ -806,6 +792,7 @@ impl HistoryStore {
     }
 }
 
+#[cfg(test)]
 pub(super) async fn read_accounting(
     tx: &impl ConnectionTrait,
     thread_id: &str,
@@ -837,6 +824,7 @@ pub(super) async fn read_accounting(
     }))
 }
 
+#[cfg(test)]
 pub(super) async fn read_purpose_costs(
     tx: &impl ConnectionTrait,
 ) -> Result<Vec<(Option<String>, Vec<pl_protocol::RuntimeCostAmount>)>> {

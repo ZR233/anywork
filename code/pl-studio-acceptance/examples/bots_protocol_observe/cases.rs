@@ -569,11 +569,11 @@ impl Session {
         // The queued input must be accepted in the canonical Thread itself: a
         // platform claim is not the queue. The public snapshot carries no input
         // list, so read the same durable input identities the runtime consults
-        // after a restart (read-only history), and require one stable pending id
+        // after a restart (saved Current JSON), and require one stable pending id
         // with a higher ordinal than the running input.
         let a_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_a");
         let b_input_id = format!("bot:{bot_id}:{DIRECT_CHAT_ID}:om_concurrent_b");
-        let (queued_b, accepted_sequence) = {
+        let (queued_b, pending_ordinal) = {
             let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
             loop {
                 let inputs = sqlite::thread_inputs(&self.home, &thread_id).await?;
@@ -598,14 +598,13 @@ impl Session {
                 let b_ok = pending_b.as_ref().is_some_and(|row| {
                     row.thread_id == thread_id
                         && matches!(row.state, sqlite::ThreadInputState::Pending)
-                        && row.accepted_sequence != 0
                         && row.revision != 0
                         && row.delivery == sqlite::ThreadInputDelivery::NextTurn
                         && consumed_a.as_ref().is_some_and(|a| row.ordinal > a.ordinal)
                 });
                 if a_ok && b_ok {
                     let b = pending_b.context("accepted second input")?;
-                    break (b.id, b.accepted_sequence);
+                    break (b.id, b.ordinal);
                 }
                 if Instant::now() >= deadline {
                     bail!(
@@ -668,7 +667,7 @@ impl Session {
         Ok(report::passed(
             CASE_IDEMPOTENT,
             format!(
-                "duplicate identity is idempotent, conflicting content is rejected, and two same-body identities each execute once: the second input became canonical pending input {queued_b} (acceptedSequence {accepted_sequence}) while the first Turn {concurrent_a_turn} was still running, reconnect keeps the existing DM binding"
+                "duplicate identity is idempotent, conflicting content is rejected, and two same-body identities each execute once: the second input became canonical pending input {queued_b} (persisted ordinal {pending_ordinal}) while the first Turn {concurrent_a_turn} was still running, reconnect keeps the existing DM binding"
             ),
         ))
     }
@@ -2155,10 +2154,22 @@ async fn running_turn_id(
     http: &crate::http::StudioHttp,
     thread_id: &str,
 ) -> Result<Option<String>> {
-    let snapshot = http.read_thread(thread_id).await?;
-    Ok(snapshot.active_turn.as_ref().and_then(|turn| {
-        matches!(turn.state, pl_protocol::TurnState::Running(_)).then(|| turn.id.clone())
-    }))
+    let current = crate::support::open_current(http, thread_id).await?;
+    let observed = current
+        .snapshot(crate::support::current_demand())
+        .await
+        .map(|view| {
+            view.state.active_turn.as_ref().and_then(|turn| {
+                matches!(turn.state, pl_protocol::TurnState::Running(_)).then(|| turn.id.clone())
+            })
+        });
+    match (observed, current.close().await) {
+        (Ok(id), Ok(())) => Ok(id),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close_error)) => {
+            Err(error.context(format!("Current close also failed: {close_error:#}")))
+        }
+    }
 }
 
 /// Synthetic long Markdown: Chinese text, quotes, backslashes and paragraphs.

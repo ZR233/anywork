@@ -16,11 +16,14 @@ mod schema;
 mod store;
 mod token;
 mod types;
+mod upgrade;
 mod validate;
 
 pub use accounting::HistoryUsageFact;
 pub use classifier::*;
 pub use import::*;
 pub use reader::HistoryReader;
-pub use store::HistoryStore;
+pub use store::{HistoryStore, HistoryStoreShare};
+pub(crate) use types::milliseconds_from_seconds;
 pub use types::*;
+pub use upgrade::{UpgradeReport, UpgradeStatus, upgrade_history};

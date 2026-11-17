@@ -40,7 +40,6 @@ void main() {
       h.transport.reads.single.reference,
       h.session.state.businessRefs!.plan!.document,
     );
-    expect(h.transport.businessReads, 0);
     expect(h.transport.reads.single.range.maxBytes, 64 * 1024);
     expect(
       find.byKey(
@@ -61,10 +60,10 @@ void main() {
     final main = lease.controller;
     final history = main.messages.toList();
     expect(history, isNotEmpty);
-    final feed = h.transport.timelineReaders.single;
+    final feed = h.transport.currentReaders.single;
     for (var update = 0; update < 5; update++) {
       final previous = lease.live.value!;
-      final live = TailSnapshot(
+      final live = CurrentRunSnapshot(
         revision: previous.revision + 1,
         layoutRevision: previous.revision + 1,
         readyFrontier: previous.readyFrontier,
@@ -132,7 +131,7 @@ void main() {
     await tester.pump();
     expect(h.transport.reads, hasLength(4));
 
-    h.transport.failNextInitial = const StudioFailure(
+    h.transport.failNextCurrentInitial = const StudioFailure(
       code: StudioFailureCode.unavailable,
       message: 'temporary connection loss',
       retryable: true,
@@ -141,7 +140,7 @@ void main() {
     h.graph.timeline.refresh('thread-main');
     await h.body('First plan body');
     expect(h.document.error, isNull);
-    expect(h.transport.timelineReaders.last.initialCalls, 2);
+    expect(h.transport.currentReaders.last.initialViewReads, greaterThan(0));
     expect(h.transport.reads, hasLength(5));
     await h.close();
   });
@@ -196,7 +195,6 @@ void main() {
       expect(h.document.loading, isFalse);
     }
 
-    final completedReads = h.transport.completedReads;
     final olderReads = h.transport.olderReads;
     h.transport.nextReadError = StateError('document disk unavailable');
     await h.publish(6, 'Retry version body');
@@ -212,17 +210,23 @@ void main() {
       find.textContaining('Retry version body', findRichText: true),
       findsNothing,
     );
-    expect(h.transport.businessReads, 0);
-    expect(h.transport.completedReads, completedReads);
+    expect(
+      h.transport.historyReaders.fold<int>(
+        0,
+        (total, reader) => total + reader.bodyCalls,
+      ),
+      0,
+      reason: 'Plan bytes are Current-owned and never read from History',
+    );
     expect(h.transport.olderReads, olderReads);
-    final feeds = h.transport.timelineReaders.length;
+    final feeds = h.transport.currentReaders.length;
     final reads = h.transport.reads.length;
     await tester.pump(const Duration(seconds: 2));
     expect(h.transport.reads, hasLength(reads), reason: '没有自动重试循环');
     await tester.tap(find.byKey(const ValueKey('plan-document-retry')));
     await h.body('Retry version body');
     expect(h.transport.reads, hasLength(reads + 1));
-    expect(h.transport.timelineReaders, hasLength(feeds), reason: '局部失败不重开连接');
+    expect(h.transport.currentReaders, hasLength(feeds), reason: '局部失败不重开连接');
 
     final disposedGate = Completer<void>();
     h.transport
@@ -264,10 +268,10 @@ void main() {
     );
     expect(find.textContaining('plan connection rejected'), findsOneWidget);
     expect(h.transport.reads, isEmpty);
-    final feeds = h.transport.timelineReaders.length;
+    final feeds = h.transport.currentReaders.length;
     await tester.tap(find.byKey(const ValueKey('plan-document-retry')));
     await h.body('Recovered connection body');
-    expect(h.transport.timelineReaders, hasLength(feeds + 1));
+    expect(h.transport.currentReaders, hasLength(feeds + 1));
     await h.close();
   });
 

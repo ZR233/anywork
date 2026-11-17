@@ -5,48 +5,22 @@ mod usage;
 pub(crate) use interaction::child_interaction as bridge_child_interaction;
 pub(crate) use interaction::interaction as bridge_interaction;
 
+use super::presentation::current_state_field;
 use anyhow::Result;
 use pl_protocol::{
     AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanRuntimeSnapshot,
     BudgetLimitKind, BudgetLimitSnapshot, McpAvailabilityDescriptor, McpHealthSnapshot,
     McpServerDescriptor, PromptPrefixChangedReason, RuntimeCostAmount, Thread, ThreadNotification,
     ThreadNotificationEnvelope, ThreadRuntimeLiveUsage, ThreadRuntimeSnapshot, ThreadRuntimeUsage,
-    ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus, ThreadSubscriptionUpdate, TodoItem,
-    TodoListSnapshot, TodoStatus, Turn, TurnCancellationCause, TurnCompletion, TurnPhase,
-    TurnRolloverOutcome, TurnState, WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot,
-    WorkflowRuntimeSnapshot,
+    ThreadRuntimeUsageState, ThreadSnapshot, ThreadStatus, TodoItem, TodoListSnapshot, TodoStatus,
+    Turn, TurnCancellationCause, TurnCompletion, TurnPhase, TurnRolloverOutcome, TurnState,
+    WorkflowRunLifecycle, WorkflowRuntimeRunSnapshot, WorkflowRuntimeSnapshot,
 };
 
 use crate::api::studio::convert::chat;
 use crate::api::studio::types::*;
 
-pub(crate) fn bridge_thread_update(
-    update: ThreadSubscriptionUpdate,
-) -> Result<BridgeThreadSubscriptionUpdate> {
-    match update {
-        ThreadSubscriptionUpdate::Snapshot {
-            completed_history_version,
-            snapshot,
-        } => {
-            if completed_history_version != pl_protocol::COMPLETED_HISTORY_VERSION {
-                return Err(protocol_version_mismatch(
-                    "unsupported completed-history content protocol",
-                ));
-            }
-            Ok(BridgeThreadSubscriptionUpdate::Snapshot {
-                completed_history_version,
-                snapshot: Box::new(bridge_thread_snapshot(*snapshot)?),
-            })
-        }
-        ThreadSubscriptionUpdate::Notification { notification } => {
-            Ok(BridgeThreadSubscriptionUpdate::Notification {
-                notification: Box::new(thread_notification(*notification)?),
-            })
-        }
-    }
-}
-
-fn thread_notification(
+pub(super) fn thread_notification(
     envelope: ThreadNotificationEnvelope,
 ) -> Result<BridgeThreadNotificationEnvelope> {
     let notification = match envelope.notification {
@@ -406,6 +380,11 @@ fn model_route_snapshot(
 pub(crate) fn runtime_snapshot(value: ThreadRuntimeSnapshot) -> BridgeThreadRuntimeSnapshot {
     BridgeThreadRuntimeSnapshot {
         thread_id: value.thread_id,
+        deferred: value
+            .deferred
+            .into_iter()
+            .map(current_state_field)
+            .collect(),
         usage: runtime_usage(value.usage),
         live_usage: value.live_usage.map(runtime_live_usage),
         turn_completion_tokens: value.turn_completion_tokens,
@@ -565,7 +544,7 @@ fn runtime_usage(value: ThreadRuntimeUsage) -> BridgeThreadRuntimeUsage {
     }
 }
 
-fn cache_usage(value: pl_protocol::CacheUsageSummary) -> BridgeCacheUsageSummary {
+pub(super) fn cache_usage(value: pl_protocol::CacheUsageSummary) -> BridgeCacheUsageSummary {
     BridgeCacheUsageSummary {
         sample_count: value.sample_count,
         legacy_sample_count_unknown: value.legacy_sample_count_unknown,
@@ -822,7 +801,7 @@ mod tests {
                 document: None,
             }),
             interactions: Some(pl_protocol::CurrentCollectionRef {
-                database_id: "thread-db".into(),
+                owner_id: "runtime-owner".into(),
                 collection: "interactions".into(),
                 revision: 9,
             }),
@@ -879,15 +858,9 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_schema_and_completed_history_versions_are_rejected_typed() {
+    fn unsupported_schema_is_rejected_typed() {
         let mut snapshot = ThreadSnapshot::empty("thread");
         snapshot.schema_version -= 1;
         assert_version_mismatch(bridge_thread_snapshot(snapshot).unwrap_err());
-
-        let update = ThreadSubscriptionUpdate::Snapshot {
-            completed_history_version: pl_protocol::COMPLETED_HISTORY_VERSION + 1,
-            snapshot: Box::new(ThreadSnapshot::empty("thread")),
-        };
-        assert_version_mismatch(bridge_thread_update(update).unwrap_err());
     }
 }

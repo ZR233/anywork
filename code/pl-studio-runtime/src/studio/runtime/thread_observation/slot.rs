@@ -20,21 +20,16 @@ pub(in crate::studio::runtime) struct ObservationSlot {
 }
 
 enum ReadRegistration {
-    Conversation(std::sync::Weak<super::super::conversation_reader::ReadLease>),
     Current(std::sync::Weak<super::super::current_reader::Inner>),
 }
 
 enum ReadOwner {
-    Conversation(super::super::ConversationReader),
     Current(super::super::CurrentReader),
 }
 
 impl ReadRegistration {
     fn upgrade(&self) -> Option<ReadOwner> {
         match self {
-            Self::Conversation(reader) => reader
-                .upgrade()
-                .map(|inner| ReadOwner::Conversation(super::super::ConversationReader { inner })),
             Self::Current(reader) => reader
                 .upgrade()
                 .map(|inner| ReadOwner::Current(super::super::CurrentReader { inner })),
@@ -42,7 +37,6 @@ impl ReadRegistration {
     }
     fn alive(&self) -> bool {
         match self {
-            Self::Conversation(reader) => reader.strong_count() > 0,
             Self::Current(reader) => reader.strong_count() > 0,
         }
     }
@@ -51,13 +45,11 @@ impl ReadRegistration {
 impl ReadOwner {
     fn request_close(&self) {
         match self {
-            Self::Conversation(reader) => reader.request_close(),
             Self::Current(reader) => reader.request_close(),
         }
     }
     async fn close(self) -> anyhow::Result<()> {
         match self {
-            Self::Conversation(reader) => reader.close().await,
             Self::Current(reader) => reader.close().await,
         }
     }
@@ -77,24 +69,6 @@ impl Default for ObservationSlot {
 }
 
 impl ObservationSlot {
-    pub(in crate::studio::runtime) fn register_reader(
-        &self,
-        reader: &super::super::ConversationReader,
-    ) {
-        let mut readers = self
-            .readers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(readers) = readers.as_mut() {
-            readers.retain(ReadRegistration::alive);
-            readers.push(ReadRegistration::Conversation(Arc::downgrade(
-                &reader.inner,
-            )));
-        } else {
-            reader.request_close();
-        }
-    }
-
     pub(in crate::studio::runtime) fn register_current_reader(
         &self,
         reader: &super::super::CurrentReader,

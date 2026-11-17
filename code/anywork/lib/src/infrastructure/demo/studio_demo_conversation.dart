@@ -541,7 +541,7 @@ final class _DemoHistory {
   final Map<String, String> displayMembership = {};
   final Map<DisplayBlockRef, List<DisplayMemberHead>> displayHeads = {};
   final Map<String, int> displayMemberRevisions = {};
-  TailSnapshot? displayLiveSeed;
+  CurrentRunSnapshot? displayLiveSeed;
   String? displayCurrentWorkId;
   int displayRevision = 0;
   int displayLayoutRevision = 0;
@@ -916,7 +916,6 @@ final class _DemoReader implements ConversationReader {
   final Map<String, (String, int, int)> _cursors = {};
   final Set<Future<void>> _accepted = {};
   final Set<_DemoContentWatch> _watches = {};
-  final Set<_DemoDisplayMembers> _displayReads = {};
   bool _closed = false;
   Future<void>? _closing;
   String cursor(String kind, int revision, int boundary) {
@@ -1016,11 +1015,9 @@ final class _DemoReader implements ConversationReader {
     );
   }
 
-  @override
   Future<ThreadBusinessRefs> readBusinessRefs() =>
       _read(() => _api._snapshotOf(_api._demoWorkspace(threadId)).businessRefs);
 
-  @override
   Future<CompletedEntry> readCompleted({
     required String recordId,
     required ReadDemand demand,
@@ -1187,187 +1184,11 @@ final class _DemoReader implements ConversationReader {
   }
 
   @override
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) => _read(() {
-    _demoDemand(demand);
-    if (!_demoHasActivity(scope) || reference.databaseId != _history.epoch) {
-      throw _demoMissing();
-    }
-    if (reference.collection != 'interactions' ||
-        reference.revision != _history.interactionRevision) {
-      throw _demoStale();
-    }
-    final source = _collection(reference.collection);
-    final start = continuation == null
-        ? 0
-        : boundary(continuation, reference.collection, reference.revision);
-    final out = <CurrentCollectionEntry>[];
-    if (_demoEncoded({
-          'revision': reference.revision,
-          'entries': [],
-          'continuation': null,
-        }) >
-        demand.maxBytes) {
-      throw _demoQueryFailure(
-        'InvalidDemand: collection envelope does not fit',
-      );
-    }
-    var more = false;
-    String? next;
-    for (final row in source) {
-      final index = row.$2;
-      if (index < start) continue;
-      if (out.length == demand.maxItems) {
-        more = true;
-        break;
-      }
-      final bytes = utf8.encode(jsonEncode(row.$3));
-      PayloadData payload = InlinePayload(bytes: bytes);
-      CurrentCollectionEntry candidate = CurrentCollectionEntry(
-        id: row.$1,
-        position: index,
-        payload: payload,
-      );
-      final token = cursor(reference.collection, reference.revision, index + 1);
-      int encoded() => _demoEncoded({
-        'revision': reference.revision,
-        'entries': [
-          for (final e in [...out, candidate])
-            {
-              'id': e.id,
-              'position': e.position,
-              'payload': chatPayloadToJson(e.payload),
-            },
-        ],
-        'continuation': token,
-      });
-      if (encoded() > demand.maxBytes) {
-        final key = (reference.collection, row.$1, 'payload');
-        _history.currentBodies.putIfAbsent(
-          key,
-          () => _DemoBody()..append(bytes),
-        );
-        payload = DeferredPayload(
-          reference: ContentRef(
-            databaseId: _history.epoch,
-            target: BodyContentTarget(
-              owner: CurrentContentOwner(
-                domain: reference.collection,
-                id: row.$1,
-                revision: reference.revision,
-              ),
-              key: 'payload',
-            ),
-          ),
-          byteLength: bytes.length,
-        );
-        candidate = CurrentCollectionEntry(
-          id: row.$1,
-          position: index,
-          payload: payload,
-        );
-        if (encoded() > demand.maxBytes) {
-          if (out.isEmpty) {
-            throw _demoQueryFailure(
-              'InvalidDemand: current entry does not fit',
-            );
-          }
-          more = true;
-          break;
-        }
-      }
-      out.add(candidate);
-      next = token;
-    }
-    // An exact-sized page may carry a cursor to one empty EOF page.
-    return CurrentCollectionPage(
-      revision: reference.revision,
-      entries: out,
-      continuation: more ? next : null,
-    );
-  });
-  Iterable<(String, int, Map<String, Object?>)> _collection(String name) sync* {
-    if (name != 'interactions') throw _demoMissing();
-    final ordered = _api._demoWorkspace(threadId).interactions.toList()
-      ..sort(
-        (a, b) => _history.positions[('interaction', a.id)]!.compareTo(
-          _history.positions[('interaction', b.id)]!,
-        ),
-      );
-    for (final value in ordered) {
-      yield (
-        value.id,
-        _history.positions[('interaction', value.id)]!,
-        {
-          'interactionId': value.id,
-          'scope': {'threadId': value.threadId, 'turnId': value.turnId},
-          'revision': value.revision,
-          'content': {
-            'kind': value.kind.name,
-            'data': {
-              ...switch (value.payload) {
-                UserInputInteractionPayload(:final questions) => {
-                  'questions': [
-                    for (final question in questions)
-                      {
-                        'id': question.id,
-                        'header': question.header,
-                        'question': question.question,
-                        'isOther': question.isOther,
-                        'isSecret': question.isSecret,
-                        'options': [
-                          for (final option in question.options)
-                            {
-                              'label': option.label,
-                              'description': option.description,
-                            },
-                        ],
-                      },
-                  ],
-                },
-                ToolApprovalInteractionPayload(
-                  :final toolName,
-                  :final arguments,
-                  :final workingDirectory,
-                  :final parentAgentId,
-                ) =>
-                  {
-                    'request': {
-                      'name': toolName,
-                      'arguments': arguments,
-                      'workingDirectory': workingDirectory,
-                      'parentAgentId': parentAgentId,
-                    },
-                  },
-                UnknownInteractionPayload() => throw _demoQueryFailure(
-                  'Unknown interaction content',
-                ),
-              },
-              'state': {
-                'kind': 'pending',
-                'data': {'operationId': value.id},
-              },
-            },
-          },
-          'createdAt': 0,
-          'updatedAt': value.revision,
-        },
-      );
-    }
-  }
-
-  @override
   void requestClose() {
     if (_closed) return;
     _closed = true;
     for (final watch in _watches.toList()) {
       watch.requestClose();
-    }
-    for (final members in _displayReads.toList()) {
-      members.requestClose();
     }
   }
 
@@ -1379,7 +1200,6 @@ final class _DemoReader implements ConversationReader {
       await Future.wait([
         ..._accepted,
         for (final watch in _watches.toList()) watch.close(),
-        for (final members in _displayReads.toList()) members.close(),
       ]);
       _cursors.clear();
       _api._ownedHistoryReaders.remove(this);
@@ -1678,158 +1498,6 @@ class _DemoConversationFeed implements ConversationFeed {
     return _closing ??= () async {
       await reader.close();
       _api._ownedConversationFeeds.remove(this);
-    }().whenComplete(() => _closing = null);
-  }
-}
-
-/// The independent Demo state subscription. It carries only State, Failure and
-/// Closed frames with its own identity, sequence and ACK budget; content never
-/// flows here and state never flows through the content feed.
-final class _DemoConversationStateFeed implements ConversationStateFeed {
-  _DemoConversationStateFeed(this._api, this.threadId)
-    : subscriptionId = 'demo-state:${newStudioCorrelationId()}' {
-    _initialState = ConversationStateEvent(
-      frame: ThreadSnapshotFrame(
-        schemaVersion: threadSchemaVersion,
-        completedHistoryVersion: completedHistoryVersion,
-        workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-      ),
-    );
-    // No await separates source registration and capture. Failed preparation
-    // has not admitted an owned resource; events.listen never creates the cut.
-    _api._ownedConversationStateFeeds.add(this);
-    (_api._conversationStateFeeds[threadId] ??= {}).add(this);
-  }
-
-  final DemoStudioTransport _api;
-  @override
-  final String threadId;
-  @override
-  final String subscriptionId;
-  ConversationStateEvent? _initialState;
-  int _sent = 0, _acked = 0;
-  bool _started = false,
-      _claimed = false,
-      _closed = false,
-      _ended = false,
-      _pending = false;
-  Future<void>? _closing;
-  late final StreamController<ConversationFrame> _controller = StreamController(
-    onListen: () {
-      _started = true;
-      _flush();
-    },
-    onCancel: () {
-      if (!_ended) {
-        requestClose();
-        return close();
-      }
-    },
-  );
-
-  @override
-  Stream<ConversationFrame> get events {
-    if (_closed) throw _conversationClosedFailure;
-    if (_claimed) {
-      throw _demoQueryFailure('Conversation state events already consumed');
-    }
-    _claimed = true;
-    return _controller.stream;
-  }
-
-  void _send(ConversationEvent event, {bool terminal = false}) {
-    if (!_started || _ended) return;
-    if (!terminal) _sent++;
-    _controller.add(
-      ConversationFrame(
-        threadId: threadId,
-        subscriptionId: subscriptionId,
-        deliverySequence: _sent,
-        event: event,
-      ),
-    );
-    if (terminal) {
-      _ended = true;
-      _unregister();
-      unawaited(_controller.close());
-    }
-  }
-
-  // State changes coalesce into one snapshot per delivery credit, captured at
-  // the flush cut; the SDK gate keeps snapshot application monotonic.
-  void _flush() {
-    if (_closed || _ended || !_started || _sent != _acked) return;
-    try {
-      if (_initialState != null) {
-        final initial = _initialState!;
-        _initialState = null;
-        _send(initial);
-        return;
-      }
-      if (_pending) {
-        _pending = false;
-        _send(
-          ConversationStateEvent(
-            frame: ThreadSnapshotFrame(
-              schemaVersion: threadSchemaVersion,
-              completedHistoryVersion: completedHistoryVersion,
-              workspace: _api._snapshotOf(_api._demoWorkspace(threadId)),
-            ),
-          ),
-        );
-      }
-    } catch (error) {
-      _send(
-        ConversationFailureEvent(
-          failure: _studioFailure(error) as StudioFailure,
-        ),
-        terminal: true,
-      );
-    }
-  }
-
-  void _stateChanged() {
-    if (_closed || _ended) return;
-    _pending = true;
-    _flush();
-  }
-
-  @override
-  Future<void> acknowledge(int deliverySequence) async {
-    if (_closed) throw _conversationClosedFailure;
-    if (deliverySequence < 0 || deliverySequence > _sent) {
-      throw _demoQueryFailure('ACK exceeds sent state sequence');
-    }
-    if (deliverySequence <= _acked) return;
-    _acked = deliverySequence;
-    _flush();
-  }
-
-  void _unregister() {
-    _api._conversationStateFeeds[threadId]?.remove(this);
-    if (_api._conversationStateFeeds[threadId]?.isEmpty ?? false) {
-      _api._conversationStateFeeds.remove(threadId);
-    }
-  }
-
-  @override
-  void requestClose() {
-    if (_closed) return;
-    _send(const ConversationClosedEvent(), terminal: true);
-    _closed = true;
-    _initialState = null;
-    _unregister();
-    if (!_ended) {
-      _ended = true;
-      unawaited(_controller.close());
-    }
-  }
-
-  @override
-  Future<void> close() {
-    requestClose();
-    return _closing ??= () async {
-      _api._ownedConversationStateFeeds.remove(this);
     }().whenComplete(() => _closing = null);
   }
 }

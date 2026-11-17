@@ -4,6 +4,7 @@ use std::{
 };
 use tokio::sync::OwnedSemaphorePermit;
 
+use super::types::HistoryHeadScope;
 use super::{HistoryEvent, HistoryEventsQuery, Result, token::Query, types::source_key};
 
 pub(super) struct Reservation {
@@ -181,6 +182,16 @@ impl Pending {
         before: Option<u64>,
         limit: usize,
     ) -> Result<Vec<Arc<Accepted>>> {
+        self.candidates_in_order(query, cut, before, limit, false)
+    }
+    pub fn candidates_in_order(
+        &self,
+        query: &Query,
+        cut: u64,
+        before: Option<u64>,
+        limit: usize,
+        ascending: bool,
+    ) -> Result<Vec<Arc<Accepted>>> {
         let key = match query {
             Query::Main => Some(Key::Main),
             Query::Group(id) => Some(Key::Members(id.clone())),
@@ -210,6 +221,27 @@ impl Pending {
                 }
             },
         };
+        if ascending {
+            let lower = before.unwrap_or(0).saturating_add(1);
+            if lower > cut {
+                return Ok(Vec::new());
+            }
+            return Ok(match key {
+                None => self
+                    .events
+                    .range(lower..=cut)
+                    .take(limit)
+                    .map(|(_, value)| value.clone())
+                    .collect(),
+                Some(key) => self
+                    .indexes
+                    .get(&key)
+                    .into_iter()
+                    .flat_map(|index| index.range(lower..=cut).take(limit))
+                    .filter_map(|seq| self.events.get(seq).cloned())
+                    .collect(),
+            });
+        }
         let upper = before.map_or(cut, |before| cut.min(before.saturating_sub(1)));
         Ok(match key {
             None => self

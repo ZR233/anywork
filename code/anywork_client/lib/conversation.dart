@@ -2,7 +2,8 @@
 library;
 
 export 'src/models/chat_models.dart';
-export 'src/models/presentation_models.dart';
+export 'src/models/current_models.dart';
+export 'src/models/history_models.dart';
 export 'src/conversation/domain/conversation_state.dart';
 export 'src/conversation/domain/content_state.dart';
 export 'src/conversation/domain/conversation_repository.dart';
@@ -12,6 +13,14 @@ export 'src/conversation/domain/content_lifecycle.dart';
 export 'src/conversation/domain/conversation_watermark.dart';
 export 'src/conversation/domain/conversation_errors.dart';
 
-export 'conversation_ports.dart' show TimelineReader, TimelineTransport;
+export 'conversation_ports.dart'
+    show
+        CurrentBodyWatch,
+        CurrentReader,
+        CurrentTransport,
+        CurrentWatch,
+        HistoryReader,
+        HistoryTransport;
 export 'src/conversation/data/conversation_read_scope.dart'
-    show ConversationReadScope;
+    show ConversationReadScope, CurrentReadScope, HistoryReadScope;
+export 'src/conversation/data/current_state_field_reader.dart';

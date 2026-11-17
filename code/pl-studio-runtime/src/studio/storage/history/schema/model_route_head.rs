@@ -246,7 +246,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema12_preserves_checkpoint_route_revision_owner_and_recovery_facts() -> Result<()> {
-        let (dir, db) = source().await?;
+        let (_dir, db) = source().await?;
         seed(&db).await?;
         let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
         let mut item = crate::ExecutionItem::completed_user_message(
@@ -517,16 +517,9 @@ mod tests {
         Ok(())
     }
 
-    async fn cold(store: &HistoryStore) -> Result<ColdStateFacet> {
-        store
-            .cold_state_facet()
-            .await?
-            .context("cold State missing")
-    }
-
     #[tokio::test]
-    async fn current_cold_head_ignores_recovery_bodies_but_rejects_bad_head_without_fallback()
-    -> Result<()> {
+    async fn route_head_ignores_recovery_bodies_but_rejects_bad_head_without_fallback() -> Result<()>
+    {
         let (dir, db) = source().await?;
         seed(&db).await?;
         prepare(&db, THREAD, Preparation::Schema, None).await?;
@@ -538,8 +531,9 @@ mod tests {
             .await?
             .context("original checkpoint")?
             .try_get::<String>("", "payload")?;
-        let store = HistoryStore::open(&dir.path().join("history.sqlite"), THREAD).await?;
-        let saved = cold(&store).await?.model_route.unwrap();
+        let saved = checkpoint::read_model_route_head(&db)
+            .await?
+            .context("route head missing")?;
         assert_eq!(saved.revision, 7);
         assert_eq!(saved.bot_id.as_deref(), Some("original-bot"));
         db.execute_unprepared(
@@ -548,22 +542,20 @@ mod tests {
     )
     .await?;
         assert!(
-            store.conversation_current().await?.is_some(),
-            "small current must not decode the corrupt recovery body"
+            checkpoint::read_model_route_head(&db).await?.is_some(),
+            "the independent route head must not decode the corrupt recovery body"
         );
-        // Content remains independent of recovery bodies. State additionally owns
-        // saved statistics, so it must reject an envelope whose integrity was lost.
-        let error = match cold(&store).await {
-            Err(error) => error,
-            Ok(_) => anyhow::bail!("State accepted a tampered statistics envelope"),
-        };
+        // The strict checkpoint decoder still owns the complete recovery envelope and must reject
+        // it rather than fall back to the independent route head.
+        let error = checkpoint::read(&db, THREAD)
+            .await
+            .expect_err("strict checkpoint accepted damaged context");
         assert!(
             error
                 .to_string()
                 .contains("checkpoint content hash mismatch")
         );
         assert!(checkpoint::read(&db, THREAD).await.is_err());
-        assert!(store.state.writer.get().is_none());
         // Restore only the original envelope; the bad recovery context remains.
         // The remaining cases isolate route-head validation rather than hash failure.
         db.execute_raw(statement(
@@ -584,8 +576,7 @@ mod tests {
                 vec![json.into(), hash.into()],
             ))
             .await?;
-            assert!(cold(&store).await.is_err());
-            assert!(store.state.writer.get().is_none());
+            assert!(checkpoint::read_model_route_head(&db).await.is_err());
         }
         let mut state = legacy_checkpoint()?.state;
         model_route::migration::upgrade(&mut state)?;

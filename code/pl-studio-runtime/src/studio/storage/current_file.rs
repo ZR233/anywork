@@ -28,6 +28,33 @@ pub(super) type CurrentWrite = Arc<dyn Fn(&std::path::Path, &[u8]) -> io::Result
 // Owned by one writer incarnation and one session directory, never shared between owners.
 pub(super) type VerifiedResources = HashSet<(String, String, u64, String)>;
 
+/// Explicit schema-upgrade read boundary. It uses the same decoder and resource verification as
+/// normal current loading, while returning the exact bytes so an existing file can be preserved.
+pub(crate) async fn read_for_upgrade(
+    directory: impl Into<PathBuf>,
+    thread_id: &str,
+) -> Result<(ThreadCurrent, Vec<u8>)> {
+    let file = CurrentFile::new(directory.into(), thread_id.to_owned());
+    file.load_with_bytes()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Thread current is missing"))
+}
+
+pub(crate) async fn verify_for_upgrade(
+    directory: impl Into<PathBuf>,
+    thread_id: &str,
+    current: &ThreadCurrent,
+) -> Result<()> {
+    let file = CurrentFile::new(directory.into(), thread_id.to_owned());
+    file.validate(current, None)?;
+    file.verify_resources(
+        current,
+        &mut VerifiedResources::new(),
+        CancellationToken::new(),
+    )
+    .await
+}
+
 #[derive(Clone)]
 pub(super) struct CurrentFile {
     directory: PathBuf,
@@ -66,6 +93,10 @@ impl CurrentFile {
     }
 
     pub(super) async fn load(&self) -> Result<Option<ThreadCurrent>> {
+        Ok(self.load_with_bytes().await?.map(|(current, _)| current))
+    }
+
+    async fn load_with_bytes(&self) -> Result<Option<(ThreadCurrent, Vec<u8>)>> {
         let path = self.directory.join(CURRENT_FILE_NAME);
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
@@ -73,10 +104,10 @@ impl CurrentFile {
             Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         };
         let file = self.clone();
-        let current = tokio::task::spawn_blocking(move || {
+        let (current, bytes) = tokio::task::spawn_blocking(move || {
             let current = ThreadCurrent::from_json(&bytes, &file.thread_id)
                 .with_context(|| format!("invalid Thread current {}", path.display()))?;
-            Ok::<_, anyhow::Error>(current)
+            Ok::<_, anyhow::Error>((current, bytes))
         })
         .await
         .context("join current decoder")??;
@@ -86,7 +117,7 @@ impl CurrentFile {
             CancellationToken::new(),
         )
         .await?;
-        Ok(Some(current))
+        Ok(Some((current, bytes)))
     }
 
     pub(super) fn validate(
@@ -269,6 +300,21 @@ mod tests {
             2,
             "no blob/manifest/history artifacts"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn upgrade_read_preserves_the_exact_existing_current_bytes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let current = ThreadCurrent::new("file-test".into(), RuntimeEpoch::new());
+        let bytes = serde_json::to_vec_pretty(&current)?;
+        std::fs::write(directory.path().join(CURRENT_FILE_NAME), &bytes)?;
+
+        let (restored, exact) =
+            read_for_upgrade(directory.path().to_path_buf(), "file-test").await?;
+
+        assert_eq!(restored.thread_id, "file-test");
+        assert_eq!(exact, bytes);
         Ok(())
     }
 

@@ -6,7 +6,6 @@ import 'package:anywork_client/studio_client.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
-import '../state/content_reference_identity.dart';
 import '../state/chat_payload_reading.dart';
 import '../../interactions/widgets/interaction_widgets.dart';
 import '../../interactions/widgets/question_step.dart';
@@ -15,12 +14,12 @@ import '../../interactions/widgets/question_step.dart';
 /// Actionable interactions remain exclusively in the original State model.
 class InteractionDetailsConnector extends StatefulWidget {
   const InteractionDetailsConnector({
-    required this.content,
+    required this.openCurrent,
     required this.reference,
     required this.isCurrent,
     super.key,
   });
-  final ConversationQueries content;
+  final CurrentQueryScope Function() openCurrent;
   final CurrentCollectionRef reference;
   final bool Function() isCurrent;
   @override
@@ -29,13 +28,14 @@ class InteractionDetailsConnector extends StatefulWidget {
 }
 
 class _InteractionDetailsState extends State<InteractionDetailsConnector> {
+  CurrentQueryScope? _scope;
   bool _expanded = false;
   Object _generation = Object();
   VoidCallback? _retire;
   @override
   Widget build(BuildContext context) {
     final reference = widget.reference;
-    final content = widget.content;
+    final content = _scope;
     final generation = _generation;
     // The composer footer paints above Scaffold's Material. Give the outer and
     // deferred ExpansionTiles a shared ink surface above that opaque decoration.
@@ -47,24 +47,30 @@ class _InteractionDetailsState extends State<InteractionDetailsConnector> {
         onExpansionChanged: (value) {
           if (!value) {
             _retire?.call();
+            _scope?.retire();
+            final scope = _scope;
+            _scope = null;
+            if (scope != null) unawaited(scope.close());
             _generation = Object();
+          } else {
+            _scope ??= widget.openCurrent();
           }
           setState(() => _expanded = value);
         },
         children: [
-          if (_expanded)
+          if (_expanded && content != null)
             _InteractionPageReader(
               key: ValueKey((
                 generation,
                 content,
                 currentCollectionIdentity(reference),
               )),
-              content: widget.content,
+              content: content,
               reference: widget.reference,
               isCurrent: () =>
                   _expanded &&
                   identical(_generation, generation) &&
-                  identical(widget.content, content) &&
+                  identical(_scope, content) &&
                   widget.reference == reference &&
                   widget.isCurrent(),
               registerRetirement: (retire) => _retire = retire,
@@ -72,6 +78,15 @@ class _InteractionDetailsState extends State<InteractionDetailsConnector> {
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _scope?.retire();
+    final scope = _scope;
+    _scope = null;
+    if (scope != null) unawaited(scope.close());
+    super.dispose();
   }
 }
 
@@ -83,7 +98,7 @@ class _InteractionPageReader extends StatefulWidget {
     required this.registerRetirement,
     super.key,
   });
-  final ConversationQueries content;
+  final CurrentQueryScope content;
   final CurrentCollectionRef reference;
   final bool Function() isCurrent;
   final ValueChanged<VoidCallback> registerRetirement;
@@ -92,9 +107,7 @@ class _InteractionPageReader extends StatefulWidget {
 }
 
 class _InteractionPageState extends State<_InteractionPageReader> {
-  late final ConversationQueryScope _scope = widget.content.openScope(
-    generation: 1,
-  );
+  CurrentQueryScope get _scope => widget.content;
   CurrentCollectionPage? _page;
   ({Object cause, bool referenceChanged})? _error;
   bool _loading = false;
@@ -120,7 +133,7 @@ class _InteractionPageState extends State<_InteractionPageReader> {
     });
     var referenceChanged = false;
     try {
-      final value = await _scope.pageCurrent(
+      final value = await _scope.pageCollection(
         reference: widget.reference,
         continuation: continuation,
         demand: const ReadDemand(maxItems: 20, maxBytes: 64 * 1024),
@@ -151,8 +164,8 @@ class _InteractionPageState extends State<_InteractionPageReader> {
     for (final retire in _resourceRetirements.toList()) {
       retire();
     }
-    _scope.retire();
-    _closing ??= _scope.close();
+    widget.content.retire();
+    _closing ??= widget.content.close();
     unawaited(_closing);
   }
 
@@ -197,14 +210,10 @@ class _InteractionPageState extends State<_InteractionPageReader> {
       if (_loading) const LinearProgressIndicator(),
       for (final entry in _page?.entries ?? const <CurrentCollectionEntry>[])
         switch (entry.payload) {
-          InlinePayload(:final bytes) => _summary(entry.id, bytes),
-          DeferredPayload(:final reference, :final byteLength) =>
+          InlineCurrentPayload(:final bytes) => _summary(entry.id, bytes),
+          DeferredCurrentPayload(:final reference, :final byteLength) =>
             _DeferredInteractionDetails(
-              key: ValueKey((
-                _request,
-                entry.id,
-                contentReferenceIdentity(reference),
-              )),
+              key: ValueKey((_request, entry.id, reference)),
               id: entry.id,
               content: widget.content,
               reference: reference,
@@ -246,8 +255,8 @@ class _DeferredInteractionDetails extends StatefulWidget {
     super.key,
   });
   final String id;
-  final ConversationQueries content;
-  final ContentRef reference;
+  final CurrentQueryScope content;
+  final CurrentContentRef reference;
   final int byteLength;
   final bool Function() isCurrent;
   final VoidCallback Function(VoidCallback) registerRetirement;
@@ -281,7 +290,7 @@ class _InteractionReadFailure implements Exception {
 
 class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
   late final VoidCallback _unregister;
-  ConversationQueryScope? _scope;
+  CurrentQueryScope? _scope;
   bool _expanded = false;
   bool _loading = false;
   bool _retired = false;
@@ -302,8 +311,6 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
     final scope = _scope;
     _scope = null;
     scope?.retire();
-    // Closing joins the actual pending query; failed close responsibility stays
-    // with the original SDK content owner, never with a detached byte snapshot.
     if (scope != null) unawaited(scope.close());
   }
 
@@ -312,7 +319,7 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
     _stopRead();
   }
 
-  bool _eligible(ConversationQueryScope scope, int epoch) =>
+  bool _eligible(CurrentQueryScope scope, int epoch) =>
       mounted &&
       !_retired &&
       _expanded &&
@@ -334,7 +341,12 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
       setState(() => _error = _InteractionFailureKind.invalidLength);
       return;
     }
-    final scope = widget.content.openScope(generation: _epoch);
+    final scope = CurrentReadScope(
+      threadId: widget.content.threadId,
+      generation: _epoch,
+      reader: widget.content.reader,
+      isEligible: () => widget.content.isActive && widget.isCurrent(),
+    );
     _scope = scope;
     final epoch = _epoch;
     setState(() => _loading = true);
@@ -348,7 +360,7 @@ class _DeferredInteractionState extends State<_DeferredInteractionDetails> {
         final limit = remaining < _interactionWindowBytes
             ? remaining
             : _interactionWindowBytes;
-        final window = await scope.readContent(
+        final window = await scope.readBody(
           reference: widget.reference,
           range: ContentRange(offset: offset, maxBytes: limit),
         );

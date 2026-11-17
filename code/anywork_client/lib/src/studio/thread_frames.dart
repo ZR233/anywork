@@ -1,6 +1,6 @@
 import '../../models.dart';
 
-const threadSchemaVersion = 17;
+const threadSchemaVersion = 18;
 
 sealed class ThreadStreamFrame {
   const ThreadStreamFrame();

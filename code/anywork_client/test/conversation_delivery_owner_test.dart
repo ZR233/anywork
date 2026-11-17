@@ -56,31 +56,33 @@ void main() {
     },
   );
 
-  test('an unaccepted Chat cannot release credit for a following State', () async {
-    final fixture = ConversationFixture();
-    final consumer = ControlledBatchConsumer();
-    final gate = Completer<void>();
-    consumer.onApply = (_) => gate.future;
-    final feed = await _open(fixture, consumer);
-    feed.send(ConversationChatEvent(batch: chatSet()));
-    await consumer.waitForCount(1);
-    // A producer violating its one-unacknowledged-frame allowance is rejected,
-    // rather than queued or allowed to publish state ahead of the component.
-    feed.send(
-      ConversationStateEvent(
-        frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
-          completedHistoryVersion: completedHistoryVersion,
-          workspace: _workspace(),
+  test(
+    'Current State is admitted while accepted Chat still holds content credit',
+    () async {
+      final fixture = ConversationFixture();
+      final consumer = ControlledBatchConsumer();
+      final gate = Completer<void>();
+      consumer.onApply = (_) => gate.future;
+      final feed = await _open(fixture, consumer);
+      feed.send(ConversationChatEvent(batch: chatSet()));
+      await consumer.waitForCount(1);
+      final current = fixture.currentReader();
+      await current.deliver(
+        testCurrentEvent(
+          frame: ThreadSnapshotFrame(
+            schemaVersion: threadSchemaVersion,
+            completedHistoryVersion: completedHistoryVersion,
+            workspace: _workspace(),
+          ),
         ),
-      ),
-    );
-    await feed.requestCloseStarted.future;
-    expect(fixture.session().state.hasSnapshot, isFalse);
-    expect(feed.acknowledgements, isEmpty);
-    gate.complete();
-    expect((await fixture.close()).complete, isTrue);
-  });
+      );
+      expect(fixture.session().state.hasSnapshot, isTrue);
+      expect(feed.acknowledgements, isEmpty);
+      expect(feed.requestCloseCalls, 0);
+      gate.complete();
+      expect((await fixture.close()).complete, isTrue);
+    },
+  );
 
   test(
     'older IO proceeds during apply but Prepend joins the same serial consumer',

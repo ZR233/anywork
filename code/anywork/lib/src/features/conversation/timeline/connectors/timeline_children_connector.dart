@@ -403,7 +403,7 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
             completionId: atom.completionItemId!,
           ),
         ),
-        content: content,
+        threadId: content.threadId,
         retirement: _parentRetirement,
         isActive: active,
         images: _images,
@@ -418,33 +418,11 @@ class _TimelineChildrenConnectorState extends State<TimelineChildrenConnector>
       onLoadOlder: _before == null
           ? null
           : () => _loadOlder(content, controller, attempt, generation),
-      contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
-          TimelineContentRangeConnector(
-            key: ValueKey((generation, itemId, contentKey)),
-            itemId: itemId,
-            contentKey: contentKey,
-            label: label,
-            reference: reference,
-            witness: witness,
-            isDisplayActive: active,
-            readContent: (reference, range) => _scope(
-              content,
-              controller,
-              attempt,
-              generation,
-            ).readContent(reference: reference, range: range),
-          ),
       attachmentBuilder: (item) => TimelineAttachmentsConnector(
         item: item,
         resources: _images,
         readAttachment: widget.readAttachment,
         isActive: active,
-        readContent: (reference, range) => _scope(
-          content,
-          controller,
-          attempt,
-          generation,
-        ).readContent(reference: reference, range: range),
       ),
     );
     return Column(

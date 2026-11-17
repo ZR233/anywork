@@ -718,6 +718,7 @@ async fn migrate(db: &impl ConnectionTrait) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::studio::storage::history::HISTORY_SCHEMA_VERSION as V24_HISTORY_SCHEMA_VERSION;
     use crate::studio::storage::history::schema::legacy_timeline_types::CurrentProjection;
     use sea_orm::DatabaseConnection;
 
@@ -1177,7 +1178,7 @@ mod tests {
         .await?;
 
         prepare(&db, THREAD, Preparation::Schema, None).await?;
-        assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+        assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
         let tool = conversation::read_item(&db, "tool").await?;
         assert_eq!(
             tool.unwrap()
@@ -1649,7 +1650,7 @@ mod background_tests {
             store.prepare_conversation_read().await?;
             store.close_for_deletion().await?;
             let db = connect(&path, SqliteFileMode::ReadWrite).await?;
-            assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
+            assert_eq!(version(&db).await?, V24_HISTORY_SCHEMA_VERSION);
             assert!(!needs_content_preparation(&db, THREAD).await?);
             let result = metadata(&db, &order::tool_id(CALL)).await?;
             assert_eq!(result.id, order::message_id(MESSAGE));

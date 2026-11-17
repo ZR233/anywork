@@ -204,7 +204,7 @@ impl<R: StudioChildResources> StudioChildFactory for ConfiguredChildFactory<R> {
         }
         let mut spec = self.resources.prepare(&request, &profile).await?;
         if spec.id != request.id
-            || spec.checkpoint.is_some()
+            || spec.current.is_some()
             || spec.parent_id.as_deref() != Some(request.caller.as_str())
         {
             return Err(ThreadAssemblyError::Identity(spec.id));

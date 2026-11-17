@@ -10,37 +10,58 @@ use anyhow::{Context, Result, ensure};
 use pl_core::chat::ChatItem;
 use pl_protocol::*;
 
-fn body(record: &ChatItem, key: &str) -> Result<String> {
-    let value = record
-        .contents
-        .values()
-        .find(|content| content.descriptor.key.key == key)
-        .with_context(|| {
-            format!(
-                "canonical content {}:{key} is missing",
-                record.header.item_id
-            )
-        })?;
-    let mut bytes = Vec::with_capacity(value.data.len());
-    let mut offset = 0;
-    while offset < value.data.len() {
-        let window = value.data.range(offset as u64, 32 * 1024)?;
-        ensure!(
-            !window.as_bytes().is_empty(),
-            "canonical content read did not advance"
-        );
-        bytes.extend_from_slice(window.as_bytes());
-        offset += window.as_bytes().len();
+pub(super) trait BodySource {
+    fn body(&self, key: &str) -> Result<String>;
+    fn keys(&self) -> impl Iterator<Item = &str>;
+    fn contains(&self, key: &str) -> bool {
+        self.keys().any(|candidate| candidate == key)
     }
-    Ok(String::from_utf8(bytes)?)
+}
+impl BodySource for ChatItem {
+    fn body(&self, key: &str) -> Result<String> {
+        let value = self
+            .contents
+            .values()
+            .find(|content| content.descriptor.key.key == key)
+            .with_context(|| {
+                format!("canonical content {}:{key} is missing", self.header.item_id)
+            })?;
+        let mut bytes = Vec::with_capacity(value.data.len());
+        let mut offset = 0;
+        while offset < value.data.len() {
+            let window = value.data.range(offset as u64, 32 * 1024)?;
+            ensure!(
+                !window.as_bytes().is_empty(),
+                "canonical content read did not advance"
+            );
+            bytes.extend_from_slice(window.as_bytes());
+            offset += window.as_bytes().len();
+        }
+        Ok(String::from_utf8(bytes)?)
+    }
+
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.contents
+            .values()
+            .map(|c| c.descriptor.key.key.as_str())
+    }
+}
+impl BodySource for std::collections::BTreeMap<String, String> {
+    fn body(&self, key: &str) -> Result<String> {
+        self.get(key)
+            .cloned()
+            .with_context(|| format!("canonical body {key} is missing"))
+    }
+    fn keys(&self) -> impl Iterator<Item = &str> {
+        self.keys().map(String::as_str)
+    }
+}
+fn body(record: &impl BodySource, key: &str) -> Result<String> {
+    record.body(key)
 }
 
-fn output(record: &ChatItem, value: ToolOutputDescriptor) -> Result<ThreadToolOutput> {
-    let artifacts = if record
-        .contents
-        .values()
-        .any(|c| c.descriptor.key.key == TOOL_OUTPUT_ARTIFACTS_FIELD)
-    {
+fn output(record: &impl BodySource, value: ToolOutputDescriptor) -> Result<ThreadToolOutput> {
+    let artifacts = if record.contains(TOOL_OUTPUT_ARTIFACTS_FIELD) {
         serde_json::from_str(&body(record, TOOL_OUTPUT_ARTIFACTS_FIELD)?)?
     } else {
         Vec::new()
@@ -55,7 +76,7 @@ fn output(record: &ChatItem, value: ToolOutputDescriptor) -> Result<ThreadToolOu
 
 fn tool(
     thread_id: &str,
-    record: &ChatItem,
+    record: &impl BodySource,
     value: ToolDescriptor,
     data: &serde_json::Value,
 ) -> Result<ThreadToolItem> {
@@ -217,6 +238,15 @@ pub(in crate::studio) fn execution_state(
         envelope["contract"] == "anywork.chat/1",
         "unsupported canonical execution payload contract"
     );
+    decode_state(record, &atom, &envelope, thread_id)
+}
+
+pub(super) fn decode_state(
+    record: &impl BodySource,
+    atom: &ChatAtom,
+    envelope: &serde_json::Value,
+    thread_id: &str,
+) -> Result<ExecutionShape> {
     let data = &envelope["data"];
     let descriptor: ItemDescriptor =
         serde_json::from_value(serde_json::json!({"kind": envelope["type"], "data":data}))?;
@@ -230,17 +260,10 @@ pub(in crate::studio) fn execution_state(
         ItemDescriptor::Thinking(value) => {
             let parts = |prefix: &str| -> Result<Vec<String>> {
                 let mut keys = record
-                    .contents
-                    .values()
-                    .filter_map(|c| {
-                        let index = c
-                            .descriptor
-                            .key
-                            .key
-                            .strip_prefix(prefix)?
-                            .parse::<u32>()
-                            .ok()?;
-                        Some((index, c.descriptor.key.key.clone()))
+                    .keys()
+                    .filter_map(|key| {
+                        let index = key.strip_prefix(prefix)?.parse::<u32>().ok()?;
+                        Some((index, key.to_owned()))
                     })
                     .collect::<Vec<_>>();
                 keys.sort_by_key(|(index, _)| *index);
@@ -268,7 +291,7 @@ pub(in crate::studio) fn execution_state(
         }
         _ => anyhow::bail!(
             "canonical record {} has no execution restoration consumer",
-            record.header.item_id
+            atom.id
         ),
     })
 }

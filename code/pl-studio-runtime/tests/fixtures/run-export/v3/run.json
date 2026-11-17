@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
   "startedAt": "2026-11-13T15:00:00.000Z",
   "build": {
@@ -19,9 +19,7 @@
   },
   "skillSearch": {
     "includeDefaultUserDir": false,
-    "additionalDirs": [
-      "/opt/eval/skills"
-    ],
+    "additionalDirs": ["/opt/eval/skills"],
     "externalDirs": [],
     "systemEnabled": true,
     "skillsEnabled": true
@@ -35,9 +33,9 @@
     }
   ],
   "exportSchema": {
-    "manifest": 2,
-    "events": 2,
-    "result": 2,
+    "manifest": 3,
+    "events": 3,
+    "result": 3,
     "contentAddressing": "sha256"
   }
 }

@@ -1,15 +1,9 @@
 import 'dart:async';
 
 import 'models.dart';
-import 'src/conversation/domain/conversation_repository.dart'
-    show DisplayMembers;
-import 'src/studio/thread_frames.dart';
-export 'src/studio/thread_frames.dart';
 
-abstract interface class ConversationTransport {
-  /// Observes canonical state independently from content consumption.
-  Future<ConversationStateFeed> openConversationStateFeed(String threadId);
-
+abstract interface class ConversationTransport
+    implements HistoryTransport, CurrentTransport {
   Future<ConversationFeed> openConversationFeed(
     String threadId, {
     required ChatScope scope,
@@ -17,87 +11,125 @@ abstract interface class ConversationTransport {
   });
 }
 
-abstract interface class TimelineTransport {
-  Future<TimelineReader> openTimelineReader(
+abstract interface class HistoryTransport {
+  Future<HistoryReader> openHistoryReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
+    required int historyProtocolVersion,
+  });
+}
+
+abstract interface class CurrentTransport {
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
     required ReadDemand demand,
   });
 }
 
-abstract interface class TimelineReader {
-  OpenTimeline get metadata;
-  ConversationReader get reader;
-  Future<ViewUpdate> next({required ViewCursor after});
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
+abstract interface class HistoryReader {
+  OpenHistory get metadata;
+  String get threadId;
+  Future<HistoryCut> capture();
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  });
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  });
+  Future<HistoryAccounting?> accounting({HistoryCut? cut});
+  Future<HistoryTimelinePage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryCut> waitChanged(HistoryCut after);
   void requestClose();
   Future<void> close();
 }
 
-/// One bounded state subscription. It carries only state, failure and close
-/// events; its identity, delivery sequence and ACK never belong to a content feed.
-abstract interface class ConversationStateFeed {
-  String get threadId;
-  String get subscriptionId;
-  Stream<ConversationFrame> get events;
-  Future<void> acknowledge(int deliverySequence);
-  void requestClose();
-  Future<void> close();
+final class OpenHistory {
+  const OpenHistory({
+    required this.readerId,
+    required this.historyProtocolVersion,
+  });
+  final String readerId;
+  final int historyProtocolVersion;
 }
 
-/// The original feed's read lease; queries do not share its producer's receive/credit lock.
-abstract interface class ConversationReader {
+abstract interface class CurrentReader {
+  OpenCurrent get metadata;
   String get threadId;
-  Future<ThreadBusinessRefs> readBusinessRefs();
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
+  CurrentView get initialView;
+  Future<CurrentView> snapshot(ReadDemand demand);
+  Future<CurrentWatch> watch({
+    CurrentRevision? after,
     required ReadDemand demand,
   });
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  });
-
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  });
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
-    required ContentRange range,
-  });
-  ConversationContentWatch watchContent({
-    required ContentRef reference,
-    required ContentRange range,
-  });
-  Future<CurrentCollectionPage> pageCurrent({
+  Future<CurrentCollectionPage> pageCollection({
     required CurrentCollectionRef reference,
     String? continuation,
     required ReadDemand demand,
   });
+  Future<ContentWindow> readBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  });
+  Future<CurrentBodyWatch> watchBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  });
   void requestClose();
   Future<void> close();
 }
 
-/// Owns one range observation on the original reader.
-///
-/// Cancelling [windows] stops delivery and requests cancellation. Call [close]
-/// to join the original resource; a failed join can be retried on this handle.
-abstract interface class ConversationContentWatch {
+final class OpenCurrent {
+  const OpenCurrent({
+    required this.readerId,
+    required this.currentProtocolVersion,
+    required this.currentOwnerId,
+  });
+  final String readerId;
+  final int currentProtocolVersion;
+  final String currentOwnerId;
+}
+
+abstract interface class CurrentWatch {
+  Stream<CurrentFrame> get frames;
+  void requestClose();
+  Future<void> close();
+}
+
+abstract interface class CurrentBodyWatch {
   Stream<ContentWindow> get windows;
   void requestClose();
   Future<void> close();
@@ -111,6 +143,35 @@ abstract interface class ConversationFeed {
   /// Completion-only Chat/Activity, Failure or Closed; never State or GUI presentation.
   Stream<ConversationFrame> get events;
   Future<void> acknowledge(int deliverySequence);
+  void requestClose();
+  Future<void> close();
+}
+
+abstract interface class ConversationReader {
+  String get threadId;
+  Future<ChatBatch> loadOlder({
+    required String before,
+    required ReadDemand demand,
+  });
+  Future<ContentManifestPage> listContents({
+    required String itemId,
+    String? continuation,
+    required ReadDemand demand,
+  });
+  Future<ContentWindow> readContent({
+    required ContentRef reference,
+    required ContentRange range,
+  });
+  ConversationContentWatch watchContent({
+    required ContentRef reference,
+    required ContentRange range,
+  });
+  void requestClose();
+  Future<void> close();
+}
+
+abstract interface class ConversationContentWatch {
+  Stream<ContentWindow> get windows;
   void requestClose();
   Future<void> close();
 }
@@ -130,11 +191,6 @@ final class ConversationFrame {
 
 sealed class ConversationEvent {
   const ConversationEvent();
-}
-
-final class ConversationStateEvent extends ConversationEvent {
-  const ConversationStateEvent({required this.frame});
-  final ThreadStreamFrame frame;
 }
 
 final class ConversationChatEvent extends ConversationEvent {

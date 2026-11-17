@@ -34,7 +34,7 @@ void main() {
       expect(graph.client.conversations.visibleThreadId.value, isNull);
       expect(graph.client.conversations.existingSession(row.threadId), isNull);
       expect(fixture.transport.stateReads, isEmpty);
-      expect(fixture.transport.timelineReaders, isEmpty);
+      expect(fixture.transport.currentReaders, isEmpty);
       expect(graph.client.drafts.existingComposer(row.threadId), isNotNull);
     },
   );
@@ -236,7 +236,7 @@ void main() {
     expect(client.selection.state.selectedThreadId, fixture.root.threadId);
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.timelineReaders, isEmpty);
+    expect(fixture.transport.currentReaders, isEmpty);
   });
 
   test(
@@ -302,7 +302,7 @@ void main() {
         expect(fixture.transport.metadataReads, [fixture.child.threadId]);
         expect(fixture.transport.stateReads, isEmpty, reason: invalidation);
         expect(
-          fixture.transport.timelineReaders,
+          fixture.transport.currentReaders,
           isEmpty,
           reason: invalidation,
         );
@@ -391,7 +391,7 @@ void main() {
         reason: action,
       );
       expect(
-        fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
+        fixture.transport.currentReaders.map((timeline) => timeline.threadId),
         isNot(contains(fixture.child.threadId)),
         reason: action,
       );
@@ -774,7 +774,7 @@ Future<void> _expectLatestQueuedColdSelection({
   );
   expect(client.conversations.sessionStates, isEmpty);
   expect(fixture.transport.stateReads, isEmpty);
-  expect(fixture.transport.timelineReaders, isEmpty);
+  expect(fixture.transport.currentReaders, isEmpty);
   if (newFails) {
     newReply.completeError(newError);
     expect(
@@ -789,7 +789,7 @@ Future<void> _expectLatestQueuedColdSelection({
     expect(client.threadDirectory.observedWindows, isEmpty);
     expect(client.conversations.sessionStates, isEmpty);
     expect(fixture.transport.stateReads, isEmpty);
-    expect(fixture.transport.timelineReaders, isEmpty);
+    expect(fixture.transport.currentReaders, isEmpty);
   } else {
     newReply.complete(sibling);
     expect(await newNavigation, isNull);
@@ -808,7 +808,7 @@ Future<void> _expectLatestQueuedColdSelection({
     ]);
     expect(fixture.transport.stateReads, [sibling.threadId]);
     expect(
-      fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
+      fixture.transport.currentReaders.map((timeline) => timeline.threadId),
       [sibling.threadId],
     );
   }
@@ -879,7 +879,7 @@ SessionDirectoryRow _secondColdChild(_ColdFixture fixture) {
 Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   final client = fixture.graph.client;
   expect(
-    fixture.transport.timelineReaders,
+    fixture.transport.currentReaders,
     isEmpty,
     reason: '选择身份本身不产生 GUI 内容需求',
   );
@@ -911,7 +911,7 @@ Future<void> _expectSelectedHistory(_ColdFixture fixture) async {
   }, reason: 'The selected history observes only its own Thread ID');
   expect(fixture.transport.stateReads, [fixture.child.threadId]);
   expect(
-    fixture.transport.timelineReaders.map((timeline) => timeline.threadId),
+    fixture.transport.currentReaders.map((timeline) => timeline.threadId),
     [fixture.child.threadId],
   );
   expect(fixture.transport.submitCalls, 0);
@@ -1153,17 +1153,15 @@ final class _ColdSelectionTransport extends RecordingDemoTransport {
   }
 
   @override
-  Future<TimelineReader> openTimelineReader(
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
+    required int currentProtocolVersion,
     required ReadDemand demand,
   }) async {
     stateReads.add(threadId);
-    return super.openTimelineReader(
+    return super.openCurrentReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
+      currentProtocolVersion: currentProtocolVersion,
       demand: demand,
     );
   }

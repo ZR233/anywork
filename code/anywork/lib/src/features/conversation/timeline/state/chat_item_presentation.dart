@@ -36,7 +36,6 @@ final class ChatItemPresentation {
     required this.data,
     required this.bodies,
     this.raw,
-    this.reference,
     this.byteLength,
     this.createdAt,
     this.authorId = 'unknown',
@@ -53,7 +52,6 @@ final class ChatItemPresentation {
   final Map<String, Object?> data;
   final List<ChatBodyPresentation> bodies;
   final String? raw;
-  final ContentRef? reference;
   final int? byteLength;
   final DateTime? createdAt;
   final String authorId;
@@ -62,8 +60,14 @@ final class ChatItemPresentation {
   final TimelineDisplayUnit? displayUnit;
   final ChatAtom? atom;
   final DisplayRecord? displayRecord;
+  String? get historyEventId => displayRecord?.historyEventId;
+  String? get historyDetailEventId => displayRecord?.historyDetailEventId;
+  List<CurrentAtomContent> get currentContents =>
+      displayRecord?.currentContents ?? const [];
   bool get finalEmptyAfterContent => switch (displayUnit?.body) {
-    SingleDisplayBlock(visibility: SingleVisibility.finalEmptyAfterContent) =>
+    SingleDisplayBlock(
+      visibility: HistorySingleVisibility.finalEmptyAfterContent,
+    ) =>
       true,
     _ => false,
   };
@@ -81,18 +85,14 @@ final class ChatItemPresentation {
     final input = atom;
     if (input == null ||
         input.source is! InputChatSource ||
-        input.kind != ChatAtomKind.input ||
-        input.payload is! DeferredPayload) {
+        input.kind != ChatAtomKind.input) {
       return const [];
     }
     return List.unmodifiable([
-      for (var index = 0; index < input.contents.length; index++)
-        if (input.contents[index].role == ChatContentRole.body)
-          if (input.contents[index].reference.target case BodyContentTarget(
-            key: 'body',
-            owner: ItemContentOwner(itemId: final ownerItemId),
-          ))
-            if (ownerItemId == (input.completionItemId ?? input.id)) index,
+      for (var index = 0; index < currentContents.length; index++)
+        if (currentContents[index].role == ChatContentRole.body &&
+            currentContents[index].reference.contentKey == 'body')
+          index,
     ]);
   }
 
@@ -173,7 +173,6 @@ final class ChatItemPresentation {
       data: value.data,
       bodies: value.bodies,
       raw: value.raw,
-      reference: value.reference,
       byteLength: value.byteLength,
       createdAt: value.createdAt,
       authorId: _inboxAuthor(message) ?? value.authorId,
@@ -189,7 +188,7 @@ final class ChatItemPresentation {
     if (item == null ||
         (unit.body is SingleDisplayBlock &&
             (unit.body as SingleDisplayBlock).visibility ==
-                SingleVisibility.finalEmptyAfterContent)) {
+                HistorySingleVisibility.finalEmptyAfterContent)) {
       return ChatItemPresentation(
         id: unit.id,
         compatibility: ChatItemCompatibility.current,
@@ -242,7 +241,6 @@ final class ChatItemPresentation {
       data: value.data,
       bodies: value.bodies,
       raw: value.raw,
-      reference: value.reference,
       byteLength: value.byteLength,
       createdAt: value.createdAt ?? time,
       authorId: author ?? value.authorId,
@@ -253,6 +251,28 @@ final class ChatItemPresentation {
       displayRecord: (unit.body as SingleDisplayBlock).record,
     );
   }
+
+  /// Wraps one stable History/Current display record without inventing a unit
+  /// row. Canonical History body loading owns the actual event identity.
+  static ChatItemPresentation forRecord(
+    DisplayRecord record, {
+    required String id,
+  }) => ChatItemPresentation(
+    id: id,
+    compatibility: ChatItemCompatibility.current,
+    type: 'displayRecord',
+    data: const {},
+    bodies: const [],
+    displayRecord: record,
+    atom: record.atom,
+    authorId: switch (record.atom.textChannel) {
+      ThreadTextChannel.user => 'user',
+      ThreadTextChannel.parentAgent => 'parentAgent',
+      ThreadTextChannel.commentary ||
+      ThreadTextChannel.finalAnswer => 'assistant',
+      null => 'unknown',
+    },
+  );
 
   // Inbox payloads cannot grant parent identity. Only the runtime's typed
   // channel records admission from the direct parent; sourceId stays opaque.
@@ -284,7 +304,6 @@ final class ChatItemPresentation {
         type: 'deferred',
         data: const {},
         bodies: const [],
-        reference: payload.reference,
         byteLength: payload.byteLength,
       );
     }
@@ -327,6 +346,21 @@ final class ChatItemPresentation {
                 inline.any((byte) => byte is! int || byte < 0 || byte > 255))) {
           throw const FormatException('Invalid inline body bytes');
         }
+        final rawReference = body['reference'];
+        HistoryEventBodyRef? historyReference;
+        CurrentContentRef? currentReference;
+        if (rawReference != null) {
+          if (rawReference is! Map<String, dynamic>) {
+            throw const FormatException('Invalid body reference');
+          }
+          if (rawReference['ownerEventId'] != null) {
+            historyReference = _historyBodyReference(rawReference);
+          } else if (rawReference['ownerId'] != null) {
+            currentReference = _currentBodyReference(rawReference);
+          } else {
+            throw const FormatException('Unknown body reference kind');
+          }
+        }
         bodies.add(
           ChatBodyPresentation(
             key: body['key'] as String,
@@ -335,9 +369,8 @@ final class ChatItemPresentation {
                 ? null
                 : Uint8List.fromList((inline as List<dynamic>).cast<int>())
                       .asUnmodifiableView(),
-            reference: body['reference'] == null
-                ? null
-                : contentReference(body['reference']),
+            historyReference: historyReference,
+            currentReference: currentReference,
           ),
         );
       }
@@ -400,44 +433,6 @@ final class ChatItemPresentation {
     raw: raw,
     diagnostic: diagnostic,
   );
-
-  static ContentRef contentReference(Object? value) {
-    if (value is! Map<String, dynamic> ||
-        value['databaseId'] is! String ||
-        value['target'] is! Map<String, dynamic>) {
-      throw const FormatException('Invalid content reference');
-    }
-    final target = value['target'] as Map<String, dynamic>;
-    final ContentTarget decoded;
-    switch (target['kind']) {
-      case 'itemPayload':
-        decoded = ItemPayloadTarget(itemId: target['itemId'] as String);
-      case 'body':
-        final owner = target['owner'] as Map<String, dynamic>;
-        decoded = BodyContentTarget(
-          owner: switch (owner['kind']) {
-            'item' => ItemContentOwner(itemId: owner['itemId'] as String),
-            'displayObservation' => DisplayObservationContentOwner(
-              blockId: owner['blockId'] as String,
-              memberKey: owner['memberKey'] as String,
-            ),
-            'current' => CurrentContentOwner(
-              domain: owner['domain'] as String,
-              id: owner['id'] as String,
-              revision: owner['revision'] as int,
-            ),
-            _ => throw const FormatException('Unknown content owner'),
-          },
-          key: target['key'] as String,
-        );
-      default:
-        throw const FormatException('Unknown content target');
-    }
-    return ContentRef(
-      databaseId: value['databaseId'] as String,
-      target: decoded,
-    );
-  }
 }
 
 final class ChatBodyPresentation {
@@ -445,10 +440,32 @@ final class ChatBodyPresentation {
     required this.key,
     required this.byteLength,
     this.inline,
-    this.reference,
+    this.historyReference,
+    this.currentReference,
   });
   final String key;
   final int byteLength;
   final Uint8List? inline;
-  final ContentRef? reference;
+  final HistoryEventBodyRef? historyReference;
+  final CurrentContentRef? currentReference;
+  bool get hasReference => historyReference != null || currentReference != null;
 }
+
+HistoryEventBodyRef _historyBodyReference(Map<String, dynamic> value) =>
+    HistoryEventBodyRef(
+      databaseId: chatString(value['databaseId'], 'body.databaseId'),
+      ownerEventId: chatString(value['ownerEventId'], 'body.ownerEventId'),
+      bodyKey: chatString(value['bodyKey'], 'body.bodyKey'),
+      bodyId: chatString(value['bodyId'], 'body.bodyId'),
+      byteStart: chatInteger(value['byteStart'], 'body.byteStart'),
+      byteLength: chatInteger(value['byteLength'], 'body.byteLength'),
+    );
+
+CurrentContentRef _currentBodyReference(Map<String, dynamic> value) =>
+    CurrentContentRef(
+      ownerId: chatString(value['ownerId'], 'body.ownerId'),
+      domain: chatString(value['domain'], 'body.domain'),
+      entityId: chatString(value['entityId'], 'body.entityId'),
+      contentKey: chatString(value['contentKey'], 'body.contentKey'),
+      generation: chatString(value['generation'], 'body.generation'),
+    );

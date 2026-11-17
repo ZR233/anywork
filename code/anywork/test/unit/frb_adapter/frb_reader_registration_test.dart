@@ -18,7 +18,7 @@ import '../../support/chat_fixtures.dart';
 /// Supplies only native creation. Registration and all cleanup run real scopes.
 final class _ReaderOpenApi implements RustLibApi {
   late Future<native.BridgeConversationFeed> Function(String) open;
-  late timeline.BridgeTimelineReader timelineReader;
+  late timeline.BridgeCurrentReader currentReader;
   final requests = <String>[];
 
   @override
@@ -33,13 +33,12 @@ final class _ReaderOpenApi implements RustLibApi {
   }
 
   @override
-  Future<timeline.BridgeTimelineReader>
-  crateApiStudioHandlersChatTimelineOpenTimelineReader({
+  Future<timeline.BridgeCurrentReader>
+  crateApiStudioHandlersChatTimelineOpenCurrentReader({
     required String threadId,
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required chat.BridgeReadDemand initialDemand,
-  }) async => timelineReader;
+    required int currentProtocolVersion,
+    required chat.BridgeReadDemand demand,
+  }) async => currentReader;
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>
@@ -73,13 +72,13 @@ final class _NativeFeed extends Fake implements native.BridgeConversationFeed {
   void dispose() => disposals++;
 }
 
-final class _NativeTimeline extends Fake
-    implements timeline.BridgeTimelineReader {
+final class _NativeCurrent extends Fake
+    implements timeline.BridgeCurrentReader {
   int closeCalls = 0;
   int disposals = 0;
   bool failClose = true;
   @override
-  presentation.BridgeOpenTimeline metadata() =>
+  presentation.BridgeOpenCurrentReader metadata() =>
       throw StateError('metadata getter failed');
   @override
   void requestClose() {}
@@ -115,7 +114,7 @@ void main() {
   late FrbRuntimeOwner runtime;
   late ClientScope root;
   late _NativeFeed handle;
-  _NativeTimeline? timelineHandle;
+  _NativeCurrent? currentHandle;
   ClientCloseBudget budget() => ClientCloseBudget(const Duration(seconds: 2));
 
   setUp(() {
@@ -130,13 +129,13 @@ void main() {
       progressScope: root.child('progress'),
     );
     handle = _NativeFeed();
-    timelineHandle = null;
+    currentHandle = null;
     api.open = (_) async => handle;
   });
 
   tearDown(() async {
     handle.failClose = false;
-    timelineHandle?.failClose = false;
+    currentHandle?.failClose = false;
     await root.close(budget: budget());
     expect((await root.retryCleanup(budget: budget())).complete, isTrue);
     RustLib.dispose();
@@ -312,14 +311,13 @@ void main() {
     },
   );
 
-  test('timeline metadata failure occurs after raw entry takeover', () async {
-    final native = timelineHandle = _NativeTimeline();
-    api.timelineReader = native;
+  test('Current metadata failure occurs after raw entry takeover', () async {
+    final native = currentHandle = _NativeCurrent();
+    api.currentReader = native;
     await expectLater(
-      transport.openTimelineReader(
+      transport.openCurrentReader(
         'thread',
-        presentationVersion: 6,
-        readerProtocolVersion: 1,
+        currentProtocolVersion: currentProtocolVersion,
         demand: chatDemand,
       ),
       throwsA(isA<StudioFailure>()),

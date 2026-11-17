@@ -11,6 +11,7 @@ import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
 import '../view_models/display_member_controller.dart';
 import '../widgets/completion_run_view.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import 'timeline_member_atom.dart';
 
 /// Borrows the stable block demand from the original display lease.
@@ -28,7 +29,7 @@ class CompletionRunConnector extends StatefulWidget {
   });
   final TimelineDisplayUnit unit;
   final String threadId;
-  final ConversationQueries content;
+  final TimelineDisplayLease content;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String)? readAttachment;
   final int Function()? monotonicMicros;
@@ -349,7 +350,7 @@ class _MembersState extends State<CompletionRunConnector>
 
   Widget _member(DisplayMemberController controller, DisplayMemberHead entry) {
     if (controller.awaitingSealed &&
-        entry.record.contentSource is CurrentAtom) {
+        entry.record.contentSource is CurrentAtomSource) {
       return const Text('正在读取封存观察…');
     }
     return TimelineMemberAtom(
@@ -362,7 +363,8 @@ class _MembersState extends State<CompletionRunConnector>
       displayId: entry.memberKey,
       disclosure: controller.disclosure(entry.memberKey),
       executionPresent: widget.unit.executionPresent,
-      content: widget.content,
+      threadId: widget.threadId,
+      currentReader: widget.content.current,
       retirement: widget.unit.expansion.retirement,
       isActive: () => isCurrent && widget.unit.expansion.expanded == true,
       images: widget.images,

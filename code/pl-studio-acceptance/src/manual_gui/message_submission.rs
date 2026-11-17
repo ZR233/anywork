@@ -260,7 +260,8 @@ fn lifecycle_script(gates: &[ReplyStage; 2]) -> Vec<Step> {
 }
 
 /// Keep only the named metadata-only runtime events, never prompt bodies.
-/// input_id on admission maps to source_effect_seq on projection/publication.
+/// Admission, live Current publication and durable History are independent observations joined
+/// by their business identities, never by a shared source-effect fence.
 fn write_submission_timing(home: &Path, output: &Path) -> Result<()> {
     let source = File::open(home.join("studio/logs/studio.log"))
         .context("open isolated submission timing log")?;
@@ -268,7 +269,7 @@ fn write_submission_timing(home: &Path, output: &Path) -> Result<()> {
     writeln!(
         destination,
         "rust_log=warn,prompt_submission=debug,conversation_work=debug\n\
-         join=input_id -> prompt accepted.source_effect_seq -> conversation_work.source_effect_seq\n\
+         join=input_id -> prompt accepted -> live Current publication -> durable History event\n\
          scope=named metadata-only stages from current isolated studio.log; no message bodies"
     )?;
     let events = [

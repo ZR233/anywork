@@ -18,7 +18,7 @@ pub struct HistoryBoundaryObservation {
     pub entity: HistoryEntityHead,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HistoryEntityChange {
     pub event: HistoryEvent,
     pub entity: HistoryEntityHead,
@@ -27,10 +27,14 @@ pub struct HistoryEntityChange {
     pub public_summary: Option<String>,
 }
 
-impl HistoryEntityHead {
+/// Native producer conversion uses the original timestamps and rejects overflow.
+pub trait NativeHistoryEntity {
+    fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<HistoryEntityHead>;
+}
+impl NativeHistoryEntity for HistoryEntityHead {
     /// Native atomic timestamps use seconds; history heads use UTC milliseconds.
     /// Legacy absence stays unknown, and out-of-range timestamps are rejected.
-    pub fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<Self> {
+    fn from_atom(atom: &pl_protocol::ChatAtom, run: Option<String>) -> Result<Self> {
         let state = match atom.lifecycle {
             pl_protocol::ChatAtomLifecycle::Active { status, .. } => {
                 HistoryEntityState::KnownActive { status }
@@ -62,7 +66,7 @@ impl HistoryEntityHead {
             single_visibility: None,
             observation: HistoryObservation::Original,
             presentation_contract: None,
-            detail_event_id: atom.completion_item_id.clone(),
+            detail_event_id: None,
             input_manifest_event_id: None,
             body_manifest_event_id: None,
         })
@@ -109,8 +113,23 @@ impl HistoryClassifier {
     pub fn new(run: RuntimeEpoch) -> Self {
         Self { run, open: None }
     }
+    pub fn from_run_id(run: &str) -> Result<Self> {
+        Ok(Self::new(run.parse().map_err(|error| {
+            HistoryError::Storage(anyhow::Error::new(error))
+        })?))
+    }
+    pub fn run_matches(&self, run: &str) -> bool {
+        self.run.to_string() == run
+    }
     pub fn open_group(&self) -> Option<&str> {
         self.open.as_ref().map(|group| group.head.group_id.as_str())
+    }
+
+    /// The bounded unfinished members whose original observations a visible boundary needs.
+    pub(crate) fn boundary_entities(&self) -> impl Iterator<Item = &str> {
+        self.open
+            .iter()
+            .flat_map(|group| group.active.keys().map(String::as_str))
     }
 
     /// Prepares on a local candidate; a failed acceptance leaves this classifier unchanged.
@@ -185,7 +204,10 @@ impl HistoryClassifier {
             }
             HistoryPlacement::Work => {
                 if candidate.open.is_none() {
-                    let group_id = uuid::Uuid::new_v4().to_string();
+                    // The first member event is a stable semantic identity. Deriving the group from
+                    // it keeps a crash-after-commit retry on the same append-only group instead of
+                    // allocating a second group for the same frozen effect.
+                    let group_id = format!("{}:{}", self.run, event.header.event_id);
                     let head = HistoryWorkHead {
                         group_id: group_id.clone(),
                         run_id: Some(self.run.to_string()),
@@ -357,6 +379,15 @@ fn group_event(
     event.is_anchor = anchor;
     event
 }
+pub(crate) fn prepare_entity_content(
+    event: &mut HistoryEvent,
+    entity: &mut HistoryEntityHead,
+    database_id: &str,
+) -> Result<()> {
+    fit_wait(event, entity, database_id)?;
+    canonical_metadata(event, entity)
+}
+
 fn canonical_metadata(event: &mut HistoryEvent, entity: &HistoryEntityHead) -> Result<()> {
     if event.header.original.is_some()
         && !event

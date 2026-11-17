@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork_client/conversation.dart';
@@ -14,7 +15,7 @@ DisplayMemberHead _head(int order, {String? text}) => DisplayMemberHead(
   memberKey: 'row-$order',
   memberOrder: order,
   record: DisplayRecord(
-    contentSource: const CurrentAtom(),
+    contentSource: const CurrentAtomSource(),
     atom: ChatAtom(
       id: 'atom-$order',
       source: const ForegroundTurnChatSource(turnId: 'turn'),

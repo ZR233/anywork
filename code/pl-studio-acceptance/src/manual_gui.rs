@@ -6032,10 +6032,10 @@ fn history_fault_interface_needs() -> serde_json::Value {
 /// Per-session history watermarks read directly from the real `history.sqlite`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct HistoryLockWatermark {
-    /// Committed `history_turns` rows.
+    /// Committed Turn anchors in the append-only history.
     pub(super) turns: i64,
-    /// `history_meta.applied_write_seq`, the durable write watermark.
-    pub(super) write_seq: i64,
+    /// Maximum committed history event sequence; unrelated to Current revisions.
+    pub(super) history_seq: i64,
 }
 
 /// Locates the single per-session history library of the isolated home.
@@ -6080,13 +6080,28 @@ pub(super) fn history_owner_thread(home: &Path) -> Result<String> {
             &SqliteConnectOptions::new().filename(&path).read_only(true),
         )
         .await?;
-        let owner: String = sea_orm::sqlx::query("SELECT thread_id FROM history_meta WHERE id=1")
-            .fetch_one(&mut connection)
-            .await?
-            .try_get("thread_id")?;
+        let owner: String =
+            sea_orm::sqlx::query("SELECT thread_id FROM history_store_meta WHERE singleton=1")
+                .fetch_one(&mut connection)
+                .await?
+                .try_get("thread_id")?;
         ensure!(!owner.is_empty(), "history library has an empty Thread id");
         Ok(owner)
     })
+}
+
+/// Reads the complete saved Current independently from the history database.
+fn read_saved_current(
+    home: &Path,
+    thread_id: &str,
+) -> Result<pl_core::thread::current::ThreadCurrent> {
+    let database = history_lock_database(home)?;
+    let path = database.with_file_name("current.json");
+    let bytes =
+        fs::read(&path).with_context(|| format!("read saved Current {}", path.display()))?;
+    Ok(pl_core::thread::current::ThreadCurrent::from_json(
+        &bytes, thread_id,
+    )?)
 }
 
 /// Reads the durable history watermarks through a read-only connection.
@@ -6101,9 +6116,9 @@ pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWater
             .filename(&database)
             .read_only(true);
         let mut connection = SqliteConnection::connect_with(&options).await?;
-        let (turns, write_seq): (i64, i64) = sea_orm::sqlx::query_as(
-            "SELECT (SELECT COUNT(*) FROM history_turns),
-                    COALESCE((SELECT applied_write_seq FROM history_meta WHERE id = 1), 0)",
+        let (turns, history_seq): (i64, i64) = sea_orm::sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM history_events WHERE row_scope='turn' AND is_anchor=1),
+                    COALESCE((SELECT MAX(seq) FROM history_events), 0)",
         )
         .fetch_one(&mut connection)
         .await
@@ -6113,44 +6128,44 @@ pub(super) fn history_lock_watermark(database: &Path) -> Result<HistoryLockWater
                 display.display()
             )
         })?;
-        Ok(HistoryLockWatermark { turns, write_seq })
+        Ok(HistoryLockWatermark { turns, history_seq })
     })
 }
 
-/// Bounded inspection of the committed canonical body; invocation text is not execution.
+/// Bounded inspection of one immutable body; invocation text is not execution.
 async fn history_content_contains(
     connection: &mut SqliteConnection,
     owner: &str,
     key: &str,
     needle: &str,
 ) -> Result<bool> {
-    let (manifest,): (Vec<u8>,) = sea_orm::sqlx::query_as(
-        "SELECT payload FROM conversation_contents WHERE owner_key=?1 AND content_key=?2",
+    ensure!(!needle.is_empty(), "empty history marker");
+    let (body_id, length): (String, i64) = sea_orm::sqlx::query_as(
+        "SELECT body_id,byte_length FROM history_bodies WHERE owner_event_id=?1 AND body_key=?2",
     )
     .bind(owner)
     .bind(key)
     .fetch_one(&mut *connection)
     .await?;
-    let manifest: serde_json::Value = serde_json::from_slice(&manifest)?;
-    ensure!(
-        manifest["sealed"] == true,
-        "acceptance original body is not sealed"
-    );
-    let length = manifest["byteLength"]
-        .as_u64()
-        .context("body length missing")?;
+    let length = u64::try_from(length)?;
     let mut offset = 0u64;
+    let mut chunk = 0i64;
     let mut carry = Vec::new();
     let mut found = false;
     while offset < length {
-        let (at,data):(i64,Vec<u8>)=sea_orm::sqlx::query_as(
-            "SELECT byte_offset,data FROM conversation_content_chunks WHERE owner_key=?1 AND content_key=?2 AND byte_offset>=?3 ORDER BY byte_offset LIMIT 1")
-            .bind(owner).bind(key).bind(i64::try_from(offset)?).fetch_one(&mut *connection).await?;
+        let data: Vec<u8> = sea_orm::sqlx::query_scalar(
+            "SELECT data FROM history_body_chunks WHERE body_id=?1 AND chunk_no=?2",
+        )
+        .bind(&body_id)
+        .bind(chunk)
+        .fetch_one(&mut *connection)
+        .await?;
         ensure!(
-            u64::try_from(at)? == offset && !data.is_empty(),
-            "canonical body has a gap"
+            data.len() == usize::try_from((length - offset).min(64 * 1024))?,
+            "immutable body has a gap or invalid chunk length"
         );
         offset += data.len() as u64;
+        chunk += 1;
         carry.extend_from_slice(&data);
         found |= carry
             .windows(needle.len())
@@ -6158,98 +6173,90 @@ async fn history_content_contains(
         let retained = needle.len().saturating_sub(1).min(carry.len());
         carry.drain(..carry.len() - retained);
     }
-    ensure!(offset == length, "canonical body exceeds manifest");
     Ok(found)
 }
 
+/// Reads only the bounded canonical entity metadata, never the opaque payload.
+async fn history_canonical_head(
+    connection: &mut SqliteConnection,
+    event_id: &str,
+) -> Result<pl_studio_runtime::history::HistoryEntityHead> {
+    let rows: Vec<(String, i64)> = sea_orm::sqlx::query_as(
+        "SELECT body_id,byte_length FROM history_bodies WHERE owner_event_id=?1 AND role='canonical_metadata'",
+    )
+    .bind(event_id)
+    .fetch_all(&mut *connection)
+    .await?;
+    ensure!(
+        rows.len() == 1,
+        "canonical entity must own exactly one metadata head"
+    );
+    let (body_id, length) = rows
+        .into_iter()
+        .next()
+        .context("canonical entity metadata row disappeared")?;
+    ensure!(
+        (1..=16 * 1024).contains(&length),
+        "canonical entity metadata exceeds its head budget"
+    );
+    let bytes: Vec<u8> = sea_orm::sqlx::query_scalar(
+        "SELECT data FROM history_body_chunks WHERE body_id=?1 AND chunk_no=0",
+    )
+    .bind(body_id)
+    .fetch_one(&mut *connection)
+    .await?;
+    ensure!(
+        bytes.len() == usize::try_from(length)?,
+        "canonical metadata length differs"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn history_fault_originals(database: &Path) -> Result<HistoryFaultOriginals> {
+    use pl_protocol::{ChatTerminalOutcome, ThreadTextChannel};
+    use pl_studio_runtime::history::{HistoryEntityKind, HistoryEntityState};
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        use pl_protocol::{
-            ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatTerminalOutcome,
-            ContentOwner, ContentTarget, ThreadTextChannel,
-        };
-        let options = SqliteConnectOptions::new()
-            .filename(database)
-            .read_only(true)
-            .create_if_missing(false);
-        let mut connection = SqliteConnection::connect_with(&options).await?;
-        let (thread_id,): (String,) =
-            sea_orm::sqlx::query_as("SELECT thread_id FROM history_meta WHERE id=1")
-                .fetch_one(&mut connection)
-                .await?;
-        let rows: Vec<(String, Vec<u8>)> =
-            sea_orm::sqlx::query_as("SELECT item_id,metadata FROM conversation_items ORDER BY seq")
-                .fetch_all(&mut connection)
-                .await?;
+        let mut connection = SqliteConnection::connect_with(
+            &SqliteConnectOptions::new().filename(database).read_only(true).create_if_missing(false),
+        ).await?;
+        let thread_id: String = sea_orm::sqlx::query_scalar("SELECT thread_id FROM history_store_meta WHERE singleton=1").fetch_one(&mut connection).await?;
         let mut originals = HistoryFaultOriginals::default();
-        for (record_id, metadata) in rows {
-            let atom: ChatAtom =
-                serde_json::from_slice(&metadata).context("decode committed canonical header")?;
-            if !matches!(
-                atom.lifecycle,
-                ChatAtomLifecycle::Terminal {
-                    outcome: ChatTerminalOutcome::Completed,
-                    ..
+        let mut after=0i64;
+        loop {
+            let rows:Vec<(i64,String,Option<String>)> = sea_orm::sqlx::query_as(
+                "SELECT seq,event_id,turn_id FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128",
+            ).bind(after).fetch_all(&mut connection).await?;
+            if rows.is_empty() { break; }
+            for (seq,event_id,turn_id) in rows {
+                after=seq;
+                let head=history_canonical_head(&mut connection,&event_id).await?;
+                if !matches!(head.state,HistoryEntityState::KnownTerminal { outcome:ChatTerminalOutcome::Completed }) { continue; }
+                let (needle,role,is_answer) = if head.kind==HistoryEntityKind::Text && head.text_channel==Some(ThreadTextChannel::Final) {
+                    (pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,"body",true)
+                } else if head.tool.as_ref().is_some_and(|tool| tool.call_id==pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID) {
+                    (pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,"tool_output",false)
+                } else { continue; };
+                let mut ordinal=-1i64;
+                let mut present=false;
+                loop {
+                    let bodies:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT ordinal,body_key FROM history_bodies WHERE owner_event_id=?1 AND role=?2 AND ordinal>?3 ORDER BY ordinal LIMIT 128")
+                        .bind(&event_id).bind(role).bind(ordinal).fetch_all(&mut connection).await?;
+                    if bodies.is_empty() { break; }
+                    for (next,key) in bodies {
+                        ordinal=next;
+                        present |= history_content_contains(&mut connection,&event_id,&key,needle).await?;
+                    }
                 }
-            ) {
-                continue;
-            }
-            let (needle, role, is_answer) = if atom.kind == ChatAtomKind::Text
-                && atom.text_channel == Some(ThreadTextChannel::Final)
-            {
-                (
-                    pl_provider_fixture::GUI_HISTORY_FAULT_ANSWER,
-                    ChatContentRole::Body,
-                    true,
-                )
-            } else if atom.tool.as_ref().is_some_and(|tool| {
-                tool.call_id == pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID
-            }) {
-                (
-                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
-                    ChatContentRole::ToolOutput,
-                    false,
-                )
-            } else {
-                continue;
-            };
-            let mut present = false;
-            for content in atom.contents.iter().filter(|content| content.role == role) {
-                let ContentTarget::Body {
-                    owner: ContentOwner::Item { item_id },
-                    key,
-                } = &content.reference.target
-                else {
-                    anyhow::bail!("canonical body has wrong owner");
-                };
-                ensure!(
-                    item_id == &record_id,
-                    "canonical body points to another original"
-                );
-                present |= history_content_contains(
-                    &mut connection,
-                    &format!("4:item{item_id}"),
-                    key,
-                    needle,
-                )
-                .await?;
-            }
-            if present {
-                let identity = HistoryFaultItemIdentity {
-                    item_id: record_id,
-                    thread_id: thread_id.clone(),
-                    turn_id: atom
-                        .turn_id
-                        .context("canonical original has no real Turn")?,
-                    tool_call_id: atom.tool.map(|tool| tool.call_id),
-                };
-                if is_answer {
-                    originals.answers.push(identity);
-                } else {
-                    originals.tools.push(identity);
+                if present {
+                    let identity=HistoryFaultItemIdentity {
+                        item_id:event_id, thread_id:thread_id.clone(),
+                        turn_id:turn_id.context("canonical original has no real Turn")?,
+                        tool_call_id:head.tool.map(|tool| tool.call_id),
+                    };
+                    if is_answer { originals.answers.push(identity); } else { originals.tools.push(identity); }
                 }
             }
         }
@@ -6265,17 +6272,28 @@ fn history_payload_count(database: &Path, needle: &str) -> Result<i64> {
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let options=SqliteConnectOptions::new().filename(database).read_only(true);
-        let mut connection=SqliteConnection::connect_with(&options).await?;
-        let rows:Vec<(String,String,String)>=sea_orm::sqlx::query_as(
-            "SELECT i.item_id,c.owner_key,c.content_key FROM conversation_items i JOIN conversation_contents c ON c.owner_key='4:item'||i.item_id ORDER BY i.seq,c.content_key")
-            .fetch_all(&mut connection).await?;
-        let mut found=std::collections::BTreeSet::new();
-        for (item,owner,key) in rows {
-            if history_content_contains(&mut connection,&owner,&key,needle).await? { found.insert(item); }
+        let mut connection=SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(database).read_only(true)).await?;
+        let mut after=0i64;
+        let mut found=0i64;
+        loop {
+            let events:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT seq,event_id FROM history_events WHERE query_class IS NOT NULL AND seq>?1 ORDER BY seq LIMIT 128")
+                .bind(after).fetch_all(&mut connection).await?;
+            if events.is_empty() { break; }
+            for (seq,event_id) in events {
+                after=seq;
+                let mut matched=false;
+                let mut ordinal=-1i64;
+                loop {
+                    let bodies:Vec<(i64,String)>=sea_orm::sqlx::query_as("SELECT ordinal,body_key FROM history_bodies WHERE owner_event_id=?1 AND role IN ('body','tool_output') AND ordinal>?2 ORDER BY ordinal LIMIT 128")
+                        .bind(&event_id).bind(ordinal).fetch_all(&mut connection).await?;
+                    if bodies.is_empty() { break; }
+                    for (next,key) in bodies { ordinal=next; matched |= history_content_contains(&mut connection,&event_id,&key,needle).await?; }
+                }
+                if matched { found+=1; }
+            }
         }
         connection.close().await?;
-        Ok(i64::try_from(found.len())?)
+        Ok(found)
     })
 }
 
@@ -6750,23 +6768,103 @@ mod history_fault_tests {
             .enable_all()
             .build()?;
         runtime.block_on(async {
-            let options=SqliteConnectOptions::new().filename(path).create_if_missing(true);
-            let mut connection=SqliteConnection::connect_with(&options).await?;
-            sea_orm::sqlx::raw_sql("CREATE TABLE IF NOT EXISTS history_meta(id INTEGER,thread_id TEXT); DELETE FROM history_meta; INSERT INTO history_meta VALUES(1,'thread');
-                CREATE TABLE IF NOT EXISTS conversation_items(seq INTEGER PRIMARY KEY,item_id TEXT,metadata BLOB);
-                CREATE TABLE IF NOT EXISTS conversation_contents(owner_key TEXT,content_key TEXT,payload BLOB);
-                CREATE TABLE IF NOT EXISTS conversation_content_chunks(owner_key TEXT,content_key TEXT,byte_offset INTEGER,data BLOB);
-                DELETE FROM conversation_items; DELETE FROM conversation_contents; DELETE FROM conversation_content_chunks;").execute(&mut connection).await?;
-            for (index,(id,atom,key,body)) in items.iter().enumerate() {
-                let owner=format!("4:item{id}");
-                sea_orm::sqlx::query("INSERT INTO conversation_items VALUES(?1,?2,?3)")
-                    .bind(i64::try_from(index+1)?).bind(id).bind(serde_json::to_vec(atom)?).execute(&mut connection).await?;
-                sea_orm::sqlx::query("INSERT INTO conversation_contents VALUES(?1,?2,?3)")
-                    .bind(&owner).bind(key).bind(serde_json::to_vec(&serde_json::json!({"sealed":true,"byteLength":body.len()}))?).execute(&mut connection).await?;
-                sea_orm::sqlx::query("INSERT INTO conversation_content_chunks VALUES(?1,?2,0,?3)")
-                    .bind(&owner).bind(key).bind(body.as_bytes()).execute(&mut connection).await?;
+            use pl_studio_runtime::history::{
+                HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEvent, HistoryEventKind,
+                HistoryLimits, HistoryOriginalInfo, HistoryStore,
+            };
+            let store = HistoryStore::open(path, "thread", HistoryLimits::default()).await?;
+            let mut events = Vec::new();
+            for (id, atom, key, body) in items {
+                let head = HistoryEntityHead::from_atom(atom, None)?;
+                let mut event = HistoryEvent::new(id.clone(), HistoryEventKind::EntityEnded, 0);
+                event.header.entity_id = Some(atom.id.clone());
+                event.header.turn_id = atom.turn_id.clone();
+                event.header.source = Some(atom.source.clone());
+                event.header.original = Some(HistoryOriginalInfo {
+                    query_class: "fixture".into(),
+                    parent_id: None,
+                    original_kind: atom.kind,
+                    tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+                });
+                event.header.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
+                let payload = HistoryBody::new(
+                    "canonical_payload",
+                    HistoryBodyRole::CanonicalPayload,
+                    Vec::new(),
+                );
+                event.payload_body_id = Some(payload.body_id.clone());
+                event.bodies = vec![
+                    payload,
+                    HistoryBody::new(
+                        "canonical_metadata",
+                        HistoryBodyRole::CanonicalMetadata,
+                        serde_json::to_vec(&head)?,
+                    ),
+                    HistoryBody::new(
+                        key.clone(),
+                        if key == "body" {
+                            HistoryBodyRole::Body
+                        } else {
+                            HistoryBodyRole::ToolOutput
+                        },
+                        body.as_bytes().to_vec(),
+                    ),
+                ];
+                events.push(event);
             }
-            connection.close().await?; Ok(())
+            store.accept_batch(&events).await?;
+            store.flush().await?;
+            store.close().await?;
+            Ok(())
+        })
+    }
+
+    fn write_boundary_observation(path: &Path) -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            use pl_studio_runtime::history::{
+                HistoryBody, HistoryBodyRole, HistoryEntityHead, HistoryEvent, HistoryEventKind,
+                HistoryLimits, HistoryObservation, HistoryRowHead, HistoryStore,
+            };
+            let (_, mut atom, _, body) = tool(
+                "boundary-result",
+                "fault-turn",
+                pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+            );
+            atom.completion_item_id = None;
+            atom.completion_seq = None;
+            atom.lifecycle = ChatAtomLifecycle::Active {
+                started: None,
+                status: pl_protocol::ChatActiveStatus::Running,
+            };
+            let mut head = HistoryEntityHead::from_atom(&atom, None)?;
+            head.observation = HistoryObservation::Boundary {
+                captured_at: Some(0),
+            };
+            head.detail_event_id = None;
+            head.body_manifest_event_id = None;
+            let mut event =
+                HistoryEvent::new("boundary-result", HistoryEventKind::BoundaryObserved, 0);
+            event.header.entity_id = Some(head.entity_id.clone());
+            event.header.turn_id = atom.turn_id.clone();
+            event.header.source = Some(head.source.clone());
+            event.header.call_id = head.tool.as_ref().map(|tool| tool.call_id.clone());
+            event.header.group_id = Some("fault-group".into());
+            event.header.row_key = Some("member:fault-group:boundary-result".into());
+            event.head = Some(HistoryRowHead::Member(head));
+            event.bodies.push(HistoryBody::new(
+                "tool.result",
+                HistoryBodyRole::ToolOutput,
+                body.as_bytes().to_vec(),
+            ));
+            let store = HistoryStore::open(path, "thread", HistoryLimits::default()).await?;
+            let events = [event];
+            store.accept_batch(&events).await?;
+            store.flush().await?;
+            store.close().await?;
+            Ok::<_, anyhow::Error>(())
         })
     }
 
@@ -6797,6 +6895,39 @@ mod history_fault_tests {
             Some(pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_CALL_ID)
         );
         Ok(())
+    }
+
+    #[test]
+    fn boundary_observation_keeps_its_own_body_without_becoming_a_completion() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let database = temp.path().join("history.sqlite");
+        write_boundary_observation(&database)?;
+        let originals = history_fault_originals(&database)?;
+        assert!(originals.answers.is_empty());
+        assert!(originals.tools.is_empty());
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        runtime.block_on(async {
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&database)
+                    .read_only(true),
+            )
+            .await?;
+            assert!(
+                history_content_contains(
+                    &mut connection,
+                    "boundary-result",
+                    "tool.result",
+                    pl_provider_fixture::GUI_HISTORY_FAULT_TOOL_MARKER,
+                )
+                .await?
+            );
+            connection.close().await?;
+            Ok::<_, anyhow::Error>(())
+        })
     }
 
     #[test]

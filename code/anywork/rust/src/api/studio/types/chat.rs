@@ -1,6 +1,6 @@
 //! Canonical conversation DTOs mirrored mechanically at the FRB boundary.
 
-use super::{BridgeActivitySnapshot, BridgeError, BridgeThreadSubscriptionUpdate};
+use super::BridgeError;
 
 #[derive(Debug, Clone)]
 pub struct BridgeConversationFrame {
@@ -12,18 +12,8 @@ pub struct BridgeConversationFrame {
 
 #[derive(Debug, Clone)]
 pub enum BridgeConversationEvent {
-    State {
-        update: Box<BridgeThreadSubscriptionUpdate>,
-    },
-    Chat {
-        batch: Box<BridgeChatBatch>,
-    },
-    Activity {
-        snapshot: Box<BridgeActivitySnapshot>,
-    },
-    Failure {
-        error: BridgeError,
-    },
+    Chat { batch: Box<BridgeChatBatch> },
+    Failure { error: BridgeError },
     Closed,
 }
 
@@ -257,14 +247,7 @@ pub enum BridgeContentOwner {
 pub struct BridgeCurrentPlanHead {
     pub revision: u64,
     pub phase: super::BridgePlanPhase,
-    pub document: Option<BridgeContentRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BridgeCurrentCollectionRef {
-    pub database_id: String,
-    pub collection: String,
-    pub revision: u64,
+    pub document: Option<super::BridgeCurrentContentRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,19 +283,5 @@ pub struct BridgeContentManifestEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeContentManifestPage {
     pub entries: Vec<BridgeContentManifestEntry>,
-    pub continuation: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentCollectionEntry {
-    pub id: String,
-    pub position: i64,
-    pub payload: BridgePayloadData,
-}
-
-#[derive(Debug, Clone)]
-pub struct BridgeCurrentCollectionPage {
-    pub revision: u64,
-    pub entries: Vec<BridgeCurrentCollectionEntry>,
     pub continuation: Option<String>,
 }

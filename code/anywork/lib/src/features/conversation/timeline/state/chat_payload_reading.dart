@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:anywork_client/models.dart';
 
 import 'chat_item_presentation.dart';
+import 'timeline_display_unit.dart';
 import 'tool_display_registry.dart';
 import 'tool_presentation.dart';
 
@@ -156,7 +157,8 @@ ToolCardReading readToolCard(ChatItemPresentation item) {
         statusString: status,
         frozenObservation:
             item.displayRecord?.contentSource is FrozenObservation,
-        executionPresent: item.displayRecord?.contentSource is CurrentAtom,
+        executionPresent:
+            item.displayRecord?.contentSource is CurrentAtomSource,
         arguments: arguments,
         output: item.inlineText('tool.result') ?? '',
         // No start timestamp is present in the canonical invocation. Keep unknown.

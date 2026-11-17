@@ -55,9 +55,10 @@ use pl_protocol::studio::{
     ),
     components(schemas(
         StudioError,
-        pl_protocol::ActivitySnapshot,
-        pl_protocol::ActivityEntry,
-        pl_protocol::ActivityIdentity,
+        pl_protocol::CurrentView,
+        pl_protocol::CurrentFrame,
+        pl_protocol::CurrentProjection,
+        pl_protocol::CurrentCollectionPage,
         pl_protocol::ChatScope
     ))
 )]
@@ -311,16 +312,29 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(set_thread_model_route))
         .routes(routes!(list_thread_turns))
         .routes(routes!(conversation::older))
-        .routes(routes!(timeline::open))
-        .routes(routes!(timeline::next))
-        .routes(routes!(timeline::older))
-        .routes(routes!(timeline::live_older))
-        .routes(routes!(timeline::close))
-        .routes(routes!(timeline::members))
+        .routes(routes!(timeline::open_history))
+        .routes(routes!(timeline::capture))
+        .routes(routes!(timeline::timeline))
+        .routes(routes!(timeline::group))
+        .routes(routes!(timeline::turns))
+        .routes(routes!(timeline::events))
+        .routes(routes!(timeline::event))
+        .routes(routes!(timeline::bodies))
+        .routes(routes!(timeline::body))
+        .routes(routes!(timeline::costs))
+        .routes(routes!(timeline::accounting))
+        .routes(routes!(timeline::changed))
+        .routes(routes!(timeline::close_history))
+        .routes(routes!(timeline::open_current))
+        .routes(routes!(timeline::snapshot))
+        .routes(routes!(timeline::watch))
+        .routes(routes!(timeline::page))
+        .routes(routes!(timeline::body_read))
+        .routes(routes!(timeline::body_watch))
+        .routes(routes!(timeline::close_current))
         .routes(routes!(conversation::completed))
         .routes(routes!(conversation::manifest))
         .routes(routes!(conversation::read))
-        .routes(routes!(conversation::current))
         .routes(routes!(conversation::legacy_evidence))
         .routes(routes!(conversation::legacy_evidence_content))
         .routes(routes!(sse::watch_content))
@@ -393,7 +407,6 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(check_update))
         .routes(routes!(sse::product_events))
         .routes(routes!(sse::thread_events))
-        .routes(routes!(sse::thread_state_events))
         .merge(crate::bots::bot_routes())
         .merge(crate::acp_business::routes())
         .merge(attachment_upload)

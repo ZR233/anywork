@@ -6,14 +6,14 @@ import 'timeline_transport.dart';
 
 // Scripted environment delivery, not SDK state mutation. Each helper waits for
 // the real feed ACK, so synchronous freeze assertions observe actual reduction.
-final Map<String, TestConversationStateFeed> _stateFeeds = {};
-final Map<String, Completer<TestConversationStateFeed>> _stateWaiting = {};
-void registerScriptedStateFeed(TestConversationStateFeed feed) {
+final Map<String, TestCurrentReader> _stateFeeds = {};
+final Map<String, Completer<TestCurrentReader>> _stateWaiting = {};
+void registerScriptedCurrentReader(TestCurrentReader feed) {
   _stateFeeds[feed.threadId] = feed;
   _stateWaiting.remove(feed.threadId)?.complete(feed);
 }
 
-Future<TestConversationStateFeed> scriptedStateFeed(String threadId) {
+Future<TestCurrentReader> scriptedCurrentReader(String threadId) {
   final current = _stateFeeds[threadId];
   return current != null && !current.requestCloseStarted.isCompleted
       ? Future.value(current)
@@ -22,11 +22,11 @@ Future<TestConversationStateFeed> scriptedStateFeed(String threadId) {
 
 extension ConversationTestDelivery on ConversationSession {
   Future<void> deliverWorkspace(ThreadWorkspace workspace) async {
-    final feed = await scriptedStateFeed(threadId);
+    final feed = await scriptedCurrentReader(threadId);
     await feed.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: workspace,
         ),
@@ -35,13 +35,13 @@ extension ConversationTestDelivery on ConversationSession {
   }
 
   Future<void> deliverNotification(ThreadNotificationFrame frame) async {
-    final feed = await scriptedStateFeed(threadId);
-    await feed.deliver(ConversationStateEvent(frame: frame));
+    final feed = await scriptedCurrentReader(threadId);
+    await feed.deliver(testCurrentEvent(frame: frame));
   }
 }
 
 /// Content-only scripted feed: it pumps the initial Chat set and never carries
-/// state frames; state scripts attach to [ScriptedConversationStateFeed].
+/// state frames; state scripts attach to [ScriptedCurrentReader].
 class ScriptedConversationFeed extends TestConversationFeed {
   ScriptedConversationFeed({
     String threadId = 'thread',
@@ -107,32 +107,36 @@ class ScriptedConversationFeed extends TestConversationFeed {
   }
 }
 
-/// State-only scripted feed: it pumps explicit state frames with real credit
-/// waits; content never flows here.
-class ScriptedConversationStateFeed extends TestConversationStateFeed {
-  ScriptedConversationStateFeed({
+/// Current-only scripted reader. Each Thread event is wrapped into the
+/// corresponding CurrentFrame; gaps become explicit watch errors.
+class ScriptedCurrentReader extends TestCurrentReader {
+  ScriptedCurrentReader({
     String threadId = 'thread',
-    String subscriptionId = 'state-sub',
     Stream<ThreadStreamFrame>? states,
+    CurrentView? initialView,
   }) : states = states,
-       super(threadId: threadId, subscriptionId: subscriptionId);
+       super(threadId: threadId, initialView: initialView);
   final Stream<ThreadStreamFrame>? states;
   StreamIterator<ThreadStreamFrame>? _states;
   Future<void>? _pump;
+
   @override
-  Stream<ConversationFrame> get events {
-    final stream = super.events;
+  Future<CurrentWatch> watch({
+    CurrentRevision? after,
+    required ReadDemand demand,
+  }) async {
+    final watch = await super.watch(after: after, demand: demand);
+    registerScriptedCurrentReader(this);
     _pump ??= () {
       final done = Completer<void>();
       scheduleMicrotask(() => done.complete(_pumpEvents()));
       return done.future;
     }();
-    return stream;
+    return watch;
   }
 
   Future<void> _pumpEvents() async {
     if (requestCloseStarted.isCompleted) return;
-    registerScriptedStateFeed(this);
     final source = states;
     if (source == null || requestCloseStarted.isCompleted) return;
     final iterator = StreamIterator(source);
@@ -146,20 +150,12 @@ class ScriptedConversationStateFeed extends TestConversationStateFeed {
       while (!requestCloseStarted.isCompleted) {
         final hasNext = await _moveNext(iterator);
         if (!hasNext || requestCloseStarted.isCompleted) return;
-        await _deliverCredited(ConversationStateEvent(frame: iterator.current));
+        sendCurrentFrame(testCurrentEvent(frame: iterator.current));
+        await Future<void>.value();
       }
     } catch (error) {
       if (requestCloseStarted.isCompleted) return;
-      await _deliverCredited(
-        ConversationFailureEvent(
-          failure: StudioFailure(
-            code: StudioFailureCode.internal,
-            message: error.toString(),
-            retryable: false,
-            correlationId: 'scripted-state',
-          ),
-        ),
-      );
+      sendError(ConversationContinuityError('scripted current: $error'));
     } finally {
       await iterator.cancel();
       if (identical(_states, iterator)) _states = null;
@@ -186,19 +182,6 @@ class ScriptedConversationStateFeed extends TestConversationStateFeed {
       }
       rethrow;
     }
-  }
-
-  Future<void> _deliverCredited(ConversationEvent event) async {
-    if (requestCloseStarted.isCompleted) return;
-    final sequence = send(event);
-    if (requestCloseStarted.isCompleted) return;
-    if (event is ConversationClosedEvent || event is ConversationFailureEvent) {
-      return;
-    }
-    await Future.any<void>([
-      acknowledged(sequence),
-      requestCloseStarted.future,
-    ]);
   }
 
   @override

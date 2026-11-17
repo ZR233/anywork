@@ -12,9 +12,9 @@ use anyhow::{Context, Result, bail};
 use pl_core::thread::UsageSummary;
 use tokio::sync::{Notify, watch};
 
+use crate::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::conversation_store::ConversationStore;
 use crate::studio::storage::calls::CallsStore;
-use crate::studio::storage::history::{HistoryStore, HistoryStoreShare};
 use crate::studio::storage::thread_writer::HistoryChannel;
 
 /// Per-Thread persistence watermarks and queue pressure reported by the owning writer.
@@ -286,18 +286,32 @@ impl Default for ThreadPersistenceCoordinator {
 }
 
 impl ThreadPersistenceCoordinator {
+    /// Stops and joins every registered append-only writer before a one-shot schema upgrade.
+    ///
+    /// The caller owns the maintenance gate that prevents a new writer from being admitted while
+    /// this method runs. Existing queued work must drain successfully; an unresolved writer failure
+    /// is returned instead of being hidden by the upgrade's writer lease.
+    pub(crate) async fn retire_history_for_upgrade(&self, thread_id: &str) -> Result<()> {
+        let channel = {
+            self.0
+                .threads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(thread_id)
+                .map(|status| status.channel.clone())
+        };
+        if let Some(channel) = channel {
+            channel.stop_and_join().await?;
+            self.release_delivery_channel(thread_id, &channel);
+        }
+        Ok(())
+    }
+
     /// Install exactly one stable current writer in the existing per-Thread registration slot.
     /// Prepare only the caller-owned session directory, then identify its physical location before
     /// taking the registration lock. Creation/lookup errors propagate; no guessed missing-path key,
     /// history access, or extra global path registry is involved. The owner must keep this directory
     /// in place until join/release, just as for the session's other physical assets.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "current-only API is intentionally not wired to production before #470"
-        )
-    )]
     pub(crate) async fn current_writer(
         &self,
         thread_id: &str,

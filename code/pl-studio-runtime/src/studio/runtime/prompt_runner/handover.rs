@@ -23,7 +23,7 @@ impl StudioRuntime {
     /// Lists the pending interactions raised by the direct children of one main session.
     ///
     /// A loaded child answers from its live owner snapshot; a child that is not resident is read
-    /// from its saved checkpoint only, so reopening the application still surfaces questions the
+    /// from its saved current only, so reopening the application still surfaces questions the
     /// user has to decide, without activating a child, starting a model call or touching its
     /// workspace. A child Plan interaction is main-session-only and stays a diagnostic: it is not
     /// offered here, and its resolution entry rejects it too.
@@ -161,24 +161,15 @@ impl StudioRuntime {
                 continue;
             };
             let thread = pl_protocol::Thread::from(record);
-            // Passive reads enter the existing content preparation barrier for a supported
-            // old schema before loading its checkpoint. This neither installs an execution
-            // owner nor performs model/identity recovery; current-schema reads stay read-only.
-            self.store
-                .history(&child_id)
-                .await?
-                .prepare_conversation_read()
-                .await?;
-            let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-                    &self.store,
-                    &thread,
-                )
-                .await?
+            let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
+                &self.store,
+                &thread,
+            )
+            .await?
             else {
                 continue;
             };
-            states.push((child_id, checkpoint.state));
+            states.push((child_id, current.state.to_paused_snapshot()));
         }
         Ok(states)
     }

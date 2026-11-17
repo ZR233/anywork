@@ -7,25 +7,14 @@ use serde::{Deserialize, Serialize};
 // 活动/存储 DTO 定义在兄弟模块 `thread_activity`，由 `types` 重导出；这里显式引入，不复制定义，
 // 也不做 `pub use` 以免与 `thread_activity::*` 产生同名 glob 歧义。
 use super::{
-    BridgeAgentExecution, BridgeCurrentCollectionRef, BridgeCurrentPlanHead, BridgeDelegationMode,
-    BridgeDelegationPreference, BridgeNewThreadModelRoute, BridgeThreadActivity,
-    BridgeThreadStorageState,
+    BridgeAgentExecution, BridgeCurrentCollectionRef, BridgeCurrentPlanHead,
+    BridgeCurrentStateField, BridgeDelegationMode, BridgeDelegationPreference,
+    BridgeNewThreadModelRoute, BridgeThreadActivity, BridgeThreadStorageState,
 };
 
 pub mod item;
 
 pub use item::*;
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum BridgeThreadSubscriptionUpdate {
-    Snapshot {
-        completed_history_version: u32,
-        snapshot: Box<BridgeThreadSnapshot>,
-    },
-    Notification {
-        notification: Box<BridgeThreadNotificationEnvelope>,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadNotificationEnvelope {
@@ -259,6 +248,7 @@ pub struct BridgeTurnBudgetUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadRuntimeSnapshot {
     pub thread_id: String,
+    pub deferred: Vec<BridgeCurrentStateField>,
     pub usage: BridgeThreadRuntimeUsage,
     pub live_usage: Option<BridgeThreadRuntimeLiveUsage>,
     pub turn_completion_tokens: u64,

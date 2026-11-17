@@ -1,5 +1,8 @@
 //! Temporary, storage-only report reception shares the ordinary identity/Entry owner.
-use super::{EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices};
+use super::{
+    EntryPurpose, SessionRuntime, ThreadAssemblyError, agent_services::AgentServices,
+    pending_delivery::PendingNativeDelivery,
+};
 use anyhow::{Context, Result};
 use pl_core::thread::{ThreadHandle, ThreadLifecycle, inbox::ThreadMessage};
 use std::sync::Arc;
@@ -7,19 +10,22 @@ use std::sync::Arc;
 enum Recipient {
     Preparing,
     Cold(EntryPurpose),
-    Borrowed(ThreadHandle),
+    Borrowed {
+        thread: ThreadHandle,
+        wake: bool,
+    },
     Temporary(ThreadHandle, Arc<()>),
     Release(Arc<()>),
 }
 
 enum StorageWrite {
-    Inbox(ThreadMessage),
+    Pending(PendingNativeDelivery),
     ReviewDelivery(super::review_delivery::ReviewDeliveryFact),
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "parent report delivery failed: {delivery:#}; temporary receiver cleanup failed: {cleanup:#}"
+    "Native delivery failed: {delivery:#}; temporary receiver cleanup failed: {cleanup:#}"
 )]
 struct ReportReceiverFailure {
     #[source]
@@ -92,7 +98,7 @@ impl SessionRuntime {
 }
 
 impl AgentServices {
-    /// Deliver only the original ID/body and wait for the existing history handoff ACK. A normal
+    /// Deliver only the original ID/body and wait for the marker + Current inbox ACK. A normal
     /// or close-storage owner is borrowed; a cold recipient gets a separately identified temporary
     /// purpose in that same Entry registry, never an executable owner or a new permanent seal.
     pub(super) async fn redeliver_parent_report(
@@ -114,7 +120,21 @@ impl AgentServices {
                 }),
             "Native report inbox requires a Native recipient"
         );
-        self.write_storage_message(owner, parent, StorageWrite::Inbox(message))
+        self.deliver_pending_native(
+            owner,
+            parent,
+            PendingNativeDelivery::from_terminal_message(message, false)?,
+        )
+        .await
+    }
+
+    pub(super) async fn deliver_pending_native(
+        &self,
+        owner: &SessionRuntime,
+        parent: &str,
+        pending: PendingNativeDelivery,
+    ) -> Result<()> {
+        self.write_storage_message(owner, parent, StorageWrite::Pending(pending))
             .await
     }
 
@@ -124,20 +144,15 @@ impl AgentServices {
         source: &str,
         fact: super::review_delivery::ReviewDeliveryFact,
     ) -> Result<super::review_delivery::ReviewDeliveryFact> {
-        let id = fact.message.id.clone();
+        let saved = fact.clone();
         self.write_storage_message(owner, source, StorageWrite::ReviewDelivery(fact))
             .await?;
-        self.store
-            .history(source)
-            .await?
-            .review_delivery_exception(&id)
-            .await?
-            .context("review delivery fact has no durable original")
+        Ok(saved)
     }
 
-    /// Both receive-only purposes use the same installation, attachment and cleanup owner. A
-    /// recovery fact mutates only opaque application state; it cannot admit model work or unseal
-    /// execution. The caller must not hold the source/recipient identity gate while joining this.
+    /// Both storage writes use the same installation, attachment and cleanup owner. Pending delivery
+    /// commits its marker before inbox admission; the review receipt carrier remains source-owned.
+    /// The caller must not hold the source/recipient identity gate while joining this.
     async fn write_storage_message(
         &self,
         owner: &SessionRuntime,
@@ -153,7 +168,7 @@ impl AgentServices {
                 let state = owner.0.state();
                 // Final close rejects new execution but still owns the original
                 // admitted report. This private storage write never resumes it.
-                let closing_inbox = matches!(write, StorageWrite::Inbox(_))
+                let closing_inbox = matches!(write, StorageWrite::Pending(_))
                     && (state.sealed_agents.contains_key(parent) || state.closing)
                     && !state.unpublished_children.contains_key(parent)
                     && !state.preparing_children.contains_key(parent);
@@ -185,7 +200,10 @@ impl AgentServices {
                                 {
                                     Recipient::Cold(EntryPurpose::CloseStorage)
                                 } else {
-                                    Recipient::Borrowed(entry.native()?.thread.clone())
+                                    Recipient::Borrowed {
+                                        thread: entry.native()?.thread.clone(),
+                                        wake: false,
+                                    }
                                 }
                             }
                             EntryPurpose::Execution
@@ -195,7 +213,10 @@ impl AgentServices {
                                     && entry.native()?.thread.snapshot().lifecycle
                                         == ThreadLifecycle::Open =>
                             {
-                                Recipient::Borrowed(entry.native()?.thread.clone())
+                                Recipient::Borrowed {
+                                    thread: entry.native()?.thread.clone(),
+                                    wake: entry.native()?.ready && !closing_inbox,
+                                }
                             }
                             EntryPurpose::Execution
                                 if matches!(write, StorageWrite::ReviewDelivery(_))
@@ -211,7 +232,7 @@ impl AgentServices {
                     }
                 }
             };
-            let (thread, temporary) = match recipient {
+            let (thread, temporary, allow_wake) = match recipient {
                 Recipient::Preparing => {
                     // reserve() precedes the activation worker's identity permit. Waiting with
                     // that permit held would prevent the worker from ever publishing its result.
@@ -223,8 +244,8 @@ impl AgentServices {
                     owner.release_report_receiver(parent, &incarnation).await?;
                     continue;
                 }
-                Recipient::Borrowed(thread) => (thread, None),
-                Recipient::Temporary(thread, incarnation) => (thread, Some(incarnation)),
+                Recipient::Borrowed { thread, wake } => (thread, None, wake),
+                Recipient::Temporary(thread, incarnation) => (thread, Some(incarnation), false),
                 Recipient::Cold(purpose) => {
                     if purpose == EntryPurpose::CloseStorage {
                         // Replacing an ended final-close core must first join its retained binding.
@@ -236,48 +257,50 @@ impl AgentServices {
                         owner.join_close_storage(parent).await?;
                     }
                     let record = self.record(parent).await?;
-                    let checkpoint =
-                        crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+                    let current =
+                        crate::studio::thread_factory::recovery::load_current_for_recovery(
                             &self.store,
                             &record,
                         )
                         .await?
-                        .context("report recipient has no saved checkpoint")?;
-                    let thread =
-                        match self.install_storage_owner(owner, &record, checkpoint, purpose) {
-                            Ok(thread) => thread,
-                            Err(ThreadAssemblyError::Preparing(_)) => {
-                                drop(operation);
-                                changed.await;
-                                continue;
-                            }
-                            Err(error) => return Err(error.into()),
-                        };
+                        .context("report recipient has no saved current")?;
+                    let thread = match self.install_storage_owner(owner, &record, current, purpose)
+                    {
+                        Ok(thread) => thread,
+                        Err(ThreadAssemblyError::Preparing(_)) => {
+                            drop(operation);
+                            changed.await;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     let incarnation = (purpose == EntryPurpose::ReportReceiver).then_some(
                         owner.0.state().entries[parent]
                             .native()?
                             .incarnation
                             .clone(),
                     );
-                    (thread, incarnation)
+                    (thread, incarnation, false)
                 }
             };
             let delivery = async {
                 owner.attach_close_storage(parent).await?;
                 match &write {
-                    StorageWrite::Inbox(message) => {
-                        thread.send_message(message.clone()).await?;
+                    StorageWrite::Pending(pending) => {
+                        super::pending_delivery::complete_pending_native_delivery(
+                            self,
+                            owner,
+                            parent,
+                            &thread,
+                            pending.clone(),
+                            allow_wake,
+                        )
+                        .await?;
                     }
                     StorageWrite::ReviewDelivery(fact) => {
                         use pl_core::thread::extensions::ExtensionMutation;
-                        let history = self.store.history(parent).await?;
                         let extension_id = fact.extension_id();
-                        if history
-                            .review_delivery_exception(&fact.message.id)
-                            .await?
-                            .is_none()
-                            && !thread.snapshot().extensions.contains_key(&extension_id)
-                        {
+                        if !thread.snapshot().extensions.contains_key(&extension_id) {
                             thread
                                 .mutate_extensions(vec![ExtensionMutation::Put {
                                     id: extension_id.clone(),
@@ -287,10 +310,19 @@ impl AgentServices {
                                 .await?;
                         }
                         owner.synchronize_observation(parent).await?;
-                        let saved = history
-                            .review_delivery_exception(&fact.message.id)
-                            .await?
-                            .context("review delivery CAS has no durable receipt")?;
+                        let saved = thread
+                            .snapshot()
+                            .extensions
+                            .get(&extension_id)
+                            .map(|record| {
+                                super::review_delivery::ReviewDeliveryFact::decode(&record.payload)
+                            })
+                            .transpose()?
+                            .context("review delivery CAS has no current carrier")?;
+                        anyhow::ensure!(
+                            saved.message.digest() == fact.message.digest(),
+                            "review delivery identity conflicts with its current carrier"
+                        );
                         if let Some(record) = thread.snapshot().extensions.get(&extension_id) {
                             let carrier = super::review_delivery::ReviewDeliveryFact::decode(
                                 &record.payload,
@@ -306,9 +338,14 @@ impl AgentServices {
                                 }])
                                 .await?;
                         }
+                        owner.synchronize_observation(parent).await?;
+                        self.store
+                            .conversation_store(parent)
+                            .await?
+                            .flush_current(thread.runtime_epoch())
+                            .await?;
                     }
                 }
-                owner.synchronize_observation(parent).await?;
                 Ok::<_, anyhow::Error>(())
             }
             .await;

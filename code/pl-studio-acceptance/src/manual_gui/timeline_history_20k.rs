@@ -50,19 +50,19 @@ struct HistoryAudit {
     distinct_seed_text_ids: i64,
     growth_text_items: i64,
     distinct_growth_text_ids: i64,
-    execution_lifecycles: i64,
+    lifecycle_events: i64,
     history_turns: i64,
-    applied_write_seq: i64,
+    history_seq: i64,
     database_bytes: u64,
     wal_bytes: Option<u64>,
     #[serde(skip)]
-    conversation_records: Vec<String>,
+    canonical_events: Vec<String>,
     #[serde(skip)]
     content_manifests: Vec<String>,
     #[serde(skip)]
     content_chunks: Vec<String>,
     #[serde(skip)]
-    execution_lifecycle_records: Vec<String>,
+    lifecycle_records: Vec<String>,
     #[serde(skip)]
     history_turn_records: Vec<String>,
 }
@@ -78,15 +78,15 @@ impl fmt::Debug for HistoryAudit {
             .field("distinct_seed_text_ids", &self.distinct_seed_text_ids)
             .field("growth_text_items", &self.growth_text_items)
             .field("distinct_growth_text_ids", &self.distinct_growth_text_ids)
-            .field("execution_lifecycles", &self.execution_lifecycles)
+            .field("lifecycle_events", &self.lifecycle_events)
             .field("history_turns", &self.history_turns)
-            .field("applied_write_seq", &self.applied_write_seq)
+            .field("history_seq", &self.history_seq)
             .field("database_bytes", &self.database_bytes)
             .field("wal_bytes", &self.wal_bytes)
-            .field("conversation_record_rows", &self.conversation_records.len())
+            .field("conversation_record_rows", &self.canonical_events.len())
             .field("content_manifest_rows", &self.content_manifests.len())
             .field("content_chunk_rows", &self.content_chunks.len())
-            .field("history_item_rows", &self.execution_lifecycle_records.len())
+            .field("history_item_rows", &self.lifecycle_records.len())
             .field("history_turn_rows", &self.history_turn_records.len())
             .finish()
     }
@@ -668,20 +668,16 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         let mut connection = SqliteConnection::connect_with(&options).await?;
         let row: (String, i64, i64, i64, i64, i64, i64, i64, i64, i64) = sea_orm::sqlx::query_as(
             "SELECT
-                    (SELECT thread_id FROM history_meta WHERE id=1),
-                    (SELECT COUNT(*) FROM conversation_items),
-                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items),
-                    (SELECT COUNT(*) FROM conversation_items
-                       WHERE item_id GLOB ?),
-                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
-                       WHERE item_id GLOB ?),
-                    (SELECT COUNT(*) FROM conversation_items
-                       WHERE item_id GLOB ?),
-                    (SELECT COUNT(DISTINCT item_id) FROM conversation_items
-                       WHERE item_id GLOB ?),
-                    (SELECT COUNT(*) FROM execution_lifecycle),
-                    (SELECT COUNT(*) FROM history_turns),
-                    (SELECT applied_write_seq FROM history_meta WHERE id=1)",
+                    (SELECT thread_id FROM history_store_meta WHERE singleton=1),
+                    (SELECT COUNT(*) FROM history_events WHERE query_class IS NOT NULL),
+                    (SELECT COUNT(DISTINCT event_id) FROM history_events WHERE query_class IS NOT NULL),
+                    (SELECT COUNT(*) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
+                    (SELECT COUNT(DISTINCT entity_id) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
+                    (SELECT COUNT(*) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
+                    (SELECT COUNT(DISTINCT entity_id) FROM history_events WHERE query_class IS NOT NULL AND entity_id GLOB ?),
+                    (SELECT COUNT(*) FROM history_events WHERE kind IN ('entity_started','entity_ended','run_started','run_ended')),
+                    (SELECT COUNT(*) FROM history_events WHERE row_scope='turn' AND is_anchor=1),
+                    (SELECT COALESCE(MAX(seq),0) FROM history_events)",
         )
         .bind(TIMELINE_HISTORY_20K_SEED_RECORD_GLOB)
         .bind(TIMELINE_HISTORY_20K_SEED_RECORD_GLOB)
@@ -690,43 +686,32 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
         .fetch_one(&mut connection)
         .await
         .with_context(|| format!("failed to audit {}", display.display()))?;
-        let conversation_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(seq,item_id,query_class,parent_id,hex(payload),hex(metadata))
-             FROM conversation_items ORDER BY seq",
+        let canonical_events = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,source_kind,source_id,call_id,message_id,query_class,parent_id,original_kind,tool_name,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+             FROM history_events WHERE query_class IS NOT NULL ORDER BY seq",
         )
         .fetch_all(&mut connection)
         .await
-        .with_context(|| format!("failed to read exact timeline inventory from {}", display.display()))?;
-        // A completed envelope can reference external bodies. Compare their
-        // exact persisted manifests/chunks too; equal item counts or previews
-        // cannot prove preservation. `4:item` is the canonical ChatKey("item", id)
-        // storage prefix; mutable Current bodies are intentionally excluded.
+        .with_context(|| format!("failed to read canonical inventory from {}", display.display()))?;
+        // Compare every immutable directory and chunk, including boundary observations.
+        // Current lives in JSON and is intentionally outside this history inventory.
         let content_manifests = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(c.owner_key,c.content_key,hex(c.payload))
-             FROM conversation_contents c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
-             ORDER BY c.owner_key,c.content_key",
+            "SELECT json_array(body_id,owner_event_id,ordinal,body_key,role,byte_length,media_type,hex(digest))
+             FROM history_bodies ORDER BY owner_event_id,ordinal",
         ).fetch_all(&mut connection).await
-            .context("failed to audit completed content manifests")?;
+            .context("failed to audit immutable body directories")?;
         let content_chunks = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(c.owner_key,c.content_key,c.byte_offset,hex(c.data))
-             FROM conversation_content_chunks c JOIN conversation_items i ON c.owner_key='4:item'||i.item_id
-             ORDER BY c.owner_key,c.content_key,c.byte_offset",
+            "SELECT json_array(body_id,chunk_no,hex(data)) FROM history_body_chunks ORDER BY body_id,chunk_no",
         ).fetch_all(&mut connection).await
-            .context("failed to audit completed content chunks")?;
-        let execution_lifecycle_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_effect,started_suborder,started_at,ended_effect,ended_suborder,finished_at,outcome,completion_item_id,last_write_seq)
-             FROM execution_lifecycle ORDER BY identity",
-        )
-        .fetch_all(&mut connection)
-        .await
-        .with_context(|| format!("failed to read exact item inventory from {}", display.display()))?;
+            .context("failed to audit immutable body chunks")?;
+        let lifecycle_records = sea_orm::sqlx::query_scalar::<_, String>(
+            "SELECT json_array(seq,event_id,kind,run_id,attempt_id,entity_id,turn_id,source_kind,source_id,call_id,message_id,group_id,row_scope,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+             FROM history_events WHERE query_class IS NULL AND row_scope IS NOT 'turn' ORDER BY seq",
+        ).fetch_all(&mut connection).await.context("failed to audit lifecycle and observation events")?;
         let history_turn_records = sea_orm::sqlx::query_scalar::<_, String>(
-            "SELECT json_array(turn_id,turn_order,admitted_effect,updated_effect,terminal_effect,payload,context_disposition)
-             FROM history_turns ORDER BY turn_id",
-        )
-        .fetch_all(&mut connection)
-        .await
-        .with_context(|| format!("failed to read exact Turn inventory from {}", display.display()))?;
+            "SELECT json_array(seq,event_id,kind,run_id,turn_id,row_key,is_anchor,occurred_at,recorded_at,head_json,payload_body_id)
+             FROM history_events WHERE row_scope='turn' ORDER BY seq",
+        ).fetch_all(&mut connection).await.context("failed to audit Turn events")?;
         Ok::<_, anyhow::Error>(HistoryAudit {
             thread_id: row.0,
             canonical_atoms: row.1,
@@ -735,15 +720,15 @@ fn history_audit(database: &Path) -> Result<HistoryAudit> {
             distinct_seed_text_ids: row.4,
             growth_text_items: row.5,
             distinct_growth_text_ids: row.6,
-            execution_lifecycles: row.7,
+            lifecycle_events: row.7,
             history_turns: row.8,
-            applied_write_seq: row.9,
+            history_seq: row.9,
             database_bytes: 0,
             wal_bytes: None,
-            conversation_records,
+            canonical_events,
             content_manifests,
             content_chunks,
-            execution_lifecycle_records,
+            lifecycle_records,
             history_turn_records,
         })
     })?;
@@ -764,12 +749,12 @@ fn same_persisted_inventory(seed: &HistoryAudit, cold: &HistoryAudit) -> bool {
         && seed.distinct_seed_text_ids == cold.distinct_seed_text_ids
         && seed.growth_text_items == cold.growth_text_items
         && seed.distinct_growth_text_ids == cold.distinct_growth_text_ids
-        && seed.execution_lifecycles == cold.execution_lifecycles
+        && seed.lifecycle_events == cold.lifecycle_events
         && seed.history_turns == cold.history_turns
-        && seed.conversation_records == cold.conversation_records
+        && seed.canonical_events == cold.canonical_events
         && seed.content_manifests == cold.content_manifests
         && seed.content_chunks == cold.content_chunks
-        && seed.execution_lifecycle_records == cold.execution_lifecycle_records
+        && seed.lifecycle_records == cold.lifecycle_records
         && seed.history_turn_records == cold.history_turn_records
 }
 
@@ -790,11 +775,11 @@ fn verify_cold_lifecycle(
         seed.thread_id,
         observation.thread_id
     );
-    let previous_closed = u64::try_from(previous.applied_write_seq)
+    let previous_closed = u64::try_from(previous.history_seq)
         .with_context(|| format!("{phase} previous closed watermark is negative"))?;
-    let seed_closed = u64::try_from(seed.applied_write_seq)
+    let seed_closed = u64::try_from(seed.history_seq)
         .with_context(|| format!("{phase} seed closed watermark is negative"))?;
-    let actual_after_close = u64::try_from(current.applied_write_seq)
+    let actual_after_close = u64::try_from(current.history_seq)
         .with_context(|| format!("{phase} after-close watermark is negative"))?;
     ensure!(
         previous_closed == seed_closed && actual_after_close == previous_closed,
@@ -853,7 +838,7 @@ mod tests {
             == 1
     }
 
-    fn audit(applied_write_seq: i64) -> HistoryAudit {
+    fn audit(history_seq: i64) -> HistoryAudit {
         HistoryAudit {
             thread_id: "thread-1".into(),
             canonical_atoms: 2,
@@ -862,18 +847,18 @@ mod tests {
             distinct_seed_text_ids: 1,
             growth_text_items: 0,
             distinct_growth_text_ids: 0,
-            execution_lifecycles: 2,
+            lifecycle_events: 2,
             history_turns: 1,
-            applied_write_seq,
+            history_seq,
             database_bytes: 100,
             wal_bytes: Some(0),
-            conversation_records: vec![
+            canonical_events: vec![
                 r#"[1,"item-1",null,1,null,"text",{"value":"a"}]"#.into(),
                 r#"[2,"turn-1","turn-1",1,10,"turn",{"state":"completed"}]"#.into(),
             ],
             content_manifests: vec![r#"["4:itemitem-1","body","manifest"]"#.into()],
             content_chunks: vec![r#"["4:itemitem-1","body",0,"61"]"#.into()],
-            execution_lifecycle_records: vec![
+            lifecycle_records: vec![
                 r#"[1,"item-1","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into(),
                 r#"[2,"turn-1","turn-1","turn",0,"terminal",1,1,{"state":"completed"},1]"#.into(),
             ],
@@ -946,17 +931,17 @@ mod tests {
         let seed = audit(10);
 
         let mut changed_payload = seed.clone();
-        changed_payload.conversation_records[0] =
+        changed_payload.canonical_events[0] =
             r#"[1,"item-1",null,1,null,"text",{"value":"changed"}]"#.into();
         assert!(!same_persisted_inventory(&seed, &changed_payload));
 
         let mut changed_identity = seed.clone();
-        changed_identity.execution_lifecycle_records[0] =
+        changed_identity.lifecycle_records[0] =
             r#"[1,"other-item","turn-1","text",0,"terminal",1,1,{"value":"a"},1]"#.into();
         assert!(!same_persisted_inventory(&seed, &changed_identity));
 
         let mut changed_order = seed.clone();
-        changed_order.conversation_records.reverse();
+        changed_order.canonical_events.reverse();
         assert!(!same_persisted_inventory(&seed, &changed_order));
 
         let mut changed_body = seed.clone();

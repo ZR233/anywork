@@ -1,0 +1,4688 @@
+//! One-shot schema 24 → 25 upgrade.
+//!
+//! This module is intentionally outside normal history reads and writes. It pins one writer,
+//! first publishes a self-contained current file and a logical backup, and only then lets the
+//! SeaORM migration transaction transform the database in one Immediate transaction.
+
+use super::NativeHistoryEntity;
+use super::{
+    BODY_CHUNK_BYTES, HEAD_MAX_BYTES, HistoryBodyRole, HistoryEntityHead, HistoryError,
+    HistoryEvent, HistoryEventBodyRef, HistoryEventKind, HistoryObservation, HistoryRowHead,
+    HistorySingleVisibility, HistorySource, HistoryTurnState, HistoryWaitHead,
+    HistoryWaitIntentHead, HistoryWorkHead, Result,
+    db::{self, statement},
+    import::{
+        HistoryBodySource, HistoryImport, HistoryImportBody, V24Body, V24BodyReader,
+        V24HistorySource,
+    },
+    schema,
+};
+use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
+use pl_core::{
+    context::OpaquePayload,
+    thread::current::{RuntimeEpoch, ThreadCurrent, ThreadCurrentState},
+};
+use pl_protocol::{
+    ChatAtom, ChatAtomLifecycle, ChatSourceLifecycle, ContentOwner, ContentRef, ContentTarget,
+    PayloadData, Turn,
+};
+use sea_orm::{ConnectionTrait, DatabaseConnection};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::{
+    collections::BTreeMap,
+    fs::File,
+    io::Write,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+mod payload;
+use payload::{
+    StagedPayload, copy_planned_bodies, create_staging as create_payload_staging,
+    drop_staging as drop_payload_staging, plan_content_reference,
+    reference_plan as payload_reference, render_rewritten_atom,
+};
+
+const LEGACY_EVENT_PREFIX: &str = "legacy:v24:";
+const LEGACY_BODY_PREFIX: &str = "legacy:v24:body:";
+const BACKUP_ROOT: &str = "migration-backups/history-24-to-25";
+#[cfg(test)]
+static FAIL_NEXT_IMPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+static FAIL_NEXT_BACKUP_PUBLISH_THREAD: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+static FAIL_NEXT_CURRENT_PUBLISH: Mutex<Option<(String, bool)>> = Mutex::new(None);
+#[cfg(test)]
+static FAIL_NEXT_DDL_THREAD: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+static FAIL_NEXT_REPORT_THREAD: Mutex<Option<String>> = Mutex::new(None);
+
+const LEGACY_SOURCE_TABLES: &[&str] = &[
+    "history_meta",
+    "conversation_items",
+    "conversation_contents",
+    "conversation_content_chunks",
+    "execution_lifecycle",
+    "history_turns",
+    "conversation_sources",
+    "conversation_display_blocks",
+    "conversation_display_members",
+    "history_tool_tasks",
+    "history_input_identities",
+    "history_message_identities",
+    "history_fact_receipts",
+    "session_costs",
+    "session_checkpoint",
+    "current_context",
+    "completion_boundary_archive_view_state",
+    "completion_boundary_archive_view_entries",
+    "completion_boundary_archive_timeline_items",
+    "completion_boundary_archive_timeline_members",
+    "completion_boundary_archive_projection_state",
+    "completion_boundary_archive_contents",
+    "completion_boundary_archive_content_chunks",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpgradeReport {
+    pub operation_id: String,
+    pub thread_id: String,
+    pub database_id: String,
+    pub status: UpgradeStatus,
+    pub backup: Option<PathBuf>,
+    pub current_original_backup: Option<PathBuf>,
+    pub source_table_rows: BTreeMap<String, u64>,
+    pub imported_categories: BTreeMap<String, u64>,
+    pub backup_only_categories: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UpgradeStatus {
+    Upgraded,
+    AlreadySchema25,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum SourceFormat {
+    Schema24,
+    Schema25,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct ImportCounts {
+    imported: BTreeMap<String, u64>,
+    backup_only: BTreeMap<String, u64>,
+}
+
+impl ImportCounts {
+    fn imported(&mut self, category: &str, amount: u64) {
+        *self.imported.entry(category.to_owned()).or_default() += amount;
+    }
+
+    fn backup_only(&mut self, category: &str, amount: u64) {
+        *self.backup_only.entry(category.to_owned()).or_default() += amount;
+    }
+}
+
+struct WriterLease {
+    _file: File,
+}
+
+pub async fn upgrade_history(
+    history_path: impl AsRef<Path>,
+    thread_id: &str,
+    session_dir: impl AsRef<Path>,
+) -> Result<UpgradeReport> {
+    let history_path = history_path.as_ref().to_path_buf();
+    let session_dir = session_dir.as_ref().to_path_buf();
+    if thread_id.is_empty() {
+        return Err(HistoryError::InvalidEvent(
+            "Thread identity is empty".into(),
+        ));
+    }
+    if !history_path.is_file() {
+        return Err(HistoryError::NotFound(history_path.display().to_string()));
+    }
+    let read = schema::connect(&history_path, true, false).await?;
+    let format = classify_source(&read).await?;
+    if format == SourceFormat::Schema25 {
+        let (database_id, _) = schema::identity(&read, thread_id).await?;
+        read.close().await?;
+        return Ok(UpgradeReport {
+            operation_id: "already-schema-25".into(),
+            thread_id: thread_id.to_owned(),
+            database_id,
+            status: UpgradeStatus::AlreadySchema25,
+            backup: None,
+            current_original_backup: None,
+            source_table_rows: BTreeMap::new(),
+            imported_categories: BTreeMap::new(),
+            backup_only_categories: BTreeMap::new(),
+        });
+    }
+    read.close().await?;
+    let _lease = acquire_writer_lease(&history_path).await?;
+    // Recheck the source under exclusive maintenance ownership before creating any backup.
+    let read = schema::connect(&history_path, true, false).await?;
+    if classify_source(&read).await? == SourceFormat::Schema25 {
+        let (database_id, _) = schema::identity(&read, thread_id).await?;
+        read.close().await?;
+        return Ok(UpgradeReport {
+            operation_id: "already-schema-25".into(),
+            thread_id: thread_id.into(),
+            database_id,
+            status: UpgradeStatus::AlreadySchema25,
+            backup: None,
+            current_original_backup: None,
+            source_table_rows: BTreeMap::new(),
+            imported_categories: BTreeMap::new(),
+            backup_only_categories: BTreeMap::new(),
+        });
+    }
+    crate::studio::storage::history::validate_layout_source(&read, thread_id).await?;
+    let identity = legacy_identity(&read, thread_id).await?;
+    read.close().await?;
+
+    let operation_id = uuid::Uuid::new_v4().to_string();
+    let operation_dir = session_dir.join(BACKUP_ROOT).join(&operation_id);
+    prepare_directory(&session_dir, &operation_dir)?;
+    let (backup_path, backup_counts) = make_backup(
+        &history_path,
+        &operation_dir,
+        thread_id,
+        &identity.0,
+        identity.1,
+    )
+    .await?;
+
+    let source = V24HistorySource::open(&history_path, thread_id).await?;
+    let counts = source_table_rows(&source).await?;
+    if counts != backup_counts {
+        source.close().await?;
+        return Err(HistoryError::Integrity(
+            "schema 24 source changed while its logical backup was prepared".into(),
+        ));
+    }
+    let current_backup = prepare_current(&source, thread_id, &session_dir, &operation_dir).await?;
+
+    let writer = schema::connect(&history_path, false, false).await?;
+    crate::studio::storage::history::validate_layout_source(&writer, thread_id).await?;
+    let imported =
+        schema::run_upgrade(&writer, thread_id, &identity.0, identity.1, source.clone()).await?;
+    let (database_id, _) = schema::identity(&writer, thread_id).await?;
+    writer.close().await?;
+    source.close().await?;
+
+    let mut backup_only_categories = imported.backup_only;
+    let archived_rows = LEGACY_SOURCE_TABLES
+        .iter()
+        .filter(|table| table.starts_with("completion_boundary_archive_"))
+        .try_fold(0u64, |total, table| {
+            let rows = counts.get(*table).copied().ok_or_else(|| {
+                HistoryError::Integrity(format!("source row count for {table} is missing"))
+            })?;
+            total
+                .checked_add(rows)
+                .ok_or_else(|| HistoryError::Integrity("archive row count overflow".into()))
+        })?;
+    backup_only_categories.insert("completion_boundary_archive_*".into(), archived_rows);
+    let report = UpgradeReport {
+        operation_id,
+        thread_id: thread_id.to_owned(),
+        database_id,
+        status: UpgradeStatus::Upgraded,
+        backup: Some(backup_path),
+        current_original_backup: current_backup,
+        source_table_rows: counts,
+        imported_categories: imported.imported,
+        backup_only_categories,
+    };
+    write_report(&operation_dir, &report)?;
+    Ok(report)
+}
+
+async fn acquire_writer_lease(history_path: &Path) -> Result<WriterLease> {
+    // HistoryStore and this one-shot upgrade must contend on the same physical path. The caller
+    // still owns the Thread maintenance/ownership gate and must stop the old writer before this
+    // entry is invoked; this lease only prevents a second process from entering either path.
+    let lock_path = writer_lock_path(history_path);
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    fs4::FileExt::try_lock(&file)
+        .map_err(|error| HistoryError::Conflict(format!("history writer lease: {error}")))?;
+    Ok(WriterLease { _file: file })
+}
+
+fn writer_lock_path(history_path: &Path) -> PathBuf {
+    let mut lock_path = history_path.as_os_str().to_os_string();
+    lock_path.push(".writer.lock");
+    PathBuf::from(lock_path)
+}
+
+async fn classify_source(db: &DatabaseConnection) -> Result<SourceFormat> {
+    let old = table_exists(db, "history_meta").await?;
+    let new = table_exists(db, "history_store_meta").await?;
+    match (old, new) {
+        (true, false) => Ok(SourceFormat::Schema24),
+        (false, true) => Ok(SourceFormat::Schema25),
+        (true, true) => Err(HistoryError::Integrity(
+            "database contains both schema 24 and schema 25 identity tables".into(),
+        )),
+        (false, false) => Err(HistoryError::Integrity(
+            "database has no recognizable history identity table".into(),
+        )),
+    }
+}
+
+async fn table_exists(db: &DatabaseConnection, table: &str) -> Result<bool> {
+    Ok(db
+        .query_one_raw(statement(
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
+            vec![table.into()],
+        ))
+        .await?
+        .is_some())
+}
+
+fn db_u64(value: i64, field: &str) -> Result<u64> {
+    u64::try_from(value)
+        .map_err(|_| HistoryError::Integrity(format!("negative database integer for {field}")))
+}
+
+async fn legacy_identity(db: &DatabaseConnection, thread_id: &str) -> Result<(String, u64)> {
+    let row = db
+        .query_one_raw(statement(
+            "SELECT database_id,applied_write_seq,thread_id FROM history_meta WHERE id=1",
+            vec![],
+        ))
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("schema 24 identity is missing".into()))?;
+    let database_id: String = row.try_get("", "database_id")?;
+    if database_id.is_empty()
+        || uuid::Uuid::parse_str(&database_id).is_err()
+        || row.try_get::<String>("", "thread_id")? != thread_id
+    {
+        return Err(HistoryError::Integrity(
+            "schema 24 database identity differs".into(),
+        ));
+    }
+    let applied = db_u64(
+        row.try_get::<i64>("", "applied_write_seq")?,
+        "history_meta.applied_write_seq",
+    )?;
+    Ok((database_id, applied))
+}
+
+fn prepare_directory(anchor: &Path, target: &Path) -> Result<()> {
+    if !target.starts_with(anchor) {
+        return Err(HistoryError::Integrity(
+            "upgrade directory escapes its session".into(),
+        ));
+    }
+    std::fs::create_dir_all(target)?;
+    #[cfg(unix)]
+    {
+        let mut current = target;
+        loop {
+            let handle = File::open(current)?;
+            handle.sync_all()?;
+            if current == anchor {
+                break;
+            }
+            current = current.parent().ok_or_else(|| {
+                HistoryError::Integrity("upgrade directory has no session parent".into())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+async fn make_backup(
+    history_path: &Path,
+    operation_dir: &Path,
+    thread_id: &str,
+    database_id: &str,
+    watermark: u64,
+) -> Result<(PathBuf, BTreeMap<String, u64>)> {
+    let db = schema::connect(history_path, false, false).await?;
+    db.execute_raw(statement("PRAGMA synchronous=FULL", Vec::new()))
+        .await?;
+    let temporary = operation_dir.join(format!(
+        ".history-v24-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let temporary_sql = temporary.to_str().ok_or_else(|| {
+        HistoryError::Storage(anyhow::anyhow!("backup path is not valid UTF-8").into())
+    })?;
+    db.execute_raw(statement(
+        "VACUUM INTO ?",
+        vec![temporary_sql.to_owned().into()],
+    ))
+    .await?;
+    db.close().await?;
+
+    let backup_read = schema::connect(&temporary, true, false).await?;
+    crate::studio::storage::history::validate_layout_source(&backup_read, thread_id).await?;
+    if legacy_identity(&backup_read, thread_id).await? != (database_id.to_owned(), watermark) {
+        return Err(HistoryError::Integrity(
+            "schema 24 backup identity or watermark differs".into(),
+        ));
+    }
+    quick_check(&backup_read).await?;
+    let counts = database_table_rows(&backup_read).await?;
+    backup_read.close().await?;
+    File::open(&temporary)?.sync_all()?;
+    fail_backup_publish_once(thread_id)?;
+    let target = operation_dir.join("history.v24.sqlite");
+    pl_tool::workspace::move_owned_path(&temporary, &target)?;
+    sync_parent(&target)?;
+    Ok((target, counts))
+}
+
+async fn quick_check(db: &DatabaseConnection) -> Result<()> {
+    for row in db
+        .query_all_raw(statement("PRAGMA quick_check", Vec::new()))
+        .await?
+    {
+        if row.try_get_by_index::<String>(0)? != "ok" {
+            return Err(HistoryError::Integrity(
+                "schema 24 backup integrity check failed".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn source_table_rows(source: &V24HistorySource) -> Result<BTreeMap<String, u64>> {
+    let mut rows = BTreeMap::new();
+    for table in LEGACY_SOURCE_TABLES {
+        let row = source
+            .query_one(
+                &format!("SELECT count(*) AS count FROM {table}"),
+                Vec::new(),
+            )
+            .await?
+            .ok_or_else(|| HistoryError::Integrity(format!("legacy table {table} vanished")))?;
+        rows.insert(
+            (*table).to_owned(),
+            db_u64(row.try_get::<i64>("", "count")?, "legacy table row count")?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn database_table_rows(db: &DatabaseConnection) -> Result<BTreeMap<String, u64>> {
+    let mut rows = BTreeMap::new();
+    for table in LEGACY_SOURCE_TABLES {
+        let row = db
+            .query_one_raw(statement(
+                &format!("SELECT count(*) AS count FROM {table}"),
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity(format!("legacy table {table} vanished")))?;
+        rows.insert(
+            (*table).to_owned(),
+            db_u64(row.try_get::<i64>("", "count")?, "backup table row count")?,
+        );
+    }
+    Ok(rows)
+}
+
+async fn prepare_current(
+    source: &V24HistorySource,
+    thread_id: &str,
+    session_dir: &Path,
+    operation_dir: &Path,
+) -> Result<Option<PathBuf>> {
+    let current_path = session_dir.join("current.json");
+    if current_path.is_file() {
+        let (_, bytes) = crate::studio::storage::read_for_upgrade(session_dir, thread_id).await?;
+        File::open(&current_path)?.sync_all()?;
+        sync_parent(&current_path)?;
+        let backup = operation_dir.join("current.original.json");
+        backup_exact_bytes(&backup, &bytes)?;
+        return Ok(Some(backup));
+    }
+    if current_path.exists() {
+        return Err(HistoryError::Integrity(
+            "current path exists but is not a file".into(),
+        ));
+    }
+    let Some(checkpoint) = source.checkpoint(thread_id).await? else {
+        return Ok(None);
+    };
+    let current = build_current(source, checkpoint, thread_id, session_dir).await?;
+    crate::studio::storage::verify_for_upgrade(session_dir, thread_id, &current).await?;
+    let bytes = serde_json::to_vec(&current)?;
+    fail_current_publish_once(thread_id, false)?;
+    pl_tool::workspace::write_file_atomically(&current_path, &bytes)?;
+    fail_current_publish_once(thread_id, true)?;
+    let (restored, restored_bytes) =
+        crate::studio::storage::read_for_upgrade(session_dir, thread_id).await?;
+    if restored.thread_id != thread_id || restored_bytes != bytes {
+        return Err(HistoryError::Integrity("published current changed".into()));
+    }
+    Ok(None)
+}
+
+async fn build_current(
+    source: &V24HistorySource,
+    mut checkpoint: Box<pl_core::thread::ThreadCheckpoint>,
+    thread_id: &str,
+    session_dir: &Path,
+) -> Result<ThreadCurrent> {
+    materialize_checkpoint_bodies(session_dir, &mut checkpoint).await?;
+    verify_saved_pending_originals(source, &checkpoint).await?;
+    verify_pending_identities(source, &checkpoint).await?;
+    let epoch = RuntimeEpoch::new();
+    let state = ThreadCurrentState::from_snapshot(&checkpoint.state, epoch)
+        .map_err(|error| HistoryError::Storage(error.into()))?;
+    let mut current = ThreadCurrent::new(thread_id.to_owned(), epoch);
+    current.state = state;
+    current.saved_at = unix_milliseconds()?;
+    current.model_call = None;
+    Ok(current)
+}
+
+async fn materialize_checkpoint_bodies(
+    session_dir: &Path,
+    checkpoint: &mut pl_core::thread::ThreadCheckpoint,
+) -> Result<()> {
+    while let Some(entry) = checkpoint.pending_body().cloned() {
+        let path = checkpoint_blob_path(session_dir, entry.reference.digest())?;
+        let bytes = tokio::fs::read(&path).await.map_err(|error| {
+            HistoryError::Storage(
+                anyhow::anyhow!("read checkpoint body {}: {error}", path.display()).into(),
+            )
+        })?;
+        checkpoint
+            .materialize_body(&entry.reference, &bytes)
+            .map_err(|error| {
+                HistoryError::Storage(
+                    anyhow::anyhow!("materialize checkpoint body {}: {error}", path.display())
+                        .into(),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn checkpoint_blob_path(session_dir: &Path, digest: &str) -> Result<PathBuf> {
+    let hex = digest.strip_prefix("sha256:").ok_or_else(|| {
+        HistoryError::Integrity("checkpoint body digest is not a SHA-256 address".into())
+    })?;
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(HistoryError::Integrity(
+            "checkpoint body digest is not a SHA-256 address".into(),
+        ));
+    }
+    Ok(session_dir
+        .join("blobs")
+        .join("checkpoint")
+        .join(&hex[..2])
+        .join(hex))
+}
+
+async fn verify_saved_pending_originals(
+    source: &V24HistorySource,
+    checkpoint: &pl_core::thread::ThreadCheckpoint,
+) -> Result<()> {
+    for resident in checkpoint.state.tasks.values() {
+        let row = source
+            .query_one(
+                "SELECT revision,task_payload FROM history_tool_tasks WHERE call_id=?",
+                vec![resident.call_id.clone().into()],
+            )
+            .await?
+            .ok_or_else(|| {
+                HistoryError::Integrity("resident task has no durable schema 24 original".into())
+            })?;
+        let durable: pl_core::thread::task::TaskRecord =
+            serde_json::from_str(&row.try_get::<String>("", "task_payload")?)?;
+        if durable != *resident
+            || durable.revision
+                != db_u64(
+                    row.try_get::<i64>("", "revision")?,
+                    "history_tool_tasks.revision",
+                )?
+        {
+            return Err(HistoryError::Integrity(
+                "resident task differs from its durable schema 24 original".into(),
+            ));
+        }
+    }
+    for resident in checkpoint.state.deliveries.iter() {
+        let row = source
+            .query_one(
+                "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
+                vec![resident.call_id.clone().into()],
+            )
+            .await?
+            .ok_or_else(|| {
+                HistoryError::Integrity(
+                    "resident delivery has no durable schema 24 original".into(),
+                )
+            })?;
+        let payload = row
+            .try_get::<Option<String>>("", "delivery_payload")?
+            .ok_or_else(|| {
+                HistoryError::Integrity("resident delivery has no durable schema 24 payload".into())
+            })?;
+        let durable: pl_core::thread::ToolDelivery = serde_json::from_str(&payload)?;
+        let durable_json = serde_json::to_value(&durable)?;
+        let resident_json = serde_json::to_value(resident)?;
+        if durable_json != resident_json {
+            return Err(HistoryError::Integrity(
+                "resident delivery differs from its durable schema 24 original".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn verify_pending_identities(
+    source: &V24HistorySource,
+    checkpoint: &pl_core::thread::ThreadCheckpoint,
+) -> Result<()> {
+    for input in checkpoint.state.inputs.iter() {
+        let row = source
+            .query_one(
+                "SELECT payload FROM history_input_identities WHERE item_id=?",
+                vec![input.input.id.clone().into()],
+            )
+            .await?
+            .ok_or_else(|| {
+                HistoryError::Integrity("resident input has no durable schema 24 original".into())
+            })?;
+        let durable: crate::studio::storage::state::InputIdentityEntry =
+            serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+        if durable.id != input.input.id
+            || durable.digest != input.input.digest()
+            || durable.continuation != input.continuation
+            || durable.delivery != input.delivery
+            || durable.purpose != input.input.purpose
+            || durable.ordinal != input.ordinal
+            || durable.revision != input.revision
+            || durable.state != input.state
+            || durable.accepted_sequence != input.accepted_sequence
+        {
+            return Err(HistoryError::Integrity(
+                "resident input differs from its durable schema 24 original".into(),
+            ));
+        }
+    }
+    for message in checkpoint.state.inbox.iter() {
+        let row = source
+            .query_one(
+                "SELECT item_id,sequence,digest FROM history_message_identities WHERE message_id=?",
+                vec![message.message.id.clone().into()],
+            )
+            .await?;
+        let row = match row {
+            Some(row) => row,
+            None => {
+                return Err(HistoryError::Integrity(
+                    "resident inbox message has no durable schema 24 identity".into(),
+                ));
+            }
+        };
+        if row.try_get::<String>("", "item_id")?.is_empty() {
+            return Err(HistoryError::Integrity(
+                "resident inbox message has no durable schema 24 identity".into(),
+            ));
+        }
+        let sequence = db_u64(
+            row.try_get::<i64>("", "sequence")?,
+            "history_message_identities.sequence",
+        )?;
+        let digest = row.try_get::<Option<String>>("", "digest")?;
+        if sequence != message.sequence
+            || digest
+                .as_deref()
+                .is_some_and(|digest| digest != message.message.digest())
+        {
+            return Err(HistoryError::Integrity(
+                "resident inbox message differs from its durable schema 24 identity".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn backup_exact_bytes(target: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = target
+        .parent()
+        .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("backup has no parent").into()))?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".upgrade-copy-")
+        .tempfile_in(parent)?;
+    temporary.write_all(bytes)?;
+    temporary.as_file().sync_all()?;
+    let (file, temporary_path) = temporary.keep().map_err(|error| error.error)?;
+    drop(file);
+    pl_tool::workspace::move_owned_path(&temporary_path, target)?;
+    sync_parent(target)?;
+    Ok(())
+}
+
+fn write_report(operation_dir: &Path, report: &UpgradeReport) -> Result<()> {
+    fail_report_publish_once(&report.thread_id)?;
+    let bytes = serde_json::to_vec_pretty(report)?;
+    backup_exact_bytes(&operation_dir.join("upgrade-report.json"), &bytes)
+}
+
+fn sync_parent(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| HistoryError::Storage(anyhow::anyhow!("path has no parent").into()))?;
+        File::open(parent)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn unix_milliseconds() -> Result<i64> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| HistoryError::Storage(error.into()))?;
+    i64::try_from(elapsed.as_millis()).map_err(|_| {
+        HistoryError::Integrity("system clock exceeds the current millisecond range".into())
+    })
+}
+
+fn opaque_payload(format: &str, content: String) -> Result<OpaquePayload> {
+    OpaquePayload::new(format, 1, content)
+        .map_err(|error| HistoryError::Storage(anyhow::anyhow!(error).into()))
+}
+
+#[cfg(test)]
+fn fail_backup_publish_once(thread_id: &str) -> Result<()> {
+    let mut fail = FAIL_NEXT_BACKUP_PUBLISH_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if fail.as_deref() == Some(thread_id) {
+        fail.take();
+        return Err(HistoryError::Integrity(
+            "injected schema 24 backup publication failure".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_backup_publish_once(_thread_id: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn fail_current_publish_once(thread_id: &str, after_write: bool) -> Result<()> {
+    let mut fail = FAIL_NEXT_CURRENT_PUBLISH
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let selected = fail
+        .as_ref()
+        .is_some_and(|(id, after)| id == thread_id && *after == after_write);
+    if selected {
+        fail.take();
+        return Err(HistoryError::Integrity(if after_write {
+            "injected current publication verification failure".into()
+        } else {
+            "injected current publication failure".into()
+        }));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_current_publish_once(_thread_id: &str, _after_write: bool) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn fail_ddl_once(thread_id: &str) -> Result<()> {
+    let mut fail = FAIL_NEXT_DDL_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if fail.as_deref() == Some(thread_id) {
+        fail.take();
+        return Err(HistoryError::Integrity(
+            "injected schema 24 destructive DDL failure".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_ddl_once(_thread_id: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn fail_report_publish_once(thread_id: &str) -> Result<()> {
+    let mut fail = FAIL_NEXT_REPORT_THREAD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if fail.as_deref() == Some(thread_id) {
+        fail.take();
+        return Err(HistoryError::Integrity(
+            "injected upgrade report publication failure".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_report_publish_once(_thread_id: &str) -> Result<()> {
+    Ok(())
+}
+
+pub(super) async fn import_database(
+    tx: &impl ConnectionTrait,
+    source: &V24HistorySource,
+    database_id: &str,
+    thread_id: &str,
+    source_watermark: u64,
+) -> Result<ImportCounts> {
+    create_payload_staging(tx).await?;
+    let result =
+        import_database_with_staging(tx, source, database_id, thread_id, source_watermark).await;
+    let cleanup = drop_payload_staging(tx).await;
+    let counts = match result {
+        Ok(counts) => counts,
+        Err(error) => return Err(error),
+    };
+    cleanup?;
+    Ok(counts)
+}
+
+async fn import_database_with_staging(
+    tx: &impl ConnectionTrait,
+    source: &V24HistorySource,
+    database_id: &str,
+    thread_id: &str,
+    source_watermark: u64,
+) -> Result<ImportCounts> {
+    let identity = source
+        .query_one(
+            "SELECT schema_version,database_id,thread_id,applied_write_seq FROM history_meta WHERE id=1",
+            Vec::new(),
+        )
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("schema 24 identity vanished".into()))?;
+    if identity.try_get::<i64>("", "schema_version")? != 24
+        || identity.try_get::<String>("", "database_id")? != database_id
+        || identity.try_get::<String>("", "thread_id")? != thread_id
+        || db_u64(
+            identity.try_get::<i64>("", "applied_write_seq")?,
+            "history_meta.applied_write_seq",
+        )? != source_watermark
+    {
+        return Err(HistoryError::Integrity(
+            "schema 24 source changed before migration".into(),
+        ));
+    }
+    assert_known_source_tables(source).await?;
+    let recorded_at = unix_milliseconds()?;
+    let mut import = HistoryImport::new(tx, database_id.to_owned()).await?;
+    let mut counts = ImportCounts::default();
+    let canonical = import_originals(
+        tx,
+        &mut import,
+        source,
+        database_id,
+        recorded_at,
+        &mut counts,
+    )
+    .await?;
+    import_supplements(
+        &mut import,
+        source,
+        database_id,
+        thread_id,
+        recorded_at,
+        &mut counts,
+    )
+    .await?;
+    import_display(
+        tx,
+        &mut import,
+        source,
+        database_id,
+        recorded_at,
+        &mut counts,
+    )
+    .await?;
+    import.finish().await?;
+    verify_import(tx, source, database_id, canonical).await?;
+    #[cfg(test)]
+    {
+        let mut fail = FAIL_NEXT_IMPORT_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if fail.as_deref() == Some(thread_id) {
+            fail.take();
+            return Err(HistoryError::Integrity(
+                "injected schema 24 to 25 import failure".into(),
+            ));
+        }
+    }
+    drop_legacy_tables(tx, thread_id).await?;
+    counts.backup_only("history_meta", 1);
+    Ok(counts)
+}
+
+async fn assert_known_source_tables(source: &V24HistorySource) -> Result<()> {
+    let rows = source
+        .query_all(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            Vec::new(),
+        )
+        .await?;
+    for row in rows {
+        let name: String = row.try_get("", "name")?;
+        if !LEGACY_SOURCE_TABLES.contains(&name.as_str())
+            && name != "seaql_migrations"
+            && ![
+                "history_store_meta",
+                "history_events",
+                "history_bodies",
+                "history_body_chunks",
+            ]
+            .contains(&name.as_str())
+        {
+            return Err(HistoryError::Integrity(format!(
+                "unknown schema 24 table {name}; original database preserved"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn deterministic_event_id(table: &str, keys: &[serde_json::Value], role: &str) -> String {
+    format!(
+        "{LEGACY_EVENT_PREFIX}{}",
+        canonical_digest([
+            serde_json::Value::String(table.to_owned()),
+            serde_json::Value::Array(keys.to_vec()),
+            serde_json::Value::String(role.to_owned()),
+        ])
+    )
+}
+
+fn deterministic_body_id(owner: &str, body_key: &str) -> String {
+    format!(
+        "{LEGACY_BODY_PREFIX}{}",
+        canonical_digest([owner.into(), body_key.into()])
+    )
+}
+
+fn canonical_digest(values: impl IntoIterator<Item = serde_json::Value>) -> String {
+    let value = serde_json::Value::Array(values.into_iter().collect());
+    hex::encode(Sha256::digest(
+        serde_json::to_vec(&value).expect("canonical JSON"),
+    ))
+}
+
+struct VecSource {
+    bytes: Vec<u8>,
+}
+impl HistoryBodySource for VecSource {
+    fn byte_length(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    async fn read(&self, offset: u64, max_bytes: u32) -> Result<Vec<u8>> {
+        let offset = offset as usize;
+        let end = offset
+            .saturating_add(max_bytes as usize)
+            .min(self.bytes.len());
+        if offset > self.bytes.len() {
+            return Err(HistoryError::InvalidDemand("legacy vector range".into()));
+        }
+        Ok(self.bytes[offset..end].to_vec())
+    }
+}
+
+async fn import_originals<C: ConnectionTrait>(
+    connection: &C,
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    database_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<u64> {
+    let mut after = 0;
+    let mut count = 0;
+    loop {
+        let page = source.originals_page(after, 128).await?;
+        if page.is_empty() {
+            break;
+        }
+        for original in page {
+            after = original.seq;
+            let metadata = read_product_container(
+                source
+                    .body(V24Body::Metadata {
+                        item_id: original.item_id.clone(),
+                    })
+                    .await?,
+            )
+            .await?;
+            let mut atom: ChatAtom = serde_json::from_slice(&metadata)?;
+            if atom
+                .completion_item_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() != original.item_id.as_str())
+            {
+                return Err(HistoryError::Integrity(
+                    "canonical original points at another completion".into(),
+                ));
+            }
+            let mut entity = HistoryEntityHead::from_atom(&atom, None)?;
+            entity.detail_event_id = Some(original.item_id.clone());
+            entity.input_manifest_event_id = Some(original.item_id.clone());
+            entity.body_manifest_event_id = Some(original.item_id.clone());
+            fit_entity_head(import, &mut entity, &original.item_id, database_id, 3).await?;
+
+            let mut staged_payload =
+                StagedPayload::from_item(connection, &original.item_id).await?;
+            staged_payload
+                .rewrite_declarations(source, database_id, &original.item_id, atom.source_order)
+                .await?;
+            if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
+                plan_content_reference(
+                    connection,
+                    source,
+                    database_id,
+                    &original.item_id,
+                    reference,
+                )
+                .await?;
+            }
+            plan_and_rewrite_atom_references(connection, &mut atom, database_id, &original.item_id)
+                .await?;
+            let payload_id = deterministic_body_id(&original.item_id, "canonical_payload");
+            import
+                .copy_body(
+                    HistoryImportBody {
+                        body_id: payload_id,
+                        owner_event_id: original.item_id.clone(),
+                        ordinal: 0,
+                        body_key: "canonical_payload".into(),
+                        role: HistoryBodyRole::CanonicalPayload,
+                        media_type: None,
+                    },
+                    &staged_payload,
+                )
+                .await?;
+
+            copy_vector_body(
+                import,
+                &original.item_id,
+                "canonical_metadata",
+                HistoryBodyRole::CanonicalMetadata,
+                1,
+                serde_json::to_vec(&entity)?,
+            )
+            .await?;
+            copy_vector_body(
+                import,
+                &original.item_id,
+                "legacy_metadata",
+                HistoryBodyRole::Other {
+                    name: "legacy_metadata".into(),
+                },
+                2,
+                serde_json::to_vec(&entity)?,
+            )
+            .await?;
+            copy_planned_bodies(connection, import, source).await?;
+
+            let mut event =
+                HistoryEvent::new(original.item_id.clone(), canonical_kind(&atom), recorded_at);
+            event.header.entity_id = Some(atom.id.clone());
+            event.header.turn_id = atom.turn_id.clone();
+            event.header.attempt_id = atom.attempt_id.clone();
+            event.header.source = Some(atom.source.clone());
+            event.header.call_id = atom.tool.as_ref().map(|tool| tool.call_id.clone());
+            event.header.occurred_at = event_time(&atom)?;
+            event.header.original = Some(super::HistoryOriginalInfo {
+                query_class: original.query_class.clone(),
+                parent_id: original.parent_id.clone(),
+                original_kind: atom.kind,
+                tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+            });
+            event.payload_body_id = Some(deterministic_body_id(
+                &original.item_id,
+                "canonical_payload",
+            ));
+            import.insert_event(event).await?;
+            count += 1;
+            counts.imported("canonical_originals", 1);
+        }
+    }
+    Ok(count)
+}
+
+fn canonical_kind(atom: &ChatAtom) -> HistoryEventKind {
+    if atom.attempt_id.is_some() {
+        return HistoryEventKind::LegacyObserved;
+    }
+    match (&atom.kind, &atom.lifecycle) {
+        (pl_protocol::ChatAtomKind::Input, ChatAtomLifecycle::Terminal { .. }) => {
+            HistoryEventKind::InputAccepted
+        }
+        (_, ChatAtomLifecycle::Terminal { .. }) => HistoryEventKind::EntityEnded,
+        _ => HistoryEventKind::LegacyObserved,
+    }
+}
+
+fn event_time(atom: &ChatAtom) -> Result<Option<i64>> {
+    milliseconds(atom.finished_at.or(atom.started_at))
+}
+
+async fn read_product_container(reader: V24BodyReader) -> Result<Vec<u8>> {
+    // This is the bounded typed product envelope, never a producer body. Its existing protocol
+    // read budget is shared with normal detail reads; historical payloads remain range-copied.
+    let length = usize::try_from(reader.byte_length())
+        .map_err(|_| HistoryError::Integrity("legacy metadata length exceeds usize".into()))?;
+    if length > pl_core::chat::MAX_READ_BYTES {
+        return Err(HistoryError::Integrity(
+            "schema 24 typed metadata exceeds the existing detail read budget".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(length);
+    let mut offset = 0;
+    while offset < reader.byte_length() {
+        let length = (reader.byte_length() - offset).min(BODY_CHUNK_BYTES as u64) as u32;
+        bytes.extend_from_slice(&reader.read(offset, length).await?);
+        offset += length as u64;
+    }
+    Ok(bytes)
+}
+
+async fn copy_vector_body<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    owner: &str,
+    key: &str,
+    role: HistoryBodyRole,
+    ordinal: u64,
+    bytes: Vec<u8>,
+) -> Result<()> {
+    import
+        .copy_body(
+            HistoryImportBody {
+                body_id: deterministic_body_id(owner, key),
+                owner_event_id: owner.to_owned(),
+                ordinal,
+                body_key: key.to_owned(),
+                role,
+                media_type: None,
+            },
+            &VecSource { bytes },
+        )
+        .await?;
+    Ok(())
+}
+
+async fn fit_entity_head<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    head: &mut HistoryEntityHead,
+    event_id: &str,
+    database_id: &str,
+    wait_ordinal: u64,
+) -> Result<u64> {
+    if serde_json::to_vec(head)?.len() <= HEAD_MAX_BYTES {
+        return Ok(wait_ordinal);
+    }
+    let Some(HistoryWaitHead::Inline { presentation }) = head.wait.take() else {
+        return Err(HistoryError::Integrity(
+            "typed history head exceeds 16 KiB without a movable wait presentation".into(),
+        ));
+    };
+    let intent = match presentation.intent() {
+        pl_protocol::ThreadWaitIntent::Events {
+            targets,
+            timeout_ms,
+        } => HistoryWaitIntentHead::Events {
+            target_count: targets.len() as u64,
+            timeout_ms: *timeout_ms,
+        },
+        pl_protocol::ThreadWaitIntent::Timer { duration_ms } => HistoryWaitIntentHead::Timer {
+            duration_ms: *duration_ms,
+        },
+    };
+    let body_id = deterministic_body_id(event_id, "wait_presentation");
+    let bytes = serde_json::to_vec(&presentation)?;
+    head.wait = Some(HistoryWaitHead::Deferred {
+        intent,
+        state: presentation.state(),
+        messages_ready: presentation.messages_ready(),
+        presentation: HistoryEventBodyRef {
+            database_id: database_id.to_owned(),
+            owner_event_id: event_id.to_owned(),
+            body_key: "wait_presentation".into(),
+            body_id,
+            byte_start: 0,
+            byte_length: bytes.len() as u64,
+        },
+    });
+    if serde_json::to_vec(head)?.len() > HEAD_MAX_BYTES {
+        return Err(HistoryError::Integrity(
+            "typed history head remains over 16 KiB after moving wait presentation".into(),
+        ));
+    }
+    copy_vector_body(
+        import,
+        event_id,
+        "wait_presentation",
+        HistoryBodyRole::WaitPresentation,
+        wait_ordinal,
+        bytes,
+    )
+    .await?;
+    wait_ordinal
+        .checked_add(1)
+        .ok_or_else(|| HistoryError::Integrity("history body ordinal exhausted".into()))
+}
+
+async fn plan_and_rewrite_atom_references(
+    connection: &impl ConnectionTrait,
+    atom: &mut ChatAtom,
+    database_id: &str,
+    _fallback_owner: &str,
+) -> Result<serde_json::Value> {
+    for content in &atom.contents {
+        validate_typed_reference(&content.reference, database_id)?;
+    }
+    if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
+        validate_typed_reference(reference, database_id)?;
+    }
+    render_rewritten_atom(connection, atom, database_id).await
+}
+
+fn validate_typed_reference(reference: &ContentRef, database_id: &str) -> Result<()> {
+    if reference.database_id != database_id {
+        return Err(HistoryError::Integrity(
+            "schema 24 typed reference points at another database".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn plan_identity(
+    target: &ContentTarget,
+    fallback_owner: &str,
+) -> Result<(String, String, HistoryBodyRole)> {
+    Ok(match target {
+        ContentTarget::ItemPayload { item_id } => (
+            item_id.clone(),
+            "canonical_payload".to_owned(),
+            HistoryBodyRole::CanonicalPayload,
+        ),
+        ContentTarget::Body { owner, key } => match owner {
+            ContentOwner::Item { item_id } => (
+                item_id.clone(),
+                format!("legacy-content:{key}"),
+                legacy_content_role(key),
+            ),
+            ContentOwner::Current {
+                domain,
+                id,
+                revision,
+            } => (
+                fallback_owner.to_owned(),
+                format!(
+                    "legacy-current:{}:{key}",
+                    canonical_digest([
+                        domain.clone().into(),
+                        id.clone().into(),
+                        (*revision).into(),
+                    ])
+                ),
+                legacy_content_role(key),
+            ),
+            ContentOwner::DisplayObservation {
+                block_id,
+                member_key,
+            } => (
+                display_member_event_id(block_id, member_key),
+                format!("legacy-display:{key}"),
+                legacy_content_role(key),
+            ),
+        },
+    })
+}
+
+fn legacy_content_role(key: &str) -> HistoryBodyRole {
+    if key == "body"
+        || key.starts_with("part.outputText.")
+        || key.starts_with("part.reasoningText.")
+    {
+        HistoryBodyRole::Body
+    } else if key.starts_with("part.summaryText.") {
+        HistoryBodyRole::ReasoningSummary
+    } else if key == "tool.arguments" {
+        HistoryBodyRole::ToolArguments
+    } else if key == "tool.result" {
+        HistoryBodyRole::ToolOutput
+    } else {
+        HistoryBodyRole::Other {
+            name: "legacy_content".into(),
+        }
+    }
+}
+
+fn display_member_event_id(block_id: &str, member_key: &str) -> String {
+    deterministic_event_id(
+        "conversation_display_members",
+        &[block_id.into(), member_key.into()],
+        "boundary",
+    )
+}
+
+#[derive(Debug, Serialize)]
+struct LifecycleRow {
+    identity: String,
+    kind: pl_protocol::ChatAtomKind,
+    source_kind: String,
+    source_identity: String,
+    turn_id: Option<String>,
+    attempt_id: Option<String>,
+    call_id: Option<String>,
+    tool_name: Option<String>,
+    text_channel: Option<pl_protocol::ThreadTextChannel>,
+    delivery: pl_protocol::ChatDeliveryKind,
+    source_order: Option<u64>,
+    execution_order: Option<u64>,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    outcome: Option<pl_protocol::ChatTerminalOutcome>,
+    completion_item_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TurnRow {
+    turn_id: String,
+    turn_order: u64,
+    payload: Turn,
+    context_disposition: pl_protocol::ThreadContextDisposition,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SourceRow {
+    source_key: String,
+    started_at: Option<i64>,
+    ended_at: Option<i64>,
+    active_observed: Option<u64>,
+    outcome: Option<pl_protocol::ChatTerminalOutcome>,
+}
+
+async fn read_legacy_product_blob(
+    source: &V24HistorySource,
+    table: &'static str,
+    key_column: &'static str,
+    key_value: &str,
+    column: &'static str,
+) -> Result<Vec<u8>> {
+    if !matches!(
+        (table, key_column, column),
+        ("conversation_display_blocks", "block_id", "header")
+            | ("conversation_display_members", "member_key", "metadata")
+    ) {
+        return Err(HistoryError::InvalidDemand(
+            "unsupported legacy product blob".into(),
+        ));
+    }
+    let length = source
+        .query_one(
+            &format!(
+                "SELECT length(CAST({column} AS BLOB)) AS bytes FROM {table} WHERE {key_column}=?"
+            ),
+            vec![key_value.into()],
+        )
+        .await?
+        .ok_or_else(|| HistoryError::NotFound(key_value.to_owned()))?
+        .try_get::<i64>("", "bytes")?;
+    let length = db_u64(length, "typed product blob length")?;
+    if length > pl_core::chat::MAX_READ_BYTES as u64 {
+        return Err(HistoryError::Integrity(
+            "schema 24 typed display record exceeds the existing detail read budget".into(),
+        ));
+    }
+    source
+        .query_one(
+            &format!("SELECT {column} AS bytes FROM {table} WHERE {key_column}=?"),
+            vec![key_value.into()],
+        )
+        .await?
+        .ok_or_else(|| HistoryError::NotFound(key_value.to_owned()))?
+        .try_get::<Vec<u8>>("", "bytes")
+        .map_err(HistoryError::from)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DisplayHeaderRow {
+    version: u32,
+    id: String,
+    source: pl_protocol::ChatSourceId,
+    block_order: u64,
+    boundary: Option<pl_protocol::ChatFactPosition>,
+    first_content_at: Option<pl_protocol::ChatFactPosition>,
+    sealed: bool,
+    unfinished: u64,
+    next_member: u64,
+    revision: u64,
+    body: v24_display::DisplayBlockBody,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DisplayMemberRow {
+    block_id: String,
+    association_key: String,
+    terminal: bool,
+    head: v24_display::DisplayMemberHead,
+}
+
+fn source_from_parts(kind: &str, identity: String) -> Result<HistorySource> {
+    Ok(match kind {
+        "foregroundTurn" => HistorySource::ForegroundTurn { turn_id: identity },
+        "input" => HistorySource::Input { input_id: identity },
+        "inboxMessage" => {
+            let (source_id, message_id) = serde_json::from_str(&identity)?;
+            HistorySource::InboxMessage {
+                source_id,
+                message_id,
+            }
+        }
+        "backgroundResult" => HistorySource::BackgroundResult {
+            message_id: identity,
+        },
+        "operation" => HistorySource::Operation {
+            operation_id: identity,
+        },
+        "receipt" => HistorySource::Receipt {
+            receipt_id: identity,
+        },
+        _ => {
+            return Err(HistoryError::Integrity(format!(
+                "unsupported schema 24 source kind {kind}"
+            )));
+        }
+    })
+}
+
+async fn import_supplements<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    database_id: &str,
+    thread_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    import_lifecycle(import, source, recorded_at, counts).await?;
+    import_turns(import, source, recorded_at, counts).await?;
+    import_sources(import, source, recorded_at, counts).await?;
+    import_tool_tasks(import, source, recorded_at, counts).await?;
+    import_input_identities(source, counts).await?;
+    import_message_identities(source, counts).await?;
+    import_fact_receipts(import, source, thread_id, recorded_at, counts).await?;
+    import_costs(import, source, recorded_at, counts).await?;
+    import_accounting(import, source, database_id, thread_id, recorded_at, counts).await?;
+    Ok(())
+}
+
+async fn import_lifecycle<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT identity,kind,source_kind,source_identity,turn_id,attempt_id,call_id,tool_name,text_channel,delivery,source_order,execution_order,started_at,finished_at,outcome,completion_item_id FROM execution_lifecycle WHERE identity>? ORDER BY identity LIMIT 128",
+                vec![after.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let optional_u64 = |name: &str| -> Result<Option<u64>> {
+                Ok(row
+                    .try_get::<Option<i64>>("", name)?
+                    .map(|value| db_u64(value, name))
+                    .transpose()?)
+            };
+            let value = LifecycleRow {
+                identity: row.try_get("", "identity")?,
+                kind: serde_json::from_str(&row.try_get::<String>("", "kind")?)?,
+                source_kind: row.try_get("", "source_kind")?,
+                source_identity: row.try_get("", "source_identity")?,
+                turn_id: row.try_get("", "turn_id")?,
+                attempt_id: row.try_get("", "attempt_id")?,
+                call_id: row.try_get("", "call_id")?,
+                tool_name: row.try_get("", "tool_name")?,
+                text_channel: row
+                    .try_get::<Option<String>>("", "text_channel")?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
+                delivery: serde_json::from_str(&row.try_get::<String>("", "delivery")?)?,
+                source_order: optional_u64("source_order")?,
+                execution_order: optional_u64("execution_order")?,
+                started_at: row.try_get("", "started_at")?,
+                finished_at: row.try_get("", "finished_at")?,
+                outcome: row
+                    .try_get::<Option<String>>("", "outcome")?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
+                completion_item_id: row.try_get("", "completion_item_id")?,
+            };
+            after = value.identity.clone();
+            if value.completion_item_id.is_some() {
+                counts.backup_only("execution_lifecycle_covered_by_original", 1);
+                continue;
+            }
+            let source_id = source_from_parts(&value.source_kind, value.source_identity.clone())?;
+            let id = deterministic_event_id(
+                "execution_lifecycle",
+                &[value.identity.clone().into()],
+                "observation",
+            );
+            let kind = if value.attempt_id.is_some() {
+                HistoryEventKind::LegacyObserved
+            } else if value.outcome.is_some() {
+                HistoryEventKind::EntityEnded
+            } else if value.started_at.is_some() {
+                HistoryEventKind::EntityStarted
+            } else {
+                HistoryEventKind::BoundaryObserved
+            };
+            let mut event = HistoryEvent::new(id.clone(), kind, recorded_at);
+            event.header.entity_id = Some(value.identity.clone());
+            event.header.turn_id = value.turn_id.clone();
+            event.header.attempt_id = value.attempt_id.clone();
+            event.header.source = Some(source_id.clone());
+            event.header.call_id = value.call_id.clone();
+            event.header.occurred_at = milliseconds(value.finished_at.or(value.started_at))?;
+            copy_vector_body(
+                import,
+                &id,
+                "canonical_payload",
+                HistoryBodyRole::CanonicalPayload,
+                0,
+                serde_json::to_vec(&value)?,
+            )
+            .await?;
+            event.payload_body_id = Some(deterministic_body_id(&id, "canonical_payload"));
+            import.insert_event(event).await?;
+            counts.imported("execution_lifecycle", 1);
+        }
+    }
+    Ok(())
+}
+
+fn milliseconds(seconds: Option<i64>) -> Result<Option<i64>> {
+    seconds
+        .map(|seconds| {
+            seconds.checked_mul(1000).ok_or_else(|| {
+                HistoryError::Integrity(
+                    "schema 24 timestamp overflows the millisecond range".into(),
+                )
+            })
+        })
+        .transpose()
+}
+
+async fn import_turns<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = 0;
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT turn_id,turn_order,length(CAST(payload AS BLOB)) AS payload_bytes,context_disposition FROM history_turns WHERE turn_order>? ORDER BY turn_order LIMIT 128",
+                vec![db::number(after)?.into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let payload_bytes = db_u64(
+                row.try_get::<i64>("", "payload_bytes")?,
+                "history_turns.payload length",
+            )?;
+            if payload_bytes > pl_core::chat::MAX_READ_BYTES as u64 {
+                return Err(HistoryError::Integrity(
+                    "schema 24 Turn payload exceeds the existing detail read budget".into(),
+                ));
+            }
+            let turn_id: String = row.try_get("", "turn_id")?;
+            let payload = source
+                .query_one(
+                    "SELECT payload FROM history_turns WHERE turn_id=?",
+                    vec![turn_id.clone().into()],
+                )
+                .await?
+                .ok_or_else(|| HistoryError::NotFound(turn_id.clone()))?
+                .try_get::<String>("", "payload")?;
+            let turn = TurnRow {
+                turn_id,
+                turn_order: db_u64(
+                    row.try_get::<i64>("", "turn_order")?,
+                    "history_turns.turn_order",
+                )?,
+                payload: serde_json::from_str(&payload)?,
+                context_disposition: serde_json::from_str(
+                    &row.try_get::<String>("", "context_disposition")?,
+                )?,
+            };
+            after = turn.turn_order;
+            if turn.turn_id != turn.payload.id {
+                return Err(HistoryError::Integrity(
+                    "schema 24 Turn identity differs from its payload".into(),
+                ));
+            }
+            let id =
+                deterministic_event_id("history_turns", &[turn.turn_id.clone().into()], "anchor");
+            let rolled_back =
+                turn.context_disposition == pl_protocol::ThreadContextDisposition::RolledBack;
+            let head = HistoryRowHead::Turn(super::HistoryTurnHead {
+                turn_id: turn.payload.id.clone(),
+                input_id: turn.payload.input_id.clone(),
+                run_id: None,
+                state: history_turn_state(&turn.payload.state),
+                phase: turn.payload.state.phase(),
+                context_disposition: turn.context_disposition,
+                queued_at: milliseconds(
+                    matches!(turn.payload.state, pl_protocol::TurnState::Queued(_))
+                        .then_some(turn.payload.updated_at),
+                )?,
+                started_at: milliseconds(turn.payload.started_at())?,
+                finished_at: milliseconds(turn.payload.completed_at())?,
+                updated_at: milliseconds(Some(turn.payload.updated_at))?.unwrap_or_default(),
+                detail_event_id: None,
+            });
+            let mut event = HistoryEvent::new(
+                id.clone(),
+                if rolled_back {
+                    HistoryEventKind::TurnRolledBack
+                } else {
+                    HistoryEventKind::LegacyObserved
+                },
+                recorded_at,
+            );
+            event.header.turn_id = Some(turn.payload.id.clone());
+            event.header.row_key = Some(format!("turn:{}", turn.payload.id));
+            event.is_anchor = true;
+            event.head = Some(head);
+            copy_column_body(
+                import,
+                source,
+                "history_turns",
+                &["turn_id"],
+                &[&turn.turn_id],
+                "payload",
+                &id,
+                "canonical_payload",
+                HistoryBodyRole::CanonicalPayload,
+            )
+            .await?;
+            event.payload_body_id = Some(deterministic_body_id(&id, "canonical_payload"));
+            import.insert_event(event).await?;
+            counts.imported("turns", 1);
+        }
+    }
+    Ok(())
+}
+
+fn history_turn_state(state: &pl_protocol::TurnState) -> HistoryTurnState {
+    match state {
+        pl_protocol::TurnState::Queued(_) => HistoryTurnState::Queued,
+        pl_protocol::TurnState::Running(_) => HistoryTurnState::Running,
+        pl_protocol::TurnState::Completed(_) => HistoryTurnState::Completed,
+        pl_protocol::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
+        pl_protocol::TurnState::Failed(_) => HistoryTurnState::Failed,
+        pl_protocol::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
+    }
+}
+
+async fn import_sources<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT source_key,started_at,ended_at,active_observed,ended_observed,outcome FROM conversation_sources WHERE source_key>? ORDER BY source_key LIMIT 128",
+                vec![after.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let source_row = SourceRow {
+                source_key: row.try_get("", "source_key")?,
+                started_at: row.try_get("", "started_at")?,
+                ended_at: row.try_get("", "ended_at")?,
+                active_observed: row.try_get("", "active_observed")?,
+                outcome: row
+                    .try_get::<Option<String>>("", "outcome")?
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()?,
+            };
+            after = source_row.source_key.clone();
+            let source_id: HistorySource = serde_json::from_str(&source_row.source_key)?;
+            let lifecycle = if source_row.outcome.is_some() {
+                ChatSourceLifecycle::Ended {
+                    outcome: source_row.outcome.expect("checked"),
+                }
+            } else if source_row.active_observed.is_some() {
+                ChatSourceLifecycle::Active
+            } else {
+                ChatSourceLifecycle::Unknown
+            };
+            let kind = match &lifecycle {
+                ChatSourceLifecycle::Ended { .. } => HistoryEventKind::SourceEnded,
+                ChatSourceLifecycle::Active => HistoryEventKind::SourceStarted,
+                ChatSourceLifecycle::Unknown => HistoryEventKind::LegacyObserved,
+            };
+            let head = HistoryRowHead::Source(super::HistorySourceHead {
+                source: source_id.clone(),
+                lifecycle,
+                started_at: milliseconds(source_row.started_at)?,
+                ended_at: milliseconds(source_row.ended_at)?,
+                observed_at: None,
+                detail_event_id: None,
+            });
+            let id = deterministic_event_id(
+                "conversation_sources",
+                &[source_row.source_key.clone().into()],
+                "anchor",
+            );
+            let mut event = HistoryEvent::new(id, kind, recorded_at);
+            event.header.source = Some(source_id.clone());
+            event.header.row_key = Some(format!("source:{}", serde_json::to_string(&source_id)?));
+            event.is_anchor = true;
+            event.head = Some(head);
+            import.insert_event(event).await?;
+            counts.imported("sources", 1);
+        }
+    }
+    Ok(())
+}
+
+async fn copy_column_body<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    table: &'static str,
+    key_columns: &'static [&'static str],
+    key_values: &[&str],
+    column: &'static str,
+    event_id: &str,
+    body_key: &str,
+    role: HistoryBodyRole,
+) -> Result<()> {
+    let reader = source
+        .column_body(
+            table,
+            key_columns,
+            key_values.iter().map(|value| (*value).to_owned()).collect(),
+            column,
+        )
+        .await?;
+    import
+        .copy_body(
+            HistoryImportBody {
+                body_id: deterministic_body_id(event_id, body_key),
+                owner_event_id: event_id.to_owned(),
+                ordinal: 0,
+                body_key: body_key.to_owned(),
+                role,
+                media_type: None,
+            },
+            &reader,
+        )
+        .await?;
+    Ok(())
+}
+
+async fn import_tool_tasks<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT call_id,revision,task_payload,delivery_payload FROM history_tool_tasks WHERE call_id>? ORDER BY call_id LIMIT 128",
+                vec![after.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let call_id: String = row.try_get("", "call_id")?;
+            after = call_id.clone();
+            let revision = db_u64(
+                row.try_get::<i64>("", "revision")?,
+                "history_tool_tasks.revision",
+            )?;
+            let task: pl_core::thread::task::TaskRecord =
+                serde_json::from_str(&row.try_get::<String>("", "task_payload")?)?;
+            if task.revision != revision || task.call_id != call_id {
+                return Err(HistoryError::Integrity(
+                    "schema 24 task row differs from its payload".into(),
+                ));
+            }
+            let delivery = row
+                .try_get::<Option<String>>("", "delivery_payload")?
+                .map(|payload| serde_json::from_str::<pl_core::thread::ToolDelivery>(&payload))
+                .transpose()?;
+            let turn_id = task.turn_id.clone();
+            if let Some(delivery) = delivery {
+                let mut references = BTreeMap::new();
+                for reference in crate::studio::thread_projection::resource_references(&delivery)
+                    .map_err(|error| HistoryError::Storage(error.into()))?
+                {
+                    if references
+                        .insert(reference.id().to_owned(), reference.clone())
+                        .is_some_and(|previous| previous != reference)
+                    {
+                        return Err(HistoryError::Integrity(
+                            "schema 24 tool delivery repeats one resource with conflicting metadata"
+                                .into(),
+                        ));
+                    }
+                }
+                for reference in references.values() {
+                    import_tool_resource_observation(
+                        import,
+                        reference,
+                        &call_id,
+                        &turn_id,
+                        revision,
+                        recorded_at,
+                        counts,
+                    )
+                    .await?;
+                }
+                let canonical = source
+                    .query_one(
+                        "SELECT item_id FROM conversation_items \
+                         WHERE json_extract(CAST(metadata AS TEXT),'$.tool.callId')=? LIMIT 1",
+                        vec![call_id.clone().into()],
+                    )
+                    .await?;
+                if canonical.is_some() {
+                    counts.backup_only("history_tool_tasks_covered_by_original", 1);
+                    continue;
+                }
+                let delivery_id = deterministic_event_id(
+                    "history_tool_tasks",
+                    &[call_id.clone().into()],
+                    "delivery",
+                );
+                let mut delivery_event = HistoryEvent::new(
+                    delivery_id.clone(),
+                    HistoryEventKind::BackgroundDeliveryRecorded,
+                    recorded_at,
+                );
+                delivery_event.header.entity_id = Some(delivery.call_id.clone());
+                delivery_event.header.turn_id = Some(turn_id.clone());
+                delivery_event.header.call_id = Some(call_id.clone());
+                match &delivery.target {
+                    pl_core::thread::ToolDeliveryTarget::CallResult => {
+                        delivery_event.header.source =
+                            Some(HistorySource::ForegroundTurn { turn_id });
+                    }
+                    pl_core::thread::ToolDeliveryTarget::Inbox { message_id } => {
+                        delivery_event.header.message_id = Some(message_id.clone());
+                    }
+                    pl_core::thread::ToolDeliveryTarget::Nested { .. } => {}
+                }
+                copy_column_body(
+                    import,
+                    source,
+                    "history_tool_tasks",
+                    &["call_id"],
+                    &[&call_id],
+                    "delivery_payload",
+                    &delivery_id,
+                    "canonical_payload",
+                    HistoryBodyRole::CanonicalPayload,
+                )
+                .await?;
+                delivery_event.payload_body_id =
+                    Some(deterministic_body_id(&delivery_id, "canonical_payload"));
+                import.insert_event(delivery_event).await?;
+                counts.imported("tool_deliveries", 1);
+            } else {
+                counts.backup_only("history_tool_tasks", 1);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn import_tool_resource_observation<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    reference: &pl_core::context::ResourceReference,
+    call_id: &str,
+    turn_id: &str,
+    effect: u64,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let event_id = deterministic_event_id(
+        "history_tool_tasks",
+        &[call_id.into(), effect.into(), reference.id().into()],
+        "resource",
+    );
+    let mut event = HistoryEvent::new(
+        event_id.clone(),
+        HistoryEventKind::BusinessChanged,
+        recorded_at,
+    );
+    event.header.entity_id = Some(reference.id().into());
+    event.header.call_id = Some(call_id.into());
+    event.header.turn_id = Some(turn_id.into());
+    let payload = opaque_payload(
+        "pl.studio.retained-tool-resource",
+        serde_json::to_string(reference)?,
+    )?;
+    import
+        .copy_body(
+            HistoryImportBody {
+                body_id: deterministic_body_id(&event_id, "resource"),
+                owner_event_id: event_id.clone(),
+                ordinal: 0,
+                body_key: "resource".into(),
+                role: HistoryBodyRole::CanonicalPayload,
+                media_type: Some("application/json".into()),
+            },
+            &VecSource {
+                bytes: serde_json::to_vec(&payload)?,
+            },
+        )
+        .await?;
+    event.payload_body_id = Some(deterministic_body_id(&event_id, "resource"));
+    import.insert_event(event).await?;
+    counts.imported("tool_resources", 1);
+    Ok(())
+}
+
+async fn import_input_identities(
+    source: &V24HistorySource,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT item_id,presentation,request_digest,payload FROM history_input_identities WHERE item_id>? ORDER BY item_id LIMIT 128",
+                vec![after.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let item_id: String = row.try_get("", "item_id")?;
+            after = item_id.clone();
+            let presentation: Option<String> = row.try_get("", "presentation")?;
+            if presentation.as_deref() != Some("visible") {
+                counts.backup_only("history_input_identities_non_visible", 1);
+                continue;
+            }
+            let _: crate::studio::storage::state::InputIdentityEntry =
+                serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
+            if source
+                .query_one(
+                    "SELECT 1 FROM conversation_items WHERE item_id=?",
+                    vec![item_id.clone().into()],
+                )
+                .await?
+                .is_some()
+            {
+                counts.backup_only("history_input_identities_covered_by_original", 1);
+                continue;
+            }
+            counts.backup_only("history_input_identities_identity_only", 1);
+        }
+    }
+    Ok(())
+}
+
+async fn import_message_identities(
+    source: &V24HistorySource,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT message_id,item_id FROM history_message_identities WHERE message_id>? ORDER BY message_id LIMIT 128",
+                vec![after.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let message_id: String = row.try_get("", "message_id")?;
+            after = message_id.clone();
+            let item_id: String = row.try_get("", "item_id")?;
+            let covered = source
+                .query_one(
+                    "SELECT 1 FROM conversation_items WHERE item_id=?",
+                    vec![item_id.clone().into()],
+                )
+                .await?
+                .is_some();
+            if covered {
+                counts.backup_only("history_message_identities_covered_by_original", 1);
+            } else {
+                counts.backup_only("history_message_identities_identity_only", 1);
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn import_fact_receipts<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    thread_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut pending_reviews = BTreeMap::new();
+    if let Some(checkpoint) = source.checkpoint(thread_id).await? {
+        for (extension_id, record) in &checkpoint.state.extensions {
+            if record.payload.format() != crate::thread_assembler::review_delivery::FACT_FORMAT {
+                continue;
+            }
+            let fact = crate::thread_assembler::review_delivery::ReviewDeliveryFact::decode(
+                &record.payload,
+            )?;
+            if fact.extension_id() != *extension_id
+                || pending_reviews
+                    .insert(
+                        fact.message.id.clone(),
+                        pl_core::context::content_hash(record.payload.content().as_bytes()),
+                    )
+                    .is_some()
+            {
+                return Err(HistoryError::Integrity(
+                    "schema 24 checkpoint has conflicting review delivery obligations".into(),
+                ));
+            }
+        }
+    }
+
+    let mut after = (String::new(), 0);
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT item_id,revision,kind,digest,payload FROM history_fact_receipts WHERE (item_id,revision)>(?,?) ORDER BY item_id,revision LIMIT 128",
+                vec![after.0.clone().into(), db::number(after.1)?.into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let item_id: String = row.try_get("", "item_id")?;
+            let revision = db_u64(
+                row.try_get::<i64>("", "revision")?,
+                "history_fact_receipts.revision",
+            )?;
+            after = (item_id.clone(), revision);
+            let kind: String = row.try_get("", "kind")?;
+            let payload = row.try_get::<String>("", "payload")?;
+            if pl_core::context::content_hash(payload.as_bytes())
+                != row.try_get::<String>("", "digest")?
+            {
+                return Err(HistoryError::Integrity(
+                    "schema 24 fact receipt digest differs from its payload".into(),
+                ));
+            }
+            match kind.as_str() {
+                "interaction" | "permission" => {}
+                "reviewDeliveryException" => {
+                    let durable: crate::thread_assembler::review_delivery::ReviewDeliveryFact =
+                        serde_json::from_str(&payload)?;
+                    if durable.message.id != item_id {
+                        return Err(HistoryError::Integrity(
+                            "schema 24 review exception identity differs".into(),
+                        ));
+                    }
+                    let Some(expected_digest) = pending_reviews.get(&item_id) else {
+                        counts.backup_only(
+                            "history_fact_receipts_review_delivery_already_acknowledged",
+                            1,
+                        );
+                        continue;
+                    };
+                    if expected_digest != &pl_core::context::content_hash(payload.as_bytes()) {
+                        return Err(HistoryError::Integrity(
+                            "schema 24 pending review exception differs from its receipt".into(),
+                        ));
+                    }
+                    let id = format!("review_delivery:{item_id}");
+                    let opaque = opaque_payload("pl.studio.review-delivery", payload)?;
+                    let mut event = HistoryEvent::new(
+                        id.clone(),
+                        HistoryEventKind::BackgroundDeliveryRecorded,
+                        recorded_at,
+                    );
+                    event.header.entity_id = Some(durable.message.id.clone());
+                    event.header.message_id = Some(durable.message.id);
+                    event.header.source = Some(crate::studio::history_delivery::source(
+                        thread_id,
+                        "review_delivery",
+                    ));
+                    copy_vector_body(
+                        import,
+                        &id,
+                        "business_fact",
+                        HistoryBodyRole::CanonicalPayload,
+                        0,
+                        serde_json::to_vec(&opaque)?,
+                    )
+                    .await?;
+                    event.payload_body_id = Some(deterministic_body_id(&id, "business_fact"));
+                    import.insert_event(event).await?;
+                    counts.imported("review_deliveries", 1);
+                    continue;
+                }
+                "legacy_execution_record" => {
+                    counts.backup_only("history_fact_receipts_legacy_execution_record", 1);
+                    continue;
+                }
+                "displayDelta" => {
+                    counts.backup_only("history_fact_receipts_display_delta", 1);
+                    continue;
+                }
+                "digest" => {
+                    counts.backup_only("history_fact_receipts_digest", 1);
+                    continue;
+                }
+                "parentReport" => {
+                    counts.backup_only("history_fact_receipts_parent_report", 1);
+                    continue;
+                }
+                _ => {
+                    counts.backup_only("history_fact_receipts_unsupported", 1);
+                    continue;
+                }
+            }
+            let business_id = match kind.as_str() {
+                "interaction" => {
+                    let durable: pl_core::thread::interactions::InteractionRecord =
+                        serde_json::from_str(&payload)?;
+                    durable.request.id
+                }
+                "permission" => {
+                    let durable: pl_core::thread::permissions::PermissionRecord =
+                        serde_json::from_str(&payload)?;
+                    durable.id
+                }
+                _ => unreachable!("review receipts continue before business import"),
+            };
+            if business_id.is_empty() {
+                return Err(HistoryError::Integrity(
+                    "schema 24 business receipt identity is empty".into(),
+                ));
+            }
+            if source
+                .query_one(
+                    "SELECT 1 FROM conversation_items \
+                     WHERE json_extract(CAST(metadata AS TEXT),'$.id')=? LIMIT 1",
+                    vec![business_id.clone().into()],
+                )
+                .await?
+                .is_some()
+            {
+                counts.backup_only("history_fact_receipts_covered_by_original", 1);
+                continue;
+            }
+            let id = deterministic_event_id(
+                "history_fact_receipts",
+                &[item_id.clone().into(), revision.into()],
+                &kind,
+            );
+            let mut event =
+                HistoryEvent::new(id.clone(), HistoryEventKind::BusinessChanged, recorded_at);
+            event.header.entity_id = Some(business_id);
+            event.header.source = Some(HistorySource::Receipt {
+                receipt_id: item_id.clone(),
+            });
+            copy_column_body(
+                import,
+                source,
+                "history_fact_receipts",
+                &["item_id", "revision"],
+                &[&item_id, &revision.to_string()],
+                "payload",
+                &id,
+                "canonical_payload",
+                HistoryBodyRole::CanonicalPayload,
+            )
+            .await?;
+            event.payload_body_id = Some(deterministic_body_id(&id, "canonical_payload"));
+            import.insert_event(event).await?;
+            counts.imported(
+                match kind.as_str() {
+                    "interaction" => "interaction_facts",
+                    "permission" => "permission_facts",
+                    _ => unreachable!("review receipts continue before business import"),
+                },
+                1,
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn import_costs<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = (String::new(), String::new());
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT purpose,currency,amount FROM session_costs WHERE (purpose,currency)>(?,?) ORDER BY purpose,currency LIMIT 128",
+                vec![after.0.clone().into(), after.1.clone().into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let purpose_json: String = row.try_get("", "purpose")?;
+            let currency: String = row.try_get("", "currency")?;
+            after = (purpose_json.clone(), currency.clone());
+            let amount = row.try_get::<f64>("", "amount")?;
+            if !amount.is_finite() || amount < 0.0 {
+                return Err(HistoryError::Integrity("invalid schema 24 cost".into()));
+            }
+            let purpose: Option<String> = serde_json::from_str(&purpose_json)?;
+            let head = super::HistoryCostHead {
+                purpose: purpose.clone(),
+                currency: currency.clone(),
+                cost_delta: None,
+                cost_total: amount,
+                cache_savings_delta: None,
+                cache_savings_total: None,
+                updated_at: 0,
+                detail_event_id: None,
+            };
+            let row_key = head.row_key()?;
+            let id = deterministic_event_id(
+                "session_costs",
+                &[purpose_json.into(), currency.clone().into()],
+                "total",
+            );
+            let mut event = HistoryEvent::new(id, HistoryEventKind::LegacyObserved, recorded_at);
+            event.header.row_key = Some(row_key);
+            event.is_anchor = true;
+            event.head = Some(HistoryRowHead::Cost(head));
+            import.insert_event(event).await?;
+            counts.imported("costs", 1);
+        }
+    }
+    Ok(())
+}
+
+async fn import_accounting<C: ConnectionTrait>(
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    _database_id: &str,
+    thread_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let Some(checkpoint) = source.checkpoint(thread_id).await? else {
+        return Ok(());
+    };
+    let summary = checkpoint.state.usage_summary.clone();
+    let head = super::HistoryAccountingHead {
+        prompt_tokens: summary.totals.prompt_tokens,
+        completion_tokens: summary.totals.completion_tokens,
+        cached_prompt_tokens: summary.totals.cached_prompt_tokens,
+        cache_write_tokens: summary.totals.cache_write_tokens,
+        reasoning_tokens: summary.totals.reasoning_tokens,
+        inference_count: summary.totals.inference_count,
+        total_tokens: summary.totals.total_tokens,
+        cache_usage: super::CacheUsageSummary {
+            sample_count: summary.cache.sample_count,
+            legacy_sample_count_unknown: false,
+            input_tokens: summary.cache.input_tokens,
+            cache_read_tokens: summary.cache.read_tokens,
+            hit_rate: None,
+            has_incomplete_usage: summary.cache.incomplete,
+        },
+        has_incomplete_usage: summary.has_incomplete_usage(),
+        has_unpriced_usage: summary.pricing.incomplete,
+        updated_at: 0,
+        detail_event_id: None,
+    };
+    let id = deterministic_event_id("session_checkpoint", &["accounting".into()], "anchor");
+    let mut event = HistoryEvent::new(id, HistoryEventKind::LegacyObserved, recorded_at);
+    event.header.row_key = Some("accounting:session".into());
+    event.is_anchor = true;
+    event.head = Some(HistoryRowHead::Accounting(head));
+    import.insert_event(event).await?;
+    counts.imported("accounting", 1);
+    Ok(())
+}
+
+async fn import_display<C: ConnectionTrait>(
+    connection: &C,
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    database_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = 0;
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT block_id,block_order,sealed,unfinished FROM conversation_display_blocks WHERE block_order>? ORDER BY block_order LIMIT 128",
+                vec![db::number(after)?.into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let block_id: String = row.try_get("", "block_id")?;
+            let block_order = db_u64(
+                row.try_get::<i64>("", "block_order")?,
+                "conversation_display_blocks.block_order",
+            )?;
+            after = block_order;
+            let header_bytes = read_legacy_product_blob(
+                source,
+                "conversation_display_blocks",
+                "block_id",
+                &block_id,
+                "header",
+            )
+            .await?;
+            let header: DisplayHeaderRow = serde_json::from_slice(&header_bytes)?;
+            if header.version != 5 || header.id != block_id || header.block_order != block_order {
+                return Err(HistoryError::Integrity(
+                    "schema 24 display block identity differs".into(),
+                ));
+            }
+            let _ = (
+                &header.source,
+                header.boundary,
+                header.first_content_at,
+                header.next_member,
+                header.revision,
+            );
+            match header.body {
+                v24_display::DisplayBlockBody::Work { timing, .. } => {
+                    let member_count = source
+                        .query_one(
+                            "SELECT count(*) AS count FROM conversation_display_members WHERE block_id=?",
+                            vec![block_id.clone().into()],
+                        )
+                        .await?
+                        .ok_or_else(|| HistoryError::Integrity("display member count failed".into()))?;
+                    let member_count = db_u64(
+                        member_count.try_get::<i64>("", "count")?,
+                        "conversation_display_members count",
+                    )?;
+                    let execution_present = source
+                        .query_one(
+                            "SELECT 1 FROM conversation_display_members WHERE block_id=? AND json_extract(metadata,'$.record.atom.kind') IN ('toolCall','inference','reasoning') LIMIT 1",
+                            vec![block_id.clone().into()],
+                        )
+                        .await?
+                        .is_some();
+                    let head = HistoryWorkHead {
+                        group_id: block_id.clone(),
+                        run_id: None,
+                        started_at: milliseconds(timing.started_at)?,
+                        boundary_at: milliseconds(timing.finished_at)?,
+                        closed: header.sealed,
+                        member_count,
+                        unfinished_count: header.unfinished,
+                        execution_present,
+                        summary: None,
+                    };
+                    let id = deterministic_event_id(
+                        "conversation_display_blocks",
+                        &[block_id.clone().into()],
+                        "work-anchor",
+                    );
+                    let mut event =
+                        HistoryEvent::new(id, HistoryEventKind::LegacyObserved, recorded_at);
+                    event.header.group_id = Some(block_id.clone());
+                    event.header.row_key = Some(format!("work:{block_id}"));
+                    event.is_anchor = true;
+                    event.head = Some(HistoryRowHead::Work(head));
+                    import.insert_event(event).await?;
+                    counts.imported("display_work_anchors", 1);
+                    import_work_members(
+                        connection,
+                        import,
+                        source,
+                        database_id,
+                        &block_id,
+                        recorded_at,
+                        counts,
+                    )
+                    .await?;
+                }
+                v24_display::DisplayBlockBody::Single { record, visibility } => {
+                    let id = deterministic_event_id(
+                        "conversation_display_blocks",
+                        &[block_id.clone().into()],
+                        "single-anchor",
+                    );
+                    import_entity_anchor(
+                        connection,
+                        import,
+                        source,
+                        database_id,
+                        &id,
+                        None,
+                        record.atom,
+                        Some(visibility),
+                        record.content_source,
+                        recorded_at,
+                        counts,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn import_work_members<C: ConnectionTrait>(
+    connection: &C,
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    database_id: &str,
+    block_id: &str,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let mut after = 0;
+    loop {
+        let rows = source
+            .query_all(
+                "SELECT member_order,member_key FROM conversation_display_members WHERE block_id=? AND member_order>? ORDER BY member_order LIMIT 128",
+                vec![block_id.into(), db::number(after)?.into()],
+            )
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            let member_order = db_u64(
+                row.try_get::<i64>("", "member_order")?,
+                "conversation_display_members.member_order",
+            )?;
+            let member_key: String = row.try_get("", "member_key")?;
+            after = member_order;
+            let member_bytes = read_legacy_product_blob(
+                source,
+                "conversation_display_members",
+                "member_key",
+                &member_key,
+                "metadata",
+            )
+            .await?;
+            let member: DisplayMemberRow = serde_json::from_slice(&member_bytes)?;
+            if member.block_id != block_id
+                || member.head.member_key != member_key
+                || member.head.member_order != member_order
+                || member.association_key.is_empty()
+                || member.terminal
+                    != matches!(
+                        &member.head.record.atom.lifecycle,
+                        ChatAtomLifecycle::Terminal { .. }
+                    )
+            {
+                return Err(HistoryError::Integrity(
+                    "schema 24 display member identity or order differs".into(),
+                ));
+            }
+            let expected_id = display_member_event_id(block_id, &member_key);
+            import_entity_anchor(
+                connection,
+                import,
+                source,
+                database_id,
+                &expected_id,
+                Some(block_id),
+                member.head.record.atom,
+                None,
+                member.head.record.content_source,
+                recorded_at,
+                counts,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn import_entity_anchor<C: ConnectionTrait>(
+    connection: &C,
+    import: &mut HistoryImport<'_, C>,
+    source: &V24HistorySource,
+    database_id: &str,
+    event_id: &str,
+    group_id: Option<&str>,
+    mut atom: ChatAtom,
+    visibility: Option<v24_display::SingleVisibility>,
+    content_source: v24_display::DisplayContentSource,
+    recorded_at: i64,
+    counts: &mut ImportCounts,
+) -> Result<()> {
+    let observation = match &content_source {
+        v24_display::DisplayContentSource::CompletedOriginal { .. } => HistoryObservation::Original,
+        v24_display::DisplayContentSource::FrozenObservation {
+            captured_at,
+            available: true,
+        } => HistoryObservation::Boundary {
+            captured_at: milliseconds(*captured_at)?,
+        },
+        v24_display::DisplayContentSource::FrozenObservation {
+            captured_at,
+            available: false,
+        } => HistoryObservation::UnavailableLegacy {
+            captured_at: milliseconds(*captured_at)?,
+        },
+        v24_display::DisplayContentSource::CurrentAtom => {
+            HistoryObservation::Boundary { captured_at: None }
+        }
+    };
+    let frozen_payload = matches!(
+        &content_source,
+        v24_display::DisplayContentSource::FrozenObservation {
+            available: true,
+            ..
+        }
+    );
+    let owns_payload = matches!(
+        &content_source,
+        v24_display::DisplayContentSource::FrozenObservation {
+            available: true,
+            ..
+        } | v24_display::DisplayContentSource::CurrentAtom
+    );
+    if frozen_payload {
+        let Some(PayloadData::Deferred { reference, .. }) = &atom.payload else {
+            return Err(HistoryError::Integrity(
+                "schema 24 frozen observation has no captured payload".into(),
+            ));
+        };
+        validate_typed_reference(reference, database_id)?;
+        let ContentTarget::Body {
+            owner:
+                ContentOwner::DisplayObservation {
+                    block_id,
+                    member_key,
+                },
+            key,
+        } = &reference.target
+        else {
+            return Err(HistoryError::Integrity(
+                "schema 24 frozen observation payload is not display-owned".into(),
+            ));
+        };
+        let expected_event = display_member_event_id(block_id, member_key);
+        if expected_event != event_id
+            || group_id.is_some_and(|actual| actual != block_id.as_str())
+            || key != "display.payload"
+        {
+            return Err(HistoryError::Integrity(
+                "schema 24 frozen observation payload owner differs".into(),
+            ));
+        }
+        let owner_key = crate::studio::conversation_identity::content_owner_key(
+            &ContentOwner::DisplayObservation {
+                block_id: block_id.clone(),
+                member_key: member_key.clone(),
+            },
+        )
+        .map_err(|error| HistoryError::Storage(error.into()))?;
+        let mut staged_payload = StagedPayload::from_body(
+            connection,
+            source,
+            V24Body::Content {
+                owner_key: owner_key.as_str().to_owned(),
+                content_key: key.clone(),
+            },
+        )
+        .await?;
+        staged_payload
+            .rewrite_declarations(source, database_id, event_id, None)
+            .await?;
+        for content in &atom.contents {
+            validate_typed_reference(&content.reference, database_id)?;
+            payload_reference(connection, &content.reference, database_id).await?;
+        }
+        import
+            .copy_body(
+                HistoryImportBody {
+                    body_id: deterministic_body_id(event_id, "canonical_payload"),
+                    owner_event_id: event_id.to_owned(),
+                    ordinal: 0,
+                    body_key: "canonical_payload".into(),
+                    role: HistoryBodyRole::CanonicalPayload,
+                    media_type: Some("application/json".into()),
+                },
+                &staged_payload,
+            )
+            .await?;
+    } else if owns_payload {
+        for content in &atom.contents {
+            plan_content_reference(
+                connection,
+                source,
+                database_id,
+                event_id,
+                &content.reference,
+            )
+            .await?;
+        }
+        if let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
+            plan_content_reference(connection, source, database_id, event_id, reference).await?;
+        }
+        let metadata =
+            plan_and_rewrite_atom_references(connection, &mut atom, database_id, event_id).await?;
+        copy_vector_body(
+            import,
+            event_id,
+            "canonical_payload",
+            HistoryBodyRole::CanonicalPayload,
+            0,
+            serde_json::to_vec(&metadata)?,
+        )
+        .await?;
+    } else {
+    }
+
+    let completed = atom.completion_item_id.clone();
+    let original_completion = match &content_source {
+        v24_display::DisplayContentSource::CompletedOriginal { completion_id } => {
+            Some(completion_id.clone())
+        }
+        _ => None,
+    };
+    if let (Some(atom_id), Some(source_id)) = (&completed, &original_completion)
+        && atom_id != source_id
+    {
+        return Err(HistoryError::Integrity(
+            "schema 24 display original names another completion".into(),
+        ));
+    }
+    let entity_turn_id = atom.turn_id.clone();
+    let mut head = HistoryEntityHead::from_atom(&atom, None)?;
+    let boundary_observation = matches!(&observation, HistoryObservation::Boundary { .. });
+    head.observation = observation;
+    match &head.observation {
+        HistoryObservation::Original => {
+            let completion = original_completion.ok_or_else(|| {
+                HistoryError::Integrity(
+                    "schema 24 completed display source has no completion identity".into(),
+                )
+            })?;
+            head.detail_event_id = Some(completion.clone());
+            head.input_manifest_event_id = Some(completion.clone());
+            head.body_manifest_event_id = Some(completion);
+        }
+        HistoryObservation::Boundary { .. } => {
+            head.detail_event_id = Some(event_id.to_owned());
+            head.input_manifest_event_id = None;
+            head.body_manifest_event_id = Some(event_id.to_owned());
+        }
+        HistoryObservation::UnavailableLegacy { .. } => {
+            head.detail_event_id = Some(event_id.to_owned());
+            head.input_manifest_event_id = None;
+            head.body_manifest_event_id = None;
+        }
+    }
+    head.single_visibility = visibility.map(single_visibility);
+    let first_content_ordinal = if owns_payload { 1 } else { 0 };
+    fit_entity_head(
+        import,
+        &mut head,
+        event_id,
+        database_id,
+        first_content_ordinal,
+    )
+    .await?;
+    if owns_payload {
+        copy_planned_bodies(connection, import, source).await?;
+    }
+    if owns_payload {
+        for content in &atom.contents {
+            let plan = payload_reference(connection, &content.reference, database_id).await?;
+            import.validate_body_reference(&plan).await?;
+        }
+        if !frozen_payload && let Some(PayloadData::Deferred { reference, .. }) = &atom.payload {
+            let plan = payload_reference(connection, reference, database_id).await?;
+            import.validate_body_reference(&plan).await?;
+        }
+    }
+    let kind = match &head.observation {
+        HistoryObservation::UnavailableLegacy { .. } | HistoryObservation::Original => {
+            HistoryEventKind::LegacyObserved
+        }
+        HistoryObservation::Boundary { .. } => HistoryEventKind::BoundaryObserved,
+    };
+    let mut event = HistoryEvent::new(event_id.to_owned(), kind, recorded_at);
+    event.header.run_id = head.run_id.clone();
+    event.header.attempt_id = head.attempt_id.clone();
+    event.header.entity_id = Some(head.entity_id.clone());
+    event.header.turn_id = entity_turn_id;
+    event.header.source = Some(head.source.clone());
+    event.header.call_id = head.tool.as_ref().map(|tool| tool.call_id.clone());
+    event.header.occurred_at = event_time(&atom)?;
+    if let Some(group_id) = group_id {
+        event.header.group_id = Some(group_id.to_owned());
+        event.header.row_key = Some(format!("member:{group_id}:{}", head.entity_id));
+    } else {
+        event.header.row_key = Some(format!("single:{}", head.entity_id));
+    }
+    event.is_anchor = true;
+    event.head = Some(if group_id.is_some() {
+        HistoryRowHead::Member(head)
+    } else {
+        HistoryRowHead::Single(head)
+    });
+    event.payload_body_id =
+        owns_payload.then(|| deterministic_body_id(event_id, "canonical_payload"));
+    import.insert_event(event).await?;
+    if group_id.is_some() {
+        counts.imported("display_member_anchors", 1);
+    } else {
+        counts.imported("display_single_anchors", 1);
+    }
+    if boundary_observation {
+        counts.imported("display_boundary_observations", 1);
+    }
+    Ok(())
+}
+
+fn single_visibility(value: v24_display::SingleVisibility) -> HistorySingleVisibility {
+    match value {
+        v24_display::SingleVisibility::Content => HistorySingleVisibility::Content,
+        v24_display::SingleVisibility::FinalEmptyAfterContent => {
+            HistorySingleVisibility::FinalEmptyAfterContent
+        }
+    }
+}
+
+async fn verify_import(
+    tx: &impl ConnectionTrait,
+    source: &V24HistorySource,
+    database_id: &str,
+    canonical_count: u64,
+) -> Result<()> {
+    let row = tx
+        .query_one_raw(statement(
+            "SELECT count(*) AS count FROM history_events WHERE query_class IS NOT NULL",
+            Vec::new(),
+        ))
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("canonical count failed".into()))?;
+    if db_u64(
+        row.try_get::<i64>("", "count")?,
+        "canonical history_events count",
+    )? != canonical_count
+    {
+        return Err(HistoryError::Integrity(
+            "canonical original count differs after import".into(),
+        ));
+    }
+
+    let mut source_after = 0;
+    let mut target_after = 0;
+    loop {
+        let source_page = source.originals_page(source_after, 128).await?;
+        let target_page = canonical_event_page(tx, target_after, 128).await?;
+        if source_page.len() != target_page.len() {
+            return Err(HistoryError::Integrity(
+                "canonical original page count or order differs".into(),
+            ));
+        }
+        if source_page.is_empty() {
+            break;
+        }
+        for (original, imported) in source_page.iter().zip(&target_page) {
+            if original.item_id != imported.1 {
+                return Err(HistoryError::Integrity(
+                    "canonical original identity or order differs".into(),
+                ));
+            }
+        }
+        source_after = source_page.last().expect("nonempty page").seq;
+        target_after = target_page.last().expect("nonempty page").0;
+    }
+    verify_display_order(tx, source).await?;
+
+    let invalid_directory = tx
+        .query_one_raw(statement(
+            "SELECT owner_event_id FROM history_bodies GROUP BY owner_event_id HAVING count(*)<>max(ordinal)+1 OR min(ordinal)<>0 LIMIT 1",
+            Vec::new(),
+        ))
+        .await?;
+    if invalid_directory.is_some() {
+        return Err(HistoryError::Integrity(
+            "imported body directory has gaps".into(),
+        ));
+    }
+    let invalid_chunk = tx
+        .query_one_raw(statement(
+            "SELECT body_id FROM history_body_chunks GROUP BY body_id HAVING count(*)<>max(chunk_no)+1 OR min(chunk_no)<>0 LIMIT 1",
+            Vec::new(),
+        ))
+        .await?;
+    if invalid_chunk.is_some() {
+        return Err(HistoryError::Integrity(
+            "imported body chunks have gaps".into(),
+        ));
+    }
+    let invalid_chunk_length = tx
+        .query_one_raw(statement(
+            "SELECT c.body_id FROM history_body_chunks AS c JOIN history_bodies AS b ON b.body_id=c.body_id WHERE c.chunk_no*65536>=b.byte_length OR length(c.data)<>min(65536,b.byte_length-c.chunk_no*65536) LIMIT 1",
+            Vec::new(),
+        ))
+        .await?;
+    if invalid_chunk_length.is_some() {
+        return Err(HistoryError::Integrity(
+            "imported body chunk lengths differ from their body headers".into(),
+        ));
+    }
+    let missing_chunks = tx
+        .query_one_raw(statement(
+            "SELECT body_id FROM history_bodies AS b WHERE byte_length>0 AND NOT EXISTS(SELECT 1 FROM history_body_chunks AS c WHERE c.body_id=b.body_id) LIMIT 1",
+            Vec::new(),
+        ))
+        .await?;
+    if missing_chunks.is_some() {
+        return Err(HistoryError::Integrity(
+            "nonempty imported body has no chunks".into(),
+        ));
+    }
+
+    verify_row_heads(tx, database_id).await?;
+    verify_canonical_metadata(tx, database_id).await?;
+    verify_legacy_metadata(tx, database_id).await?;
+    for check in ["PRAGMA quick_check", "PRAGMA foreign_key_check"] {
+        let rows = tx.query_all_raw(statement(check, Vec::new())).await?;
+        if check == "PRAGMA quick_check" {
+            for row in rows {
+                if row.try_get_by_index::<String>(0)? != "ok" {
+                    return Err(HistoryError::Integrity(
+                        "imported history quick_check failed".into(),
+                    ));
+                }
+            }
+        } else if !rows.is_empty() {
+            return Err(HistoryError::Integrity(
+                "imported history foreign keys differ".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn canonical_event_page(
+    tx: &impl ConnectionTrait,
+    after: u64,
+    limit: u32,
+) -> Result<Vec<(u64, String)>> {
+    Ok(tx
+        .query_all_raw(statement(
+            "SELECT seq,event_id FROM history_events WHERE query_class IS NOT NULL AND seq>? ORDER BY seq LIMIT ?",
+            vec![db::number(after)?.into(), i64::from(limit).into()],
+        ))
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok::<(u64, String), HistoryError>((
+                db_u64(row.try_get::<i64>("", "seq")?, "history_events.seq")?,
+                row.try_get("", "event_id")?,
+            ))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+async fn verify_display_order(tx: &impl ConnectionTrait, source: &V24HistorySource) -> Result<()> {
+    let mut source_after = 0;
+    let mut target_after = 0;
+    let mut source_members = 0u64;
+    loop {
+        let source_page = source
+            .query_all(
+                "SELECT block_id,block_order,json_extract(header,'$.body.kind') AS body_kind FROM conversation_display_blocks WHERE block_order>? ORDER BY block_order LIMIT 128",
+                vec![db::number(source_after)?.into()],
+            )
+            .await?;
+        let target_page = tx
+            .query_all_raw(statement(
+                "SELECT seq,event_id FROM history_events WHERE is_anchor=1 AND row_scope IN ('work','single') AND seq>? ORDER BY seq LIMIT 128",
+                vec![db::number(target_after)?.into()],
+            ))
+            .await?;
+        if source_page.len() != target_page.len() {
+            return Err(HistoryError::Integrity(
+                "main display anchor count or order differs".into(),
+            ));
+        }
+        if source_page.is_empty() {
+            break;
+        }
+        for (row, target) in source_page.iter().zip(&target_page) {
+            let block_order = db_u64(
+                row.try_get::<i64>("", "block_order")?,
+                "conversation_display_blocks.block_order",
+            )?;
+            source_after = block_order;
+            let block_id: String = row.try_get("", "block_id")?;
+            let body_kind: String = row.try_get("", "body_kind")?;
+            let role = if body_kind == "work" {
+                "work-anchor"
+            } else {
+                if body_kind != "single" {
+                    return Err(HistoryError::Integrity(
+                        "schema 24 display block has an unsupported body kind".into(),
+                    ));
+                }
+                "single-anchor"
+            };
+            let expected_main = deterministic_event_id(
+                "conversation_display_blocks",
+                &[block_id.clone().into()],
+                role,
+            );
+            if target.try_get::<String>("", "event_id")? != expected_main {
+                return Err(HistoryError::Integrity(
+                    "main display anchor identity or order differs".into(),
+                ));
+            }
+            if body_kind != "work" {
+                continue;
+            }
+            let expected = verify_member_order(tx, source, &block_id).await?;
+            source_members = source_members
+                .checked_add(expected)
+                .ok_or_else(|| HistoryError::Integrity("member count overflow".into()))?;
+        }
+        target_after = db_u64(
+            target_page
+                .last()
+                .expect("nonempty page")
+                .try_get::<i64>("", "seq")?,
+            "history_events.seq",
+        )?;
+    }
+    let target_members = db_u64(
+        tx.query_one_raw(statement(
+            "SELECT count(*) AS count FROM history_events WHERE is_anchor=1 AND row_scope='member'",
+            Vec::new(),
+        ))
+        .await?
+        .ok_or_else(|| HistoryError::Integrity("imported member total failed".into()))?
+        .try_get::<i64>("", "count")?,
+        "imported member count",
+    )?;
+    let all_source_members = db_u64(
+        source
+            .query_one(
+                "SELECT count(*) AS count FROM conversation_display_members",
+                Vec::new(),
+            )
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("source member total failed".into()))?
+            .try_get::<i64>("", "count")?,
+        "source member count",
+    )?;
+    if source_members != all_source_members || source_members != target_members {
+        return Err(HistoryError::Integrity(
+            "member display anchors contain a missing or extra group".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_member_order(
+    tx: &impl ConnectionTrait,
+    source: &V24HistorySource,
+    block_id: &str,
+) -> Result<u64> {
+    let mut source_after = 0;
+    let mut target_after = 0;
+    let mut count = 0u64;
+    loop {
+        let source_page = source
+            .query_all(
+                "SELECT member_order,member_key FROM conversation_display_members WHERE block_id=? AND member_order>? ORDER BY member_order LIMIT 128",
+                vec![block_id.into(), db::number(source_after)?.into()],
+            )
+            .await?;
+        let target_page = tx
+            .query_all_raw(statement(
+                "SELECT seq,event_id FROM history_events WHERE is_anchor=1 AND row_scope='member' AND group_id=? AND seq>? ORDER BY seq LIMIT 128",
+                vec![block_id.into(), db::number(target_after)?.into()],
+            ))
+            .await?;
+        if source_page.len() != target_page.len() {
+            return Err(HistoryError::Integrity(
+                "member display anchor count or order differs".into(),
+            ));
+        }
+        if source_page.is_empty() {
+            break;
+        }
+        for (source_row, target_row) in source_page.iter().zip(&target_page) {
+            source_after = db_u64(
+                source_row.try_get::<i64>("", "member_order")?,
+                "conversation_display_members.member_order",
+            )?;
+            target_after = db_u64(target_row.try_get::<i64>("", "seq")?, "history_events.seq")?;
+            let member_key: String = source_row.try_get("", "member_key")?;
+            if target_row.try_get::<String>("", "event_id")?
+                != display_member_event_id(block_id, &member_key)
+            {
+                return Err(HistoryError::Integrity(
+                    "member display anchor identity or order differs".into(),
+                ));
+            }
+            count = count
+                .checked_add(1)
+                .ok_or_else(|| HistoryError::Integrity("member count overflow".into()))?;
+        }
+    }
+    Ok(count)
+}
+
+async fn verify_row_heads(tx: &impl ConnectionTrait, database_id: &str) -> Result<()> {
+    let mut after = 0;
+    loop {
+        let rows = tx
+            .query_all_raw(statement(
+                "SELECT seq,head_json FROM history_events WHERE head_json IS NOT NULL AND seq>? ORDER BY seq LIMIT 128",
+                vec![db::number(after)?.into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            after = db_u64(row.try_get::<i64>("", "seq")?, "history_events.seq")?;
+            let head: HistoryRowHead =
+                serde_json::from_str(&row.try_get::<String>("", "head_json")?)?;
+            verify_row_head(tx, database_id, &head).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn verify_canonical_metadata(tx: &impl ConnectionTrait, database_id: &str) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = tx
+            .query_all_raw(statement(
+                "SELECT owner_event_id,body_id,byte_length FROM history_bodies WHERE role='canonical_metadata' AND owner_event_id>? ORDER BY owner_event_id LIMIT 128",
+                vec![after.clone().into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            after = row.try_get("", "owner_event_id")?;
+            let body_id: String = row.try_get("", "body_id")?;
+            let length = db_u64(
+                row.try_get::<i64>("", "byte_length")?,
+                "history_bodies.byte_length",
+            )?;
+            if length > HEAD_MAX_BYTES as u64 {
+                return Err(HistoryError::Integrity(
+                    "canonical typed metadata exceeds the history head limit".into(),
+                ));
+            }
+            let bytes = read_body_at_most(tx, &body_id, length, HEAD_MAX_BYTES).await?;
+            let head: HistoryEntityHead = serde_json::from_slice(&bytes)?;
+            verify_entity_head(tx, database_id, &head).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn verify_legacy_metadata(tx: &impl ConnectionTrait, database_id: &str) -> Result<()> {
+    let mut after = String::new();
+    loop {
+        let rows = tx
+            .query_all_raw(statement(
+                "SELECT body_id,byte_length FROM history_bodies WHERE role='legacy_metadata' AND body_id>? ORDER BY body_id LIMIT 128",
+                vec![after.clone().into()],
+            ))
+            .await?;
+        if rows.is_empty() {
+            break;
+        }
+        for row in rows {
+            after = row.try_get("", "body_id")?;
+            let body_id: String = after.clone();
+            let length = db_u64(
+                row.try_get::<i64>("", "byte_length")?,
+                "history_bodies.byte_length",
+            )?;
+            let bytes =
+                read_body_at_most(tx, &body_id, length, pl_core::chat::MAX_READ_BYTES).await?;
+            let head: HistoryEntityHead = serde_json::from_slice(&bytes)?;
+            verify_entity_head(tx, database_id, &head).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn read_body_at_most(
+    tx: &impl ConnectionTrait,
+    body_id: &str,
+    length: u64,
+    max_length: usize,
+) -> Result<Vec<u8>> {
+    if length > max_length as u64 {
+        return Err(HistoryError::Integrity(
+            "typed history body exceeds its product-container budget".into(),
+        ));
+    }
+    let chunks = length.div_ceil(BODY_CHUNK_BYTES as u64);
+    let capacity = usize::try_from(length)
+        .map_err(|_| HistoryError::Integrity("head body length exceeds usize".into()))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    for offset in 0..chunks {
+        let chunk = tx
+            .query_one_raw(statement(
+                "SELECT data FROM history_body_chunks WHERE body_id=? AND chunk_no=?",
+                vec![body_id.into(), db::number(offset)?.into()],
+            ))
+            .await?
+            .ok_or_else(|| {
+                HistoryError::Integrity(format!("head body {body_id} has a chunk gap"))
+            })?;
+        let data: Vec<u8> = chunk.try_get("", "data")?;
+        bytes.extend_from_slice(&data);
+    }
+    if bytes.len() != capacity {
+        return Err(HistoryError::Integrity(
+            "head body chunks exceed their declared length".into(),
+        ));
+    }
+    Ok(bytes)
+}
+
+async fn verify_row_head(
+    tx: &impl ConnectionTrait,
+    database_id: &str,
+    head: &HistoryRowHead,
+) -> Result<()> {
+    match head {
+        HistoryRowHead::Single(head) | HistoryRowHead::Member(head) => {
+            verify_entity_head(tx, database_id, head).await
+        }
+        HistoryRowHead::Turn(head) => {
+            verify_optional_event(tx, head.detail_event_id.as_deref()).await
+        }
+        HistoryRowHead::Source(head) => {
+            verify_optional_event(tx, head.detail_event_id.as_deref()).await
+        }
+        HistoryRowHead::Cost(head) => {
+            verify_optional_event(tx, head.detail_event_id.as_deref()).await
+        }
+        HistoryRowHead::Accounting(head) => {
+            verify_optional_event(tx, head.detail_event_id.as_deref()).await
+        }
+        HistoryRowHead::Work(_) => Ok(()),
+    }
+}
+
+async fn verify_entity_head(
+    tx: &impl ConnectionTrait,
+    database_id: &str,
+    head: &HistoryEntityHead,
+) -> Result<()> {
+    for id in [
+        head.detail_event_id.as_deref(),
+        head.input_manifest_event_id.as_deref(),
+        head.body_manifest_event_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        verify_optional_event(tx, Some(id)).await?;
+    }
+    if let Some(HistoryWaitHead::Deferred { presentation, .. }) = &head.wait {
+        verify_body_reference(tx, database_id, presentation).await?;
+    }
+    Ok(())
+}
+
+async fn verify_optional_event(tx: &impl ConnectionTrait, event_id: Option<&str>) -> Result<()> {
+    let Some(event_id) = event_id else {
+        return Ok(());
+    };
+    if tx
+        .query_one_raw(statement(
+            "SELECT 1 FROM history_events WHERE event_id=?",
+            vec![event_id.into()],
+        ))
+        .await?
+        .is_none()
+    {
+        return Err(HistoryError::Integrity(format!(
+            "display head references missing event {event_id}"
+        )));
+    }
+    Ok(())
+}
+
+async fn verify_body_reference(
+    tx: &impl ConnectionTrait,
+    database_id: &str,
+    reference: &HistoryEventBodyRef,
+) -> Result<()> {
+    let row = tx
+        .query_one_raw(statement(
+            "SELECT owner_event_id,body_key,byte_length FROM history_bodies WHERE body_id=?",
+            vec![reference.body_id.clone().into()],
+        ))
+        .await?
+        .ok_or_else(|| {
+            HistoryError::Integrity(format!(
+                "typed head references missing body {}",
+                reference.body_id
+            ))
+        })?;
+    let body_length = db_u64(
+        row.try_get::<i64>("", "byte_length")?,
+        "history_bodies.byte_length",
+    )?;
+    if reference.database_id != database_id
+        || row.try_get::<String>("", "owner_event_id")? != reference.owner_event_id
+        || row.try_get::<String>("", "body_key")? != reference.body_key
+        || reference.byte_start != 0
+        || reference
+            .byte_start
+            .checked_add(reference.byte_length)
+            .is_none_or(|end| end > body_length)
+    {
+        return Err(HistoryError::Integrity(
+            "typed head body reference differs from its immutable body".into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn verify_display_tables_are_gone(tx: &impl ConnectionTrait) -> Result<()> {
+    for table in [
+        "conversation_display_blocks",
+        "conversation_display_members",
+        "conversation_items",
+        "conversation_contents",
+        "conversation_content_chunks",
+        "history_meta",
+        "session_checkpoint",
+        "current_context",
+    ] {
+        if tx
+            .query_one_raw(statement(
+                "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
+                vec![table.into()],
+            ))
+            .await?
+            .is_some()
+        {
+            return Err(HistoryError::Integrity(format!(
+                "retired history table {table} survived migration"
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn drop_legacy_tables(tx: &impl ConnectionTrait, thread_id: &str) -> Result<()> {
+    for (index, table) in [
+        "conversation_display_members",
+        "conversation_display_blocks",
+        "conversation_content_chunks",
+        "conversation_contents",
+        "completion_boundary_archive_content_chunks",
+        "completion_boundary_archive_contents",
+        "completion_boundary_archive_view_entries",
+        "completion_boundary_archive_view_state",
+        "completion_boundary_archive_timeline_members",
+        "completion_boundary_archive_timeline_items",
+        "completion_boundary_archive_projection_state",
+        "execution_lifecycle",
+        "history_turns",
+        "conversation_sources",
+        "history_tool_tasks",
+        "history_input_identities",
+        "history_message_identities",
+        "history_fact_receipts",
+        "session_costs",
+        "current_context",
+        "session_checkpoint",
+        "history_meta",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        tx.execute_raw(statement(
+            &format!("DROP TABLE IF EXISTS {table}"),
+            Vec::new(),
+        ))
+        .await?;
+        if index == 0 {
+            fail_ddl_once(thread_id)?;
+        }
+    }
+    verify_display_tables_are_gone(tx).await?;
+    let rows = tx
+        .query_all_raw(statement(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            Vec::new(),
+        ))
+        .await?;
+    for row in rows {
+        let name: String = row.try_get("", "name")?;
+        if ![
+            "history_store_meta",
+            "history_events",
+            "history_bodies",
+            "history_body_chunks",
+            "seaql_migrations",
+        ]
+        .contains(&name.as_str())
+        {
+            return Err(HistoryError::Integrity(format!(
+                "unknown table {name} survived migration"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writer_lease_path_matches_history_store_suffix() {
+        assert_eq!(
+            writer_lock_path(Path::new("/thread/history.sqlite")),
+            PathBuf::from("/thread/history.sqlite.writer.lock")
+        );
+    }
+
+    #[test]
+    fn millisecond_conversion_rejects_overflow() {
+        assert_eq!(milliseconds(Some(2)).unwrap(), Some(2_000));
+        assert!(milliseconds(Some(i64::MAX)).is_err());
+        assert_eq!(milliseconds(None).unwrap(), None);
+    }
+
+    #[test]
+    fn current_owner_body_key_is_independent_of_plan_position() {
+        let target = ContentTarget::Body {
+            owner: ContentOwner::Current {
+                domain: "model".into(),
+                id: "attempt".into(),
+                revision: 7,
+            },
+            key: "body".into(),
+        };
+        let first = plan_identity(&target, "event").unwrap();
+        let second = plan_identity(&target, "event").unwrap();
+        assert_eq!(first, second);
+        assert!(first.1.starts_with("legacy-current:"));
+        assert!(!first.1.contains(":0:"));
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::studio::storage::history::schema::v24_presentation_types as v24_display;
+    use crate::thread_assembler::{
+        agent_review::review_message_id,
+        review_delivery::{
+            DeliveryExceptionOutcome, DeliveryExceptionReason, DeliveryObservation,
+            ReviewDeliveryException, ReviewDeliveryFact,
+        },
+    };
+    use crate::{
+        ExecutionItem, ExecutionShape,
+        history::{
+            HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore as CurrentHistoryStore,
+        },
+        resource_store::FileResourceStore,
+        studio::storage::history::{HistoryStore as V24HistoryStore, persist_completed},
+    };
+    use pl_core::{
+        context::{
+            ContextContent, ContextRecord, ContextSnapshot, ContextSource, OpaquePayload,
+            content_hash,
+        },
+        thread::{
+            ThreadCheckpoint, ThreadLifecycle, ThreadSnapshot, ToolDelivery, ToolDeliveryTarget,
+            ToolOutcome,
+            extensions::ExtensionRecord,
+            task::{TaskRecord, TaskStatus},
+        },
+        tool::ToolOutput,
+    };
+    use pl_protocol::{
+        AttachmentModality, ChatAtom, ChatAtomContent, ChatClassFilter, ChatContentRole, ChatScope,
+        ChatSourceId, ContentOwner, PayloadData, ThreadContentLifecycle, ThreadContextDisposition,
+        ThreadTextChannel, ThreadTextItem, Turn,
+    };
+    use sea_orm::ConnectionTrait;
+
+    struct V24Fixture {
+        database_id: String,
+        large_id: String,
+        empty_id: String,
+        large_body: Vec<u8>,
+        empty_body: Vec<u8>,
+        host_body: Vec<u8>,
+        resource_id: String,
+        resource_body: Vec<u8>,
+        pending_review_id: Option<String>,
+        acknowledged_review_id: Option<String>,
+        canonical_payloads: BTreeMap<String, Vec<u8>>,
+    }
+
+    fn text_item(thread_id: &str, id: &str, ordinal: u64, body: &str) -> ExecutionItem {
+        ExecutionItem::new(
+            id.into(),
+            thread_id.into(),
+            "turn-1".into(),
+            ordinal,
+            1,
+            1,
+            2,
+            ExecutionShape::Text(ThreadTextItem::new(
+                ThreadTextChannel::Final,
+                body.into(),
+                vec![],
+                ThreadContentLifecycle::completed(2),
+            )),
+        )
+    }
+
+    async fn write_v24_fixture(
+        history_path: &Path,
+        thread_id: &str,
+        include_checkpoint_and_display: bool,
+    ) -> Result<V24Fixture> {
+        let large_text = format!("large-{}-{}", "正文".repeat(BODY_CHUNK_BYTES), "tail");
+        let large_body = large_text.clone().into_bytes();
+        let empty_body = Vec::new();
+        let host_body = (0..=255u8)
+            .cycle()
+            .take(BODY_CHUNK_BYTES + 123)
+            .collect::<Vec<_>>();
+        let items = [
+            text_item(thread_id, "original-large", 1, &large_text),
+            text_item(thread_id, "original-empty", 2, ""),
+        ];
+        let legacy = V24HistoryStore::open(history_path, thread_id).await?;
+        let completions = persist_completed(&legacy, 1, &items).await?;
+        drop(legacy);
+        if completions.len() != items.len() {
+            return Err(HistoryError::Integrity(
+                "legacy fixture completion count differs".into(),
+            ));
+        }
+
+        let db = schema::connect(history_path, false, false).await?;
+        let metadata = db
+            .query_one_raw(statement(
+                "SELECT schema_version,database_id,applied_write_seq FROM history_meta WHERE id=1",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("fixture identity is missing".into()))?;
+        if metadata.try_get::<i64>("", "schema_version")? != 24 {
+            return Err(HistoryError::Integrity(
+                "legacy fixture did not stop at schema 24".into(),
+            ));
+        }
+        let database_id: String = metadata.try_get("", "database_id")?;
+        let applied = db_u64(
+            metadata.try_get::<i64>("", "applied_write_seq")?,
+            "history_meta.applied_write_seq",
+        )?;
+        if applied != 1 {
+            return Err(HistoryError::Integrity(
+                "legacy fixture watermark differs".into(),
+            ));
+        }
+
+        let resource_body = b"retained resource bytes".to_vec();
+        let resources = FileResourceStore::new(
+            history_path
+                .parent()
+                .ok_or_else(|| HistoryError::NotFound("fixture parent".into()))?
+                .join("resources"),
+        );
+        let resource = resources
+            .retain_bytes(
+                Arc::from(resource_body.as_slice()),
+                "application/octet-stream",
+            )
+            .await
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+        let attached =
+            pl_model::runtime::attachment_content(resource.clone(), AttachmentModality::Image)
+                .map_err(|error| HistoryError::Storage(error.into()))?;
+        let resource_task = TaskRecord {
+            id: "task:resource-call".into(),
+            parent_call_id: None,
+            invocation: None,
+            call_id: "resource-call".into(),
+            tool_id: "resource-tool".into(),
+            turn_id: "turn-1".into(),
+            revision: 1,
+            status: TaskStatus::Succeeded,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(1),
+        };
+        let resource_delivery = ToolDelivery {
+            target: ToolDeliveryTarget::CallResult,
+            call_id: "resource-call".into(),
+            tool_id: "resource-tool".into(),
+            output: ToolOutput::new(OpaquePayload::text("resource result"), Vec::new()),
+            delivered_context: vec![attached],
+            outcome: ToolOutcome::Succeeded,
+        };
+        db.execute_raw(statement(
+            "INSERT INTO history_tool_tasks(
+                call_id,revision,task_payload,delivery_payload,last_write_seq
+             ) VALUES(?,?,?,?,?)",
+            vec![
+                resource_task.call_id.clone().into(),
+                db::number(resource_task.revision)?.into(),
+                serde_json::to_string(&resource_task)?.into(),
+                serde_json::to_string(&resource_delivery)?.into(),
+                db::number(applied)?.into(),
+            ],
+        ))
+        .await?;
+        let backup_only_task = TaskRecord {
+            id: "task:task-only".into(),
+            parent_call_id: None,
+            invocation: None,
+            call_id: "task-only".into(),
+            tool_id: "task-only-tool".into(),
+            turn_id: "turn-1".into(),
+            revision: 1,
+            status: TaskStatus::Running,
+            cancel_requested: false,
+            acknowledgement: None,
+            started_sequence: Some(2),
+        };
+        db.execute_raw(statement(
+            "INSERT INTO history_tool_tasks(
+                call_id,revision,task_payload,delivery_payload,last_write_seq
+             ) VALUES(?,?,?,NULL,?)",
+            vec![
+                backup_only_task.call_id.clone().into(),
+                db::number(backup_only_task.revision)?.into(),
+                serde_json::to_string(&backup_only_task)?.into(),
+                db::number(applied)?.into(),
+            ],
+        ))
+        .await?;
+
+        let (pending_review, pending_review_id, acknowledged_review_id): (
+            Option<ReviewDeliveryFact>,
+            Option<String>,
+            Option<String>,
+        ) = if include_checkpoint_and_display {
+            let pending = ReviewDeliveryException {
+                reviewer_id: thread_id.into(),
+                turn_id: "review-turn-pending".into(),
+                input_id: None,
+                terminal_sequence: 5,
+                target_agent_id: "parent".into(),
+                feedback_message_id: review_message_id(thread_id, "review-turn-pending", 5),
+                observation: DeliveryObservation::Reconciliation,
+                outcome: DeliveryExceptionOutcome::Rejected {
+                    reason: DeliveryExceptionReason::IdentityConflict,
+                },
+            }
+            .into_fact()?;
+            let acknowledged = ReviewDeliveryException {
+                reviewer_id: thread_id.into(),
+                turn_id: "review-turn-acknowledged".into(),
+                input_id: None,
+                terminal_sequence: 6,
+                target_agent_id: "parent".into(),
+                feedback_message_id: review_message_id(thread_id, "review-turn-acknowledged", 6),
+                observation: DeliveryObservation::Reconciliation,
+                outcome: DeliveryExceptionOutcome::Rejected {
+                    reason: DeliveryExceptionReason::IdentityConflict,
+                },
+            }
+            .into_fact()?;
+            for fact in [&pending, &acknowledged] {
+                let payload = serde_json::to_string(fact)?;
+                db.execute_raw(statement(
+                    "INSERT INTO history_fact_receipts(
+                        item_id,revision,kind,digest,payload,last_write_seq
+                     ) VALUES(?,1,'reviewDeliveryException',?,?,?)",
+                    vec![
+                        fact.message.id.clone().into(),
+                        content_hash(payload.as_bytes()).into(),
+                        payload.into(),
+                        db::number(applied)?.into(),
+                    ],
+                ))
+                .await?;
+            }
+            (
+                Some(pending.clone()),
+                Some(pending.message.id),
+                Some(acknowledged.message.id),
+            )
+        } else {
+            (None, None, None)
+        };
+
+        let mut canonical_payloads = BTreeMap::new();
+        let mut atoms = BTreeMap::new();
+        let bodies = BTreeMap::from([
+            ("original-large".to_owned(), large_body.as_slice()),
+            ("original-empty".to_owned(), empty_body.as_slice()),
+        ]);
+        for completion in &completions {
+            let item_id = completion.header.item_id.clone();
+            let body = *bodies
+                .get(&item_id)
+                .ok_or_else(|| HistoryError::NotFound(item_id.clone()))?;
+            let owner = ContentOwner::Item {
+                item_id: item_id.clone(),
+            };
+            let owner_key = crate::studio::conversation_identity::content_owner_key(&owner)
+                .map_err(|error| HistoryError::Storage(error.into()))?;
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "byteLength": body.len() as u64,
+                "generation": 1,
+                "sealed": true,
+                "mediaType": "text/plain"
+            }))?;
+            db.execute_raw(statement(
+                "DELETE FROM conversation_content_chunks WHERE owner_key=? AND content_key='body'",
+                vec![owner_key.as_str().into()],
+            ))
+            .await?;
+            db.execute_raw(statement(
+                "INSERT INTO conversation_contents(owner_key,content_key,payload) VALUES(?,'body',?)
+                 ON CONFLICT(owner_key,content_key) DO UPDATE SET payload=excluded.payload",
+                vec![owner_key.as_str().into(), manifest.into()],
+            ))
+            .await?;
+            // Deliberately differ from the new 64 KiB writer boundary.
+            for (index, chunk) in body.chunks(4_099).enumerate() {
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_content_chunks(owner_key,content_key,byte_offset,data)
+                     VALUES(?,'body',?,?)",
+                    vec![
+                        owner_key.as_str().into(),
+                        i64::try_from(index * 4_099).map_err(|_| {
+                            HistoryError::Integrity("fixture chunk offset overflow".into())
+                        })?.into(),
+                        chunk.to_vec().into(),
+                    ],
+                ))
+                .await?;
+            }
+
+            let source_payload = if item_id == "original-large" {
+                let host_manifest = serde_json::to_vec(&serde_json::json!({
+                    "byteLength": host_body.len() as u64,
+                    "generation": 1,
+                    "sealed": true,
+                    "mediaType": "application/octet-stream"
+                }))?;
+                db.execute_raw(statement(
+                    "DELETE FROM conversation_content_chunks \
+                     WHERE owner_key=? AND content_key='tool.output-artifacts'",
+                    vec![owner_key.as_str().into()],
+                ))
+                .await?;
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_contents(owner_key,content_key,payload) \
+                     VALUES(?,'tool.output-artifacts',?) \
+                     ON CONFLICT(owner_key,content_key) DO UPDATE SET payload=excluded.payload",
+                    vec![owner_key.as_str().into(), host_manifest.into()],
+                ))
+                .await?;
+                for (index, chunk) in host_body.chunks(4_099).enumerate() {
+                    db.execute_raw(statement(
+                        "INSERT INTO conversation_content_chunks(\
+                             owner_key,content_key,byte_offset,data\
+                         ) VALUES(?,'tool.output-artifacts',?,?)",
+                        vec![
+                            owner_key.as_str().into(),
+                            i64::try_from(index * 4_099)
+                                .map_err(|_| {
+                                    HistoryError::Integrity("fixture offset overflow".into())
+                                })?
+                                .into(),
+                            chunk.to_vec().into(),
+                        ],
+                    ))
+                    .await?;
+                }
+                let host_reference = pl_protocol::ContentRef {
+                    database_id: database_id.clone(),
+                    target: pl_protocol::ContentTarget::Body {
+                        owner: owner.clone(),
+                        key: "tool.output-artifacts".into(),
+                    },
+                };
+                let mut payload: serde_json::Value = serde_json::from_slice(&completion.payload)?;
+                payload["bodies"]
+                    .as_array_mut()
+                    .ok_or_else(|| HistoryError::Integrity("fixture payload has no bodies".into()))?
+                    .push(serde_json::json!({
+                        "key":"tool.output-artifacts",
+                        "byteLength":host_body.len() as u64,
+                        "reference":host_reference
+                    }));
+                serde_json::to_vec(&payload)?
+            } else {
+                completion.payload.to_vec()
+            };
+
+            let mut atom: ChatAtom = serde_json::from_slice(&completion.header.metadata)?;
+            atom.content_present = Some(true);
+            atom.source_order = Some(if item_id == "original-large" { 1 } else { 2 });
+            atom.contents = vec![ChatAtomContent {
+                role: ChatContentRole::Body,
+                reference: pl_protocol::ContentRef {
+                    database_id: database_id.clone(),
+                    target: pl_protocol::ContentTarget::Body {
+                        owner: owner.clone(),
+                        key: "body".into(),
+                    },
+                },
+            }];
+            db.execute_raw(statement(
+                "UPDATE conversation_items SET metadata=? WHERE item_id=?",
+                vec![serde_json::to_vec(&atom)?.into(), item_id.clone().into()],
+            ))
+            .await?;
+            canonical_payloads.insert(item_id.clone(), source_payload);
+            atoms.insert(item_id, atom);
+        }
+
+        db.execute_raw(statement(
+            "DELETE FROM history_turns WHERE turn_id='turn-rollback'",
+            Vec::new(),
+        ))
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO history_turns(
+                turn_id,turn_order,admitted_effect,updated_effect,terminal_effect,payload,context_disposition
+             ) VALUES(?,50,NULL,NULL,NULL,?,?)",
+            vec![
+                "turn-rollback".into(),
+                50i64.into(),
+                serde_json::to_string(&Turn::queued("turn-rollback", thread_id, 1))?.into(),
+                serde_json::to_string(&ThreadContextDisposition::RolledBack)?.into(),
+            ],
+        ))
+        .await?;
+        db.execute_raw(statement(
+            "INSERT INTO session_costs(purpose,currency,amount) VALUES(?,?,?)",
+            vec![
+                serde_json::to_string(&Some("chat"))?.into(),
+                "USD".into(),
+                1.25f64.into(),
+            ],
+        ))
+        .await?;
+
+        if include_checkpoint_and_display {
+            let context_record = ContextRecord {
+                id: "context-1".into(),
+                turn_id: None,
+                source: ContextSource::User,
+                content: vec![ContextContent::Text {
+                    text: Arc::from("cold context"),
+                }],
+                tool_calls: Vec::new(),
+            };
+            let mut state = ThreadSnapshot::default();
+            state.commit_sequence = applied;
+            state.context = ContextSnapshot {
+                revision: 1,
+                records: Vec::<ContextRecord>::new().into(),
+            };
+            if let Some(fact) = &pending_review {
+                state.extensions.insert(
+                    fact.extension_id(),
+                    ExtensionRecord {
+                        revision: 1,
+                        payload: fact.encode()?,
+                    },
+                );
+                state.extension_sequence = 1;
+            }
+            let checkpoint = ThreadCheckpoint {
+                schema_version: ThreadCheckpoint::SCHEMA_VERSION,
+                thread_id: thread_id.into(),
+                state_revision: applied,
+                history_fence: applied,
+                saved_at: 1,
+                external_bodies: Vec::new(),
+                state,
+            };
+            let checkpoint_payload = serde_json::to_string(&checkpoint)?;
+            db.execute_raw(statement("DELETE FROM session_checkpoint", Vec::new()))
+                .await?;
+            db.execute_raw(statement("DELETE FROM current_context", Vec::new()))
+                .await?;
+            db.execute_raw(statement(
+                "INSERT INTO session_checkpoint(
+                    id,revision,context_revision,context_count,payload,payload_hash
+                 ) VALUES(1,?,?,1,?,?)",
+                vec![
+                    db::number(applied)?.into(),
+                    1i64.into(),
+                    checkpoint_payload.clone().into(),
+                    content_hash(checkpoint_payload.as_bytes()).into(),
+                ],
+            ))
+            .await?;
+            let context_payload = serde_json::to_string(&context_record)?;
+            db.execute_raw(statement(
+                "INSERT INTO current_context(ordinal,record_id,payload,payload_hash)
+                 VALUES(0,?,?,?)",
+                vec![
+                    context_record.id.clone().into(),
+                    context_payload.clone().into(),
+                    content_hash(context_payload.as_bytes()).into(),
+                ],
+            ))
+            .await?;
+
+            let block_id = "work-1";
+            let source = ChatSourceId::ForegroundTurn {
+                turn_id: "turn-1".into(),
+            };
+            let header = serde_json::to_vec(&serde_json::json!({
+                "version": 5,
+                "id": block_id,
+                "source": source.clone(),
+                "blockOrder": 1,
+                "boundary": null,
+                "firstContentAt": null,
+                "sealed": true,
+                "unfinished": 0,
+                "nextMember": 3,
+                "revision": 1,
+                "body": {
+                    "kind": "work",
+                    "timing": {"startedAt": 1, "finishedAt": 2},
+                    "members": {"databaseId": database_id.clone(), "blockId": block_id}
+                }
+            }))?;
+            db.execute_raw(statement(
+                "INSERT INTO conversation_display_blocks(
+                    block_id,source_key,block_order,sealed,updated_effect,header
+                 ) VALUES(?,?,1,1,1,?)",
+                vec![
+                    block_id.into(),
+                    serde_json::to_string(&source)?.into(),
+                    header.into(),
+                ],
+            ))
+            .await?;
+
+            let mut frozen_atom = atoms["original-large"].clone();
+            frozen_atom.completion_item_id = None;
+            frozen_atom.completion_seq = None;
+            let observation_owner = ContentOwner::DisplayObservation {
+                block_id: block_id.into(),
+                member_key: "member-1".into(),
+            };
+            let observation_owner_key =
+                crate::studio::conversation_identity::content_owner_key(&observation_owner)
+                    .map_err(|error| HistoryError::Storage(error.into()))?;
+            let observation_body = b"frozen body \xF0\x9F\xA6\x80";
+            let body_reference = pl_protocol::ContentRef {
+                database_id: database_id.clone(),
+                target: pl_protocol::ContentTarget::Body {
+                    owner: observation_owner.clone(),
+                    key: "body".into(),
+                },
+            };
+            let observation_payload = serde_json::to_vec(&serde_json::json!({
+                "contract":"anywork.chat/1",
+                "type":"text",
+                "data":{"kind":"text","data":{"text":"frozen"}},
+                "capturedAt":2,
+                "turnId":"turn-1",
+                "bodies":[{
+                    "key":"body",
+                    "byteLength":observation_body.len() as u64,
+                    "reference":body_reference
+                }]
+            }))?;
+            for (content_key, bytes) in [
+                ("body", observation_body.to_vec()),
+                ("display.payload", observation_payload.clone()),
+            ] {
+                let manifest = serde_json::to_vec(&serde_json::json!({
+                    "byteLength": bytes.len() as u64,
+                    "generation": 1,
+                    "sealed": true,
+                    "mediaType": if content_key == "body" {
+                        "application/octet-stream"
+                    } else {
+                        "application/json"
+                    }
+                }))?;
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_contents(owner_key,content_key,payload)
+                     VALUES(?,?,?)",
+                    vec![
+                        observation_owner_key.as_str().into(),
+                        content_key.into(),
+                        manifest.into(),
+                    ],
+                ))
+                .await?;
+                for (index, chunk) in bytes.chunks(4_099).enumerate() {
+                    db.execute_raw(statement(
+                        "INSERT INTO conversation_content_chunks(
+                             owner_key,content_key,byte_offset,data
+                         ) VALUES(?,?,?,?)",
+                        vec![
+                            observation_owner_key.as_str().into(),
+                            content_key.into(),
+                            i64::try_from(index * 4_099)
+                                .map_err(|_| {
+                                    HistoryError::Integrity("fixture offset overflow".into())
+                                })?
+                                .into(),
+                            chunk.to_vec().into(),
+                        ],
+                    ))
+                    .await?;
+                }
+            }
+            frozen_atom.contents = vec![ChatAtomContent {
+                role: ChatContentRole::Body,
+                reference: body_reference,
+            }];
+            frozen_atom.payload = Some(PayloadData::Deferred {
+                reference: pl_protocol::ContentRef {
+                    database_id: database_id.clone(),
+                    target: pl_protocol::ContentTarget::Body {
+                        owner: observation_owner,
+                        key: "display.payload".into(),
+                    },
+                },
+                byte_length: observation_payload.len() as u64,
+            });
+            let records = [
+                (
+                    "member-1",
+                    1i64,
+                    None::<String>,
+                    v24_display::DisplayContentSource::FrozenObservation {
+                        captured_at: Some(2),
+                        available: true,
+                    },
+                    frozen_atom,
+                ),
+                (
+                    "member-2",
+                    2i64,
+                    Some("original-empty".into()),
+                    v24_display::DisplayContentSource::CompletedOriginal {
+                        completion_id: "original-empty".into(),
+                    },
+                    atoms["original-empty"].clone(),
+                ),
+            ];
+            for (member_key, member_order, completion_id, content_source, atom) in records {
+                let head = v24_display::DisplayMemberHead {
+                    member_key: member_key.into(),
+                    member_order: u64::try_from(member_order).map_err(|_| {
+                        HistoryError::Integrity("fixture member order is negative".into())
+                    })?,
+                    record: v24_display::DisplayRecord {
+                        atom,
+                        start_fact: None,
+                        end_fact: None,
+                        content_source,
+                    },
+                };
+                let metadata = serde_json::to_vec(&serde_json::json!({
+                    "blockId": block_id,
+                    "associationKey": member_key,
+                    "terminal": true,
+                    "head": head
+                }))?;
+                db.execute_raw(statement(
+                    "INSERT INTO conversation_display_members(
+                        terminal,completion_id,association_key,updated_effect,metadata,
+                        block_id,member_order,member_key
+                     ) VALUES(1,?,?,1,?,?,?,?)",
+                    vec![
+                        completion_id.into(),
+                        member_key.into(),
+                        metadata.into(),
+                        block_id.into(),
+                        member_order.into(),
+                        member_key.into(),
+                    ],
+                ))
+                .await?;
+            }
+        }
+        db.close().await?;
+        Ok(V24Fixture {
+            database_id,
+            large_id: "original-large".into(),
+            empty_id: "original-empty".into(),
+            large_body,
+            empty_body,
+            host_body,
+            resource_id: resource.id().to_owned(),
+            resource_body,
+            pending_review_id,
+            acknowledged_review_id,
+            canonical_payloads,
+        })
+    }
+
+    async fn read_all_body(
+        reader: &crate::history::HistoryReader,
+        reference: HistoryEventBodyRef,
+    ) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let mut offset = 0;
+        while offset < reference.byte_length {
+            let window = reader
+                .read_body(reference.clone(), offset, BODY_CHUNK_BYTES as u32)
+                .await?;
+            if window.bytes.is_empty() {
+                return Err(HistoryError::Integrity(
+                    "history body stopped before its declared length".into(),
+                ));
+            }
+            offset += window.bytes.len() as u64;
+            bytes.extend_from_slice(&window.bytes);
+        }
+        Ok(bytes)
+    }
+
+    async fn schema_version(path: &Path) -> Result<i64> {
+        let db = schema::connect(path, true, false).await?;
+        let version = db
+            .query_one_raw(statement(
+                "SELECT schema_version FROM history_meta WHERE id=1",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("source identity was lost".into()))?
+            .try_get::<i64>("", "schema_version")?;
+        db.close().await?;
+        Ok(version)
+    }
+
+    async fn event_count(path: &Path) -> Result<i64> {
+        let db = schema::connect(path, true, false).await?;
+        let count = db
+            .query_one_raw(statement(
+                "SELECT count(*) AS count FROM history_events",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("history event count failed".into()))?
+            .try_get::<i64>("", "count")?;
+        db.close().await?;
+        Ok(count)
+    }
+
+    #[tokio::test]
+    async fn real_schema24_upgrade_preserves_canonical_current_and_display_facts() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-integration";
+        let fixture = write_v24_fixture(&history_path, thread_id, true).await?;
+
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert!(report.backup.as_ref().is_some_and(|path| path.is_file()));
+        assert_eq!(report.imported_categories["canonical_originals"], 2);
+        assert_eq!(report.imported_categories["turns"], 1);
+        assert_eq!(report.imported_categories["costs"], 1);
+        assert_eq!(report.imported_categories["tool_resources"], 1);
+        assert_eq!(report.imported_categories["tool_deliveries"], 1);
+        assert_eq!(report.backup_only_categories["history_tool_tasks"], 1);
+        assert_eq!(report.imported_categories["review_deliveries"], 1);
+        assert_eq!(
+            report.backup_only_categories["history_fact_receipts_review_delivery_already_acknowledged"],
+            1
+        );
+        assert_eq!(report.imported_categories["display_work_anchors"], 1);
+        assert_eq!(report.imported_categories["display_member_anchors"], 2);
+        assert_eq!(
+            report.imported_categories["display_boundary_observations"],
+            1
+        );
+
+        let current_bytes = tokio::fs::read(directory.path().join("current.json")).await?;
+        let current = ThreadCurrent::from_json(&current_bytes, thread_id)
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+        assert!(current.state.execution.is_none());
+        assert_eq!(current.state.lifecycle, ThreadLifecycle::Open);
+        assert!(current.state.context.records.iter().any(|record| {
+            record.content.iter().any(|content| {
+                matches!(content, ContextContent::Text { text } if text.as_ref() == "cold context")
+            })
+        }));
+
+        let store =
+            CurrentHistoryStore::open(&history_path, thread_id, HistoryLimits::default()).await?;
+        let reader = store.reader();
+        let resources = FileResourceStore::new(directory.path().join("resources"));
+        assert_eq!(
+            crate::studio::history_resources::read(&reader, &resources, &fixture.resource_id)
+                .await?,
+            fixture.resource_body.as_slice()
+        );
+        let pending_review = fixture
+            .pending_review_id
+            .as_deref()
+            .ok_or_else(|| HistoryError::NotFound("pending review id".into()))?;
+        assert!(
+            crate::studio::history_delivery::review_exception(&reader, pending_review)
+                .await?
+                .is_some(),
+            "the exact current review obligation remains recoverable"
+        );
+        let acknowledged_review = fixture
+            .acknowledged_review_id
+            .as_deref()
+            .ok_or_else(|| HistoryError::NotFound("acknowledged review id".into()))?;
+        assert!(
+            crate::studio::history_delivery::review_exception(&reader, acknowledged_review)
+                .await?
+                .is_none(),
+            "an acknowledged receipt is not recreated as a history obligation"
+        );
+        let originals = reader
+            .events_page(
+                HistoryEventsQuery::Originals {
+                    scope: ChatScope {
+                        query_class: ChatClassFilter::All {},
+                        parent_id: None,
+                    },
+                },
+                None,
+                None,
+                HistoryDemand::default(),
+            )
+            .await?;
+        assert_eq!(originals.entries.len(), 2);
+        for (item_id, expected) in &fixture.canonical_payloads {
+            let event = originals
+                .entries
+                .iter()
+                .find(|entry| entry.header.event_id == *item_id)
+                .ok_or_else(|| HistoryError::NotFound(item_id.clone()))?;
+            let reference = event
+                .payload_ref
+                .clone()
+                .ok_or_else(|| HistoryError::Integrity("canonical payload is missing".into()))?;
+            let bytes = read_all_body(&reader, reference).await?;
+            let actual: serde_json::Value = serde_json::from_slice(&bytes)?;
+            let expected: serde_json::Value = serde_json::from_slice(expected)?;
+            assert_eq!(actual["contract"], "anywork.chat/1");
+            assert_eq!(actual["type"], expected["type"]);
+            assert_eq!(actual["data"], expected["data"]);
+            assert_eq!(actual["sourceEffectSeq"], expected["sourceEffectSeq"]);
+            assert_eq!(
+                actual["sourceOrder"].as_u64(),
+                Some(if item_id == "original-large" { 1 } else { 2 })
+            );
+            for body in actual["bodies"].as_array().unwrap_or(&Vec::new()) {
+                assert!(body["reference"].is_object());
+                assert!(body["inline"].is_null());
+                assert_eq!(body["reference"]["byteLength"], body["byteLength"]);
+            }
+        }
+
+        let target = schema::connect(&history_path, true, false).await?;
+        for (item_id, expected) in [
+            (&fixture.large_id, fixture.large_body.as_slice()),
+            (&fixture.empty_id, fixture.empty_body.as_slice()),
+        ] {
+            let row = target
+                .query_one_raw(statement(
+                    "SELECT body_id,byte_length FROM history_bodies
+                     WHERE owner_event_id=? AND body_key='legacy-content:body'",
+                    vec![item_id.clone().into()],
+                ))
+                .await?
+                .ok_or_else(|| HistoryError::NotFound(item_id.clone()))?;
+            let reference = HistoryEventBodyRef {
+                database_id: fixture.database_id.clone(),
+                owner_event_id: item_id.clone(),
+                body_key: "legacy-content:body".into(),
+                body_id: row.try_get("", "body_id")?,
+                byte_start: 0,
+                byte_length: db_u64(row.try_get("", "byte_length")?, "history body length")?,
+            };
+            assert_eq!(read_all_body(&reader, reference).await?, expected);
+        }
+        let host_row = target
+            .query_one_raw(statement(
+                "SELECT body_id,byte_length FROM history_bodies \
+                 WHERE owner_event_id=? AND body_key='legacy-content:tool.output-artifacts'",
+                vec![fixture.large_id.clone().into()],
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::NotFound("host artifact body".into()))?;
+        let host_reference = HistoryEventBodyRef {
+            database_id: fixture.database_id.clone(),
+            owner_event_id: fixture.large_id.clone(),
+            body_key: "legacy-content:tool.output-artifacts".into(),
+            body_id: host_row.try_get("", "body_id")?,
+            byte_start: 0,
+            byte_length: db_u64(
+                host_row.try_get::<i64>("", "byte_length")?,
+                "host artifact body length",
+            )?,
+        };
+        assert_eq!(
+            read_all_body(&reader, host_reference).await?,
+            fixture.host_body
+        );
+        let metadata_row = target
+            .query_one_raw(statement(
+                "SELECT body_id,byte_length FROM history_bodies \
+                 WHERE owner_event_id=? AND role='legacy_metadata'",
+                vec![fixture.large_id.clone().into()],
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::NotFound("legacy metadata body".into()))?;
+        let metadata_reference = HistoryEventBodyRef {
+            database_id: fixture.database_id.clone(),
+            owner_event_id: fixture.large_id.clone(),
+            body_key: "legacy_metadata".into(),
+            body_id: metadata_row.try_get("", "body_id")?,
+            byte_start: 0,
+            byte_length: db_u64(
+                metadata_row.try_get::<i64>("", "byte_length")?,
+                "legacy metadata body length",
+            )?,
+        };
+        let metadata: HistoryEntityHead =
+            serde_json::from_slice(&read_all_body(&reader, metadata_reference).await?)?;
+        assert_eq!(metadata.entity_id, "original-large");
+        let boundary_event = display_member_event_id("work-1", "member-1");
+        let row = target
+            .query_one_raw(statement(
+                "SELECT body_id,byte_length FROM history_bodies \
+                 WHERE owner_event_id=? AND body_key='legacy-display:body'",
+                vec![boundary_event.clone().into()],
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::NotFound("frozen observation body".into()))?;
+        let boundary_reference = HistoryEventBodyRef {
+            database_id: fixture.database_id.clone(),
+            owner_event_id: boundary_event,
+            body_key: "legacy-display:body".into(),
+            body_id: row.try_get("", "body_id")?,
+            byte_start: 0,
+            byte_length: db_u64(row.try_get::<i64>("", "byte_length")?, "frozen body length")?,
+        };
+        assert_eq!(
+            read_all_body(&reader, boundary_reference).await?,
+            b"frozen body \xF0\x9F\xA6\x80".to_vec()
+        );
+        target.close().await?;
+
+        let main = reader
+            .timeline_page(None, None, HistoryDemand::default())
+            .await?;
+        let work = main
+            .entries
+            .iter()
+            .find(|entry| entry.row_key == "work:work-1")
+            .ok_or_else(|| HistoryError::NotFound("work:work-1".into()))?;
+        let HistoryRowHead::Work(work_head) = &work.head else {
+            return Err(HistoryError::Integrity("work head is missing".into()));
+        };
+        assert_eq!((work_head.member_count, work_head.unfinished_count), (2, 0));
+        let members = reader
+            .group_page("work-1".into(), None, None, HistoryDemand::default())
+            .await?;
+        assert_eq!(members.members.len(), 2);
+        let boundary = members
+            .members
+            .iter()
+            .find(|entry| {
+                matches!(
+                    &entry.head,
+                    HistoryRowHead::Member(head)
+                        if matches!(&head.observation, HistoryObservation::Boundary { .. })
+                )
+            })
+            .ok_or_else(|| HistoryError::NotFound("frozen observation".into()))?;
+        let boundary_payload = reader.read_event(boundary.head_seq).await?
+            .payload_ref
+            .clone()
+            .ok_or_else(|| HistoryError::Integrity("frozen payload is missing".into()))?;
+        let observation: serde_json::Value =
+            serde_json::from_slice(&read_all_body(&reader, boundary_payload).await?)?;
+        let boundary_event = display_member_event_id("work-1", "member-1");
+        assert_eq!(observation["contract"], "anywork.chat/1");
+        assert_eq!(observation["capturedAt"], 2);
+        assert!(observation["sourceEffectSeq"].is_null());
+        assert_eq!(
+            observation["bodies"][0]["reference"]["ownerEventId"],
+            boundary_event
+        );
+
+        let costs = reader
+            .costs_page(None, None, HistoryDemand::default())
+            .await?;
+        assert_eq!(costs.entries.len(), 1);
+        assert!(matches!(
+            &costs.entries[0].head,
+            HistoryRowHead::Cost(head) if head.cost_total == 1.25 && head.cost_delta.is_none()
+        ));
+        let turn = reader
+            .events_page(
+                HistoryEventsQuery::Turn {
+                    turn_id: "turn-rollback".into(),
+                },
+                None,
+                None,
+                HistoryDemand::default(),
+            )
+            .await?;
+        assert_eq!(turn.entries.len(), 1);
+        assert_eq!(
+            turn.entries[0].header.kind,
+            HistoryEventKind::TurnRolledBack
+        );
+        assert!(matches!(
+            &turn.entries[0].head,
+            Some(HistoryRowHead::Turn(head))
+                if head.context_disposition == ThreadContextDisposition::RolledBack
+        ));
+        reader.close().await;
+        store.close().await?;
+        let committed_events = event_count(&history_path).await?;
+        let observed = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(observed.status, UpgradeStatus::AlreadySchema25);
+        assert_eq!(
+            event_count(&history_path).await?,
+            committed_events,
+            "a fresh post-commit observation must not append the upgrade twice"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn existing_current_bytes_are_not_rewritten_by_upgrade() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-current-bytes";
+        write_v24_fixture(&history_path, thread_id, false).await?;
+
+        let mut current = ThreadCurrent::new(thread_id.into(), RuntimeEpoch::new());
+        current.saved_at = 123;
+        let original = serde_json::to_vec_pretty(&current)?;
+        std::fs::write(directory.path().join("current.json"), &original)?;
+
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(
+            tokio::fs::read(directory.path().join("current.json")).await?,
+            original
+        );
+        let backup = report
+            .current_original_backup
+            .ok_or_else(|| HistoryError::NotFound("current backup".into()))?;
+        assert_eq!(std::fs::read(backup)?, original);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_preparation_failure_preserves_schema24_and_does_not_publish_current()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-backup-failure";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        std::fs::write(
+            directory.path().join("migration-backups"),
+            b"not a directory",
+        )?;
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(schema_version(&history_path).await?, 24);
+        assert!(!directory.path().join("current.json").exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_publish_failure_leaves_only_an_unpublished_temporary_copy() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-backup-publish";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        *FAIL_NEXT_BACKUP_PUBLISH_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(schema_version(&history_path).await?, 24);
+        assert!(!directory.path().join("current.json").exists());
+        let operations = directory.path().join(BACKUP_ROOT);
+        let operation = std::fs::read_dir(&operations)?
+            .next()
+            .transpose()?
+            .ok_or_else(|| HistoryError::NotFound("backup operation directory".into()))?;
+        assert!(!operation.path().join("history.v24.sqlite").exists());
+        assert!(
+            std::fs::read_dir(operation.path())?.any(|entry| {
+                entry
+                    .ok()
+                    .and_then(|entry| entry.file_name().into_string().ok())
+                    .is_some_and(|name| name.starts_with(".history-v24-"))
+            }),
+            "validated temporary backup remains unpublished"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn current_publish_failures_never_migrate_database_or_rewrite_published_bytes()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-current-publish";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+
+        *FAIL_NEXT_CURRENT_PUBLISH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((thread_id.into(), false));
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(schema_version(&history_path).await?, 24);
+        assert!(!directory.path().join("current.json").exists());
+
+        *FAIL_NEXT_CURRENT_PUBLISH
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((thread_id.into(), true));
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(schema_version(&history_path).await?, 24);
+        let published = tokio::fs::read(directory.path().join("current.json")).await?;
+        ThreadCurrent::from_json(&published, thread_id)
+            .map_err(|error| HistoryError::Storage(error.into()))?;
+
+        let report = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(report.status, UpgradeStatus::Upgraded);
+        assert_eq!(
+            tokio::fs::read(directory.path().join("current.json")).await?,
+            published
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn destructive_ddl_failure_rolls_back_partial_table_drops() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-ddl-rollback";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        *FAIL_NEXT_DDL_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(schema_version(&history_path).await?, 24);
+        let source = schema::connect(&history_path, true, false).await?;
+        for table in ["conversation_display_members", "history_store_meta"] {
+            let exists = source
+                .query_one_raw(statement(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?",
+                    vec![table.into()],
+                ))
+                .await?
+                .is_some();
+            assert_eq!(
+                exists,
+                table == "conversation_display_members",
+                "partial DDL rollback must restore {table} exactly"
+            );
+        }
+        source.close().await?;
+        assert!(directory.path().join("current.json").is_file());
+
+        let retried = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(retried.status, UpgradeStatus::Upgraded);
+        let target = schema::connect(&history_path, true, false).await?;
+        let counts = target
+            .query_one_raw(statement(
+                "SELECT count(*) AS total,count(DISTINCT event_id) AS unique FROM history_events",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("retry event count failed".into()))?;
+        assert_eq!(
+            counts.try_get::<i64>("", "total")?,
+            counts.try_get::<i64>("", "unique")?
+        );
+        target.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn lost_result_after_commit_reopens_as_schema25_without_appending() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-lost-commit-result";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        *FAIL_NEXT_REPORT_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err(),
+            "the caller observes a failed maintenance result"
+        );
+        assert!(directory.path().join("current.json").is_file());
+        let committed_events = event_count(&history_path).await?;
+        let target = schema::connect(&history_path, true, false).await?;
+        let (_, observed_head) = schema::identity(&target, thread_id).await?;
+        target.close().await?;
+        assert!(observed_head > 0);
+
+        let observed = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(observed.status, UpgradeStatus::AlreadySchema25);
+        assert_eq!(
+            event_count(&history_path).await?,
+            committed_events,
+            "reopening the committed schema must not append a second migration"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn corrupt_existing_current_is_never_overwritten() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-corrupt-current";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        let original = b"{not valid current json".to_vec();
+        std::fs::write(directory.path().join("current.json"), &original)?;
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            tokio::fs::read(directory.path().join("current.json")).await?,
+            original
+        );
+        assert_eq!(
+            schema::connect(&history_path, true, false)
+                .await?
+                .query_one_raw(statement(
+                    "SELECT schema_version FROM history_meta WHERE id=1",
+                    Vec::new()
+                ))
+                .await?
+                .ok_or_else(|| HistoryError::Integrity("source identity was lost".into()))?
+                .try_get::<i64>("", "schema_version")?,
+            24
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_import_rolls_back_schema_and_retry_does_not_duplicate_events() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let history_path = directory.path().join("history.sqlite");
+        let thread_id = "migration-rollback-retry";
+        write_v24_fixture(&history_path, thread_id, true).await?;
+        *FAIL_NEXT_IMPORT_THREAD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(thread_id.into());
+
+        assert!(
+            upgrade_history(&history_path, thread_id, directory.path())
+                .await
+                .is_err()
+        );
+        let source = schema::connect(&history_path, true, false).await?;
+        let version = source
+            .query_one_raw(statement(
+                "SELECT schema_version FROM history_meta WHERE id=1",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("source identity was lost".into()))?
+            .try_get::<i64>("", "schema_version")?;
+        assert_eq!(version, 24);
+        assert!(
+            source
+                .query_one_raw(statement(
+                    "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='history_events'",
+                    Vec::new(),
+                ))
+                .await?
+                .is_none()
+        );
+        source.close().await?;
+        assert!(directory.path().join("current.json").is_file());
+
+        let retried = upgrade_history(&history_path, thread_id, directory.path()).await?;
+        assert_eq!(retried.status, UpgradeStatus::Upgraded);
+        assert_eq!(retried.imported_categories["canonical_originals"], 2);
+        let target = schema::connect(&history_path, true, false).await?;
+        let canonical = target
+            .query_one_raw(statement(
+                "SELECT count(*) AS count FROM history_events WHERE query_class IS NOT NULL",
+                Vec::new(),
+            ))
+            .await?
+            .ok_or_else(|| HistoryError::Integrity("canonical count failed".into()))?
+            .try_get::<i64>("", "count")?;
+        assert_eq!(canonical, 2);
+        target.close().await?;
+        Ok(())
+    }
+}

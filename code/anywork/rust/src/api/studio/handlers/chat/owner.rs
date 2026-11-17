@@ -6,9 +6,7 @@ use std::{
 };
 
 use pl_protocol::studio::{StudioError, StudioErrorCode};
-use pl_studio_runtime::{
-    ConversationFeed, ConversationReader, ConversationStateFeed, TimelineReader,
-};
+use pl_studio_runtime::{ConversationFeed, ConversationReader};
 use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
@@ -27,7 +25,6 @@ pub(crate) struct ConversationOwner {
     pub(super) state: SyncMutex<DeliveryState>,
     pub(super) credit: Notify,
     native: Mutex<Option<NativeFeed>>,
-    pub(super) timeline: Option<Arc<TimelineReader>>,
     /// Events installation and the whole close operation share this gate; never take it in producer.
     gate: Mutex<()>,
     producer: Mutex<OwnedTaskSlot>,
@@ -41,17 +38,13 @@ pub(super) struct ContentCapabilities {
 
 pub(super) enum NativeFeed {
     Content(Box<ConversationFeed>),
-    State(Box<ConversationStateFeed>),
 }
 
 impl NativeFeed {
     pub(super) async fn recv(
         &mut self,
     ) -> Result<Option<crate::api::studio::types::BridgeConversationEvent>, BridgeError> {
-        use crate::api::studio::{
-            convert::{chat, thread_stream::bridge_thread_update},
-            types::BridgeConversationEvent,
-        };
+        use crate::api::studio::{convert::chat, types::BridgeConversationEvent};
         match self {
             Self::Content(feed) => Ok(feed.recv().await?.map(|event| match event {
                 pl_studio_runtime::ConversationEvent::Chat { batch } => {
@@ -59,35 +52,19 @@ impl NativeFeed {
                         batch: Box::new(chat::batch(*batch)),
                     }
                 }
-                pl_studio_runtime::ConversationEvent::Activity { snapshot } => {
-                    BridgeConversationEvent::Activity {
-                        snapshot: Box::new(chat::activity((*snapshot).clone())),
-                    }
-                }
             })),
-            Self::State(feed) => feed
-                .recv()
-                .await?
-                .map(|update| {
-                    Ok(BridgeConversationEvent::State {
-                        update: Box::new(bridge_thread_update(update)?),
-                    })
-                })
-                .transpose(),
         }
     }
 
     fn request_close(&self) {
         match self {
             Self::Content(feed) => feed.request_close(),
-            Self::State(feed) => feed.request_close(),
         }
     }
 
     async fn close(&mut self) -> Result<(), BridgeError> {
         match self {
             Self::Content(feed) => Ok(feed.close().await?),
-            Self::State(feed) => Ok(feed.close().await?),
         }
     }
 }
@@ -119,32 +96,6 @@ impl ConversationOwner {
         )
     }
 
-    pub(super) fn timeline(reader: TimelineReader, cancel: CancellationToken) -> Self {
-        let content = ContentCapabilities {
-            reader: reader.reader().clone(),
-            watches: ContentWatches::new(&reader.metadata().reader_id),
-        };
-        let mut owner = Self::with_native(
-            reader.thread_id().to_owned(),
-            reader.metadata().reader_id,
-            None,
-            Some(content),
-            cancel,
-        );
-        owner.timeline = Some(Arc::new(reader));
-        owner
-    }
-
-    pub(super) fn new_state(feed: ConversationStateFeed, cancel: CancellationToken) -> Self {
-        Self::with_native(
-            feed.thread_id().to_owned(),
-            feed.subscription_id().to_owned(),
-            Some(NativeFeed::State(Box::new(feed))),
-            None,
-            cancel,
-        )
-    }
-
     fn with_native(
         thread_id: String,
         subscription_id: String,
@@ -157,7 +108,6 @@ impl ConversationOwner {
             subscription_id,
             content,
             native: Mutex::new(feed),
-            timeline: None,
             producer_cancel: cancel.child_token(),
             cancel,
             state: SyncMutex::new(DeliveryState::default()),
@@ -172,7 +122,7 @@ impl ConversationOwner {
         self.content.as_ref().ok_or_else(|| {
             error(
                 StudioErrorCode::InvalidArgument,
-                "state feed has no content reader",
+                "conversation feed has no content reader",
             )
         })
     }
@@ -240,9 +190,6 @@ impl ConversationOwner {
     }
 
     pub(crate) fn request_close(&self) {
-        if let Some(reader) = &self.timeline {
-            reader.request_close();
-        }
         self.state.lock().unwrap_or_else(|e| e.into_inner()).closing = true;
         if let Some(content) = &self.content {
             content.watches.request_close_all();
@@ -460,10 +407,6 @@ mod tests {
 
     fn managed(feed: ConversationFeed) -> Arc<ConversationOwner> {
         Arc::new(ConversationOwner::new(feed, CancellationToken::new()))
-    }
-
-    fn managed_state(feed: ConversationStateFeed) -> Arc<ConversationOwner> {
-        Arc::new(ConversationOwner::new_state(feed, CancellationToken::new()))
     }
 
     async fn start_port(owner: &Arc<ConversationOwner>) -> mpsc::Receiver<BridgeConversationFrame> {
@@ -695,7 +638,7 @@ mod tests {
             handlers::chat::tests::MODEL,
             types::{
                 BridgeChatBatch, BridgeChatPlacement, BridgeContentRange, BridgeThreadNotification,
-                BridgeThreadSubscriptionUpdate, BridgeTurnState,
+                BridgeTurnState,
             },
         };
         use pl_provider_fixture::{ReplyStage, responses_text_chunks};
@@ -742,58 +685,50 @@ mod tests {
 
         /// State proves business completion and execution removal independently of content retirement.
         pub(super) async fn observe_stopped_execution(
-            owner: &ConversationOwner,
-            port: &mut mpsc::Receiver<BridgeConversationFrame>,
+            watch: &mut pl_studio_runtime::CurrentWatch,
         ) -> Result<String> {
-            let mut sent = 0;
             let mut completed = None;
             let mut executing_turn = None;
             let mut execution_cleared = false;
             loop {
-                let frame = next_content(owner, port, &mut sent).await.with_context(|| {
-            format!(
-                "waiting for State TurnCompleted and execution removal: completed={completed:?}; executing_turn={executing_turn:?}; execution_cleared={execution_cleared}"
-            )
-        })?;
-                let BridgeConversationEvent::State { update } = frame.event else {
-                    anyhow::bail!("unexpected event on State feed: {:?}", frame.event);
+                let frame = watch.next().await.with_context(|| {
+                    format!(
+                        "waiting for Current TurnCompleted and execution removal: completed={completed:?}; executing_turn={executing_turn:?}; execution_cleared={execution_cleared}"
+                    )
+                })?.context("Current watch ended before execution removal")?;
+                let pl_protocol::CurrentFrame::Notification { notification, .. } = frame else {
+                    continue;
                 };
-                match *update {
-                    BridgeThreadSubscriptionUpdate::Notification { notification } => {
-                        match notification.notification {
-                            BridgeThreadNotification::TurnCompleted { turn }
-                                if turn.input_id.as_deref() == Some("input-bridge-live") =>
-                            {
-                                ensure!(
-                                    matches!(turn.state, BridgeTurnState::Completed { .. }),
-                                    "followup Turn failed: {:?}",
-                                    turn.state
-                                );
-                                ensure!(
-                                    completed.replace(turn.id).is_none(),
-                                    "duplicate typed terminal"
-                                );
-                            }
-                            BridgeThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
-                                match runtime.execution {
-                                    Some(execution) => {
-                                        if let Some(turn_id) = execution.turn_id {
-                                            executing_turn = Some(turn_id);
-                                        }
-                                        execution_cleared = false;
-                                    }
-                                    None => execution_cleared = executing_turn.is_some(),
+                match notification.notification {
+                    ThreadNotification::TurnCompleted { turn }
+                        if turn.input_id.as_deref() == Some("input-bridge-live") =>
+                    {
+                        ensure!(
+                            matches!(turn.state, pl_protocol::TurnState::Completed(_)),
+                            "followup Turn failed: {:?}",
+                            turn.state
+                        );
+                        ensure!(
+                            completed.replace(turn.id).is_none(),
+                            "duplicate typed terminal"
+                        );
+                    }
+                    ThreadNotification::ThreadRuntimeUpdated { runtime, .. } => {
+                        match runtime.execution {
+                            Some(execution) => {
+                                if let Some(turn_id) = execution.turn_id() {
+                                    executing_turn = Some(turn_id.to_owned());
                                 }
+                                execution_cleared = false;
                             }
-                            BridgeThreadNotification::Lagged { dropped } => {
-                                anyhow::bail!("State feed dropped {dropped} notifications");
-                            }
-                            _ => {}
+                            None => execution_cleared = executing_turn.is_some(),
                         }
                     }
-                    BridgeThreadSubscriptionUpdate::Snapshot { .. } => {}
+                    ThreadNotification::Lagged { dropped } => {
+                        anyhow::bail!("Current watch dropped {dropped} notifications");
+                    }
+                    _ => {}
                 }
-                owner.acknowledge(&owner.subscription_id, frame.delivery_sequence)?;
                 if execution_cleared && let Some(turn_id) = completed {
                     ensure!(
                         executing_turn.as_ref() == Some(&turn_id),
@@ -840,12 +775,22 @@ mod tests {
                 &[&head, &appended],
             );
             let env = Environment::with_followup(Some(reply)).await?;
-            let state_owner = managed_state(
-                env.runtime
-                    .open_conversation_state_feed(&env.thread_id)
-                    .await?,
-            );
-            let mut state_port = start_port(&state_owner).await;
+            let state_demand = pl_protocol::ReadDemand {
+                max_items: 16,
+                max_bytes: 64 * 1024,
+            };
+            let state_owner = env
+                .runtime
+                .open_current_reader(
+                    &env.thread_id,
+                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    state_demand,
+                )
+                .await?;
+            let state_baseline = state_owner.snapshot(state_demand).await?;
+            let mut state_watch = state_owner
+                .watch(Some(state_baseline.revision), state_demand)
+                .await?;
             let result = tokio::time::timeout(Duration::from_secs(30), async {
         let content = async {
         let owner = managed(env.feed().await?);
@@ -1077,7 +1022,7 @@ mod tests {
         };
         let (content, state) = tokio::join!(
             content,
-            observe_stopped_execution(&state_owner, &mut state_port),
+            observe_stopped_execution(&mut state_watch),
         );
         let content_turn = content?;
         let state_turn = state?;
@@ -1086,9 +1031,16 @@ mod tests {
     }).await.context("live FRB lifecycle exceeded its bounded test budget").and_then(|result| result);
             head.release();
             appended.release();
-            let state_close = state_owner.close().await;
-            env.finish(result.and(state_close.map_err(anyhow::Error::from)))
-                .await
+            state_watch.request_close();
+            let watch_close = state_watch.close().await;
+            state_owner.request_close();
+            let reader_close = state_owner.close().await;
+            env.finish(
+                result
+                    .and(watch_close.map_err(anyhow::Error::from))
+                    .and(reader_close.map_err(anyhow::Error::from)),
+            )
+            .await
         }
     }
 
@@ -1431,12 +1383,22 @@ mod tests {
             let owner = managed(feed);
             let facade = BridgeConversationFeed::from_test_owner(Arc::clone(&owner)).await;
             let mut port = start_port(&owner).await;
-            let state_feed = env
+            let state_demand = pl_protocol::ReadDemand {
+                max_items: 16,
+                max_bytes: 64 * 1024,
+            };
+            let state_owner = env
                 .runtime
-                .open_conversation_state_feed(&env.thread_id)
+                .open_current_reader(
+                    &env.thread_id,
+                    pl_protocol::CURRENT_PROTOCOL_VERSION,
+                    state_demand,
+                )
                 .await?;
-            let state_owner = managed_state(state_feed);
-            let mut state_port = start_port(&state_owner).await;
+            let state_baseline = state_owner.snapshot(state_demand).await?;
+            let mut state_watch = state_owner
+                .watch(Some(state_baseline.revision), state_demand)
+                .await?;
             let mut sent = 0;
             let observation = tokio::time::timeout(Duration::from_secs(120), async {
         // Reliable Main first: the initial real Set must arrive before the followup is submitted.
@@ -1577,7 +1539,7 @@ mod tests {
         let (main, body, state) = tokio::join!(
             observe,
             consume,
-            super::live::observe_stopped_execution(&state_owner, &mut state_port),
+            super::live::observe_stopped_execution(&mut state_watch),
         );
         let (target, appended) =
             main.with_context(|| format!("continuous body result: {body:?}"))?;
@@ -1687,6 +1649,9 @@ mod tests {
             // precedence, so already-published trailing frames cannot be acknowledged afterwards.
             let acknowledged_prefix = sent;
             let close = facade.close().await;
+            state_watch.request_close();
+            let watch_close = state_watch.close().await;
+            state_owner.request_close();
             let state_close = state_owner.close().await;
             let settled = owner.is_settled();
             let native_closed = owner.native.lock().await.is_none();
@@ -1799,246 +1764,11 @@ mod tests {
                 );
                 Ok(())
             };
-            let tail = tail.await.and(state_close.map_err(anyhow::Error::from));
+            let tail = tail
+                .await
+                .and(watch_close.map_err(anyhow::Error::from))
+                .and(state_close.map_err(anyhow::Error::from));
             env.finish(tail).await
-        }
-    }
-
-    mod state {
-        //! Real independent native feeds drive the shared production bridge producer.
-        use super::*;
-        use crate::api::studio::{
-            handlers::chat::{BridgeConversationStateFeed, tests::MODEL},
-            types::{
-                BridgeErrorCode, BridgeThreadNotification, BridgeThreadSubscriptionUpdate,
-                BridgeTurnState,
-            },
-        };
-        use pl_provider_fixture::{Reply, responses_text};
-
-        #[tokio::test]
-        async fn content_without_ack_does_not_block_state_runtime_or_share_ack_credit() -> Result<()>
-        {
-            let env = Environment::with_followup(Some(Reply::Sse(responses_text(
-                "Independent state completed.",
-                "bridge-state-followup",
-                MODEL,
-            ))))
-            .await?;
-            let result = tokio::time::timeout(Duration::from_secs(15), async {
-                let content = managed(env.feed().await?);
-                let state = managed_state(
-                    env.runtime
-                        .open_conversation_state_feed(&env.thread_id)
-                        .await?,
-                );
-                ensure!(
-                    state.content().is_err(),
-                    "state must not own a content reader"
-                );
-                ensure!(content.subscription_id != state.subscription_id);
-                let mut content_port = start_port(&content).await;
-                let mut state_port = start_port(&state).await;
-                let first_content = receive(&mut content_port).await?;
-                ensure!(matches!(
-                    first_content.event,
-                    BridgeConversationEvent::Chat { .. }
-                ));
-                ensure!(first_content.delivery_sequence == 1);
-                let first_state = receive(&mut state_port).await?;
-                ensure!(first_state.thread_id == env.thread_id);
-                ensure!(first_state.subscription_id == state.subscription_id);
-                ensure!(first_state.delivery_sequence == 1);
-                ensure!(matches!(
-                    first_state.event,
-                    BridgeConversationEvent::State { update }
-                        if matches!(*update, BridgeThreadSubscriptionUpdate::Snapshot { .. })
-                ));
-
-                // Neither another feed's identity nor a future prefix can release this feed's credit.
-                ensure!(
-                    state
-                        .acknowledge(&content.subscription_id, 1)
-                        .unwrap_err()
-                        .code
-                        == BridgeErrorCode::InvalidArgument
-                );
-                ensure!(
-                    content
-                        .acknowledge(&state.subscription_id, 1)
-                        .unwrap_err()
-                        .code
-                        == BridgeErrorCode::InvalidArgument
-                );
-                ensure!(
-                    state
-                        .acknowledge(&state.subscription_id, 2)
-                        .unwrap_err()
-                        .code
-                        == BridgeErrorCode::InvalidArgument
-                );
-                let mut blocked = Box::pin(state.wait_credit());
-                ensure!(futures::poll!(blocked.as_mut()).is_pending());
-                state.acknowledge(&state.subscription_id, 0)?;
-                ensure!(futures::poll!(blocked.as_mut()).is_pending());
-                state.acknowledge(&state.subscription_id, 1)?;
-                state.acknowledge(&state.subscription_id, 1)?;
-                ensure!(blocked.await);
-                let mut content_blocked = Box::pin(content.wait_credit());
-                ensure!(futures::poll!(content_blocked.as_mut()).is_pending());
-                ensure!(content_port.try_recv().is_err());
-
-                env.submit_followup().await?;
-                let mut sent = 1;
-                let mut runtime_seen = false;
-                loop {
-                    let frame = receive(&mut state_port).await?;
-                    ensure!(frame.subscription_id == state.subscription_id);
-                    ensure!(frame.thread_id == state.thread_id);
-                    ensure!(frame.delivery_sequence == sent + 1);
-                    sent = frame.delivery_sequence;
-                    let BridgeConversationEvent::State { update } = frame.event else {
-                        anyhow::bail!("state producer emitted non-State data");
-                    };
-                    let mut completed = false;
-                    if let BridgeThreadSubscriptionUpdate::Notification { notification } = *update {
-                        match notification.notification {
-                            BridgeThreadNotification::ThreadRuntimeUpdated { .. } => {
-                                runtime_seen = true
-                            }
-                            BridgeThreadNotification::TurnCompleted { turn }
-                                if turn.input_id.as_deref() == Some("input-bridge-live") =>
-                            {
-                                ensure!(matches!(turn.state, BridgeTurnState::Completed { .. }));
-                                completed = true;
-                            }
-                            _ => {}
-                        }
-                    }
-                    if completed {
-                        ensure!(
-                            runtime_seen,
-                            "no runtime update crossed the blocked content feed"
-                        );
-                        break;
-                    }
-                    state.acknowledge(&state.subscription_id, sent)?;
-                }
-                ensure!(futures::poll!(content_blocked.as_mut()).is_pending());
-                ensure!(
-                    content_port.try_recv().is_err(),
-                    "state ACK released content credit"
-                );
-                {
-                    let credit = content.state.lock().unwrap();
-                    ensure!(credit.sent == 1 && credit.acknowledged == 0);
-                }
-                // Both producers now wait for independent ACKs. Close must emit terminals and join
-                // without acquiring credit or acknowledging either outstanding ordinary frame.
-                let (content_close, state_close) = tokio::join!(content.close(), state.close());
-                content_close?;
-                state_close?;
-                ensure!(!content_blocked.await);
-                for (owner, port, sequence) in [
-                    (&content, &mut content_port, 1),
-                    (&state, &mut state_port, sent),
-                ] {
-                    let terminal = receive(port).await?;
-                    ensure!(matches!(terminal.event, BridgeConversationEvent::Closed));
-                    ensure!(terminal.delivery_sequence == sequence);
-                    ensure!(port.recv().await.is_none());
-                    ensure!(owner.is_settled());
-                    ensure!(owner.native.lock().await.is_none());
-                    ensure!(owner.producer.lock().await.task.is_none());
-                }
-                Ok(())
-            })
-            .await
-            .context("independent bridge feeds timed out")
-            .and_then(|result| result);
-            env.finish(result).await
-        }
-
-        #[tokio::test]
-        async fn state_close_before_listen_and_with_available_credit_retains_native_join()
-        -> Result<()> {
-            let env = Environment::new().await?;
-            let result = async {
-                let unopened = managed_state(
-                    env.runtime
-                        .open_conversation_state_feed(&env.thread_id)
-                        .await?,
-                );
-                let facade =
-                    BridgeConversationStateFeed::from_test_owner(Arc::clone(&unopened)).await;
-                facade.close().await?;
-                facade.close().await?;
-                ensure!(unopened.is_settled());
-                ensure!(unopened.native.lock().await.is_none());
-                ensure!(unopened.producer.lock().await.task.is_none());
-                ensure!(
-                    facade
-                        .acknowledge("wrong".into(), u64::MAX)
-                        .unwrap_err()
-                        .code
-                        == BridgeErrorCode::Cancelled
-                );
-
-                let idle = managed_state(
-                    env.runtime
-                        .open_conversation_state_feed(&env.thread_id)
-                        .await?,
-                );
-                let mut port = start_port(&idle).await;
-                let first = receive(&mut port).await?;
-                idle.acknowledge(&idle.subscription_id, first.delivery_sequence)?;
-                ensure!(idle.wait_credit().await);
-                tokio::time::timeout(Duration::from_secs(5), idle.close()).await??;
-                ensure!(idle.is_settled());
-                ensure!(idle.native.lock().await.is_none());
-                ensure!(idle.producer.lock().await.task.is_none());
-                Ok(())
-            }
-            .await;
-            env.finish(result).await
-        }
-    }
-
-    mod timeline {
-        use super::*;
-        #[tokio::test]
-        async fn cursor_reader_queries_and_close_do_not_use_producer_credit() -> Result<()> {
-            let env = Environment::new().await?;
-            let result: Result<()> = async {
-                let native = env
-                    .runtime
-                    .open_timeline_reader(
-                        &env.thread_id,
-                        6,
-                        1,
-                        pl_protocol::ReadDemand {
-                            max_items: 2,
-                            max_bytes: 64 * 1024,
-                        },
-                    )
-                    .await?;
-                let owner = Arc::new(ConversationOwner::timeline(
-                    native,
-                    CancellationToken::new(),
-                ));
-                let reader = owner.timeline.as_ref().context("timeline capability")?;
-                let first = reader.next(reader.metadata().initial_cursor).await?;
-                ensure!(first.history.placement == pl_protocol::HistoryPlacement::Set);
-                ensure!(first == reader.next(first.after.clone()).await?);
-                ensure!(owner.native.lock().await.is_none());
-                owner.content()?.reader.read_business_refs().await?;
-                owner.close().await?;
-                ensure!(owner.is_settled());
-                ensure!(reader.next(first.next).await.is_err());
-                Ok(())
-            }
-            .await;
-            env.finish(result).await
         }
     }
 }

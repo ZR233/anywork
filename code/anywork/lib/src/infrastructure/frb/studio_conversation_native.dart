@@ -18,25 +18,8 @@ class _FrbNativeReader {
       dispose = native.dispose,
       loadOlder = native.loadOlder,
       readCompleted = native.readCompleted,
-      readBusinessRefs = native.readBusinessRefs,
       listContents = native.listContents,
       readContent = native.readContent,
-      pageCurrent = native.pageCurrent,
-      openContentWatch = native.openContentWatch,
-      nextContentWindow = native.nextContentWindow,
-      requestCloseContentWatch = native.requestCloseContentWatch,
-      closeContentWatch = native.closeContentWatch;
-  _FrbNativeReader.timeline(frb_timeline.BridgeTimelineReader native)
-    : threadId = (() => native.threadId()),
-      requestClose = native.requestClose,
-      close = native.close,
-      dispose = native.dispose,
-      loadOlder = native.loadCompletedOlder,
-      readCompleted = native.readCompleted,
-      readBusinessRefs = native.readBusinessRefs,
-      listContents = native.listContents,
-      readContent = native.readContent,
-      pageCurrent = native.pageCurrent,
       openContentWatch = native.openContentWatch,
       nextContentWindow = native.nextContentWindow,
       requestCloseContentWatch = native.requestCloseContentWatch,
@@ -56,7 +39,6 @@ class _FrbNativeReader {
     required frb_chat_types.BridgeReadDemand demand,
   })
   readCompleted;
-  final Future<frb.BridgeThreadBusinessRefs> Function() readBusinessRefs;
   final Future<frb_chat_types.BridgeContentManifestPage> Function({
     required String itemId,
     String? continuation,
@@ -68,12 +50,6 @@ class _FrbNativeReader {
     required frb_chat_types.BridgeContentRange range,
   })
   readContent;
-  final Future<frb_chat_types.BridgeCurrentCollectionPage> Function({
-    required frb_chat_types.BridgeCurrentCollectionRef reference,
-    String? continuation,
-    required frb_chat_types.BridgeReadDemand demand,
-  })
-  pageCurrent;
   final Future<String> Function({
     required frb_chat_types.BridgeContentRef reference,
     required frb_chat_types.BridgeContentRange range,

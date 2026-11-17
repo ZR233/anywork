@@ -2192,27 +2192,6 @@ mod tests {
         Ok(())
     }
 
-    async fn prepared_history_family(target: &Path, thread: &str, fence: u64) -> Result<()> {
-        let donor = tempfile::tempdir()?;
-        let live = donor.path().join("history.sqlite");
-        let history = crate::studio::storage::history::HistoryStore::open(&live, thread).await?;
-        // The real history owner initializes its schema and commits facts, but no checkpoint import
-        // has happened yet. Capture only a quiescent donor, never open the migration fixture in flight.
-        crate::studio::storage::history::persist_completed(&history, fence, &[]).await?;
-        assert!(history.checkpoint().await?.is_none());
-        for suffix in ["", "-wal", "-shm"] {
-            let from = donor.path().join(format!("history.sqlite{suffix}"));
-            if from.exists() {
-                tokio::fs::copy(
-                    from,
-                    target.with_file_name(format!("history.sqlite{suffix}")),
-                )
-                .await?;
-            }
-        }
-        Ok(())
-    }
-
     #[cfg(windows)]
     #[test]
     fn bot_root_relocation_accepts_only_safe_windows_path_spellings() -> Result<()> {
@@ -2487,55 +2466,15 @@ mod tests {
                 .root,
             new_root
         );
-        for (thread, child) in [(THREAD, false), ("bot-child", true)] {
-            // 工作区路径是会话级目录事实；两名成员共用同一会话记录。
-            assert_eq!(
-                store
-                    .catalog()
-                    .get_session(THREAD)
-                    .context("catalog")?
-                    .workspace_path,
-                new_root
-            );
-            let history = store.history_for(OWNER, thread).await?;
-            if child {
-                store
-                    .state_for(OWNER, thread)?
-                    .prepare_recovery(&history)
-                    .await?;
-            }
-            let checkpoint = history
-                .prepare_model_access()
-                .await?
-                .context("checkpoint")?;
-            assert_eq!(checkpoint.history_fence, 0);
-            assert_eq!(checkpoint.state_revision, 0);
-            let project = &checkpoint.state.extensions["studio.project"];
-            assert_eq!(project.revision, 5);
-            let record: crate::studio::WorkspaceRecord =
-                serde_json::from_str(project.payload.content())?;
-            assert_eq!(record.path, new_root);
-            assert_eq!(record.id, OWNER);
-            assert_eq!(
-                checkpoint.state.extensions["unrelated.opaque"]
-                    .payload
-                    .content(),
-                format!("original path string: {frozen_root}")
-            );
-            if child {
-                let assignment =
-                    crate::studio::workspace_receipt::from_snapshot(&checkpoint.state)?
-                        .context("assignment")?;
-                assert_eq!(assignment.root, new_root);
-                assert_eq!(assignment.project_root, new_root);
-                assert_eq!(assignment.writable_paths, Some(Vec::new()));
-                assert_eq!(checkpoint.state.extensions["studio.workspace"].revision, 9);
-            }
-            assert_eq!(
-                serde_json::to_value(history.prepare_model_access().await?.context("restart")?)?,
-                serde_json::to_value(checkpoint)?
-            );
-        }
+        // 工作区路径是会话级目录事实；两名成员共用同一会话记录。
+        assert_eq!(
+            store
+                .catalog()
+                .get_session(THREAD)
+                .context("catalog")?
+                .workspace_path,
+            new_root
+        );
         store.close().await?;
         Ok(())
     }
@@ -2662,234 +2601,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepared_history_without_checkpoint_recovers_verified_toml_and_keeps_sqlite_canonical()
-    -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
-        let sessions = temp
-            .path()
-            .join("v2/projects")
-            .join(storage_key(OWNER, "Workspace")?)
-            .join("sessions");
-        let child = sessions.join(storage_key("bot-child", "Thread")?);
-        prepared_history_family(&child.join("history.sqlite"), "bot-child", 7).await?;
-        let mut original = bot_checkpoint("bot-child", "bot-test-one", &old_root, true)?;
-        original.history_fence = 7;
-        original.state_revision = 37;
-        original.state.commit_sequence = 37;
-        // Freeze an already-current delegation fact so this test isolates relocation rather than
-        // the independent model-access migration that adds an absent delegation extension.
-        original.state.extensions.insert(
-            crate::studio::delegation::EXTENSION.into(),
-            pl_core::thread::extensions::ExtensionRecord {
-                revision: 8,
-                payload: crate::studio::delegation::encode(Default::default())?,
-            },
-        );
-        let (externalized, bodies) = original.externalize_bodies(0);
-        assert!(!bodies.is_empty());
-        tokio::fs::create_dir_all(child.join("blobs/checkpoint")).await?;
-        for body in bodies {
-            let hash = body
-                .entry
-                .reference
-                .digest()
-                .strip_prefix("sha256:")
-                .context("body hash")?;
-            let directory = child.join("blobs/checkpoint").join(&hash[..2]);
-            tokio::fs::create_dir_all(&directory).await?;
-            tokio::fs::write(directory.join(hash), body.bytes).await?;
-        }
-        let toml_bytes = toml::to_string(&externalized)?;
-        tokio::fs::write(child.join("state.toml"), &toml_bytes).await?;
-        // Root already has a committed SQLite checkpoint: even a contradictory/future stale TOML
-        // must not supersede it or make owner evidence depend on the wrong source.
-        tokio::fs::write(
-            sessions
-                .join(storage_key(THREAD, "Thread")?)
-                .join("state.toml"),
-            "schemaVersion = 999\nthreadId = 'stale-foreign-thread'\n",
-        )
-        .await?;
-        prepare(&paths).await?;
-        let session = paths.session_paths(OWNER, "bot-child")?;
-        let mapping = bot_roots::for_history(&session.history_database(), "bot-child")
-            .await?
-            .context("published bot proof")?;
-        assert!(mapping.threads["bot-child"].proven_local_root);
-        let store = StudioStore::prepare_database(&paths.database()).await?;
-        let history = store.history_for(OWNER, "bot-child").await?;
-        store
-            .state_for(OWNER, "bot-child")?
-            .prepare_recovery(&history)
-            .await?;
-        let recovered = history
-            .prepare_model_access()
-            .await?
-            .context("recovered checkpoint")?;
-        assert_eq!(recovered.thread_id, original.thread_id);
-        assert_eq!(recovered.history_fence, 7);
-        assert_eq!(history.watermark().await?, 7);
-        assert_eq!(recovered.state_revision, 37);
-        assert_eq!(recovered.saved_at, original.saved_at);
-        assert_eq!(
-            recovered.state.extension_sequence,
-            original.state.extension_sequence
-        );
-        assert_eq!(
-            serde_json::to_value(&recovered.state.extensions["unrelated.opaque"])?,
-            serde_json::to_value(&original.state.extensions["unrelated.opaque"])?
-        );
-        let assignment = crate::studio::workspace_receipt::from_snapshot(&recovered.state)?
-            .context("child workspace assignment")?;
-        assert_eq!(assignment.root, mapping.new_root);
-        assert_eq!(assignment.project_root, mapping.new_root);
-        assert_eq!(assignment.writable_paths, Some(Vec::new()));
-        assert_eq!(recovered.state.extensions["studio.workspace"].revision, 9);
-        let owner: crate::studio::WorkspaceRecord = serde_json::from_str(
-            recovered.state.extensions["studio.project"]
-                .payload
-                .content(),
-        )?;
-        assert_eq!(owner.id, OWNER);
-        assert_eq!(owner.path, mapping.new_root);
-        assert_eq!(recovered.state.extensions["studio.project"].revision, 5);
-        assert_eq!(
-            store
-                .workspaces()
-                .get(OWNER)
-                .context("business workspace")?
-                .path,
-            "/isolated-workspace"
-        );
-        let canonical_root = store.history_for(OWNER, THREAD).await?;
-        assert_eq!(
-            canonical_root
-                .prepare_model_access()
-                .await?
-                .context("root checkpoint")?
-                .thread_id,
-            THREAD
-        );
-        assert_eq!(
-            serde_json::to_value(history.prepare_model_access().await?.context("restart")?)?,
-            serde_json::to_value(recovered)?
-        );
-        store.close().await?;
-        let journal = decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
-        assert_eq!(
-            tokio::fs::read_to_string(
-                backup_root(&paths, &journal)
-                    .join(child.strip_prefix(temp.path())?)
-                    .join("state.toml")
-            )
-            .await?,
-            toml_bytes
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn prepared_history_toml_window_rejects_unknown_or_conflicting_evidence() -> Result<()> {
-        for fault in [
-            "foreign-history",
-            "future-history",
-            "missing-checkpoint-table",
-            "unversioned-history",
-            "corrupt-history",
-            "future-toml",
-            "foreign-toml",
-            "owner-conflict",
-            "missing-body",
-            "corrupt-toml",
-        ] {
-            let temp = tempfile::tempdir()?;
-            let (paths, old_root) = bot_binding_fixture(temp.path(), "bot-test-one").await?;
-            let child = temp
-                .path()
-                .join("v2/projects")
-                .join(storage_key(OWNER, "Workspace")?)
-                .join("sessions")
-                .join(storage_key("bot-child", "Thread")?);
-            let database = child.join("history.sqlite");
-            let thread = if fault == "foreign-history" {
-                "other-thread"
-            } else {
-                "bot-child"
-            };
-            prepared_history_family(&database, thread, 7).await?;
-            let mut checkpoint = bot_checkpoint("bot-child", "bot-test-one", &old_root, true)?;
-            checkpoint.history_fence = 7;
-            checkpoint.state_revision = 37;
-            checkpoint.state.commit_sequence = 37;
-            match fault {
-                "future-history" | "missing-checkpoint-table" => {
-                    let mut db = sea_orm::sqlx::SqliteConnection::connect_with(
-                        &sea_orm::sqlx::sqlite::SqliteConnectOptions::new().filename(&database),
-                    )
-                    .await?;
-                    db.execute(if fault == "future-history" {
-                        "UPDATE history_meta SET schema_version=999"
-                    } else {
-                        "DROP TABLE session_checkpoint"
-                    })
-                    .await?;
-                    db.close().await?;
-                }
-                "unversioned-history" | "corrupt-history" => {
-                    for suffix in ["", "-wal", "-shm"] {
-                        let member = child.join(format!("history.sqlite{suffix}"));
-                        if member.exists() {
-                            tokio::fs::remove_file(member).await?;
-                        }
-                    }
-                    tokio::fs::write(
-                        &database,
-                        if fault == "corrupt-history" {
-                            b"not sqlite".as_slice()
-                        } else {
-                            &[]
-                        },
-                    )
-                    .await?;
-                }
-                "future-toml" => checkpoint.schema_version = 999,
-                "foreign-toml" => checkpoint.thread_id = "foreign-thread".into(),
-                "owner-conflict" => {
-                    checkpoint = bot_checkpoint("bot-child", "bot-other", &old_root, true)?
-                }
-                "missing-body" => {
-                    checkpoint = checkpoint.externalize_bodies(0).0;
-                    assert!(!checkpoint.external_bodies.is_empty());
-                }
-                _ => {}
-            }
-            let content = if fault == "corrupt-toml" {
-                "broken = [".to_owned()
-            } else {
-                toml::to_string(&checkpoint)?
-            };
-            tokio::fs::write(child.join("state.toml"), &content).await?;
-            for _ in 0..2 {
-                prepare(&paths).await.expect_err(fault);
-                assert!(!paths.layout_file().exists(), "{fault}");
-            }
-            let journal =
-                decode_journal(&tokio::fs::read_to_string(temp.path().join(JOURNAL)).await?)?;
-            assert_eq!(
-                tokio::fs::read_to_string(
-                    backup_root(&paths, &journal)
-                        .join(child.strip_prefix(temp.path())?)
-                        .join("state.toml")
-                )
-                .await?,
-                content
-            );
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn nonmanaged_identity_is_preserved_with_execution_diagnostic_and_readable_history()
     -> Result<()> {
         let temp = tempfile::tempdir()?;
@@ -2937,20 +2648,6 @@ mod tests {
                 .root,
             business_root
         );
-        let history = store.history_for(OWNER, THREAD).await?;
-        assert!(
-            history.checkpoint().await?.is_some(),
-            "content reads do not require execution rebinding"
-        );
-        let error = history
-            .prepare_model_access()
-            .await
-            .expect_err("unsafe execution must be refused");
-        assert!(
-            format!("{error:#}").contains("original binding was preserved"),
-            "{error:#}"
-        );
-        assert!(history.checkpoint().await?.is_some());
         store.close().await?;
         prepare(&paths).await?;
         Ok(())

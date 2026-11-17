@@ -53,55 +53,9 @@ fn turn_outcome(state: &pl_core::thread::TurnState) -> Option<ChatTerminalOutcom
 }
 
 impl LiveProjection {
-    pub(super) fn text_visibility(
-        &self,
-        effect: &ThreadEffectBatch,
-    ) -> Result<Arc<[super::super::presentation::TextVisible]>, ProjectionError> {
-        let mut visible = Vec::new();
-        for (index, member) in effect.model_member_content_available.iter().enumerate() {
-            let (id, _, _) = observation_start(
-                &member.attempt_id,
-                member.generation,
-                &member.identity,
-                &ThreadContentLifecycle::streaming(),
-            )
-            .ok_or_else(|| {
-                ProjectionError::UnsupportedOutput("invalid content-available identity".into())
-            })?;
-            let atom = self.atom_starts.get(&id).ok_or_else(|| {
-                ProjectionError::History("content-available member has no admitted start".into())
-            })?;
-            if atom.turn_id.as_deref() != Some(member.turn_id.as_str())
-                || atom.attempt_id.as_deref() != Some(member.attempt_id.as_str())
-            {
-                return Err(ProjectionError::History(
-                    "content-available ownership differs from start".into(),
-                ));
-            }
-            if atom.kind == ChatAtomKind::Text {
-                visible.push(super::super::presentation::TextVisible {
-                    atom: atom.clone(),
-                    at: position(
-                        effect,
-                        slots(&[
-                            1,
-                            effect.inputs.len(),
-                            effect.inbox.len(),
-                            effect.context_compactions.len(),
-                            effect.model_member_starts.len(),
-                            index,
-                        ])?,
-                    )?,
-                });
-            }
-        }
-        Ok(visible.into())
-    }
-
     /// Execution activation only. Passive conversation opens never create this owner or scan history.
     pub(in crate::studio) async fn restore_current(
         &mut self,
-        _chat: &Session,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
     ) -> Result<(), ProjectionError> {
@@ -110,65 +64,11 @@ impl LiveProjection {
                 "current provenance was already restored".into(),
             ));
         }
-        self.ensure_database_identity().await?;
-        let history = self
-            .execution_history
-            .as_ref()
-            .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-        let sequence = history
-            .watermark()
-            .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        // Original accepted facts include independent operations which have no
-        // ExecutionItem (e.g. compaction). Restore them without any presentation fold.
-        let mut after = None;
-        loop {
-            let atoms = history
-                .recovery_atom_starts(after.as_deref(), 128)
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            let count = atoms.len();
-            for atom in atoms {
-                after = Some(atom.id.clone());
-                self.atom_starts.insert(atom.id.clone(), atom);
-            }
-            if self.atom_starts.len() > LIVE_ITEM_WINDOW {
-                return Err(ProjectionError::History(
-                    "recovered activity exceeds retained window".into(),
-                ));
-            }
-            if count < 128 {
-                break;
-            }
-        }
-        let sources = self
-            .atom_starts
-            .values()
-            .map(|atom| atom.source.clone())
-            // A Turn can have a durable start without ever producing a body member.
-            // Cold seeding also retains Turns referenced only by a pending recovery
-            // effect, after Core has pruned them from its current snapshot.
-            .chain(
-                self.facts
-                    .values()
-                    .filter(|fact| !fact.turn_id.is_empty())
-                    .map(|fact| ChatSourceId::ForegroundTurn {
-                        turn_id: fact.turn_id.clone(),
-                    }),
-            )
-            .chain(state.turns.iter().map(|turn| ChatSourceId::ForegroundTurn {
-                turn_id: turn.turn_id.clone(),
-            }))
-            .collect::<BTreeSet<_>>();
-        if !sources.is_empty() {
-            for source in history
-                .execution_sources(&sources.into_iter().collect::<Vec<_>>(), sequence)
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?
-            {
-                self.source_states.insert(source.source.clone(), source);
-            }
-        }
+        self.ensure_current_owner().await?;
+        // A new runtime epoch owns a fresh live provenance owner. Replaying append-only history
+        // would recreate durable-display restore and could give R1 callbacks R2 rights. Late
+        // reliable facts resolve their original identity through the bounded HistoryReader.
+        let sequence = state.commit_sequence;
         self.provenance_restored = true;
         self.sync_provenance()?;
         let active = self.current_texts();
@@ -178,16 +78,12 @@ impl LiveProjection {
         Ok(())
     }
     pub(in crate::studio) fn confirm_sources(&mut self, through: u64) {
-        self.presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .confirm(through);
         self.source_states
             .retain(|_, state| state.ended.is_none_or(|at| at.effect_seq > through));
     }
 
     pub(super) fn sync_provenance(&mut self) -> Result<(), ProjectionError> {
-        let database = self.current.database_id().ok_or_else(|| {
+        let database = self.current.owner_id().ok_or_else(|| {
             ProjectionError::History("provenance has no database identity".into())
         })?;
         for atom in self.atom_starts.values_mut() {
@@ -385,10 +281,10 @@ impl LiveProjection {
                 reference: pl_protocol::ContentRef {
                     database_id: self
                         .current
-                        .database_id()
+                        .owner_id()
                         .ok_or_else(|| {
                             ProjectionError::History(
-                                "canonical member start has no database identity".into(),
+                                "canonical member start has no runtime owner".into(),
                             )
                         })?
                         .into(),

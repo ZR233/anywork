@@ -25,6 +25,7 @@ pub struct BridgeActivitySnapshot {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BridgeThreadActivity {
     pub thread_id: String,
+    pub deferred: Vec<super::BridgeCurrentStateField>,
     pub identity: String,
     pub revision: u64,
     pub turn_id: Option<String>,

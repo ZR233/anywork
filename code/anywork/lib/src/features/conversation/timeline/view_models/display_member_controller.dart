@@ -4,6 +4,7 @@ import 'package:anywork_client/conversation.dart';
 import 'package:flutter/foundation.dart';
 
 import 'conversation_current_owner.dart';
+import '../state/timeline_display_unit.dart';
 
 /// One display-lease-owned bounded member demand, stable across live/history.
 final class DisplayMemberController extends ChangeNotifier {
@@ -50,7 +51,7 @@ final class DisplayMemberController extends ChangeNotifier {
   // accepted result is one backend cut, including the overlapping anchor row.
   void older() {
     final current = page;
-    if (loading || current == null || current.before == null) return;
+    if (loading || current == null || !current.hasOlder) return;
     if (window is LatestDisplayMembers) {
       _newer.add(window);
       _newer.add(
@@ -99,7 +100,7 @@ final class DisplayMemberController extends ChangeNotifier {
     if (page?.sealed == true) return;
     loading = true;
     for (final entry in page?.entries ?? const <DisplayMemberHead>[]) {
-      if (entry.record.contentSource is! CurrentAtom) continue;
+      if (entry.record.contentSource is! CurrentAtomSource) continue;
       final key = entry.memberKey;
       final previous = _disclosures[key];
       if (previous == null) continue;
@@ -336,7 +337,7 @@ Object _recordValue(DisplayRecord record) {
     _fact(record.startFact),
     _fact(record.endFact),
     switch (record.contentSource) {
-      CurrentAtom() => 'current',
+      CurrentAtomSource() => 'current',
       FrozenObservation(:final capturedAt, :final available) => (
         'frozen',
         capturedAt,

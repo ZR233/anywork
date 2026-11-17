@@ -44,7 +44,6 @@ class TimelineView extends StatefulWidget {
     required this.remoteImageBuilder,
     this.planSummary,
     this.pendingPlanInteractionId,
-    this.contentRangeBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
@@ -68,7 +67,6 @@ class TimelineView extends StatefulWidget {
   final Widget Function(BuildContext, String) remoteImageBuilder;
   final Widget? planSummary;
   final String? pendingPlanInteractionId;
-  final ChatContentRangeBuilder? contentRangeBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
@@ -566,8 +564,6 @@ class _TimelineViewState extends State<TimelineView> {
                                         ) => ChatItemView(
                                           item: item,
                                           bodyBuilder: _body,
-                                          contentRangeBuilder:
-                                              widget.contentRangeBuilder,
                                           attachmentBuilder:
                                               widget.attachmentBuilder,
                                           monotonicMicros:

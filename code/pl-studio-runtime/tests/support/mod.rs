@@ -5,7 +5,9 @@ use pl_model::{
     protocol::ProtocolEndpoint,
 };
 use pl_protocol::{
-    AgentWorkspaceMode, ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode,
+    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, ContentRange, CurrentFrame, ReadDemand,
+    ThreadNotification, ThreadWorkspaceMode,
+    history::HistoryEventBodyRef,
     studio::{CreateThreadRequest, NewThreadModelRoute, StudioPromptInput},
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
@@ -113,29 +115,29 @@ pub async fn completed_prompt(
     terminal(runtime, id, Some(&format!("input-{prompt}"))).await
 }
 
+pub fn current_demand() -> ReadDemand {
+    ReadDemand {
+        max_items: 64,
+        max_bytes: 1024 * 1024,
+    }
+}
+
 async fn terminal(
     runtime: &StudioRuntime,
     id: &str,
     input: Option<&str>,
 ) -> Result<pl_protocol::Turn> {
-    // The prompt already activated the owner. Reopen on slot replacement; never activate here.
-    let mut feed = runtime.open_conversation_state_feed(id).await?;
-    tokio::time::timeout(integration_test_deadline()?, async {
+    let demand = current_demand();
+    let reader = runtime
+        .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
+        .await?;
+    let mut watch = reader.watch(None, demand).await?;
+    let observed = tokio::time::timeout(integration_test_deadline()?, async {
         loop {
-            let update = match feed.recv().await {
-                Ok(update) => update,
-                Err(error) if is_resync(&error) => {
-                    let _ = feed.close().await;
-                    feed = runtime.open_conversation_state_feed(id).await?;
-                    continue;
-                }
-                Err(error) => return Err(error),
+            let Some(CurrentFrame::Notification { notification, .. }) = watch.next().await? else {
+                continue;
             };
-            let Some(update) = update else {
-                anyhow::bail!("thread stream ended without a terminal Turn");
-            };
-            if let ThreadSubscriptionUpdate::Notification { notification } = update
-                && let ThreadNotification::TurnCompleted { turn } = notification.notification
+            if let ThreadNotification::TurnCompleted { turn } = notification.notification
                 && input.is_none_or(|input| turn.input_id.as_deref() == Some(input))
             {
                 return Ok::<_, anyhow::Error>(turn);
@@ -143,13 +145,9 @@ async fn terminal(
         }
     })
     .await
-    .context("terminal Turn not observed")?
-}
-
-fn is_resync(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<pl_protocol::studio::StudioError>()
-        .is_some_and(|error| error.reason() == Some("conversationResyncRequired"))
+    .context("terminal Turn not observed");
+    reader.close().await.context("close CurrentReader")?;
+    observed?
 }
 
 pub struct Environment {
@@ -362,11 +360,11 @@ pub fn child_path(receipt: &serde_json::Value) -> Result<&Path> {
 
 pub struct Saved {
     pub path: PathBuf,
-    pub checkpoint: pl_core::thread::ThreadCheckpoint,
-    pub context: Vec<String>,
+    pub root: PathBuf,
+    pub current: pl_core::thread::current::ThreadCurrent,
 }
 
-/// Read only test-owned SQLite files; no production visibility is expanded for assertions/faults.
+/// Locate and decode the Thread-owned schema-25 storage without opening a provider.
 pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
     let mut pending = vec![home.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -384,27 +382,24 @@ pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
             let row = db
                 .query_one_raw(Statement::from_string(
                     DbBackend::Sqlite,
-                    "SELECT payload FROM session_checkpoint WHERE id=1",
+                    "SELECT thread_id FROM history_store_meta WHERE singleton=1",
                 ))
                 .await?;
             if let Some(row) = row {
-                let checkpoint: pl_core::thread::ThreadCheckpoint =
-                    serde_json::from_str(&row.try_get::<String>("", "payload")?)?;
-                if checkpoint.thread_id == id {
-                    let context = db
-                        .query_all_raw(Statement::from_string(
-                            DbBackend::Sqlite,
-                            "SELECT payload FROM current_context ORDER BY ordinal",
-                        ))
-                        .await?
-                        .into_iter()
-                        .map(|row| row.try_get::<String>("", "payload"))
-                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                if row.try_get::<String>("", "thread_id")?.as_str() == id {
                     db.close().await?;
+                    let root = path
+                        .parent()
+                        .context("history database has no parent")?
+                        .to_path_buf();
+                    let current_path = root.join("current.json");
+                    let current: pl_core::thread::current::ThreadCurrent =
+                        serde_json::from_slice(&std::fs::read(&current_path)?)?;
+                    current.validate(id)?;
                     return Ok(Saved {
                         path,
-                        checkpoint,
-                        context,
+                        root,
+                        current,
                     });
                 }
             }
@@ -412,37 +407,4 @@ pub async fn saved(home: &Path, id: &str) -> Result<Saved> {
         }
     }
     anyhow::bail!("no durable checkpoint for {id}")
-}
-
-pub async fn nested_delivery(
-    home: &std::path::Path,
-    thread: &str,
-    call: &str,
-) -> Result<pl_core::thread::ToolDelivery> {
-    let saved = saved(home, thread).await?;
-    let db = Database::connect(format!("sqlite://{}?mode=ro", saved.path.display())).await?;
-    let row = db
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
-            [call.into()],
-        ))
-        .await?
-        .context("original committed file delivery")?;
-    let parent: pl_core::thread::ToolDelivery =
-        serde_json::from_str(&row.try_get::<String>("", "delivery_payload")?)?;
-    let children =
-        pl_tool::lua::saved_nested_call_ids(parent.output.payload())?.context("Lua provenance")?;
-    ensure!(children.len() == 1);
-    let row = db
-        .query_one_raw(Statement::from_sql_and_values(
-            DbBackend::Sqlite,
-            "SELECT delivery_payload FROM history_tool_tasks WHERE call_id=?",
-            [children[0].clone().into()],
-        ))
-        .await?
-        .context("original nested file delivery")?;
-    let result = serde_json::from_str(&row.try_get::<String>("", "delivery_payload")?)?;
-    db.close().await?;
-    Ok(result)
 }

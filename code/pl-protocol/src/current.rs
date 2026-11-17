@@ -27,6 +27,28 @@ pub struct CurrentContentRef {
     pub generation: String,
 }
 
+/// An explicitly deferred State field. The inline placeholder is not a complete value while
+/// this head is present. Read the exact JSON value through CurrentReader::read_body on demand.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CurrentStateField {
+    Body {
+        field: String,
+        reference: CurrentContentRef,
+        byte_length: u64,
+    },
+    Collection {
+        field: String,
+        reference: CurrentCollectionRef,
+        count: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(
     tag = "kind",
@@ -253,4 +275,24 @@ pub struct CurrentCollectionPage {
     pub revision: u64,
     pub entries: Vec<CurrentCollectionEntry>,
     pub continuation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ToSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ActivityIdentity {
+    ModelPart { atom_id: String },
+    ForegroundTool { call_id: String },
+    BackgroundTool { call_id: String },
+    Other { domain: String, id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActivityEntry {
+    pub identity: ActivityIdentity,
+    pub atom: crate::ChatAtom,
 }

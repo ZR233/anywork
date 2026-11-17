@@ -23,6 +23,7 @@ final class TimelineMessageController {
   final TimelineExpansionIntent Function(String)? expansionForBlock;
   bool _disposed = false;
   bool _retired = false;
+  Future<void> _admission = Future.value();
   int get length => controller.messages.length;
 
   TimelineDisplayUnit _unitOf(Message message) =>
@@ -50,6 +51,14 @@ final class TimelineMessageController {
     if (placement == ChatPlacement.append && blocks.isEmpty) {
       return Future.value();
     }
+    return _serialize(() => _applyBlocks(blocks, placement));
+  }
+
+  Future<void> _applyBlocks(
+    List<DisplayBlock> blocks,
+    ChatPlacement placement,
+  ) {
+    if (_disposed || _retired) throw const StaleConversationScope();
     final messages = [for (final block in blocks) _message(block)];
     final previousUnits = placement == ChatPlacement.set
         ? [for (final message in controller.messages) _unitOf(message)]
@@ -96,6 +105,71 @@ final class TimelineMessageController {
         },
       );
     });
+  }
+
+  /// Replaces rows by stable row identity and appends genuinely new anchors.
+  ///
+  /// This is one controller admission and one serial Flyer mutation.
+  Future<void> replaceBlocks(List<DisplayBlock> blocks) {
+    if (_disposed || _retired) throw const StaleConversationScope();
+    return _serialize(() => _replaceBlocks(blocks));
+  }
+
+  Future<void> _replaceBlocks(List<DisplayBlock> blocks) async {
+    final existingById = {
+      for (final message in controller.messages) message.id: message,
+    };
+    final appended = <Message>[];
+    for (final block in blocks) {
+      final next = _message(block);
+      final old = existingById[block.id];
+      if (old == null) {
+        appended.add(next);
+        continue;
+      }
+      final oldUnit = _unitOf(old);
+      if (sameDisplayBlock(oldUnit.block, block)) continue;
+      if (_isFrozenBoundary(oldUnit) && !_isFrozenBoundary(_unitOf(next))) {
+        continue;
+      }
+      await controller.updateMessage(old, next);
+      if (_disposed || _retired) return;
+      _retire(oldUnit);
+      final unit = _unitOf(next);
+      unit.expansion.current = unit;
+      onUnitCreated?.call(unit);
+    }
+    if (appended.isNotEmpty) {
+      await _applyBlocks(
+        blocks.where((block) => existingById[block.id] == null).toList(),
+        ChatPlacement.append,
+      );
+    }
+  }
+
+  Future<void> trimNewest(int count) {
+    if (count <= 0) return Future.value();
+    return _serialize(() async {
+      for (var index = 0; index < count; index++) {
+        if (controller.messages.isEmpty) return;
+        final message = controller.messages.last;
+        await controller.removeMessage(message, animated: false);
+        if (_disposed || _retired) return;
+        _retire(_unitOf(message));
+      }
+    });
+  }
+
+  Future<void> _serialize(Future<void> Function() operation) {
+    final work = _admission.then((_) => operation());
+    _admission = work.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    return work;
+  }
+
+  bool _isFrozenBoundary(TimelineDisplayUnit unit) {
+    final body = unit.body;
+    return body is SingleDisplayBlock &&
+        body.record.contentSource is FrozenObservation;
   }
 
   void _retire(TimelineDisplayUnit unit) {

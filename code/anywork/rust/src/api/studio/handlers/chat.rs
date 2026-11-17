@@ -34,14 +34,6 @@ pub struct BridgeConversationFeed {
     test_scope: Option<pl_lifecycle::ScopeOwner<BridgeError>>,
 }
 
-/// State-only observation. It owns no content reader and does not activate execution.
-pub struct BridgeConversationStateFeed {
-    inner: Arc<ConversationOwner>,
-    managed: Managed<ConversationResource>,
-    #[cfg(test)]
-    test_scope: Option<pl_lifecycle::ScopeOwner<BridgeError>>,
-}
-
 struct ConversationResource(Arc<ConversationOwner>);
 
 impl ManagedResource for ConversationResource {
@@ -57,25 +49,6 @@ impl ManagedResource for ConversationResource {
 }
 
 impl BridgeConversationFeed {
-    fn from_managed(managed: Managed<ConversationResource>) -> Self {
-        Self {
-            inner: Arc::clone(&managed.get().0),
-            managed,
-            #[cfg(test)]
-            test_scope: None,
-        }
-    }
-
-    #[cfg(test)]
-    async fn from_test_owner(inner: Arc<ConversationOwner>) -> Self {
-        let (managed, scope) = test_managed_conversation(inner).await;
-        let mut facade = Self::from_managed(managed);
-        facade.test_scope = Some(scope);
-        facade
-    }
-}
-
-impl BridgeConversationStateFeed {
     fn from_managed(managed: Managed<ConversationResource>) -> Self {
         Self {
             inner: Arc::clone(&managed.get().0),
@@ -112,35 +85,7 @@ async fn test_managed_conversation(
     (managed, scope)
 }
 
-pub async fn open_conversation_state_feed(
-    thread_id: String,
-) -> Result<BridgeConversationStateFeed, BridgeError> {
-    let bridge = active_bridge().await?;
-    bridge
-        .observation_factory
-        .open_conversation_state(thread_id)
-        .await
-}
-
 impl BridgeObservationFactory {
-    pub(crate) async fn open_conversation_state(
-        &self,
-        thread_id: String,
-    ) -> Result<BridgeConversationStateFeed, BridgeError> {
-        let source = self.source.clone();
-        let managed = self
-            .scope
-            .open("conversations", move |cancel| async move {
-                let feed = source.open_conversation_state_feed(&thread_id).await?;
-                Ok(ConversationResource(Arc::new(
-                    ConversationOwner::new_state(feed, cancel),
-                )))
-            })
-            .await
-            .map_err(open_error)?;
-        Ok(BridgeConversationStateFeed::from_managed(managed))
-    }
-
     pub(crate) async fn open_conversation(
         &self,
         thread_id: String,
@@ -161,43 +106,6 @@ impl BridgeObservationFactory {
             .await
             .map_err(open_error)?;
         Ok(BridgeConversationFeed::from_managed(managed))
-    }
-}
-
-impl BridgeConversationStateFeed {
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn thread_id(&self) -> String {
-        self.inner.thread_id.clone()
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn subscription_id(&self) -> String {
-        self.inner.subscription_id.clone()
-    }
-
-    pub async fn events(
-        &self,
-        sink: StreamSink<BridgeConversationFrame>,
-    ) -> Result<(), BridgeError> {
-        self.inner.start(sink).await
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn acknowledge(
-        &self,
-        subscription_id: String,
-        delivery_sequence: u64,
-    ) -> Result<(), BridgeError> {
-        self.inner.acknowledge(&subscription_id, delivery_sequence)
-    }
-
-    #[flutter_rust_bridge::frb(sync)]
-    pub fn request_close(&self) {
-        self.managed.request_close();
-    }
-
-    pub async fn close(&self) -> Result<(), BridgeError> {
-        self.managed.retry_close().await.map_err(close_error)
     }
 }
 
@@ -342,27 +250,6 @@ impl BridgeConversationFeed {
         Ok(chat::window(window))
     }
 
-    pub async fn page_current(
-        &self,
-        reference: BridgeCurrentCollectionRef,
-        continuation: Option<String>,
-        demand: BridgeReadDemand,
-    ) -> Result<BridgeCurrentCollectionPage, BridgeError> {
-        self.inner.ensure_read_open()?;
-        let page = self
-            .inner
-            .content()?
-            .reader
-            .page_current(
-                &chat::protocol_collection_ref(reference),
-                continuation.as_deref(),
-                chat::demand(demand),
-            )
-            .await?;
-        self.inner.ensure_read_open()?;
-        Ok(chat::collection_page(page))
-    }
-
     #[flutter_rust_bridge::frb(sync)]
     pub fn thread_id(&self) -> String {
         self.inner.thread_id.clone()
@@ -416,7 +303,7 @@ pub(crate) mod tests {
         protocol::ProtocolEndpoint,
     };
     use pl_protocol::{
-        ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, TurnState,
+        ThreadNotification, ThreadWorkspaceMode, TurnState,
         studio::{
             CreateThreadRequest, NewThreadModelRoute, StudioPromptInput, SubmitPromptRequest,
         },
@@ -543,26 +430,26 @@ pub(crate) mod tests {
                 ))
                 .await?;
                 let id = started.thread.id;
-                let mut subscription = runtime.open_conversation_state_feed(&id).await?;
+                let demand = pl_protocol::ReadDemand {
+                    max_items: 16,
+                    max_bytes: 64 * 1024,
+                };
+                let current = runtime
+                    .open_current_reader(&id, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)
+                    .await?;
+                let baseline = current.snapshot(demand).await?;
+                let mut subscription = current.watch(Some(baseline.revision), demand).await?;
                 loop {
-                    let update = subscription.recv().await?.context("fixture stream ended")?;
+                    let update = subscription.next().await?.context("fixture stream ended")?;
                     let turn = match update {
-                        ThreadSubscriptionUpdate::Snapshot {
-                            completed_history_version,
-                            snapshot,
-                        } => {
-                            ensure!(
-                                completed_history_version == pl_protocol::COMPLETED_HISTORY_VERSION,
-                                "snapshot advertised an unsupported completed-history version"
-                            );
-                            snapshot.active_turn
-                        }
-                        ThreadSubscriptionUpdate::Notification { notification } => {
+                        pl_protocol::CurrentFrame::Reset { view } => view.state.active_turn,
+                        pl_protocol::CurrentFrame::Notification { notification, .. } => {
                             match notification.notification {
                                 ThreadNotification::TurnCompleted { turn } => Some(turn),
                                 _ => None,
                             }
                         }
+                        pl_protocol::CurrentFrame::Projection { .. } => None,
                     };
                     if let Some(turn) = turn
                         && turn.input_id.as_deref() == Some(INPUT)
@@ -576,7 +463,10 @@ pub(crate) mod tests {
                         break;
                     }
                 }
+                subscription.request_close();
                 subscription.close().await?;
+                current.request_close();
+                current.close().await?;
                 runtime.synchronize_thread_observation(&id).await?;
                 Ok(id)
             }

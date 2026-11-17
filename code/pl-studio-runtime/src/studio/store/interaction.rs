@@ -1,4 +1,4 @@
-//! Product interactions are projected from current Thread checkpoints.
+//! Product interactions are projected from complete current Thread documents.
 use crate::studio::store::StudioStore;
 use crate::{InteractionRequest, InteractionStatus};
 use anyhow::Result;
@@ -15,16 +15,14 @@ impl StudioStore {
         };
         let thread = pl_protocol::Thread::from(record);
         // Reading one interaction is a projection: it never imports or deletes storage.
-        let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(self, &thread)
-                .await?
+        let Some(current) =
+            crate::studio::thread_factory::recovery::load_current_read_only(self, &thread).await?
         else {
             return Ok(None);
         };
+        let state = current.state.to_paused_snapshot();
         Ok(crate::thread_assembler::project_thread_interaction(
-            thread_id,
-            local_id,
-            &checkpoint.state,
+            thread_id, local_id, &state,
         )?)
     }
 
@@ -37,13 +35,12 @@ impl StudioStore {
         };
         let thread = pl_protocol::Thread::from(record);
         // Listing pending interactions is a projection too: no migration, no legacy cleanup.
-        let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(self, &thread)
-                .await?
+        let Some(current) =
+            crate::studio::thread_factory::recovery::load_current_read_only(self, &thread).await?
         else {
             return Ok(Vec::new());
         };
-        let state = checkpoint.state;
+        let state = current.state.to_paused_snapshot();
         let mut pending = Vec::new();
         for id in state.permissions.keys().chain(state.interactions.keys()) {
             if let Some(interaction) =
@@ -62,10 +59,10 @@ impl StudioStore {
         Ok(pending)
     }
 
-    /// 恢复诊断：逐会话回读 checkpoint 取持久化的交互身份。
+    /// 恢复诊断：逐会话回读 current 取持久化的交互身份。
     ///
-    /// 交互身份不在目录摘要中，且目录摘要的状态与 checkpoint 不保证同序耐久，因此这里不能用
-    /// `catalog.toml` 的 status 过滤，仍需按目录身份回读 checkpoint；这是恢复边界而非目录查询。
+    /// 交互身份不在目录摘要中，且目录摘要的状态与 current 不保证同序耐久，因此这里不能用
+    /// `catalog.toml` 的 status 过滤，仍需按目录身份回读 current；这是恢复边界而非目录查询。
     pub async fn list_threads_with_transient_pending_interactions(&self) -> Result<Vec<String>> {
         let mut ids = Vec::new();
         let catalog = self.catalog();

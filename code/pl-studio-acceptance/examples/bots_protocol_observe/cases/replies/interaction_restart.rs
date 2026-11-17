@@ -15,16 +15,16 @@ use super::{CASE_BUDGET, answers_json, ensure_bound_row, optional_title_step};
 use crate::http;
 use crate::report::{self, CaseResult};
 use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes, content_bytes,
-    payload_bytes,
+    HISTORY_OBSERVATION_BYTES, charge_history_bytes, current_content_bytes, current_payload_bytes,
+    open_current,
 };
 use crate::thread_watch::{ThreadWatch, interaction_line};
 use anyhow::{Context, Result, ensure};
 use pl_protocol::studio::ResolveInteractionRequest;
 use pl_protocol::{
-    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, ContentOwner, ContentTarget, InteractionContent,
-    InteractionRequest, InteractionResolution, InteractionStatus, ThreadBusinessRefs,
-    UserInputAnswer, UserInputResolution,
+    AGENT_SESSION_PLAN_CONFIRMATION_QUESTION_ID, InteractionContent, InteractionRequest,
+    InteractionResolution, InteractionStatus, ThreadBusinessRefs, UserInputAnswer,
+    UserInputResolution,
 };
 use pl_provider_fixture::feishu::{
     ChatType, DIRECT_CHAT_ID, SenderKind, TRUSTED_USER_OPEN_ID, text_event,
@@ -362,69 +362,81 @@ async fn assert_interaction_reference_page(
     );
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
-        let (read, main) = tokio::time::timeout_at(
-            deadline.into(),
-            session.http()?.open_chat(
-                thread_id,
-                pl_protocol::ChatScope::conversation(None),
-                CHAT_DEMAND,
-            ),
-        )
-        .await
-        .context("opening interaction-reference Main read exceeded its deadline")??;
-        let mut remaining = CHAT_OBSERVATION_BYTES;
-        charge_chat_batch(&main, &mut remaining)?;
-        let mut continuation = None;
-        let mut seen = std::collections::HashSet::new();
-        let mut matched = 0usize;
-        for page_index in 0..256 {
-            let page = tokio::time::timeout_at(
-                deadline.into(),
-                read.page_current(reference, continuation.as_deref(), CHAT_DEMAND),
-            )
-            .await
-            .context("pageCurrent exceeded the State reference deadline")??;
-            ensure!(
-                page.revision == reference.revision
-                    && page.entries.len() <= CHAT_DEMAND.max_items as usize
-                    && serde_json::to_vec(&page)?.len() <= CHAT_DEMAND.max_bytes as usize,
-                "interactions page did not match the State reference revision or demand"
-            );
-            charge_chat_bytes(serde_json::to_vec(&page)?.len(), &mut remaining)?;
-            for entry in &page.entries {
-                let bytes = payload_bytes(&read, &entry.payload, &mut remaining, deadline).await?;
-                let interaction: InteractionRequest =
-                    serde_json::from_slice(&bytes).context("invalid referenced interaction")?;
+        let current = open_current(session.http()?, thread_id).await?;
+        let observed = async {
+            let mut remaining = HISTORY_OBSERVATION_BYTES;
+            let mut continuation = None;
+            let mut seen = std::collections::HashSet::new();
+            let mut matched = 0usize;
+            for page_index in 0..256 {
+                let page = tokio::time::timeout_at(
+                    deadline.into(),
+                    current.page_current(
+                        reference,
+                        continuation.as_deref(),
+                        crate::support::current_demand(),
+                    ),
+                )
+                .await
+                .context("pageCurrent exceeded the State reference deadline")??;
                 ensure!(
-                    entry.id == interaction.interaction_id
-                        && interaction.scope.thread_id == thread_id,
-                    "interaction collection entry identity/scope mismatch"
+                    page.revision == reference.revision
+                        && page.entries.len()
+                            <= usize::try_from(crate::support::current_demand().max_items)?
+                        && serde_json::to_vec(&page)?.len()
+                            <= usize::try_from(crate::support::current_demand().max_bytes)?,
+                    "interactions page did not match the State reference revision or demand"
                 );
-                if interaction.interaction_id == expected.interaction_id {
+                charge_history_bytes(serde_json::to_vec(&page)?.len(), &mut remaining)?;
+                for entry in &page.entries {
+                    let bytes = current_payload_bytes(
+                        &current,
+                        &entry.payload,
+                        &mut remaining,
+                        deadline,
+                    )
+                    .await?;
+                    let interaction: InteractionRequest =
+                        serde_json::from_slice(&bytes).context("invalid referenced interaction")?;
                     ensure!(
-                        interaction.revision == expected.revision
-                            && interaction.status() == expected.status()
-                            && interaction.scope == expected.scope,
-                        "pageCurrent and State disagree about the same interaction revision/status"
+                        entry.id == interaction.interaction_id
+                            && interaction.scope.thread_id == thread_id,
+                        "interaction collection entry identity/scope mismatch"
                     );
-                    matched += 1;
+                    if interaction.interaction_id == expected.interaction_id {
+                        ensure!(
+                            interaction.revision == expected.revision
+                                && interaction.status() == expected.status()
+                                && interaction.scope == expected.scope,
+                            "pageCurrent and State disagree about the same interaction revision/status"
+                        );
+                        matched += 1;
+                    }
                 }
-            }
-            let Some(next) = page.continuation else {
+                let Some(next) = page.continuation else {
+                    ensure!(
+                        matched == 1,
+                        "State-referenced interactions collection returned {matched} copies of {}",
+                        expected.interaction_id
+                    );
+                    return Ok::<(), anyhow::Error>(());
+                };
                 ensure!(
-                    matched == 1,
-                    "State-referenced interactions collection returned {matched} copies of {}",
-                    expected.interaction_id
+                    page_index + 1 < 256 && seen.insert(next.clone()),
+                    "interactions collection exceeded its bounded page budget or repeated a cursor"
                 );
-                return Ok::<(), anyhow::Error>(());
-            };
-            ensure!(
-                page_index + 1 < 256 && seen.insert(next.clone()),
-                "interactions collection exceeded its bounded page budget or repeated a cursor"
-            );
-            continuation = Some(next);
+                continuation = Some(next);
+            }
+            anyhow::bail!("interactions collection exceeded its bounded page budget")
         }
-        anyhow::bail!("interactions collection exceeded its bounded page budget")
+        .await;
+        match (observed, current.close().await) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(close_error)) => Err(error.context(format!(
+                "Current close also failed: {close_error:#}"
+            ))),
+        }
     })
     .await
     .context("interaction collection read exceeded its deadline")??;
@@ -445,47 +457,40 @@ async fn assert_plan_reference(
         .as_ref()
         .context("State Plan omitted its complete-document reference")?;
     ensure!(
-        !document.database_id.is_empty()
-            && matches!(
-                &document.target,
-                ContentTarget::Body {
-                    owner: ContentOwner::Current {
-                        domain,
-                        id,
-                        revision,
-                    },
-                    key,
-                } if domain == "plan" && id == "document" && *revision == plan.revision && key == "document"
-            ),
+        !document.owner_id.is_empty()
+            && document.domain == "plan"
+            && document.entity_id == "document"
+            && document.content_key == "document"
+            && document.generation == plan.revision.to_string(),
         "State Plan reference does not identify its exact complete document version"
     );
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
-        let (read, main) = tokio::time::timeout_at(
-            deadline.into(),
-            session.http()?.open_chat(
-                thread_id,
-                pl_protocol::ChatScope::conversation(None),
-                CHAT_DEMAND,
-            ),
-        )
-        .await
-        .context("opening Plan document read exceeded its deadline")??;
-        let mut remaining = CHAT_OBSERVATION_BYTES;
-        charge_chat_batch(&main, &mut remaining)?;
-        let bytes = content_bytes(
-            &read,
-            document,
-            PLAN_MD.len() as u64,
-            &mut remaining,
-            deadline,
-        )
-        .await?;
-        ensure!(
-            bytes == PLAN_MD.as_bytes(),
-            "State Plan reference did not read the exact accepted Plan document"
-        );
-        Ok::<(), anyhow::Error>(())
+        let current = open_current(session.http()?, thread_id).await?;
+        let observed = async {
+            let mut remaining = HISTORY_OBSERVATION_BYTES;
+            let bytes = current_content_bytes(
+                &current,
+                document,
+                PLAN_MD.len() as u64,
+                &mut remaining,
+                deadline,
+            )
+            .await?;
+            ensure!(
+                bytes == PLAN_MD.as_bytes(),
+                "State Plan reference did not read the exact accepted Plan document"
+            );
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        match (observed, current.close().await) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(close_error)) => {
+                Err(error.context(format!("Current close also failed: {close_error:#}")))
+            }
+        }
     })
     .await
     .context("Plan document read exceeded its deadline")??;

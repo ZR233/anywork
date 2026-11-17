@@ -1463,7 +1463,7 @@ sdk.CompletedEntry _mainEntry(sdk.ChatAtom atom) => sdk.CompletedEntry(
 
 // Explicit synthetic completion positions for these rendering stories. They
 // never classify/group payloads or create a second product reducer.
-sdk.ViewUpdate _mainBatch({
+sdk.TimelineFixtureBatch _mainBatch({
   required sdk.ChatPlacement placement,
   required List<sdk.CompletedEntry> entries,
   String? before,
@@ -1483,7 +1483,7 @@ sdk.ViewUpdate _mainBatch({
           id: entry.recordId,
           blockOrder: start + i,
           body: sdk.SingleDisplayBlock(
-            visibility: sdk.SingleVisibility.content,
+            visibility: sdk.HistorySingleVisibility.content,
             record: sdk.DisplayRecord(
               atom: entry.atom,
               contentSource: sdk.CompletedOriginal(

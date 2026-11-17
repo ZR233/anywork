@@ -321,8 +321,14 @@ extension StudioLocalizationsX on BuildContext {
         l10n.composerFailureInteractionNotHosted,
       StudioFailureReason.staleInteraction =>
         l10n.composerFailureStaleInteraction,
+      StudioFailureReason.invalidDemand =>
+        l10n.studioFailureCodeInvalidArgument,
       // A local content/collection revision expired, not the whole conversation.
-      StudioFailureReason.staleContent => l10n.studioFailureCodeStaleRevision,
+      StudioFailureReason.staleContent ||
+      StudioFailureReason.staleCurrentReference ||
+      StudioFailureReason.staleReadScope ||
+      StudioFailureReason.staleLspBinding =>
+        l10n.studioFailureCodeStaleRevision,
       StudioFailureReason.conversationResyncRequired =>
         l10n.studioFailureConversationResyncRequired,
       StudioFailureReason.staleViewCursor => l10n.studioFailureStaleViewCursor,

@@ -66,7 +66,7 @@ Future<List<ObservedDisplayRecord>> collectDisplayRecords(
 String? completedOriginalId(DisplayRecord record) =>
     switch (record.contentSource) {
       CompletedOriginal(:final completionId) => completionId,
-      CurrentAtom() || FrozenObservation() => null,
+      CurrentAtomSource() || FrozenObservation() => null,
     };
 
 // The display record grants the read domain. Never resolve a frozen observation

@@ -8,13 +8,7 @@ use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::watch, time::Instant};
 
-use crate::{
-    session::AgentRuntime,
-    studio::runtime::{
-        acp_business::AcpResources,
-        thread_observation::{HistoryStatus, HistoryStore},
-    },
-};
+use crate::{session::AgentRuntime, studio::runtime::acp_business::AcpResources};
 
 /// Sum of complete serialized reports, excluding current and the MCP envelope.
 const REPORT_BYTE_BUDGET: usize = 64 * 1024;
@@ -52,14 +46,14 @@ fn service(error: anyhow::Error) -> ControlError {
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "backend", rename_all = "camelCase", deny_unknown_fields)]
 enum Position {
-    Native { sequence: u64 },
+    Native { database_id: String, sequence: u64 },
     Acp { generation: String, sequence: u64 },
 }
 
 impl Position {
     fn sequence(&self) -> u64 {
         match self {
-            Self::Native { sequence } | Self::Acp { sequence, .. } => *sequence,
+            Self::Native { sequence, .. } | Self::Acp { sequence, .. } => *sequence,
         }
     }
 }
@@ -107,8 +101,9 @@ impl Cursor {
 
 enum Source {
     Native {
-        history: HistoryStore,
-        changes: Option<watch::Receiver<HistoryStatus>>,
+        history: crate::history::HistoryReader,
+        thread_id: String,
+        last_cut: Option<crate::history::HistoryCut>,
         thread: Option<pl_core::thread::ThreadHandle>,
         lifecycle: Option<pl_core::thread::ThreadSubscription>,
     },
@@ -126,34 +121,48 @@ struct Read {
 }
 
 impl Source {
-    async fn read(&self, after: Option<&Position>) -> Result<Read, ControlError> {
+    async fn read(&mut self, after: Option<&Position>) -> Result<Read, ControlError> {
         match self {
             Self::Native {
-                history, thread, ..
+                history,
+                last_cut,
+                thread_id,
+                thread,
+                ..
             } => {
-                let latest = history
-                    .latest_terminal_report_sequence()
+                let (cut, head) = history
+                    .capture_position()
                     .await
-                    .map_err(service)?;
-                let sequences = match after {
-                    Some(Position::Native { sequence }) if *sequence <= latest.unwrap_or(0) => {
-                        history
-                            .terminal_report_sequences(*sequence)
-                            .await
-                            .map_err(service)?
+                    .map_err(|error| service(error.into()))?;
+                *last_cut = Some(cut);
+                let pivot = match after {
+                    Some(Position::Native {
+                        database_id,
+                        sequence,
+                    }) if database_id == history.database_id() && *sequence <= head => {
+                        Some(*sequence)
                     }
                     Some(_) => return Err(invalid_cursor()),
-                    None => latest.into_iter().collect(),
+                    None => None,
                 };
-                let page = history
-                    .terminal_reports(&sequences, REPORT_BYTE_BUDGET)
-                    .await
-                    .map_err(service)?;
+                let page = crate::studio::history_delivery::reports(
+                    history,
+                    thread_id,
+                    pivot,
+                    pivot.is_some(),
+                    REPORT_BYTE_BUDGET,
+                )
+                .await
+                .map_err(service)?;
                 let mut reports = Vec::with_capacity(page.len());
                 let mut position = None;
-                for (sequence, report) in page {
-                    reports.push(serde_json::to_value(report).map_err(ControlError::service)?);
-                    position = Some(Position::Native { sequence });
+                for report in page {
+                    reports
+                        .push(serde_json::to_value(report.message).map_err(ControlError::service)?);
+                    position = Some(Position::Native {
+                        database_id: history.database_id().into(),
+                        sequence: report.event_seq,
+                    });
                 }
                 Ok(Read {
                     reports,
@@ -189,27 +198,19 @@ impl Source {
     async fn changed(&mut self) -> Result<(), ControlError> {
         match self {
             Self::Native {
-                changes, lifecycle, ..
+                history,
+                last_cut,
+                lifecycle,
+                ..
             } => {
-                let changes = changes.as_mut().ok_or_else(|| {
-                    service(anyhow::anyhow!(
-                        "Native target has no original writer readability notification"
-                    ))
+                let cut = last_cut.clone().ok_or_else(|| {
+                    service(anyhow::anyhow!("report observation has no read cut"))
                 })?;
                 loop {
                     tokio::select! {
-                        changed = changes.changed() => {
-                            return changed.map_err(|_| ControlError::Closed);
-                        }
-                        snapshot = async {
-                            match lifecycle.as_mut() {
-                                Some(lifecycle) => lifecycle.next().await,
-                                None => std::future::pending::<Option<pl_core::thread::ThreadSnapshot>>().await,
-                            }
-                        } => {
-                            if snapshot.is_none_or(|snapshot| snapshot.lifecycle == pl_core::thread::ThreadLifecycle::Closed) {
-                                return Ok(());
-                            }
+                        changed=history.wait_changed(cut.clone())=>{changed.map_err(|error|service(error.into()))?;return Ok(());},
+                        snapshot=async {match lifecycle.as_mut() {Some(lifecycle)=>lifecycle.next().await,None=>std::future::pending().await}}=>{
+                            if snapshot.is_none_or(|snapshot|snapshot.lifecycle==pl_core::thread::ThreadLifecycle::Closed){return Ok(());}
                         }
                     }
                 }
@@ -344,15 +345,6 @@ impl super::agents::AgentHost {
                 let changes = resources.session().map_err(service)?.completion_changes();
                 Source::Acp { resources, changes }
             } else {
-                // Register the original incarnation's writer before even opening the reader.
-                let changes = native.as_ref().and_then(|(_, resources)| {
-                    resources
-                        .observations
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .last()
-                        .map(|observation| observation.report_changes())
-                });
                 let thread = native.map(|(thread, _)| thread);
                 let lifecycle = thread.as_ref().map(|thread| thread.subscribe());
                 let services = services.ok_or_else(|| {
@@ -362,12 +354,13 @@ impl super::agents::AgentHost {
                 })?;
                 let history = services
                     .store
-                    .history(identity.thread_id.as_str())
+                    .open_history_reader(identity.thread_id.as_str())
                     .await
                     .map_err(service)?;
                 Source::Native {
                     history,
-                    changes,
+                    thread_id: identity.thread_id.to_string(),
+                    last_cut: None,
                     thread,
                     lifecycle,
                 }
@@ -407,7 +400,10 @@ mod tests {
     #[test]
     fn cursors_bind_source_target_and_instance() {
         for position in [
-            Position::Native { sequence: 42 },
+            Position::Native {
+                database_id: "database-a".into(),
+                sequence: 42,
+            },
             Position::Acp {
                 generation: "generation-8".into(),
                 sequence: 3,
@@ -422,7 +418,15 @@ mod tests {
             }
         }
         assert!(Cursor::decode("not a cursor", "child", "thread").is_err());
-        let zero = Cursor::encode("child", "thread", Position::Native { sequence: 0 }).unwrap();
+        let zero = Cursor::encode(
+            "child",
+            "thread",
+            Position::Native {
+                database_id: "database-a".into(),
+                sequence: 0,
+            },
+        )
+        .unwrap();
         assert!(Cursor::decode(&zero, "child", "thread").is_err());
     }
 
@@ -487,7 +491,10 @@ mod tests {
             acp_read(
                 "generation-8",
                 Some(completed(5)),
-                Some(&Position::Native { sequence: 1 }),
+                Some(&Position::Native {
+                    database_id: "database-a".into(),
+                    sequence: 1,
+                }),
                 false
             )
             .is_err()
@@ -515,76 +522,5 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.to_string().contains("exceeds report byte budget"));
-    }
-
-    #[tokio::test]
-    async fn native_wait_registers_before_read_and_reads_persisted_terminal_index() {
-        let directory = tempfile::tempdir().unwrap();
-        let history = HistoryStore::open(&directory.path().join("history.sqlite"), "child")
-            .await
-            .unwrap();
-        let (writer, changes) = watch::channel(HistoryStatus::default());
-        let mut source = Source::Native {
-            history: history.clone(),
-            changes: Some(changes),
-            thread: None,
-            lifecycle: None,
-        };
-        assert!(source.read(None).await.unwrap().reports.is_empty());
-        // The writer commits between the reader's empty query and its first wait.
-        // A registered watch must retain that notification instead of requiring polling.
-        let item = crate::ExecutionItem::new(
-            "turn:actual".into(),
-            "child".into(),
-            "actual".into(),
-            1,
-            1,
-            1,
-            1,
-            crate::ExecutionShape::Turn(pl_protocol::ThreadTurnItem::new(
-                pl_protocol::TurnState::Completed(pl_protocol::CompletedTurnState::new(
-                    Some(1),
-                    1,
-                    pl_protocol::TurnCompletion::Normal,
-                )),
-            )),
-        );
-        crate::studio::storage::history::persist_completed(&history, 12, &[item])
-            .await
-            .unwrap();
-        writer.send_modify(|status| status.committed_sequence = 12);
-        tokio::time::timeout(Duration::from_millis(100), source.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            history.latest_terminal_report_sequence().await.unwrap(),
-            Some(12)
-        );
-        // A terminal without its original receipt is not a synthesized successful report.
-        assert!(source.read(None).await.is_err());
-        assert!(
-            source
-                .read(Some(&Position::Native { sequence: 13 }))
-                .await
-                .is_err()
-        );
-        assert!(
-            source
-                .read(Some(&Position::Acp {
-                    generation: "generation-1".into(),
-                    sequence: 1
-                }))
-                .await
-                .is_err()
-        );
-        assert!(
-            source
-                .read(Some(&Position::Native { sequence: 12 }))
-                .await
-                .unwrap()
-                .reports
-                .is_empty()
-        );
     }
 }

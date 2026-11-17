@@ -1,7 +1,6 @@
 //! Effect-local product current and its read owners. No completed-history mirror lives here.
 
 use super::FrozenCurrentProjection;
-use crate::studio::storage::history::conversation::current::{CurrentEntryWrite, PreparedCurrent};
 use crate::studio::{
     conversation_identity::content_owner_key,
     runtime::chat_item::{BodyKey, TOOL_ARGUMENTS_FIELD, TOOL_RESULT_FIELD},
@@ -34,6 +33,14 @@ pub(super) type ActiveText = (
     Option<ThreadTextChannel>,
     Option<ModelPartLocation>,
 );
+
+#[derive(Debug, Clone)]
+pub(in crate::studio) struct CurrentEntryWrite {
+    pub collection: String,
+    pub position: i64,
+    pub entry_id: String,
+    pub payload: Arc<[u8]>,
+}
 
 #[derive(Debug)]
 pub(in crate::studio) struct CurrentContent {
@@ -80,7 +87,7 @@ pub(in crate::studio) struct CurrentState {
 
 #[derive(Default)]
 pub(super) struct CurrentOwner {
-    database_id: Option<String>,
+    owner_id: Option<String>,
     activity: super::activity::ActivityProjection,
     state: Option<Arc<CurrentState>>,
     plan_extension_revision: Option<u64>,
@@ -109,21 +116,16 @@ impl CurrentOwner {
                     .map_or(0, |state| state.metadata_bytes()),
             )
     }
-    pub(super) fn database_id(&self) -> Option<&str> {
-        self.database_id.as_deref()
+    pub(super) fn owner_id(&self) -> Option<&str> {
+        self.owner_id.as_deref()
     }
-    pub(super) fn bind(&mut self, database_id: String) -> Result<()> {
+    pub(super) fn bind(&mut self, owner_id: String) -> Result<()> {
+        ensure!(!owner_id.is_empty(), "empty conversation database identity");
         ensure!(
-            !database_id.is_empty(),
-            "empty conversation database identity"
-        );
-        ensure!(
-            self.database_id
-                .as_ref()
-                .is_none_or(|old| old == &database_id),
+            self.owner_id.as_ref().is_none_or(|old| old == &owner_id),
             "conversation database identity changed within owner"
         );
-        self.database_id = Some(database_id);
+        self.owner_id = Some(owner_id);
         Ok(())
     }
     pub(super) fn item_contents(&self) -> Arc<ChatContents> {
@@ -134,18 +136,6 @@ impl CurrentOwner {
     }
     pub(super) fn snapshot(&self) -> Option<Arc<CurrentState>> {
         self.state.clone()
-    }
-
-    pub(super) fn freeze(
-        &mut self,
-        thread: &Thread,
-        state: &ThreadSnapshot,
-        sequence: u64,
-        active: impl IntoIterator<Item = ActiveText>,
-    ) -> Result<(Arc<PreparedCurrent>, Arc<CurrentState>)> {
-        let snapshot = self.project(thread, state, sequence, active)?;
-        let prepared = PreparedCurrent::new(snapshot.projection.clone(), Arc::from([]));
-        Ok((Arc::new(prepared), snapshot))
     }
 
     pub(super) fn observe(
@@ -165,8 +155,8 @@ impl CurrentOwner {
         sequence: u64,
         active: impl IntoIterator<Item = ActiveText>,
     ) -> Result<Arc<CurrentState>> {
-        let database_id = self
-            .database_id
+        let owner_id = self
+            .owner_id
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?
             .clone();
@@ -377,11 +367,11 @@ impl CurrentOwner {
             });
         }
         projection.interactions = Some(CurrentCollectionRef {
-            owner_id: database_id.clone(),
+            owner_id: owner_id.clone(),
             collection: "interactions".into(),
             // The original Core owner versions both transfer and resident slices.
             // Reopening or observing progress must never allocate a resource version.
-            revision: state.interaction_collection_revision,
+            revision: super::collection_revision(state.interaction_collection_revision, self.cold_revision.is_some())?,
         });
         let (mut entries, mut by_position, interactions, mut business_bytes) =
             if let Some(previous) = cached_business {
@@ -646,7 +636,7 @@ impl CurrentOwner {
         }
         let snapshot = Arc::new(CurrentState {
             revision: sequence,
-            owner_id: database_id.clone(),
+            owner_id: owner_id.clone(),
             references: Arc::new(references),
             projection: FrozenCurrentProjection::new(projection),
             activity_entries: activity_entries.into(),
@@ -719,11 +709,11 @@ impl CurrentOwner {
         }
         Ok(CurrentCollectionRef {
             owner_id: self
-                .database_id
+                .owner_id
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?,
             collection: collection.into(),
-            revision: *revision,
+            revision: super::collection_revision(*revision, self.cold_revision.is_some())?,
         })
     }
 
@@ -760,7 +750,7 @@ impl CurrentOwner {
         let (domain, entity_id, scope_revision) = decode_current_key(&key)?;
         let reference = CurrentContentRef {
             owner_id: self
-                .database_id
+                .owner_id
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("current owner has no identity"))?,
             domain,
@@ -848,10 +838,10 @@ impl CurrentState {
         owner.cold_revision = Some(sequence);
         owner
             .resource_versions
-            .insert("atoms", sequence.saturating_sub(1));
+            .insert("atoms", sequence);
         owner
             .resource_versions
-            .insert("sources", sequence.saturating_sub(1));
+            .insert("sources", sequence);
         owner.bind(database)?;
         let current = owner.observe(&Thread::placeholder(thread_id), state, sequence, [])?;
         let mut projection = current.projection().clone();
@@ -873,10 +863,10 @@ impl CurrentState {
         owner.cold_revision = Some(saved.snapshot_revision);
         owner
             .resource_versions
-            .insert("atoms", saved.snapshot_revision.saturating_sub(1));
+            .insert("atoms", saved.snapshot_revision);
         owner
             .resource_versions
-            .insert("sources", saved.snapshot_revision.saturating_sub(1));
+            .insert("sources", saved.snapshot_revision);
         owner.bind(saved.saved_runtime_epoch.to_string())?;
         let mut active = Vec::new();
         let mut atoms = Vec::new();
@@ -1353,7 +1343,7 @@ mod tests {
             Arc::ptr_eq(&accepted, &content.content()),
             "two readers built distinct indexes for one owner version"
         );
-        let (prepared, frozen) = owner.freeze(
+        let frozen = owner.observe(
             &thread,
             &state,
             2,
@@ -1367,7 +1357,7 @@ mod tests {
             )],
         )?;
         assert!(
-            prepared.contents.is_empty(),
+            frozen.entries.is_empty(),
             "active progress became a durable document write"
         );
         assert!(Arc::ptr_eq(

@@ -272,12 +272,6 @@ final class ConversationContentImpl implements ConversationContent {
     final work = _enqueue(a, () async {
       if (!_eligible(a, a.consumer)) return;
       switch (frame.event) {
-        case ConversationStateEvent():
-          // State arrives on its own bounded feed; a content feed carrying a
-          // state event is a protocol violation, never a second reduction path.
-          throw const ConversationContinuityError(
-            'state event on content feed',
-          );
         case ConversationChatEvent(:final batch):
           await _deliver(a, a.consumer, batch);
         case ConversationActivityEvent(:final snapshot):
@@ -425,22 +419,6 @@ final class ConversationContentImpl implements ConversationContent {
     a.activityRevision = snapshot.revision;
     a.activity = snapshot;
     _activity.publish(snapshot);
-  }
-
-  /// Only affected read resources retire; feed/history/draft ownership stays intact.
-  ///
-  /// Called by the session when the independent state stream replaces the
-  /// business references; it applies to the current live content attempt
-  /// because read scopes never change owners.
-  void businessRefsChanged(
-    ThreadBusinessRefs? previous,
-    ThreadBusinessRefs next,
-  ) {
-    final attempt = _current;
-    if (attempt == null || !_live(attempt) || previous == next) return;
-    for (final scope in List.of(attempt.scopes)) {
-      scope.businessRefsChanged(previous, next);
-    }
   }
 
   void _flushAck(_Attempt a) {

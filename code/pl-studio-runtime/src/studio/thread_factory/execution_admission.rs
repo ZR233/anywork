@@ -116,10 +116,12 @@ impl StudioThreadFactory {
                     check != ExecutionWorkspaceCheck::Audit,
                     "cold child execution binding requires on-demand resolution"
                 );
-                loaded = super::recovery::load_checkpoint_read_only(&self.services.store, thread)
+                loaded = super::recovery::load_current_read_only(&self.services.store, thread)
                     .await?
-                    .context("child execution binding has no saved checkpoint")?;
-                Some(&loaded.state)
+                    .context("child execution binding has no saved current")?
+                    .state
+                    .to_paused_snapshot();
+                Some(&loaded)
             } else {
                 snapshot
             };

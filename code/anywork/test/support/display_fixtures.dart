@@ -17,7 +17,7 @@ DisplayBlock displaySingle(CompletedEntry entry, {int? blockOrder}) =>
       id: entry.recordId,
       blockOrder: blockOrder ?? entry.completionSeq,
       body: SingleDisplayBlock(
-        visibility: SingleVisibility.content,
+        visibility: HistorySingleVisibility.content,
         record: DisplayRecord(
           atom: entry.atom,
           contentSource: CompletedOriginal(completionId: entry.recordId),
@@ -25,60 +25,106 @@ DisplayBlock displaySingle(CompletedEntry entry, {int? blockOrder}) =>
       ),
     );
 
-ViewUpdate displayBatch(
+final class TimelineFixtureBatch {
+  TimelineFixtureBatch({
+    required this.blocks,
+    required this.placement,
+    this.fromOrder,
+    required this.throughOrder,
+    this.before,
+    this.live,
+  });
+  final List<DisplayBlock> blocks;
+  final ChatPlacement placement;
+  final int? fromOrder;
+  final int throughOrder;
+  final String? before;
+  final CurrentRunSnapshot? live;
+}
+
+TimelineFixtureBatch displayBatch(
   List<DisplayBlock> blocks, {
   ChatPlacement placement = ChatPlacement.set,
   int? from,
   int? through,
   String? before,
-  TailSnapshot? live,
-}) => ViewUpdate(
-  readerProtocolVersion: 1,
-  after: const ViewCursor("fixture-C0"),
-  next: const ViewCursor("fixture-C1"),
-  history: HistoryDelta(
-    placement: placement == ChatPlacement.set
-        ? HistoryPlacement.set
-        : HistoryPlacement.append,
-    blocks: blocks,
-    fromOrder: from,
-    throughOrder:
-        through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
-    before: before,
-  ),
-  presentationVersion: presentationVersion,
-  tail: live == null ? const KeepTail() : ReplaceTail(snapshot: live),
+  CurrentRunSnapshot? live,
+}) => TimelineFixtureBatch(
+  blocks: blocks,
+  placement: placement,
+  fromOrder: from,
+  throughOrder:
+      through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
+  before: before,
+  live: live,
 );
-
-// Component fixtures supply already qualified blocks. Protocol admission is tested at TimelineSessionOwner.
-extension FixtureUpdate on ViewUpdate {
-  List<DisplayBlock> get blocks => history.blocks;
-  int get throughOrder => history.throughOrder;
-  int? get fromOrder => history.fromOrder;
-  String? get before => history.before;
-  TailSnapshot? get live => switch (tail) {
-    ReplaceTail(:final snapshot) => snapshot,
-    _ => null,
-  };
-  ChatPlacement get placement => history.placement == HistoryPlacement.set
-      ? ChatPlacement.set
-      : ChatPlacement.append;
-}
 
 extension ApplyComponentFixture on TimelineMessageController {
   Future<void> applyFixtureUpdate(
-    ViewUpdate update, {
+    TimelineFixtureBatch update, {
     ChatPlacement? placement,
-  }) => applyBlocks(update.history.blocks, placement ?? update.placement);
+  }) => applyBlocks(update.blocks, placement ?? update.placement);
 }
 
-TimelinePage historyFixturePage(
-  ViewUpdate update, {
+HistoryTimelinePage historyFixturePage(
+  TimelineFixtureBatch update, {
   String databaseId = 'db',
-}) => TimelinePage(
-  presentationVersion: update.presentationVersion,
-  databaseId: databaseId,
-  ceiling: update.history.throughOrder,
-  blocks: update.history.blocks,
-  before: update.history.before,
+}) => HistoryTimelinePage(
+  cut: HistoryCut('$databaseId:${update.throughOrder}'),
+  entries: [
+    for (final block in update.blocks)
+      HistoryTimelineEntry(
+        rowKey: block.id,
+        anchorSeq: block.blockOrder,
+        headSeq: block.blockOrder,
+        head: switch (block.body) {
+          WorkDisplayBlock(:final members) => WorkHistoryRow(
+            HistoryWorkHead(
+              groupId: members.blockId,
+              runId: null,
+              startedAt: 0,
+              boundaryAt: 1,
+              closed: true,
+              memberCount: 0,
+              unfinishedCount: 0,
+              executionPresent: false,
+              summary: null,
+            ),
+          ),
+          SingleDisplayBlock(:final record, :final visibility) =>
+            SingleHistoryRow(
+              HistoryEntityHead(
+                entityId: record.atom.id,
+                runId: record.runId,
+                attemptId: record.atom.attemptId,
+                source: record.atom.source,
+                kind: record.atom.kind,
+                delivery: record.atom.delivery,
+                state: switch (record.atom.lifecycle) {
+                  ActiveChatAtom(:final status) => HistoryEntityState(
+                    kind: HistoryEntityStateKind.knownActive,
+                    activeStatus: status,
+                  ),
+                  TerminalChatAtom(:final outcome) => HistoryEntityState(
+                    kind: HistoryEntityStateKind.knownTerminal,
+                    outcome: outcome,
+                  ),
+                },
+                startedAt: record.atom.startedAt,
+                finishedAt: record.atom.finishedAt,
+                textChannel: record.atom.textChannel,
+                tool: record.atom.tool,
+                contentPresent: record.atom.contentPresent,
+                singleVisibility: visibility,
+                observation: const HistoryObservation(
+                  kind: HistoryObservationKind.original,
+                ),
+                detailEventId: record.historyDetailEventId,
+                bodyManifestEventId: record.historyEventId,
+              ),
+            ),
+        },
+      ),
+  ],
+  next: update.before,
 );

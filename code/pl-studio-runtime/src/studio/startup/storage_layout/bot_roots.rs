@@ -263,7 +263,7 @@ async fn read_frozen_owner(
     let payload = match committed {
         Some(payload) => Some(payload),
         None => crate::studio::storage::state::StateStore::new(source.to_owned(), thread_id)
-            .load_legacy()
+            .legacy_checkpoint()
             .await?
             .map(serde_json::to_value)
             .transpose()?,

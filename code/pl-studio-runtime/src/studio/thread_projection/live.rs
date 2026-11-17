@@ -25,11 +25,12 @@ use std::{
 };
 
 use pl_core::{
-    chat::{ChatDraft, ChatItem, PresentationPart, Session},
+    chat::{ChatDraft, PresentationPart},
     model::{
         AggregateChannel, ContentBlock, ModelTextChannel, ObservedItemKind, ObservedPart,
         ObservedPartIdentity, ObservedPartKind,
     },
+    thread::current::RuntimeEpoch,
     thread::{ThreadEffectBatch, ThreadSnapshot, TurnState},
 };
 use pl_protocol::{
@@ -43,6 +44,10 @@ use pl_protocol::{
 };
 
 use super::ProjectionError;
+use crate::history::{
+    HistoryBody, HistoryEntityChange, HistoryEvent, HistoryEventKind, HistorySourceHead,
+    HistoryTurnHead, HistoryTurnState,
+};
 use crate::studio::runtime::chat_item::{
     BodyKey, TOOL_RESULT_FIELD, background_started_draft, completion_draft_reusing, static_state,
 };
@@ -311,35 +316,19 @@ pub(in crate::studio) struct PreparedEffect {
     /// Effect sequence this batch belongs to; the writer matches it against its admission queue.
     pub(in crate::studio) sequence: u64,
     /// Original journal timestamp in Unix seconds, retained across publication/ACK retries.
-    committed_at: i64,
+    pub(in crate::studio) committed_at: i64,
+    pub(in crate::studio) run_id: RuntimeEpoch,
     pub(in crate::studio) accounting: Arc<super::PreparedAccounting>,
-    pub(in crate::studio) current:
-        Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
     pub(in crate::studio) current_state: Option<Arc<super::CurrentState>>,
-    pub(in crate::studio) display: Option<Arc<super::presentation::PreparedDisplayDelta>>,
-    /// Reliable effect-local changes of already admitted members, not new immutable phases.
-    /// Publication consumes these into the original frozen display delta.
-    display_atom_updates: Arc<[pl_protocol::ChatAtom]>,
-    /// 仅待发布的展示事实，发布后立即释放；不交给可靠 writer。
-    display_facts: Arc<[pl_protocol::ChatAtom]>,
-    display_text_visible: Arc<[super::presentation::TextVisible]>,
-    display_observation_plan: Arc<super::presentation::ObservationPlan>,
-    /// Only requested boundary cuts survive retirement; publication never consults newer live data.
-    display_observations: Arc<BTreeMap<String, observations::Observation>>,
     /// The canonical items the effect committed, in the order the durable rows are written.
-    pub(in crate::studio) turns: Arc<[crate::studio::storage::history::turns::TurnWrite]>,
     pub(in crate::studio) execution_order: u64,
-    /// The frozen completion records this batch published atomically before the handoff.
-    ///
-    /// The completion session allocated their `append_seq` in one short critical section and keeps
-    /// the very same `Arc` records in its pending set; the writer submits exactly these records in
-    /// the same `history.sqlite` transaction that persists the items, then confirms the durable
-    /// prefix through them (`design/26` §26.3). They are the completion-pending bytes of this
-    /// batch, charged by [`PreparedEffect::retained_bytes`].
-    pub(in crate::studio) completions: Arc<[Arc<ChatItem>]>,
-    /// Frozen publication work owned by the pending handoff, before any history read can wait.
-    /// `Some([])` still owes publication; only `None` may enter the writer.
-    pub(in crate::studio) completion_drafts: Option<Vec<ChatDraft>>,
+    /// Visibility/group changes accepted from the independent HistoryClassifier.
+    pub(in crate::studio) boundary_inputs: Arc<BTreeMap<String, observations::Observation>>,
+    pub(in crate::studio) history_changes: Arc<[HistoryEntityChange]>,
+    pub(in crate::studio) history_turns: Arc<[HistoryTurnHead]>,
+    pub(in crate::studio) history_turn_details: Arc<BTreeMap<String, pl_protocol::Turn>>,
+    pub(in crate::studio) history_sources: Arc<[HistorySourceHead]>,
+    pub(in crate::studio) retained_resources: Arc<[super::history_facts::RetainedResourceFact]>,
     /// Exact terminal handoff, committed in the same history transaction as its terminal effect.
     pub(in crate::studio) parent_report: Option<Arc<pl_core::thread::inbox::ThreadMessage>>,
     pub(in crate::studio) terminal_retention:
@@ -351,44 +340,153 @@ pub(in crate::studio) struct PreparedEffect {
 
 fn prepared_turns(
     items: &[ExecutionItem],
-    current: &crate::studio::storage::history::conversation::current::PreparedCurrent,
+    run: RuntimeEpoch,
     effect: u64,
-) -> Result<Vec<crate::studio::storage::history::turns::TurnWrite>, ProjectionError> {
-    items
+) -> Result<(Vec<HistoryTurnHead>, BTreeMap<String, pl_protocol::Turn>), ProjectionError> {
+    fn millis(at: i64) -> Result<i64, ProjectionError> {
+        crate::history::milliseconds_from_seconds(at)
+            .map_err(|error| ProjectionError::History(error.to_string()))
+    }
+    let mut heads = Vec::new();
+    let mut details = BTreeMap::new();
+    for item in items {
+        let ExecutionShape::Turn(turn) = item.state() else {
+            continue;
+        };
+        let started_at = turn.state().started_at().map(millis).transpose()?;
+        let finished_at = turn.state().completed_at().map(millis).transpose()?;
+        let state = match turn.state() {
+            pl_protocol::TurnState::Queued(_) => HistoryTurnState::Queued,
+            pl_protocol::TurnState::Running(_) => HistoryTurnState::Running,
+            pl_protocol::TurnState::Completed(_) => HistoryTurnState::Completed,
+            pl_protocol::TurnState::Cancelled(_) => HistoryTurnState::Cancelled,
+            pl_protocol::TurnState::Failed(_) => HistoryTurnState::Failed,
+            pl_protocol::TurnState::BudgetLimited(_) => HistoryTurnState::BudgetLimited,
+        };
+        let queued_at = match turn.state() {
+            pl_protocol::TurnState::Queued(state) => Some(millis(state.queued_at())?),
+            _ => None,
+        };
+        heads.push(HistoryTurnHead {
+            turn_id: item.turn_id.clone(),
+            input_id: turn.input_id().map(str::to_owned),
+            run_id: Some(run.to_string()),
+            state,
+            phase: turn.state().phase(),
+            context_disposition: pl_protocol::ThreadContextDisposition::Active,
+            queued_at,
+            started_at,
+            finished_at,
+            updated_at: millis(item.updated_at)?,
+            detail_event_id: None,
+        });
+        details.insert(
+            item.turn_id.clone(),
+            pl_protocol::Turn {
+                input_id: turn.input_id().map(str::to_owned),
+                id: item.turn_id.clone(),
+                thread_id: item.thread_id.clone(),
+                revision: item.revision,
+                state: turn.state().clone(),
+                updated_at: item.updated_at,
+            },
+        );
+    }
+    Ok((heads, details))
+}
+
+fn history_entity_change(
+    atom: &pl_protocol::ChatAtom,
+    drafts: &[ChatDraft],
+    run: RuntimeEpoch,
+    effect: &ThreadEffectBatch,
+    database_id: &str,
+) -> Result<HistoryEntityChange, ProjectionError> {
+    let millis = |at| {
+        crate::history::milliseconds_from_seconds(at)
+            .map_err(|error| ProjectionError::History(error.to_string()))
+    };
+    let draft_id = atom.completion_item_id.as_deref().unwrap_or(&atom.id);
+    let draft = matches!(
+        atom.lifecycle,
+        pl_protocol::ChatAtomLifecycle::Terminal { .. }
+    )
+    .then(|| drafts.iter().find(|draft| draft.item_id == draft_id))
+    .flatten();
+    let mut event = HistoryEvent::new(
+        draft.map_or_else(
+            || format!("entity:{run}:{}:{}", effect.sequence, atom.id),
+            |draft| draft.item_id.clone(),
+        ),
+        match atom.lifecycle {
+            pl_protocol::ChatAtomLifecycle::Active { .. } => HistoryEventKind::EntityStarted,
+            pl_protocol::ChatAtomLifecycle::Terminal { .. } => HistoryEventKind::EntityEnded,
+        },
+        millis(effect.committed_at)?,
+    );
+    event.header.occurred_at = atom
+        .finished_at
+        .or(atom.started_at)
+        .map(millis)
+        .transpose()?;
+    if let Some(draft) = draft {
+        event.header.original = Some(crate::history::HistoryOriginalInfo {
+            query_class: draft.query_class.clone(),
+            parent_id: draft
+                .parent_id
+                .as_ref()
+                .map(|parent| parent.as_str().to_owned()),
+            original_kind: atom.kind,
+            tool_name: atom.tool.as_ref().map(|tool| tool.name.clone()),
+        });
+    }
+    let mut change = HistoryEntityChange::from_atom(event, atom, run)
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+    if let Some(draft) = draft {
+        crate::studio::runtime::chat_item::freeze_history_original(
+            &mut change.event,
+            &mut change.entity,
+            draft,
+            database_id,
+        )
+        .map_err(|error| ProjectionError::History(error.to_string()))?;
+    }
+    Ok(change)
+}
+
+fn history_sources(sources: &[pl_protocol::ChatSourceState]) -> Vec<HistorySourceHead> {
+    sources
         .iter()
-        .filter_map(|item| {
-            let ExecutionShape::Turn(turn) = item.state() else {
-                return None;
-            };
-            let admitted_effect =
-                current
-                    .source_changes
-                    .iter()
-                    .find_map(|source| match &source.source {
-                        pl_protocol::ChatSourceId::ForegroundTurn { turn_id }
-                            if *turn_id == item.turn_id =>
-                        {
-                            source.started.map(|at| at.effect_seq)
-                        }
-                        _ => None,
-                    });
-            Some(Ok(crate::studio::storage::history::turns::TurnWrite {
-                turn: pl_protocol::Turn {
-                    id: item.turn_id.clone(),
-                    thread_id: item.thread_id.clone(),
-                    input_id: turn.input_id().map(str::to_owned),
-                    revision: effect,
-                    state: turn.state().clone(),
-                    updated_at: item.updated_at,
-                },
-                turn_order: item.ordinal,
-                admitted_effect,
-                updated_effect: Some(effect),
-                terminal_effect: turn.state().is_terminal().then_some(effect),
-                context_disposition: pl_protocol::ThreadContextDisposition::Active,
-            }))
+        .map(|source| HistorySourceHead {
+            source: source.source.clone(),
+            lifecycle: source.lifecycle.clone(),
+            started_at: None,
+            ended_at: None,
+            observed_at: None,
+            detail_event_id: None,
         })
         .collect()
+}
+
+fn retained_resources(effect: &ThreadEffectBatch) -> Result<Vec<super::history_facts::RetainedResourceFact>, ProjectionError> {
+    let mut facts = BTreeMap::new();
+    let mut retain = |call_id: &str, reference: pl_core::context::ResourceReference| -> Result<(), ProjectionError> {
+        let key = (call_id.to_owned(), reference.id().to_owned());
+        if let Some(old) = facts.get(&key) {
+            if old != &reference {
+                return Err(ProjectionError::History("contradictory delivered resource references".into()));
+            }
+        } else { facts.insert(key, reference); }
+        Ok(())
+    };
+    for delivery in effect.deliveries.iter() {
+        for reference in super::resource_references(delivery)? { retain(&delivery.call_id, reference)?; }
+    }
+    for repair in effect.delivery_repairs.iter() { retain(&repair.call_id, repair.reference.clone())?; }
+    Ok(facts.into_iter().map(|((call_id, _), reference)| {
+        let turn_id = effect.tasks.iter().find(|task| task.call_id == call_id).map(|task| task.turn_id.clone());
+        super::history_facts::RetainedResourceFact { call_id, turn_id, reference }
+    }).collect())
 }
 
 fn review_delivery_facts(
@@ -453,60 +551,32 @@ impl PreparedEffect {
                 .saturating_add(fact.message.id.len() as u64)
                 .saturating_add(256)
         });
-        // The payload and explicit content owners are the same Arcs retained by pending and writer.
-        let completions = self.completions.iter().fold(0_u64, |bytes, record| {
-            bytes
-                .saturating_add(completion_bytes(
-                    &record.header.item_id,
-                    &record.payload,
-                    &record.contents,
-                ))
-                .saturating_add(RETAINED_ITEM_OVERHEAD)
-                .saturating_add(record.header.metadata.len() as u64)
-        });
-        self.turns
+        self.history_changes
             .iter()
-            .fold(0_u64, |bytes, turn| {
-                bytes.saturating_add(turn.retained_bytes())
+            .fold(0_u64, |bytes, change| {
+                bytes.saturating_add(RETAINED_ITEM_OVERHEAD).saturating_add(
+                    change.event.bodies.iter().fold(0_u64, |bodies, body| {
+                        bodies.saturating_add(body.bytes.len() as u64)
+                    }),
+                )
             })
             .saturating_add(
-                self.display
-                    .as_ref()
-                    .map_or(0, |delta| delta.retained_bytes),
+                (self.history_turns.len() as u64)
+                    .saturating_mul(std::mem::size_of::<HistoryTurnHead>() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.history_turn_details.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
+            )
+            .saturating_add(
+                (self.history_sources.len() as u64)
+                    .saturating_mul(std::mem::size_of::<HistorySourceHead>() as u64),
+            )
+            .saturating_add(
+                serde_json::to_vec(self.retained_resources.as_ref())
+                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
             )
             .saturating_add(self.accounting.retained_bytes())
-            .saturating_add(self.current.projection_retained_bytes())
-            .saturating_add(self.current.operation_bytes())
-            .saturating_add(self.current.lifecycle.iter().fold(0_u64, |bytes, fact| {
-                bytes.saturating_add(fact.retained_bytes())
-            }))
-            .saturating_add(
-                serde_json::to_vec(&(
-                    self.display_atom_updates.as_ref(),
-                    self.display_facts.as_ref(),
-                ))
-                .map_or(u64::MAX, |bytes| bytes.len() as u64),
-            )
-            .saturating_add(
-                serde_json::to_vec(self.display_text_visible.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
-            )
-            .saturating_add(
-                serde_json::to_vec(self.display_observation_plan.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
-            )
-            .saturating_add(self.display_observations.iter().fold(
-                0u64,
-                |bytes, (key, observation)| {
-                    bytes
-                        .saturating_add(key.len() as u64)
-                        .saturating_add(observation.retained_bytes())
-                },
-            ))
-            .saturating_add(
-                serde_json::to_vec(self.current.source_changes.as_ref())
-                    .map_or(u64::MAX, |bytes| bytes.len() as u64),
-            )
             .saturating_add(
                 self.current_state
                     .as_ref()
@@ -514,19 +584,12 @@ impl PreparedEffect {
             )
             .saturating_add(parent_report)
             .saturating_add(review_delivery)
-            .saturating_add(completions)
-            .saturating_add(self.completion_drafts.as_ref().map_or(0, |drafts| {
-                drafts.iter().fold(0_u64, |bytes, draft| {
-                    bytes
-                        .saturating_add(RETAINED_ITEM_OVERHEAD)
-                        .saturating_add(draft.metadata.len() as u64)
-                        .saturating_add(completion_bytes(
-                            &draft.item_id,
-                            &draft.payload,
-                            &draft.contents,
-                        ))
-                })
-            }))
+            .saturating_add(
+                self.boundary_inputs
+                    .values()
+                    .map(observations::Observation::retained_bytes)
+                    .sum::<u64>(),
+            )
     }
 }
 
@@ -1137,7 +1200,7 @@ impl TurnResult {
     }
 
     /// Adds one committed payload to the Turn's result facts.
-    fn observe(&mut self, item: &ExecutionItem) {
+    pub(in crate::studio) fn observe(&mut self, item: &ExecutionItem) {
         if self.identities.insert(item.id.clone()) {
             self.identity_bytes = self
                 .identity_bytes
@@ -1189,7 +1252,7 @@ impl TurnResult {
 
     pub(in crate::studio) fn observe_completion(
         &mut self,
-        record: &ChatItem,
+        record: &pl_core::chat::ChatItem,
         thread_id: &str,
     ) -> anyhow::Result<()> {
         let atom: pl_protocol::ChatAtom = serde_json::from_slice(&record.header.metadata)?;
@@ -1279,8 +1342,9 @@ impl Fact {
     }
 }
 
-mod observations;
 /// Folds admitted writes into the live product facts and yields the changes each one made.
+mod observations;
+pub(in crate::studio) use observations::Observation as HistoryObservationInput;
 mod provenance;
 
 pub(in crate::studio) struct LiveProjection {
@@ -1368,10 +1432,9 @@ pub(in crate::studio) struct LiveProjection {
     /// It is the same index the kernel's synchronous presentation reservations draw from, so an
     /// identity's preview frame and its terminal commit resolve one ordinal from one allocator.
     order_index: Option<Arc<RuntimeOrderIndex>>,
-    execution_history: Option<crate::studio::storage::history::HistoryStore>,
+    run: Option<RuntimeEpoch>,
+    execution_history: Option<crate::history::HistoryStore>,
     current: super::current::CurrentOwner,
-    presentation: super::presentation::PresentationHandle,
-    presentation_restored: bool,
 }
 
 impl Drop for LiveProjection {
@@ -1410,10 +1473,9 @@ impl LiveProjection {
             observed: HashMap::new(),
             revisions: BTreeMap::new(),
             order_index: None,
+            run: None,
             execution_history: None,
             current: Default::default(),
-            presentation: Default::default(),
-            presentation_restored: false,
             items_bytes: 0,
             facts_bytes: 0,
             previews_bytes: 0,
@@ -1425,7 +1487,8 @@ impl LiveProjection {
     pub(in crate::studio) fn bind_execution_history(
         &mut self,
         index: Arc<RuntimeOrderIndex>,
-        history: crate::studio::storage::history::HistoryStore,
+        run: RuntimeEpoch,
+        history: crate::history::HistoryStore,
     ) -> Result<(), ProjectionError> {
         if self.order_index.is_some() || self.execution_history.is_some() {
             return Err(ProjectionError::History(
@@ -1433,82 +1496,25 @@ impl LiveProjection {
             ));
         }
         self.order_index = Some(index);
+        self.run = Some(run);
         self.execution_history = Some(history);
-        Ok(())
-    }
-    pub(in crate::studio) fn conversation_database_id(&self) -> Option<&str> {
-        self.current.database_id()
-    }
-
-    pub(in crate::studio) fn bind_conversation_identity(
-        &mut self,
-        database_id: String,
-    ) -> Result<(), ProjectionError> {
         self.current
-            .bind(database_id)
+            .bind(run.to_string())
             .map_err(|error| ProjectionError::History(error.to_string()))?;
         Ok(())
     }
-
-    async fn ensure_database_identity(&mut self) -> Result<(), ProjectionError> {
-        if self.current.database_id().is_none() {
+    async fn ensure_current_owner(&mut self) -> Result<(), ProjectionError> {
+        if self.current.owner_id().is_none() {
             let database_id = self
-                .execution_history
-                .as_ref()
-                .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?
-                .conversation_database_id()
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?
-                .ok_or_else(|| {
-                    ProjectionError::History(
-                        "execution database has not crossed initialization".into(),
-                    )
-                })?;
+                .run
+                .clone()
+                .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?
+                .to_string();
             self.current
                 .bind(database_id)
                 .map_err(|error| ProjectionError::History(error.to_string()))?;
         }
-        if !self.presentation_restored {
-            let database = self.current.database_id().expect("bound identity");
-            if let Some(history) = &self.execution_history {
-                let seed = history
-                    .display_recovery()
-                    .await
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-                if let Some(seed) = seed {
-                    self.presentation
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .restore(
-                            database,
-                            seed.published,
-                            seed.last_order,
-                            seed.effect,
-                            seed.open,
-                            seed.unfinished,
-                        )
-                        .map_err(|error| ProjectionError::History(error.to_string()))?;
-                } else {
-                    self.presentation
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .bind(database)
-                        .map_err(|error| ProjectionError::History(error.to_string()))?;
-                }
-            } else {
-                self.presentation
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .bind(database)
-                    .map_err(|error| ProjectionError::History(error.to_string()))?;
-            }
-            self.presentation_restored = true;
-        }
         Ok(())
-    }
-
-    pub(in crate::studio) fn presentation(&self) -> super::presentation::PresentationHandle {
-        self.presentation.clone()
     }
 
     pub(in crate::studio) fn current_state(&self) -> Option<Arc<super::CurrentState>> {
@@ -1536,34 +1542,12 @@ impl LiveProjection {
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
         effect: &ThreadEffectBatch,
-    ) -> Result<
-        (
-            Arc<crate::studio::storage::history::conversation::current::PreparedCurrent>,
-            Arc<super::CurrentState>,
-        ),
-        ProjectionError,
-    > {
+    ) -> Result<Arc<super::CurrentState>, ProjectionError> {
         let active = self.current_texts();
         self.sync_provenance()?;
-        let (mut prepared, current) = self
-            .current
-            .freeze(thread, state, effect.sequence, active)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        if let Some(attempt) = &effect.attempt
-            && matches!(
-                attempt.outcome,
-                pl_core::thread::AttemptOutcome::Interrupted
-            )
-        {
-            Arc::make_mut(&mut prepared).recovery_interruption = Some((
-                attempt.attempt_id.clone(),
-                pl_protocol::ChatFactPosition {
-                    effect_seq: effect.sequence,
-                    suborder: 0,
-                },
-            ));
-        }
-        Ok((prepared, current))
+        self.current
+            .observe(thread, state, effect.sequence, active)
+            .map_err(|error| ProjectionError::History(error.to_string()))
     }
 
     fn current_texts(&self) -> Vec<super::current::ActiveText> {
@@ -1673,23 +1657,6 @@ impl LiveProjection {
     /// A frame while many final parts remain resident therefore still visits those report entries;
     /// the identity accumulator does not make the whole retention query constant-time.
     pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        self.retained_without_display().saturating_add(
-            self.presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retained_bytes(),
-        )
-    }
-
-    pub(in crate::studio) fn retained_after_display(
-        &self,
-        plan: &super::presentation::PresentationPlan,
-    ) -> u64 {
-        self.retained_without_display()
-            .saturating_add(plan.retained_bytes())
-    }
-
-    fn retained_without_display(&self) -> u64 {
         let mut bytes = self
             .items_bytes
             .saturating_add(self.facts_bytes)
@@ -1755,14 +1722,17 @@ impl LiveProjection {
         state: &ThreadSnapshot,
         deliver: bool,
     ) -> Result<(Option<Vec<LiveEvent>>, Arc<PreparedEffect>), ProjectionError> {
-        self.ensure_database_identity().await?;
+        self.ensure_current_owner().await?;
+        let run = self
+            .run
+            .clone()
+            .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let mut provenance = self.begin_provenance(effect)?;
-        let display_text_visible = self.text_visibility(effect)?;
-        let observation_inputs = self
-            .observation_inputs(&thread.id)
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let turns = self.prepare_turn_frames(thread, effect, state, deliver)?;
+        let before = self
+            .observation_inputs(&thread.id)
+            .map_err(|error| ProjectionError::History(error.to_string()))?;
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
         #[cfg(test)]
@@ -1782,63 +1752,40 @@ impl LiveProjection {
         let mut events = deliver.then(Vec::new);
         self.emit_frames(thread, effect, state, turns, &mut events);
         self.retire_effect_source(effect)?;
-        let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
-        let display_facts = provenance
-            .2
-            .iter()
-            .chain(provenance.0.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let (display_observations, display_observation_plan) = self
-            .retain_display_observations(
-                &thread.id,
-                effect.sequence,
-                &display_facts,
-                &display_text_visible,
-                observation_inputs,
-            )
+        let current_state = self.freeze_current(thread, state, effect)?;
+        let boundary_inputs = self
+            .retain_boundary_inputs(&thread.id, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Arc::make_mut(&mut current).lifecycle = provenance
-            .0
-            .iter()
-            .map(|atom| {
-                let mut fact=crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(atom,effect.sequence)?;
-                fact.execution_order=items.iter().find(|item|item.id==atom.id).map(|item|item.ordinal)
-                    .or_else(||self.order_index.as_ref().and_then(|index|index.assigned(&atom.id)));
-                Ok(fact)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-            .into();
-        Arc::make_mut(&mut current).source_changes = provenance.1.into();
-        // Admission, source ends and terminals are folded together only after
-        // reliable retention/publication assigns the original completion seqs.
+        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
+            run_id: run.clone(),
             accounting,
-            current: current.clone(),
             current_state: Some(current_state),
-            display: None,
-            display_atom_updates: provenance.2.into(),
-            display_facts: provenance.0.into(),
-            display_text_visible,
-            display_observation_plan,
-            display_observations,
-            turns: prepared_turns(&items, &current, effect.sequence)?.into(),
-            execution_order: items
+            boundary_inputs,
+            history_changes: provenance
+                .0
                 .iter()
-                .map(|item| item.ordinal)
-                .chain(
-                    current
-                        .lifecycle
-                        .iter()
-                        .filter_map(|fact| fact.execution_order),
-                )
-                .max()
-                .unwrap_or(0),
-            completions: Arc::from(Vec::new()),
-            completion_drafts: Some(completion_drafts),
+                .map(|atom| {
+                    history_entity_change(
+                        atom,
+                        &completion_drafts,
+                        run,
+                        effect,
+                        self.execution_history
+                            .as_ref()
+                            .expect("bound history")
+                            .database_id(),
+                    )
+                })
+                .collect::<Result<Vec<_>, ProjectionError>>()?
+                .into(),
+            history_turns: history_turns.into(),
+            history_turn_details: Arc::new(history_turn_details),
+            history_sources: history_sources(&provenance.1).into(),
+            retained_resources: retained_resources(effect)?.into(),
+            execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
@@ -1873,13 +1820,16 @@ impl LiveProjection {
         effect: &ThreadEffectBatch,
         state: &ThreadSnapshot,
     ) -> Result<Arc<PreparedEffect>, ProjectionError> {
-        self.ensure_database_identity().await?;
+        self.ensure_current_owner().await?;
+        let run = self
+            .run
+            .clone()
+            .ok_or_else(|| ProjectionError::History("runtime epoch is not bound".into()))?;
         let mut provenance = self.begin_provenance(effect)?;
-        let display_text_visible = self.text_visibility(effect)?;
-        let observation_inputs = self
+        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
+        let before = self
             .observation_inputs(&thread.id)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let accounting = Arc::new(super::PreparedAccounting::prepare(effect)?);
         let (items, review_delivery, mut completion_drafts) =
             self.project(thread, effect, state).await?;
         self.complete_provenance(
@@ -1891,61 +1841,40 @@ impl LiveProjection {
         )
         .await?;
         self.retire_effect_source(effect)?;
-        let (mut current, current_state) = self.freeze_current(thread, state, effect)?;
-        let display_facts = provenance
-            .2
-            .iter()
-            .chain(provenance.0.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let (display_observations, display_observation_plan) = self
-            .retain_display_observations(
-                &thread.id,
-                effect.sequence,
-                &display_facts,
-                &display_text_visible,
-                observation_inputs,
-            )
+        let current_state = self.freeze_current(thread, state, effect)?;
+        let boundary_inputs = self
+            .retain_boundary_inputs(&thread.id, before)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        Arc::make_mut(&mut current).lifecycle = provenance
-            .0
-            .iter()
-            .map(|atom| {
-                let mut fact=crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle::from_atom(atom,effect.sequence)?;
-                fact.execution_order=items.iter().find(|item|item.id==atom.id).map(|item|item.ordinal)
-                    .or_else(||self.order_index.as_ref().and_then(|index|index.assigned(&atom.id)));
-                Ok(fact)
-            })
-            .collect::<anyhow::Result<Vec<_>>>()
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-            .into();
-        Arc::make_mut(&mut current).source_changes = provenance.1.into();
+        let (history_turns, history_turn_details) = prepared_turns(&items, run, effect.sequence)?;
         let prepared = Arc::new(PreparedEffect {
             sequence: effect.sequence,
             committed_at: effect.committed_at,
+            run_id: run.clone(),
             accounting,
-            current: current.clone(),
             current_state: Some(current_state),
-            display: None,
-            display_atom_updates: provenance.2.into(),
-            display_facts: provenance.0.into(),
-            display_text_visible,
-            display_observation_plan,
-            display_observations,
-            turns: prepared_turns(&items, &current, effect.sequence)?.into(),
-            execution_order: items
+            boundary_inputs,
+            history_changes: provenance
+                .0
                 .iter()
-                .map(|item| item.ordinal)
-                .chain(
-                    current
-                        .lifecycle
-                        .iter()
-                        .filter_map(|fact| fact.execution_order),
-                )
-                .max()
-                .unwrap_or(0),
-            completions: Arc::from(Vec::new()),
-            completion_drafts: Some(completion_drafts),
+                .map(|atom| {
+                    history_entity_change(
+                        atom,
+                        &completion_drafts,
+                        run,
+                        effect,
+                        self.execution_history
+                            .as_ref()
+                            .expect("bound history")
+                            .database_id(),
+                    )
+                })
+                .collect::<Result<Vec<_>, ProjectionError>>()?
+                .into(),
+            history_turns: history_turns.into(),
+            history_turn_details: Arc::new(history_turn_details),
+            history_sources: history_sources(&provenance.1).into(),
+            retained_resources: retained_resources(effect)?.into(),
+            execution_order: items.iter().map(|item| item.ordinal).max().unwrap_or(0),
             parent_report: None,
             terminal_retention: None,
             review_delivery: review_delivery.into(),
@@ -2279,9 +2208,9 @@ impl LiveProjection {
         background_ids: &[(String, String)],
     ) -> Result<Vec<ChatDraft>, ProjectionError> {
         let mut drafts = Vec::new();
-        let database = self
+        let owner_id = self
             .current
-            .database_id()
+            .owner_id()
             .ok_or_else(|| ProjectionError::History("missing database identity".into()))?;
         // Completion order within an effect: accepted inputs, accepted inbox,
         // then its original terminal receipts. All share Session's one allocator.
@@ -2298,7 +2227,7 @@ impl LiveProjection {
                         .map_err(|_| ProjectionError::Count)?,
                     },
                     effect.committed_at,
-                    database,
+                    owner_id,
                 )?
             {
                 drafts.push(draft);
@@ -2331,7 +2260,7 @@ impl LiveProjection {
                     .map_err(|_| ProjectionError::Count)?,
                 },
                 effect.committed_at,
-                database,
+                owner_id,
             )? {
                 drafts.push(draft);
             }
@@ -2361,7 +2290,7 @@ impl LiveProjection {
                 effect.sequence,
                 effect.committed_at,
                 self.current
-                    .database_id()
+                    .owner_id()
                     .ok_or_else(|| ProjectionError::History("missing database identity".into()))?,
             )
             .map_err(|error| ProjectionError::History(error.to_string()))?;
@@ -2403,7 +2332,7 @@ impl LiveProjection {
                 completion_draft_reusing(
                     item,
                     effect.sequence,
-                    self.current.database_id().ok_or_else(|| {
+                    self.current.owner_id().ok_or_else(|| {
                         ProjectionError::History("missing database identity".into())
                     })?,
                     &self.current.item_contents(),
@@ -2412,142 +2341,6 @@ impl LiveProjection {
             );
         }
         Ok(drafts)
-    }
-
-    /// Publishes only the retained batch's original drafts. Every wait belongs to that batch.
-    pub(in crate::studio) fn plan_display(
-        &self,
-        prepared: &PreparedEffect,
-        records: &[Arc<ChatItem>],
-    ) -> anyhow::Result<(
-        super::presentation::PresentationPlan,
-        Arc<super::presentation::PreparedDisplayDelta>,
-    )> {
-        let presentation = self
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let display_facts = prepared
-            .display_atom_updates
-            .iter()
-            .filter(|atom| presentation.accepts_update(atom))
-            .chain(prepared.display_facts.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        presentation.plan_visible(
-            prepared.sequence,
-            prepared.committed_at,
-            super::presentation::DisplayInput {
-                facts: &display_facts,
-                visible: &prepared.display_text_visible,
-                observations: Some(&prepared.display_observation_plan),
-            },
-            records,
-            |member| {
-                prepared
-                    .display_observations
-                    .get(&member.association_key)
-                    .ok_or_else(|| anyhow::anyhow!("boundary has no retained effect observation"))?
-                    .freeze()
-            },
-        )
-    }
-
-    pub(in crate::studio) fn apply_display(&self, plan: super::presentation::PresentationPlan) {
-        self.presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .apply_visible(plan);
-    }
-
-    pub(in crate::studio) fn complete_prepared(
-        prepared: &mut PreparedEffect,
-        records: Arc<[Arc<ChatItem>]>,
-        display: Arc<super::presentation::PreparedDisplayDelta>,
-    ) {
-        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
-        prepared.display = Some(display);
-        prepared.display_atom_updates = Arc::from([]);
-        prepared.display_facts = Arc::from([]);
-        prepared.display_text_visible = Arc::from([]);
-        prepared.display_observation_plan = Arc::new(BTreeMap::new());
-        prepared.display_observations = Arc::new(BTreeMap::new());
-        prepared.completions = records;
-        prepared.completion_drafts = None;
-    }
-
-    /// 明确的恢复／重放入口；普通新批次由 Store 的同步准入负责。
-    #[cfg(test)]
-    pub(in crate::studio) async fn publish_prepared(
-        &mut self,
-        chat: &Session,
-        prepared: &mut Arc<PreparedEffect>,
-    ) -> Result<(), ProjectionError> {
-        let Some(candidates) = prepared.completion_drafts.as_ref() else {
-            return Ok(());
-        };
-        let records = if prepared.completions.is_empty() {
-            let records = chat
-                .publish_batch(candidates.clone())
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-            // The original publication remains owned by this retained batch if
-            // a later fold step fails; retry must not filter its records away.
-            Arc::make_mut(prepared).completions = records.clone();
-            records
-        } else {
-            prepared.completions.clone()
-        };
-        for record in records.iter() {
-            self.order_index_of()?
-                .mark_completion(&record.header.item_id, true);
-        }
-        // Existing-member Active updates precede this effect's starts/terminals, so a
-        // terminal of the same identity remains its final display state. This walks only
-        // effect-local changes; progress/token observation never enters this path.
-        let mut presentation = self
-            .presentation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let display_facts = prepared
-            .display_atom_updates
-            .iter()
-            .filter(|atom| presentation.accepts_update(atom))
-            .chain(prepared.display_facts.iter())
-            .cloned()
-            .collect::<Vec<_>>();
-        let display = presentation
-            .prepare_visible(
-                prepared.sequence,
-                prepared.committed_at,
-                super::presentation::DisplayInput {
-                    facts: &display_facts,
-                    visible: &prepared.display_text_visible,
-                    observations: Some(&prepared.display_observation_plan),
-                },
-                &records,
-                |member| {
-                    prepared
-                        .display_observations
-                        .get(&member.association_key)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("boundary has no retained effect observation")
-                        })?
-                        .freeze()
-                },
-            )
-            .map_err(|error| ProjectionError::History(error.to_string()))?;
-        let prepared = Arc::make_mut(prepared);
-        Arc::make_mut(&mut prepared.current).display = Some(display.clone());
-        prepared.display = Some(display);
-        prepared.display_atom_updates = Arc::from([]);
-        prepared.display_facts = Arc::from([]);
-        prepared.display_text_visible = Arc::from([]);
-        prepared.display_observation_plan = Arc::new(BTreeMap::new());
-        prepared.display_observations = Arc::new(BTreeMap::new());
-        prepared.completions = records;
-        prepared.completion_drafts = None;
-        Ok(())
     }
 
     async fn completion_exists(&self, id: &str) -> Result<bool, ProjectionError> {
@@ -2562,10 +2355,21 @@ impl LiveProjection {
             .execution_history
             .as_ref()
             .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-        let sealed = pl_core::chat::ChatHistory::item(history, id)
+        let sealed = match history
+            .reader()
+            .read_event(
+                id.to_owned(),
+                crate::history::HistoryDemand {
+                    max_rows: 1,
+                    max_bytes: 64 * 1024,
+                },
+            )
             .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-            .is_some();
+        {
+            Ok(event) => event.header.original.is_some(),
+            Err(crate::history::HistoryError::NotFound(_)) => false,
+            Err(error) => return Err(ProjectionError::History(error.to_string())),
+        };
         index.mark_completion(id, sealed);
         Ok(sealed)
     }
@@ -2591,12 +2395,10 @@ impl LiveProjection {
     /// move.
     pub(in crate::studio) async fn stream(
         &mut self,
-        _chat: &Session,
         thread: &pl_protocol::Thread,
         state: &ThreadSnapshot,
-        _applied: u64,
     ) -> Result<(), ProjectionError> {
-        self.ensure_database_identity().await?;
+        self.ensure_current_owner().await?;
         self.stream_model_progress(thread, state).await?;
         self.stream_tool_progress(state)?;
         let active = self.current_texts();
@@ -2604,16 +2406,6 @@ impl LiveProjection {
         self.current
             .observe(thread, state, state.commit_sequence, active)
             .map_err(|error| ProjectionError::History(error.to_string()))?;
-        if let Some(activity) = self.current.activity()
-            && activity.kind == pl_protocol::ThreadActivityKind::Thinking
-            && let Some(summary) = activity.thinking_summary.as_deref()
-        {
-            self.presentation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .observe_thinking_summary(summary)
-                .map_err(|error| ProjectionError::History(error.to_string()))?;
-        }
         Ok(())
     }
 
@@ -3080,11 +2872,7 @@ impl LiveProjection {
                 .execution_history
                 .as_ref()
                 .ok_or_else(|| ProjectionError::History("execution history is not bound".into()))?;
-            if let Some(item) = history
-                .execution_item(&id)
-                .await
-                .map_err(|error| ProjectionError::History(error.to_string()))?
-            {
+            if let Some(item) = historical_execution_item(history, &thread.id, &id).await? {
                 restored.insert(id.clone());
                 existing.insert(id, item);
             } else if let Some(item) = placement {
@@ -3769,7 +3557,7 @@ impl LiveProjection {
 /// Returns a projection failure when the already-committed body cannot be read or decoded.
 pub(in crate::studio) async fn seed_repaired_targets(
     projection: &mut LiveProjection,
-    history: &crate::studio::storage::history::HistoryStore,
+    history: &crate::history::HistoryStore,
     effect: &ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
     if effect.delivery_repairs.is_empty() {
@@ -3781,11 +3569,7 @@ pub(in crate::studio) async fn seed_repaired_targets(
         if projection.holds_terminal_tool(&tool_id) {
             continue;
         }
-        if let Some(item) = history
-            .execution_item(&tool_id)
-            .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?
-        {
+        if let Some(item) = historical_execution_item(history, &effect.thread_id, &tool_id).await? {
             seeded.push(item);
         }
     }
@@ -3811,7 +3595,7 @@ pub(in crate::studio) async fn seed_repaired_targets(
 pub(in crate::studio) async fn seed_interaction_targets(
     projection: &mut LiveProjection,
     thread_id: &str,
-    history: &crate::studio::storage::history::HistoryStore,
+    history: &crate::history::HistoryStore,
     effect: &ThreadEffectBatch,
 ) -> Result<(), ProjectionError> {
     let mut seeded = Vec::new();
@@ -3832,10 +3616,8 @@ pub(in crate::studio) async fn seed_interaction_targets(
         if projection.holds_tool_body(&tool_id) {
             continue;
         }
-        let item = history
-            .execution_item(&tool_id)
-            .await
-            .map_err(|error| ProjectionError::History(error.to_string()))?
+        let item = historical_execution_item(history, thread_id, &tool_id)
+            .await?
             .ok_or_else(|| ProjectionError::MissingDurableToolCall(tool_id.clone()))?;
         if item.tool().is_none() {
             return Err(ProjectionError::UserInput(format!(
@@ -3848,6 +3630,31 @@ pub(in crate::studio) async fn seed_interaction_targets(
         projection.seed(seeded, std::collections::BTreeSet::new());
     }
     Ok(())
+}
+
+async fn historical_execution_item(
+    history: &crate::history::HistoryStore,
+    thread_id: &str,
+    item_id: &str,
+) -> Result<Option<ExecutionItem>, ProjectionError> {
+    let reader = history.reader();
+    let Some(record) = reader
+        .original_for_entity(
+            item_id.to_owned(),
+            crate::history::HistoryDemand {
+                max_rows: 1,
+                max_bytes: 64 * 1024,
+            },
+        )
+        .await
+        .map_err(|error| ProjectionError::History(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    crate::studio::runtime::chat_item::read_execution_item(&reader, record, thread_id)
+        .await
+        .map(Some)
+        .map_err(|error| ProjectionError::History(error.to_string()))
 }
 
 /// The canonical identity of one aggregate streaming channel of an attempt.
@@ -3981,32 +3788,19 @@ fn fields_equal(
 }
 
 #[cfg(test)]
-mod completion_boundary_tests {
-    //! Producer ports → original projection → Session → real HistoryStore transaction.
+mod append_only_history_tests {
     use super::*;
-    use crate::studio::storage::{history::HistoryStore, thread_writer::HistoryChannel};
+    use crate::{
+        history::{HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore},
+        studio::storage::thread_writer::HistoryChannel,
+    };
     use anyhow::{Context, Result};
-    use pl_core::{
-        chat::{ChatHistory, ContentReadRequest, TimelineEpoch},
-        context::OpaquePayload,
-        model::{
-            ActiveModelProgress, ModelProgress, ModelStartedMember, ObservedItemKind, ObservedPart,
-            ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
-        },
-        thread::{AttemptOutcome, AttemptStatus, RequestAttempt, TurnRecord, TurnState},
-    };
-    use pl_model::{
-        completion::{
-            CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
-            CompletionPresentationPartKind,
-        },
-        runtime::{ModelMemberReceipt, ModelMemberState},
-    };
-    use pl_protocol::{ChatAtomKind, ChatAtomLifecycle, ChatTerminalOutcome};
-    use sea_orm::{ConnectionTrait, Database};
 
-    fn started(id: &str) -> ModelStartedMember {
-        ModelStartedMember {
+    fn started(id: &str) -> pl_core::model::ModelStartedMember {
+        use pl_core::model::{
+            ObservedItemKind, ObservedPartIdentity, ObservedPartKind, ProviderPartIdentity,
+        };
+        pl_core::model::ModelStartedMember {
             turn_id: "boundary-turn".into(),
             attempt_id: "boundary-attempt".into(),
             generation: 0,
@@ -4020,669 +3814,36 @@ mod completion_boundary_tests {
         }
     }
 
-    fn content_available(
-        start: &ModelStartedMember,
-    ) -> pl_core::model::ModelContentAvailableMember {
-        pl_core::model::ModelContentAvailableMember {
-            turn_id: start.turn_id.clone(),
-            attempt_id: start.attempt_id.clone(),
-            generation: start.generation,
-            identity: start.identity.clone(),
-        }
-    }
-
-    async fn publish(
-        projection: &mut LiveProjection,
-        history: &HistoryStore,
-        chat: &Session,
-        thread: &pl_protocol::Thread,
-        state: &ThreadSnapshot,
-        effect: &ThreadEffectBatch,
-    ) -> Result<Arc<PreparedEffect>> {
-        let (_, mut prepared) = projection.prepare(thread, effect, state, false).await?;
-        projection.publish_prepared(chat, &mut prepared).await?;
-        super::restore_tests::save(history, effect, &prepared).await?;
-        Ok(prepared)
-    }
-
     #[tokio::test]
-    async fn v364_reliable_empty_text_start_preserves_work_and_atomic_started() -> Result<()> {
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "v364 empty Text")
-                    .await?,
-            );
-            let history =
-                HistoryStore::open(&env._temp.path().join("v364-empty.sqlite"), &thread.id).await?;
-            history.prepare_write().await?;
-            let database = history
-                .conversation_database_id()
-                .await?
-                .context("database")?;
-            let chat = Session::new(history.clone(), TimelineEpoch::new("v364-empty")?);
-            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(database)?;
-            let state = ThreadSnapshot {
-                turns: vec![TurnRecord {
-                    turn_id: "boundary-turn".into(),
-                    input_id: None,
-                    state: TurnState::Running,
-                    elapsed_ms: None,
-                    model_steps: 1,
-                }]
-                .into(),
-                attempts: vec![RequestAttempt::new(
-                    "boundary-turn".into(),
-                    "boundary-attempt".into(),
-                    0,
-                    AttemptStatus::Running,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            let first = ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 1,
-                committed_at: 10,
-                model_member_starts: vec![started("R")].into(),
-                ..Default::default()
-            };
-            publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-            let text = ModelStartedMember {
-                identity: ObservedPartIdentity::Provider(ProviderPartIdentity {
-                    item_id: "empty".into(),
-                    output_index: None,
-                    content_index: 0,
-                    item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
-                    part: ObservedPartKind::OutputText,
-                }),
-                ..started("empty")
-            };
-            let second = ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 2,
-                committed_at: 20,
-                model_member_starts: vec![text].into(),
-                ..Default::default()
-            };
-            let prepared =
-                publish(&mut projection, &history, &chat, &thread, &state, &second).await?;
-            assert!(
-                prepared
-                    .current
-                    .lifecycle
-                    .iter()
-                    .any(|atom| atom.kind == ChatAtomKind::Text)
-            );
-            assert_eq!(chat.head_seq(), 0);
-            let presentation = projection.presentation();
-            let cut = presentation.lock().unwrap().capture(None, 8, Some(0), 8);
-            assert_eq!(
-                cut.published, 0,
-                "reliable Started is not content availability"
-            );
-            assert_eq!(cut.open.len(), 1, "no empty Single shell");
-            assert!(matches!(
-                cut.open[0].body,
-                pl_protocol::DisplayBlockBody::Work { .. }
-            ));
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-
-    async fn read_frozen_payload(
-        history: &HistoryStore,
-        chat: &Session,
-        record: &pl_protocol::DisplayRecord,
-    ) -> Result<(serde_json::Value, Vec<String>)> {
-        use pl_protocol::{ContentOwner, ContentTarget, PayloadData};
-        assert!(matches!(
-            record.atom.lifecycle,
-            ChatAtomLifecycle::Active { .. }
-        ));
-        assert!(record.atom.completion_item_id.is_none());
-        assert!(record.atom.finished_at.is_none());
-        let read = |reference: &pl_protocol::ContentRef| {
-            let ContentTarget::Body { owner, key } = &reference.target else {
-                panic!("owned body")
-            };
-            assert!(matches!(owner, ContentOwner::DisplayObservation { .. }));
-            ContentReadRequest {
-                epoch: chat.epoch(),
-                reference: pl_core::chat::ContentRef::Body(pl_core::chat::ChatContentKey {
-                    owner: crate::studio::conversation_identity::content_owner_key(owner).unwrap(),
-                    key: key.clone(),
-                }),
-                offset: 0,
-                max_bytes: 64 * 1024,
-                generation: None,
-            }
+    async fn terminal_effect_freezes_the_older_boundary_cut_before_its_final_receipt() -> Result<()>
+    {
+        use pl_core::model::{
+            ActiveModelProgress, ModelProgress, ObservedPart, ObservedPartIdentity,
+            ObservedPartKind, ProviderPartIdentity,
         };
-        let Some(PayloadData::Deferred { reference, .. }) = &record.atom.payload else {
-            anyhow::bail!("frozen payload is not an owned reference");
+        use pl_core::thread::{AttemptStatus, RequestAttempt, TurnRecord};
+        use pl_model::completion::{
+            CompletionPresentationItem, CompletionPresentationItemKind, CompletionPresentationPart,
+            CompletionPresentationPartKind,
         };
-        let payload = ChatHistory::read_content(history, &read(reference)).await?;
-        assert!(payload.sealed);
-        let value: serde_json::Value = serde_json::from_slice(payload.bytes.as_bytes())?;
-        assert_eq!(
-            value["contract"], "anywork.chat/1",
-            "frozen payload must use the public codec"
-        );
-        let mut texts = Vec::new();
-        for body in value["bodies"].as_array().context("body manifest")? {
-            let reference: pl_protocol::ContentRef =
-                serde_json::from_value(body["reference"].clone())?;
-            assert!(
-                record
-                    .atom
-                    .contents
-                    .iter()
-                    .any(|content| content.reference == reference)
-            );
-            let window = ChatHistory::read_content(history, &read(&reference)).await?;
-            assert!(window.sealed);
-            assert_eq!(
-                window.bytes.as_bytes().len() as u64,
-                body["byteLength"].as_u64().unwrap()
-            );
-            texts.push(std::str::from_utf8(window.bytes.as_bytes())?.to_string());
-        }
-        Ok((value, texts))
-    }
+        use pl_model::runtime::{ModelMemberReceipt, ModelMemberState};
 
-    #[tokio::test]
-    async fn a07_streamed_summary_payload_owns_prefix_through_progress_terminal_and_cold_read()
-    -> Result<()> {
-        use pl_core::model::ModelProgressSender;
-        let prefix = "这段推理在正文开始后继续保持活动。";
-        assert_eq!(prefix.len(), 51);
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "A07 observation payload")
-                    .await?,
-            );
-            let path = env._temp.path().join("a07-payload.sqlite");
-            let history = HistoryStore::open(&path, &thread.id).await?;
-            history.prepare_write().await?;
-            let database = history
-                .conversation_database_id()
-                .await?
-                .context("database")?;
-            let chat = Session::new(history.clone(), TimelineEpoch::new("a07-hot")?);
-            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(database.clone())?;
-            let turn = TurnRecord {
-                turn_id: "boundary-turn".into(),
-                input_id: None,
-                state: TurnState::Running,
-                elapsed_ms: None,
-                model_steps: 1,
-            };
-            let mut state = ThreadSnapshot {
-                turns: vec![turn.clone()].into(),
-                attempts: vec![RequestAttempt::new(
-                    "boundary-turn".into(),
-                    "boundary-attempt".into(),
-                    0,
-                    AttemptStatus::Running,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            let effect = |sequence| ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence,
-                committed_at: sequence as i64 + 10,
-                ..Default::default()
-            };
-            let mut reason = started("A07");
-            let ObservedPartIdentity::Provider(provider) = &mut reason.identity else {
-                unreachable!()
-            };
-            provider.part = ObservedPartKind::SummaryText;
-            let mut first = effect(1);
-            first.turn = Some(turn);
-            first.model_member_starts = vec![reason.clone()].into();
-            let prepared =
-                publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-            let atom_id = prepared
-                .current
-                .lifecycle
-                .iter()
-                .find(|atom| atom.kind == ChatAtomKind::Reasoning)
-                .context("reliable Core member start")?
-                .identity
-                .clone();
-            // No atom with a body is fabricated: the Core producer's watch and the real stream owner
-            // supply the immutable part that the reliable Text Started boundary will capture.
-            let sender = ModelProgressSender::detached(1024 * 1024);
-            sender.edit_parts(|parts| {
-                parts.push(ObservedPart::new(reason.identity).appended(prefix))
-            });
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id: "boundary-attempt".into(),
-                progress: sender.latest(),
-            });
-            projection.stream(&chat, &thread, &state, 1).await?;
-            let mut boundary = effect(2);
-            let mut text = started("A07-text");
-            text.identity = ObservedPartIdentity::Provider(ProviderPartIdentity {
-                item_id: "A07-text".into(),
-                output_index: None,
-                content_index: 0,
-                item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
-                part: ObservedPartKind::OutputText,
-            });
-            boundary.model_member_content_available = vec![content_available(&text)];
-            boundary.model_member_starts = vec![text].into();
-            let prepared =
-                publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
-            let frozen = prepared
-                .display
-                .as_ref()
-                .context("display")?
-                .members
-                .iter()
-                .find(|member| member.head.record.atom.id == atom_id)
-                .context("frozen A")?;
-            let block = frozen.block_id.clone();
-            let page = history
-                .display_member_page(&database, &block, None, 8, None)
-                .await?;
-            let record = page
-                .entries
-                .iter()
-                .find(|member| member.head.record.atom.id == atom_id)
-                .context("persisted display head")?
-                .head
-                .record
-                .clone();
-            let expected = read_frozen_payload(&history, &chat, &record).await?;
-            assert_eq!(expected.0["data"]["outcome"]["kind"], "streaming");
-            assert_eq!(expected.1, [prefix]);
-            assert_eq!(record.end_fact, None);
-            let pl_protocol::ContentTarget::Body { owner, key } =
-                &record.atom.contents[0].reference.target
-            else {
-                unreachable!()
-            };
-            let content_key = pl_core::chat::ChatContentKey {
-                owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-                key: key.clone(),
-            };
-            assert_eq!(
-                projection
-                    .presentation()
-                    .lock()
-                    .unwrap()
-                    .observation_content(&content_key)
-                    .context("pending RAM observation body")?
-                    .data
-                    .range(0, 1024)?
-                    .as_bytes(),
-                prefix.as_bytes()
-            );
-            sender.edit_parts(|parts| parts[0] = parts[0].appended("LATER_PROGRESS"));
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id: "boundary-attempt".into(),
-                progress: sender.latest(),
-            });
-            projection.stream(&chat, &thread, &state, 2).await?;
-            publish(
-                &mut projection,
-                &history,
-                &chat,
-                &thread,
-                &state,
-                &effect(3),
-            )
-            .await?;
-            let receipt = ModelMemberReceipt {
-                item: CompletionPresentationItem {
-                    provider_item_id: "A07".into(),
-                    output_index: None,
-                    kind: CompletionPresentationItemKind::Reasoning,
-                    parts: vec![CompletionPresentationPart {
-                        kind: CompletionPresentationPartKind::SummaryText,
-                        content_index: 0,
-                        provider_part_id: None,
-                        text: "FUTURE_COMPLETED_ORIGINAL".into(),
-                    }],
-                },
-                state: ModelMemberState::Completed,
-            };
-            let mut terminal = effect(4);
-            terminal.model_members = vec![pl_core::model::ModelCompletedMember {
-                turn_id: "boundary-turn".into(),
-                attempt_id: "boundary-attempt".into(),
-                generation: 0,
-                member_id: "A07".into(),
-                payload: OpaquePayload::new(
-                    "pl.model.completed-member",
-                    1,
-                    serde_json::to_string(&receipt)?,
-                )?,
-            }]
-            .into();
-            publish(&mut projection, &history, &chat, &thread, &state, &terminal).await?;
-            let unchanged = history
-                .display_member_page(&database, &block, None, 8, None)
-                .await?;
-            assert_eq!(
-                unchanged
-                    .entries
-                    .iter()
-                    .find(|member| member.head.record.atom.id == atom_id)
-                    .unwrap()
-                    .head
-                    .record,
-                record
-            );
-            assert_eq!(
-                read_frozen_payload(&history, &chat, &record).await?,
-                expected
-            );
-            drop(projection);
-            drop(chat);
-            let cold = HistoryStore::open(&path, &thread.id).await?;
-            let cold_chat = Session::new(cold.clone(), TimelineEpoch::new("a07-cold")?);
-            let page = cold
-                .display_member_page(&database, &block, None, 8, None)
-                .await?;
-            let cold_record = &page
-                .entries
-                .iter()
-                .find(|member| member.head.record.atom.id == atom_id)
-                .unwrap()
-                .head
-                .record;
-            assert_eq!(cold_record, &record);
-            assert_eq!(
-                read_frozen_payload(&cold, &cold_chat, cold_record).await?,
-                expected
-            );
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-
-    #[tokio::test]
-    async fn activity_token_cost_visits_only_active_parts_without_summary() -> Result<()> {
-        use pl_core::model::ModelProgressSender;
-        use pl_protocol::{ThreadActivityKind, ThreadContentLifecycle};
-
-        const COMPLETED: usize = 4096;
-        const UPDATES: usize = 3;
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-        let thread = pl_protocol::Thread::from(
-            env.runtime.create_thread(&env.project.id, "activity part cost").await?,
-        );
-        let history = HistoryStore::open(&env._temp.path().join("activity-parts.sqlite"), &thread.id).await?;
-        history.prepare_write().await?;
-        let chat = Session::new(history.clone(), TimelineEpoch::new("activity-parts")?);
-        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let index = channel.order_index();
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(index.clone(), history.clone())?;
-        projection.bind_conversation_identity(history.conversation_database_id().await?.context("database")?)?;
-
-        // Assemble the retained completed prefix through the original execution owner. There is no
-        // history read or test-side imitation of activity selection in the measured stream path.
-        let mut parts = Vec::new();
-        for part_index in 0..COMPLETED {
-            let mut member = started(&format!("completed-{part_index}"));
-            let ObservedPartIdentity::Provider(provider) = &mut member.identity else { unreachable!() };
-            provider.part = ObservedPartKind::SummaryText;
-            let part = ObservedPart::new(member.identity).appended("OLD_SUMMARY");
-            let (id, _, shape) = observation_preview(
-                "boundary-attempt", 0, &part, &ThreadContentLifecycle::completed(10),
-            ).context("completed part shape")?;
-            let order = index.reserve_observed("boundary-attempt", &id)?;
-            index.materialize(&ExecutionItem::new(
-                id.clone(), thread.id.clone(), "boundary-turn".into(), order, 1, 9, 10, shape,
-            ), 1)?;
-            index.mark_completion(&id, true);
-            assert!(index.is_terminal(&id));
-            parts.push(part);
-        }
-        let active = started("active-reasoning");
-        parts.push(ObservedPart::new(active.identity.clone()).appended("CURRENT_REASONING"));
-        let turn = TurnRecord { turn_id:"boundary-turn".into(), input_id:None,
-            state:TurnState::Running, elapsed_ms:None, model_steps:1 };
-        let mut state = ThreadSnapshot {
-            turns:vec![turn.clone()].into(),
-            attempts:vec![RequestAttempt::new("boundary-turn".into(),"boundary-attempt".into(),0,AttemptStatus::Running)].into(),
-            ..Default::default()
-        };
-        let effect = ThreadEffectBatch { thread_id:thread.id.clone(), sequence:1, committed_at:11,
-            turn:Some(turn), model_member_starts:vec![active].into(), ..Default::default() };
-        publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
-        let sender = ModelProgressSender::detached(1024 * 1024);
-        sender.publish(ModelProgress::new(1, parts));
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        projection.stream(&chat, &thread, &state, 1).await?; // establish the immutable retired prefix
-
-        let mut visits = (0, 0);
-        for _ in 0..UPDATES {
-            sender.edit_parts(|parts| {
-                parts[COMPLETED] = parts[COMPLETED].appended(" token");
-            });
-            state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-            super::super::activity::part_cost::begin();
-            projection.stream(&chat, &thread, &state, 1).await?;
-            let frame = super::super::activity::part_cost::finish();
-            visits.0 += frame.0;
-            visits.1 += frame.1;
-            let activity = projection.current.activity().context("current activity")?;
-            assert_eq!(activity.kind, ThreadActivityKind::Thinking);
-            assert!(activity.summary.starts_with("CURRENT_REASONING"));
-            assert_eq!(activity.thinking_summary, None, "completed summaries are not active");
-        }
-        eprintln!("ACTIVITY_PART_COST {}", serde_json::json!({
-            "path":"stream/current/activity", "completed_parts":COMPLETED, "active_parts":1,
-            "token_updates":UPDATES, "model_part_visits":visits.0, "activity_part_visits":visits.1,
-        }));
-        assert!(visits.0 <= UPDATES * 4, "live owner revisited completed parts: {visits:?}");
-        assert!(visits.1 <= UPDATES * 4, "activity revisited completed parts: {visits:?}");
-
-        // The no-line path must not scan the completed list either, including its summary fallback.
-        sender.edit_parts(|parts| parts[COMPLETED] = parts[COMPLETED].authorized(" \n"));
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        super::super::activity::part_cost::begin();
-        projection.stream(&chat, &thread, &state, 1).await?;
-        let missing = super::super::activity::part_cost::finish();
-        let activity = projection.current.activity().context("missing-line activity")?;
-        assert_eq!(activity.summary, "");
-        assert_eq!(activity.thinking_summary, None);
-        eprintln!("ACTIVITY_PART_COST {}", serde_json::json!({
-            "path":"stream/current/activity/no_matching_line", "completed_parts":COMPLETED,
-            "active_parts":1, "model_part_visits":missing.0, "activity_part_visits":missing.1,
-        }));
-        assert!(missing.0 <= 4 && missing.1 <= 4, "missing-line lookup scanned history: {missing:?}");
-
-        // Lexical ids and execution ordinals are not the producer's current part order.
-        let mut first_summary = started("z-first-summary");
-        let mut last_summary = started("a-last-summary");
-        for member in [&mut first_summary, &mut last_summary] {
-            let ObservedPartIdentity::Provider(provider) = &mut member.identity else { unreachable!() };
-            provider.part = ObservedPartKind::SummaryText;
-        }
-        let start_summaries = ThreadEffectBatch {thread_id:thread.id.clone(), sequence:2, committed_at:12,
-            model_member_starts:vec![first_summary.clone(), last_summary.clone()].into(), ..Default::default()};
-        publish(&mut projection, &history, &chat, &thread, &state, &start_summaries).await?;
-        sender.edit_parts(|parts| {
-            parts.push(ObservedPart::new(first_summary.identity).appended("FIRST_SUMMARY"));
-            parts.push(ObservedPart::new(last_summary.identity).appended("LAST_SUMMARY"));
-        });
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        projection.stream(&chat, &thread, &state, 2).await?;
-        let activity = projection.current.activity().context("summary activity")?;
-        assert_eq!(activity.summary, "LAST_SUMMARY");
-        assert_eq!(activity.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
-        let cut = projection.presentation.lock().unwrap().capture(None, 8, Some(0), 8);
-        let work = cut.open.iter().find(|header| Some(&header.id) == cut.current_work_id.as_ref()).context("open Work")?;
-        assert_eq!(work.thinking_summary.as_deref(), Some("LAST_SUMMARY"));
-        sender.edit_parts(|parts| {
-            let first = parts[COMPLETED + 1].clone();
-            parts[COMPLETED + 1] = parts[COMPLETED + 2].clone();
-            parts[COMPLETED + 2] = first;
-        });
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        projection.stream(&chat, &thread, &state, 2).await?;
-        let activity = projection.current.activity().context("reordered activity")?;
-        assert_eq!(activity.summary, "FIRST_SUMMARY", "unchanged versions still follow producer order");
-        assert_eq!(activity.thinking_summary.as_deref(), Some("FIRST_SUMMARY"));
-
-        // Replace the entire list at the same length/version with different, unadmitted identities.
-        // Old locations must not return either their stale blocks or the replacement's bytes.
-        let before = sender.latest();
-        let mut replaced = before.parts().iter().cloned().collect::<Vec<_>>();
-        for (offset, part) in replaced[COMPLETED..].iter_mut().enumerate() {
-            let mut replacement = started(&format!("unadmitted-{offset}"));
-            let ObservedPartIdentity::Provider(provider) = &mut replacement.identity else { unreachable!() };
-            provider.part = ObservedPartKind::SummaryText;
-            *part = ObservedPart::new(replacement.identity).appended("NOT_ADMITTED");
-        }
-        sender.publish(ModelProgress::new(before.version(), replaced));
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        projection.stream(&chat, &thread, &state, 2).await?;
-        let activity = projection.current.activity().context("replaced activity")?;
-        assert_eq!(activity.summary, "");
-        assert_eq!(activity.thinking_summary, None);
-
-        sender.begin_recovery(1, Arc::from("retry"))?;
-        sender.edit_parts(|parts| parts.push(
-            ObservedPart::new(started("active-reasoning").identity).appended("NEXT_GENERATION"),
-        ));
-        state.model_progress = Some(ActiveModelProgress {attempt_id:"boundary-attempt".into(), progress:sender.latest()});
-        let mut next = started("active-reasoning");
-        next.generation = 1;
-        let next_start = ThreadEffectBatch {thread_id:thread.id.clone(), sequence:3, committed_at:13,
-            model_member_starts:vec![next].into(), ..Default::default()};
-        publish(&mut projection, &history, &chat, &thread, &state, &next_start).await?;
-        projection.stream(&chat, &thread, &state, 3).await?;
-        let activity = projection.current.activity().context("next generation activity")?;
-        assert_eq!(activity.summary, "NEXT_GENERATION");
-        assert_eq!(activity.thinking_summary, None, "old generation summaries cannot leak");
-        Ok(())
-    }.await;
-        env.finish(result).await
-    }
-
-    fn started_body(
-        prepared: &PreparedEffect,
-        kind: ChatAtomKind,
-        database: &str,
-    ) -> Result<pl_protocol::ChatAtomContent> {
-        let fact = prepared
-            .current
-            .lifecycle
-            .iter()
-            .find(|fact| fact.kind == kind && fact.outcome.is_none())
-            .context("reliable active start")?;
-        let atom = &prepared
-            .display
-            .as_ref()
-            .context("frozen display")?
-            .members
-            .iter()
-            .find(|member| member.head.record.atom.id == fact.identity)
-            .context("real allocated display member")?
-            .head
-            .record
-            .atom;
-        assert_eq!(
-            atom.contents.len(),
-            1,
-            "start must carry its allocated body"
-        );
-        let content = &atom.contents[0];
-        assert_eq!(content.reference.database_id, database);
-        let pl_protocol::ContentTarget::Body { owner, key } = &content.reference.target else {
-            anyhow::bail!("start content is not a canonical body");
-        };
-        assert_eq!(
-            owner,
-            &pl_protocol::ContentOwner::Item {
-                item_id: atom.id.clone()
-            }
-        );
-        let current_key = pl_core::chat::ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-            key: key.clone(),
-        };
-        let current = prepared
-            .current_state
-            .as_ref()
-            .context("frozen current owner")?
-            .contents()
-            .get(&current_key)
-            .context("start reference resolves to its real allocated body")?;
-        assert_eq!(current.descriptor.byte_length, 0, "no token is required");
-        assert_eq!(
-            prepared
-                .display
-                .as_ref()
-                .context("frozen display")?
-                .members
-                .iter()
-                .find(|member| member.head.record.atom.id == atom.id)
-                .context("display member")?
-                .head
-                .record
-                .atom
-                .contents,
-            atom.contents
-        );
-        Ok(content.clone())
-    }
-
-    #[tokio::test]
-    async fn reliable_permission_status_changes_update_display_without_rewriting_start()
-    -> Result<()> {
-        use pl_core::{
-            context::{ContextRecord, ContextSource},
-            model::ModelToolCall,
-            thread::{
-                journal::ContextChange,
-                permissions::{PermissionRecord, PermissionState},
-                task::{TaskRecord, TaskStatus},
+        let directory = tempfile::tempdir()?;
+        let thread = pl_protocol::Thread::placeholder("boundary-owner");
+        let history = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            &thread.id,
+            HistoryLimits {
+                pending_events: 64,
+                pending_bytes: 1024 * 1024,
             },
-        };
-        use pl_protocol::ChatActiveStatus;
-
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-        let thread = pl_protocol::Thread::from(
-            env.runtime
-                .create_thread(&env.project.id, "display permission changes")
-                .await?,
-        );
-        let path = env._temp.path().join("display-permission.sqlite");
-        let history = HistoryStore::open(&path, &thread.id).await?;
-        history.prepare_write().await?;
-        let database = history
-            .conversation_database_id()
-            .await?
-            .context("database")?;
-        let sql = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-        let chat = Session::new(history.clone(), TimelineEpoch::new("display-permission")?);
+        )
+        .await?;
+        let run = RuntimeEpoch::new();
         let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
         let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history.clone())?;
-        projection.bind_conversation_identity(database.clone())?;
+        projection.bind_execution_history(channel.order_index(), run, history.clone())?;
+
         let turn = TurnRecord {
             turn_id: "boundary-turn".into(),
             input_id: None,
@@ -4690,12 +3851,279 @@ mod completion_boundary_tests {
             elapsed_ms: None,
             model_steps: 1,
         };
+        let mut state = ThreadSnapshot {
+            turns: Arc::from([turn.clone()]),
+            attempts: Arc::from([RequestAttempt::new(
+                "boundary-turn".into(),
+                "boundary-attempt".into(),
+                0,
+                AttemptStatus::Running,
+            )]),
+            ..Default::default()
+        };
+        let effect = |sequence| ThreadEffectBatch {
+            thread_id: thread.id.clone(),
+            sequence,
+            committed_at: 10 + sequence as i64,
+            ..Default::default()
+        };
+        let mut opening = effect(1);
+        opening.turn = Some(turn);
+        opening.model_member_starts = Arc::from([started("A")]);
+        projection.prepare(&thread, &opening, &state, false).await?;
+
+        let observed = started("A").identity;
+        let part = ObservedPart::new(observed).appended("BOUNDARY_PREFIX");
+        state.model_progress = Some(ActiveModelProgress {
+            attempt_id: "boundary-attempt".into(),
+            progress: ModelProgress::new(1, vec![part]),
+        });
+        projection.stream(&thread, &state).await?;
+
+        let mut terminal = effect(2);
+        let mut final_text = started("T");
+        final_text.identity = ObservedPartIdentity::Provider(ProviderPartIdentity {
+            item_id: "T".into(),
+            output_index: None,
+            content_index: 0,
+            item_kind: pl_core::model::ObservedItemKind::Text(
+                pl_core::model::ModelTextChannel::Final,
+            ),
+            part: ObservedPartKind::OutputText,
+        });
+        terminal.model_member_content_available =
+            Arc::from([pl_core::model::ModelContentAvailableMember {
+                turn_id: final_text.turn_id.clone(),
+                attempt_id: final_text.attempt_id.clone(),
+                generation: final_text.generation,
+                identity: final_text.identity.clone(),
+            }]);
+        terminal.model_member_starts = Arc::from([final_text]);
+        let receipt = ModelMemberReceipt {
+            item: CompletionPresentationItem {
+                provider_item_id: "A".into(),
+                output_index: None,
+                kind: CompletionPresentationItemKind::Reasoning,
+                parts: vec![CompletionPresentationPart {
+                    kind: CompletionPresentationPartKind::ReasoningText,
+                    content_index: 0,
+                    provider_part_id: None,
+                    text: "FUTURE_ORIGINAL".into(),
+                }],
+            },
+            state: ModelMemberState::Completed,
+        };
+        terminal.model_members = Arc::from([pl_core::model::ModelCompletedMember {
+            turn_id: "boundary-turn".into(),
+            attempt_id: "boundary-attempt".into(),
+            generation: 0,
+            member_id: "A".into(),
+            payload: pl_core::context::OpaquePayload::new(
+                "pl.model.completed-member",
+                1,
+                serde_json::to_string(&receipt)?,
+            )?,
+        }]);
+
+        let (_, prepared) = projection
+            .prepare(&thread, &terminal, &state, false)
+            .await?;
+        let (_, boundary_input) = prepared
+            .boundary_inputs
+            .iter()
+            .find(|(id, _)| id.as_str() == "A")
+            .context("the retired producer must retain its pre-terminal cut")?;
+        let boundary_event = prepared
+            .history_changes
+            .iter()
+            .find(|change| change.entity.entity_id == "T")
+            .context("the final text is the visible boundary")?;
+        let boundary = boundary_input.freeze(&boundary_event.event, history.database_id())?;
+        assert_eq!(
+            boundary.event.header.kind,
+            crate::history::HistoryEventKind::BoundaryObserved
+        );
+        assert_eq!(boundary.entity.entity_id, "A");
+        let frozen = serde_json::to_vec(&boundary.event.bodies)?;
+        let frozen = String::from_utf8_lossy(&frozen);
+        assert!(frozen.contains("BOUNDARY_PREFIX"));
+        assert!(
+            !frozen.contains("FUTURE_ORIGINAL"),
+            "a later canonical final must not replace the accepted boundary observation"
+        );
+        assert!(
+            prepared
+                .current_state
+                .as_ref()
+                .is_some_and(|current| current
+                    .projection()
+                    .atoms
+                    .iter()
+                    .all(|atom| atom.id != "A"))
+        );
+        channel.stop_and_join().await?;
+        history.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn history_pages_large_heads_without_duplicate_or_missing_sequences() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            "large-history",
+            HistoryLimits {
+                pending_events: 64,
+                pending_bytes: 1024 * 1024,
+            },
+        )
+        .await?;
+        let mut sequence = 0_u64;
+        for group in 0..10 {
+            let events: Vec<_> = (0..64)
+                .map(|offset| {
+                    sequence += 1;
+                    let mut event = HistoryEvent::new(
+                        format!("event-{group}-{offset}"),
+                        crate::history::HistoryEventKind::RunStarted,
+                        sequence,
+                    );
+                    event.header.run_id = Some(format!("run-{group}-{offset}"));
+                    event
+                })
+                .collect();
+            store.accept_batch(&events).await?;
+            store.flush().await?;
+        }
+        assert_eq!(sequence, 640);
+
+        let reader = store.reader();
+        let demand = HistoryDemand {
+            max_rows: 17,
+            max_bytes: 64 * 1024,
+        };
+        let mut seen = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        for expected_len in [
+            17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 17, 12,
+        ] {
+            let page = reader
+                .events_page(HistoryEventsQuery::AllEvents, None, cursor, demand)
+                .await?;
+            assert_eq!(page.entries.len(), expected_len);
+            for entry in page.entries {
+                assert!(seen.insert(entry.header.seq));
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 640);
+        assert_eq!(seen.first().copied(), Some(1));
+        assert_eq!(seen.last().copied(), Some(640));
+        assert!(cursor.is_none());
+        reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn maximum_history_body_window_reads_the_full_64k_original() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = HistoryStore::open(
+            directory.path().join("history.sqlite"),
+            "large-body",
+            HistoryLimits {
+                pending_events: 8,
+                pending_bytes: 256 * 1024,
+            },
+        )
+        .await?;
+        let payload: Vec<u8> = (0..65_536).map(|index| (index % 251) as u8).collect();
+        let body = HistoryBody::new(
+            "canonical",
+            crate::history::HistoryBodyRole::CanonicalPayload,
+            payload.clone(),
+        );
+        let mut event = HistoryEvent::new(
+            "one-large-original",
+            crate::history::HistoryEventKind::BackgroundDeliveryRecorded,
+            1,
+        );
+        event.payload_body_id = Some(body.body_id.clone());
+        event.bodies.push(body);
+        store.accept_batch(&[event]).await?;
+        store.flush().await?;
+
+        let reader = store.reader();
+        let original = reader
+            .read_event(
+                "one-large-original".into(),
+                HistoryDemand {
+                    max_rows: 1,
+                    max_bytes: 4096,
+                },
+            )
+            .await?;
+        let reference = original.payload_ref.context("payload original")?;
+        let window = reader.read_body(reference, 0, 64 * 1024).await?;
+        assert_eq!(window.total_length, 65_536);
+        assert_eq!(window.bytes.len(), 65_536);
+        assert_eq!(window.bytes, payload);
+        reader.close().await;
+        store.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nested_task_invocation_is_projected_from_the_task_without_a_context_copy() -> Result<()>
+    {
+        use pl_core::{
+            model::ModelToolCall,
+            thread::task::{TaskRecord, TaskStatus},
+        };
+        use pl_protocol::{ChatAtomKind, ChatAtomLifecycle};
+
+        let directory = tempfile::tempdir()?;
+        let thread = pl_protocol::Thread::placeholder("nested-task");
+        let history = HistoryStore::open(
+            directory.path().join("nested-task.sqlite"),
+            &thread.id,
+            HistoryLimits {
+                pending_events: 64,
+                pending_bytes: 1024 * 1024,
+            },
+        )
+        .await?;
+        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        let mut projection = LiveProjection::new();
+        projection.bind_execution_history(channel.order_index(), RuntimeEpoch::new(), history)?;
+
+        let turn = TurnRecord {
+            turn_id: "nested-turn".into(),
+            input_id: None,
+            state: TurnState::Running,
+            elapsed_ms: None,
+            model_steps: 1,
+        };
+        let invocation = ModelToolCall {
+            call_id: "outer:nested:1".into(),
+            tool_id: "exec_command".into(),
+            arguments: pl_core::context::OpaquePayload::new(
+                "application/json",
+                1,
+                "{\"command\":\"printf original\"}",
+            )?,
+            presentation_contract: None,
+            rejection: None,
+        };
         let task = TaskRecord {
-            parent_call_id: None,
-            invocation: None,
-            id: "task:approval-call".into(),
-            call_id: "approval-call".into(),
-            tool_id: "exec".into(),
+            id: "task:outer:nested:1".into(),
+            parent_call_id: Some("outer".into()),
+            invocation: Some(invocation.clone()),
+            call_id: invocation.call_id.clone(),
+            tool_id: invocation.tool_id.clone(),
             turn_id: turn.turn_id.clone(),
             revision: 1,
             status: TaskStatus::Running,
@@ -4703,1992 +4131,166 @@ mod completion_boundary_tests {
             acknowledgement: None,
             started_sequence: Some(1),
         };
-        let record = ContextRecord {
-            id: "call-record".into(),
-            turn_id: Some(turn.turn_id.clone()),
-            source: ContextSource::Assistant,
-            content: Vec::new(),
-            tool_calls: vec![ModelToolCall {
-                call_id: task.call_id.clone(),
-                tool_id: task.tool_id.clone(),
-                arguments: OpaquePayload::new("pl.tool.input", 1, "{}")?,
-                presentation_contract: None,
-                rejection: None,
-            }],
-        };
         let mut state = ThreadSnapshot {
-            turns: vec![turn.clone()].into(),
-            attempts: vec![RequestAttempt::new(
-                "boundary-turn".into(),
-                "boundary-attempt".into(),
-                0,
-                AttemptStatus::Running,
-            )]
-            .into(),
+            turns: Arc::from([turn.clone()]),
             ..Default::default()
         };
-        state.context.revision = 1;
-        state.context.records = vec![record.clone()].into();
-        state
-            .live_calls
-            .insert(task.call_id.clone(), task.turn_id.clone());
         state.tasks.insert(task.id.clone(), task.clone());
-        let effect = |sequence| ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence,
-            committed_at: sequence as i64 + 10,
-            ..Default::default()
-        };
-        let mut first = effect(1);
-        first.turn = Some(turn);
-        first.context = Some(ContextChange::Append {
-            revision: 1,
-            records: vec![record].into(),
-        });
-        first.tasks = vec![task.clone()].into();
-        let prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-        let tool_atom = prepared
-            .current
-            .lifecycle
-            .iter()
-            .find(|atom| atom.kind == ChatAtomKind::ToolCall)
-            .context("original tool start")?
-            .clone();
-        let owner = projection.presentation();
-        let first_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
-        let block_id = first_cut.open[0].id.clone();
-        let structure_revision = (first_cut.revision, first_cut.layout_revision);
-        let mut previous_revision = first_cut.open[0].revision;
-        let mut changes = owner.lock().unwrap().subscribe_members();
-        let start_row = || {
-            sea_orm::Statement::from_sql_and_values(
-                sea_orm::DbBackend::Sqlite,
-                "SELECT json_array(kind,source_kind,source_identity,source_order,started_effect,started_suborder,started_at) AS original FROM execution_lifecycle WHERE identity=?",
-                vec![tool_atom.identity.clone().into()],
-            )
-        };
-        let original_start: String = sql
-            .query_one_raw(start_row())
-            .await?
-            .context("start row")?
-            .try_get("", "original")?;
-
-        let mut permission = PermissionRecord {
-            id: "approval".into(),
-            task_id: task.id.clone(),
-            call_id: task.call_id.clone(),
-            turn_id: task.turn_id.clone(),
-            tool_id: task.tool_id.clone(),
-            revision: 1,
-            created_at: 12,
-            updated_at: 12,
-            response: None,
-            state: PermissionState::Pending,
-            payload: OpaquePayload::new(
-                "pl.studio.tool-approval",
-                1,
-                serde_json::to_string(&serde_json::json!({
-                    "name": "exec",
-                    "arguments": OpaquePayload::new("pl.tool.input", 1, "{}")?,
-                    "workingDirectory": "/workspace",
-                }))?,
-            )?,
-        };
-        for (sequence, status, waiting) in [
-            (2, PermissionState::Pending, 1),
-            (3, PermissionState::Allowed, 0),
-        ] {
-            permission.state = status;
-            permission.revision = sequence - 1;
-            permission.updated_at = sequence as i64 + 10;
-            state
-                .permissions
-                .insert(permission.id.clone(), permission.clone());
-            state.interaction_collection_revision = sequence - 1;
-            let mut update = effect(sequence);
-            update.permissions = vec![permission.clone()].into();
-            let prepared =
-                publish(&mut projection, &history, &chat, &thread, &state, &update).await?;
-            assert!(
-                !prepared
-                    .current
-                    .lifecycle
-                    .iter()
-                    .any(|fact| fact.identity == tool_atom.identity),
-                "a status transition is not a replacement start fact"
-            );
-            let cut = owner
-                .lock()
-                .unwrap()
-                .member_cut(&block_id, None, 2)
-                .context("hot member cut")?;
-            assert_eq!(cut.header.next_member, 1);
-            assert_eq!(cut.header.unfinished, 1);
-            assert!(cut.header.revision > previous_revision);
-            previous_revision = cut.header.revision;
-            let main_cut = owner.lock().unwrap().capture(None, 1, Some(0), 1);
-            assert_eq!((main_cut.revision, main_cut.layout_revision), structure_revision,
-                "member waiting status is not a main tail layout change");
-            assert!(changes.has_changed()?);
-            changes.borrow_and_update();
-            let expected = if waiting == 1 {
-                ChatActiveStatus::Waiting
-            } else {
-                ChatActiveStatus::Running
-            };
-            assert!(matches!(cut.overlay[0].head.record.atom.lifecycle,
-                ChatAtomLifecycle::Active { status, .. } if status == expected));
-            let saved = history
-                .display_member_page(&database, &block_id, None, 2, None)
-                .await?;
-            assert_eq!(saved.header.as_ref(), cut.header.as_ref());
-            assert_eq!(saved.entries[0], *cut.overlay[0]);
-            assert_eq!(
-                sql.query_one_raw(start_row())
-                    .await?
-                    .context("preserved start")?
-                    .try_get::<String>("", "original")?,
-                original_start
-            );
-        }
-        let before_token = history
-            .display_member_page(&database, &block_id, None, 2, None)
-            .await?;
-        let mut part = ObservedPart::new(started("preview-only").identity);
-        for version in 1..=2 {
-            part = part.authorized(&"token".repeat(version as usize));
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id: "boundary-attempt".into(),
-                progress: ModelProgress::new(version, vec![part.clone()]),
-            });
-            projection.stream(&chat, &thread, &state, 3).await?;
-        }
-        let after_token = owner
-            .lock()
-            .unwrap()
-            .member_cut(&block_id, None, 2)
-            .context("after token")?;
-        assert_eq!(after_token.header.as_ref(), before_token.header.as_ref());
-        assert!(!changes.has_changed()?);
-        assert_eq!(
-            history
-                .display_member_page(&database, &block_id, None, 2, None)
-                .await?
-                .entries,
-            before_token.entries
-        );
-        let mut boundary = effect(4);
-        let mut text = started("tool-boundary");
-        text.identity = ObservedPartIdentity::Provider(ProviderPartIdentity {
-            item_id: "tool-boundary".into(),
-            output_index: None,
-            content_index: 0,
-            item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
-            part: ObservedPartKind::OutputText,
-        });
-        boundary.model_member_content_available = vec![content_available(&text)];
-        boundary.model_member_starts = vec![text].into();
-        publish(&mut projection, &history, &chat, &thread, &state, &boundary).await?;
-        let page = history
-            .display_member_page(&database, &block_id, None, 2, None)
-            .await?;
-        let frozen = &page
-            .entries
-            .iter()
-            .find(|member| member.head.record.atom.id == tool_atom.identity)
-            .context("real unfinished tool")?
-            .head
-            .record;
-        let (payload, texts) = read_frozen_payload(&history, &chat, frozen).await?;
-        assert_eq!(payload["type"], "tool");
-        assert_eq!(payload["data"]["state"]["kind"], "running");
-        assert_eq!(payload["data"]["invocation"]["name"], "exec");
-        assert_eq!(texts, ["{}", ""]);
-        let saved_payload = payload;
-        permission.state = PermissionState::Pending;
-        permission.revision += 1;
-        permission.updated_at = 15;
-        state
-            .permissions
-            .insert(permission.id.clone(), permission.clone());
-        let mut later = effect(5);
-        later.permissions = vec![permission].into();
-        publish(&mut projection, &history, &chat, &thread, &state, &later).await?;
-        assert_eq!(
-            read_frozen_payload(&history, &chat, frozen).await?,
-            (saved_payload, texts),
-            "later public tool status cannot rewrite its frozen payload"
-        );
-        Ok(())
-    }
-    .await;
-        env.finish(result).await
-    }
-
-    #[tokio::test]
-    async fn reliable_text_visibility_hands_off_work_without_a_new_atomic_completion() -> Result<()>
-    {
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-        let thread = pl_protocol::Thread::from(
-            env.runtime
-                .create_thread(&env.project.id, "display boundary")
-                .await?,
-        );
-        let history = HistoryStore::open(
-            &env._temp.path().join("display-boundary.sqlite"),
-            &thread.id,
-        )
-        .await?;
-        history.prepare_write().await?;
-        let database = history
-            .conversation_database_id()
-            .await?
-            .context("database")?;
-        let chat = Session::new(history.clone(), TimelineEpoch::new("display-start")?);
-        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history.clone())?;
-        projection.bind_conversation_identity(database.clone())?;
-        let turn = TurnRecord {
-            turn_id: "boundary-turn".into(),
-            input_id: None,
-            state: TurnState::Running,
-            elapsed_ms: None,
-            model_steps: 1,
-        };
-        let mut state = ThreadSnapshot {
-            turns: vec![turn.clone()].into(),
-            attempts: vec![RequestAttempt::new("boundary-turn".into(), "boundary-attempt".into(), 0, AttemptStatus::Running)].into(),
-            ..Default::default()
-        };
-        let effect = |sequence| ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence,
-            committed_at: sequence as i64 + 10,
-            ..Default::default()
-        };
-        let mut first = effect(1);
-        first.turn = Some(turn);
-        first.model_member_starts = vec![started("R")].into();
-        let first_prepared = publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-        assert!(matches!(&first_prepared.display.as_ref().unwrap().blocks[0].header.body,
-            pl_protocol::DisplayBlockBody::Work { timing, .. }
-            if timing.started_at == Some(first.committed_at) && timing.finished_at.is_none()));
-        started_body(&first_prepared, ChatAtomKind::Reasoning, &database)?;
-        let mut second = effect(2);
-        let receipt = ModelMemberReceipt {
-            item: CompletionPresentationItem {
-                provider_item_id: "R".into(),
-                output_index: None,
-                kind: CompletionPresentationItemKind::Reasoning,
-                parts: vec![CompletionPresentationPart {
-                    kind: CompletionPresentationPartKind::ReasoningText,
-                    content_index: 0,
-                    provider_part_id: None,
-                    text: "完整思考".into(),
-                }],
-            },
-            state: ModelMemberState::Completed,
-        };
-        second.model_members = vec![pl_core::model::ModelCompletedMember {
-            turn_id: "boundary-turn".into(),
-            attempt_id: "boundary-attempt".into(),
-            generation: 0,
-            member_id: "R".into(),
-            payload: OpaquePayload::new(
-                "pl.model.completed-member",
-                1,
-                serde_json::to_string(&receipt)?,
-            )?,
-        }]
-        .into();
-        publish(&mut projection, &history, &chat, &thread, &state, &second).await?;
-        let h = chat.head_seq();
-        let presentation = projection.presentation();
-        {
-            let owner = presentation.lock().unwrap();
-            let cut = owner.capture(None, 8, Some(0), 8);
-            assert_eq!(cut.published, 0);
-            assert!(
-                matches!(&cut.open[0].body, pl_protocol::DisplayBlockBody::Work { timing, .. }
-                if cut.open[0].next_member == 1 && cut.open[0].unfinished == 0
-                    && timing.started_at == Some(first.committed_at)
-                    && timing.finished_at.is_none())
-            );
-        }
-        let mut text = started("T");
-        text.identity = ObservedPartIdentity::Provider(ProviderPartIdentity {
-            item_id: "T".into(),
-            output_index: None,
-            content_index: 0,
-            item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
-            part: ObservedPartKind::OutputText,
-        });
-        let mut third = effect(3);
-        third.model_member_content_available = vec![content_available(&text)];
-        third.model_member_starts = vec![text].into();
-        let prepared = publish(&mut projection, &history, &chat, &thread, &state, &third).await?;
-        let frozen_work = prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.header.sealed).context("published Work")?;
-        assert!(matches!(&frozen_work.header.body,
-            pl_protocol::DisplayBlockBody::Work { timing, .. }
-            if timing.started_at == Some(first.committed_at) && timing.finished_at == Some(third.committed_at)));
-        let cold_work = history.display_history_heads(&database, 0, 1, None, 8, true).await?;
-        assert_eq!(cold_work[0].body, frozen_work.header.body);
-        let text_body = started_body(&prepared, ChatAtomKind::Text, &database)?;
-        assert_eq!(chat.head_seq(), h);
-        assert!(prepared.completions.is_empty());
-        assert_eq!(prepared.display.as_ref().unwrap().ready_frontier, 1);
-        assert!(Arc::ptr_eq(
-            prepared.display.as_ref().unwrap(),
-            prepared.current.display.as_ref().unwrap()
-        ));
-        let cold = history
-            .display_recovery()
-            .await?
-            .context("saved display cut")?;
-        assert_eq!(cold.published, 1);
-        assert_eq!(cold.open.len(), 1);
-        assert_eq!(cold.unfinished.len(), 1);
-        let mut recovered = super::super::presentation::PresentationState::default();
-        recovered.restore(
-            &database,
-            cold.published,
-            cold.last_order,
-            cold.effect,
-            cold.open,
-            cold.unfinished,
-        )?;
-        assert!(
-            !recovered
-                .member_cut(
-                    &prepared
-                        .display
-                        .as_ref()
-                        .unwrap()
-                        .blocks
-                        .iter()
-                        .find(|b| !b.header.sealed)
-                        .unwrap()
-                        .header
-                        .id,
-                    None,
-                    8
-                )
-                .unwrap()
-                .complete
-        );
-        let completed_id = &prepared.display.as_ref().unwrap().blocks.iter()
-            .find(|block| block.header.sealed).context("completed work")?.header.id;
-        assert!(presentation.lock().unwrap().member_cut(completed_id,None,8).context("retained completed member")?
-            .overlay.iter().any(|member| member.terminal));
-        presentation.lock().unwrap().begin_cost_observation();
-        let mut part = ObservedPart::new(third.model_member_starts[0].identity.clone());
-        for version in 1..=2 {
-            part = part.authorized(&"正文 token".repeat(version as usize));
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id:"boundary-attempt".into(), progress:ModelProgress::new(version,vec![part.clone()]),
-            });
-            projection.stream(&chat,&thread,&state,3).await?;
-        }
-        let pl_protocol::ContentTarget::Body { owner, key } = &text_body.reference.target else {
-            unreachable!("started_body checked the target");
-        };
-        let current_key = pl_core::chat::ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-            key: key.clone(),
-        };
-        assert!(
-            projection.current.snapshot().context("streamed current")?
-                .contents().get(&current_key).context("same body after tokens")?
-                .descriptor.byte_length > 0
-        );
-        let visits = presentation.lock().unwrap().finish_cost_observation();
-        assert_eq!((visits.members.reads,visits.members.writes,visits.heads.reads,visits.heads.writes),(0,0,0,0));
-        eprintln!("PRESENTATION_COST {}",serde_json::json!({
-            "event":"production_token_preview", "token_updates":2, "retained_completed_members_at_least":1,
-            "member_reads":visits.members.reads, "member_writes":visits.members.writes,
-            "head_reads":visits.heads.reads, "head_writes":visits.heads.writes,
-        }));
-        projection.confirm_sources(3);
-        assert_eq!(
-            presentation.lock().unwrap().capture(None, 8, Some(0), 8).published,
-            1
-        );
-        super::restore_tests::save(&history, &third, &prepared).await?; // exact lost-ACK replay
-        Ok(())
-    }
-    .await;
-        env.finish(result).await
-    }
-
-    #[tokio::test]
-    async fn progress_never_writes_prefix_and_real_restart_interrupt_preserves_completed_member()
-    -> Result<()> {
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "completion boundary")
-                    .await?,
-            );
-            let path = env._temp.path().join("completion-boundary.sqlite");
-            let history = HistoryStore::open(&path, &thread.id).await?;
-            history.prepare_write().await?;
-            let database = history
-                .conversation_database_id()
-                .await?
-                .context("database")?;
-            let sql = Database::connect(format!("sqlite://{}?mode=rw", path.display())).await?;
-            let chat = Session::new(history.clone(), TimelineEpoch::new("before-restart")?);
-            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(database.clone())?;
-            let turn = TurnRecord {
-                turn_id: "boundary-turn".into(),
-                input_id: None,
-                state: TurnState::Running,
-                elapsed_ms: None,
-                model_steps: 1,
-            };
-            let mut state = ThreadSnapshot {
-                turns: vec![turn.clone()].into(),
-                attempts: vec![RequestAttempt::new(
-                    "boundary-turn".into(),
-                    "boundary-attempt".into(),
-                    0,
-                    AttemptStatus::Running,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            let effect = |sequence| ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence,
-                committed_at: sequence as i64 + 10,
-                ..Default::default()
-            };
-            let mut first = effect(1);
-            first.turn = Some(turn);
-            first.model_member_starts = vec![started("A")].into();
-            publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-            let mut part = ObservedPart::new(started("A").identity);
-            for sequence in 2..=5 {
-                let prefix = "流式前缀".repeat(sequence as usize * 4096);
-                part = part.authorized(&prefix);
-                state.model_progress = Some(ActiveModelProgress {
-                    attempt_id: "boundary-attempt".into(),
-                    progress: ModelProgress::new(sequence, vec![part.clone()]),
-                });
-                state.commit_sequence = sequence;
-                projection.stream(&chat, &thread, &state, sequence).await?;
-                let prepared = publish(
-                    &mut projection,
-                    &history,
-                    &chat,
-                    &thread,
-                    &state,
-                    &effect(sequence),
-                )
-                .await?;
-                assert!(
-                    prepared.current.contents.is_empty(),
-                    "progress prepared a body write"
-                );
-                let row = sql
-                    .query_one_raw(sea_orm::Statement::from_string(
-                        sea_orm::DbBackend::Sqlite,
-                        "SELECT (SELECT COUNT(*) FROM conversation_contents) AS bodies,
-                        (SELECT COUNT(*) FROM conversation_items) AS items"
-                            .to_owned(),
-                    ))
-                    .await?
-                    .context("counts")?;
-                assert_eq!(row.try_get::<i64>("", "bodies")?, 0);
-                assert_eq!(row.try_get::<i64>("", "items")?, 0);
-            }
-            let full = "完整思考".repeat(40_000);
-            let receipt = ModelMemberReceipt {
-                item: CompletionPresentationItem {
-                    provider_item_id: "A".into(),
-                    output_index: None,
-                    kind: CompletionPresentationItemKind::Reasoning,
-                    parts: vec![CompletionPresentationPart {
-                        content_index: 0,
-                        provider_part_id: None,
-                        text: full.clone(),
-                        kind: CompletionPresentationPartKind::ReasoningText,
-                    }],
-                },
-                state: ModelMemberState::Completed,
-            };
-            let mut complete = effect(6);
-            complete.model_members = vec![pl_core::model::ModelCompletedMember {
-                turn_id: "boundary-turn".into(),
-                attempt_id: "boundary-attempt".into(),
-                generation: 0,
-                member_id: "A".into(),
-                payload: OpaquePayload::new(
-                    "pl.model.completed-member",
-                    1,
-                    serde_json::to_string(&receipt)?,
-                )?,
-            }]
-            .into();
-            state.model_progress = None;
-            let saved =
-                publish(&mut projection, &history, &chat, &thread, &state, &complete).await?;
-            let record = saved
-                .completions
-                .iter()
-                .find(|record| {
-                    record
-                        .contents
-                        .values()
-                        .any(|content| content.descriptor.byte_length == full.len() as u64)
-                })
-                .context("A record")?;
-            let a_id = record.header.item_id.clone();
-            let content = record
-                .contents
-                .values()
-                .find(|content| content.descriptor.byte_length == full.len() as u64)
-                .context("A body")?;
-            let window = ChatHistory::read_content(
-                &history,
-                &ContentReadRequest {
-                    epoch: chat.epoch(),
-                    reference: pl_core::chat::ContentRef::Body(content.descriptor.key.clone()),
-                    offset: 0,
-                    max_bytes: 64 * 1024,
-                    generation: Some(content.descriptor.generation),
-                },
-            )
-            .await?;
-            assert!(window.sealed);
-            assert_eq!(window.available_through, full.len() as u64);
-            assert_eq!(window.bytes.as_bytes(), &full.as_bytes()[..64 * 1024]);
-            assert_eq!(
-                record.header.append_seq, 1,
-                "a completed member must publish immediately"
-            );
-            let mut second = effect(7);
-            second.model_member_starts = vec![started("B")].into();
-            publish(&mut projection, &history, &chat, &thread, &state, &second).await?;
-            drop(projection);
-            drop(chat);
-            drop(channel);
-            // A passive cold read does not manufacture an interruption or restore a preview.
-            let current = history
-                .conversation_current()
-                .await?
-                .context("cold current")?;
-            assert!(!current.execution_present);
-            assert!(current.previews.is_empty());
-            let restored_chat = Session::new(history.clone(), TimelineEpoch::new("after-restart")?);
-            let restored_channel =
-                HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut restored = LiveProjection::new();
-            restored.bind_execution_history(restored_channel.order_index(), history.clone())?;
-            restored.bind_conversation_identity(database.clone())?;
-            state.attempts = vec![RequestAttempt::new(
-                "boundary-turn".into(),
-                "boundary-attempt".into(),
-                0,
-                AttemptStatus::Interrupted,
-            )]
-            .into();
-            restored
-                .restore_current(&restored_chat, &thread, &state)
-                .await?;
-            assert!(
-                restored
-                    .current_state()
-                    .context("restored current")?
-                    .contents()
-                    .is_empty()
-            );
-            let mut interrupted = effect(8);
-            interrupted.turn = Some(TurnRecord {
-                turn_id: "boundary-turn".into(),
-                input_id: None,
-                state: TurnState::Interrupted,
-                elapsed_ms: None,
-                model_steps: 1,
-            });
-            interrupted.attempt = Some(pl_core::thread::journal::AttemptUpdate {
-                turn_id: "boundary-turn".into(),
-                attempt_id: "boundary-attempt".into(),
-                retry_of: None,
-                input_revision: 0,
-                request_metadata: None,
-                usage_binding: None,
-                tool_projection: None,
-                tools: Arc::from([]),
-                outcome: AttemptOutcome::Interrupted,
-                input_estimate: None,
-            });
-            state.turns = vec![interrupted.turn.clone().unwrap()].into();
-            state.commit_sequence = 8;
-            let settled = publish(
-                &mut restored,
-                &history,
-                &restored_chat,
-                &thread,
-                &state,
-                &interrupted,
-            )
-            .await?;
-            assert!(
-                settled
-                    .completions
-                    .iter()
-                    .all(|record| record.header.item_id != a_id)
-            );
-            assert!(settled.current.projection().atoms.is_empty());
-            let metadata = settled
-                .current
-                .lifecycle
-                .iter()
-                .find(|fact| fact.identity != a_id && fact.kind == ChatAtomKind::Reasoning)
-                .context("interrupted B fact")?;
-            let durable=sql.query_one_raw(sea_orm::Statement::from_sql_and_values(sea_orm::DbBackend::Sqlite,
-                "SELECT ended_effect,outcome,completion_item_id FROM execution_lifecycle WHERE identity=?",vec![metadata.identity.clone().into()]))
-                .await?.context("saved interruption")?;
-            assert_eq!(durable.try_get::<Option<i64>>("","ended_effect")?,Some(8));
-            assert_eq!(durable.try_get::<String>("","outcome")?,serde_json::to_string(&ChatTerminalOutcome::Cancelled)?);
-            assert_eq!(durable.try_get::<Option<String>>("","completion_item_id")?,None);
-            assert_eq!(metadata.outcome, Some(ChatTerminalOutcome::Cancelled));
-            assert!(metadata.started.is_some());
-            let b_end = metadata.ended.context("real interrupted end")?;
-            assert_eq!(b_end.effect_seq, 8);
-            assert!(metadata.completion_item_id.is_none());
-            let source_end = settled
-                .current
-                .source_changes
-                .iter()
-                .find(|source| source.source == metadata.source)
-                .and_then(|source| source.ended)
-                .context("enclosing Turn source end")?;
-            let receipt_end = settled
-                .current
-                .lifecycle
-                .iter()
-                .find(|fact| fact.kind == ChatAtomKind::TurnReceipt)
-                .and_then(|fact| fact.ended)
-                .context("Turn closing receipt")?;
-            assert!(b_end < receipt_end && receipt_end < source_end);
-            let frozen_positions = (
-                settled.current.lifecycle.clone(),
-                settled.current.source_changes.clone(),
-            );
-            let mut replay = settled.clone();
-            restored
-                .publish_prepared(&restored_chat, &mut replay)
-                .await?;
-            super::restore_tests::save(&history, &interrupted, &replay).await?;
-            assert_eq!(
-                (
-                    replay.current.lifecycle.clone(),
-                    replay.current.source_changes.clone()
-                ),
-                frozen_positions
-            );
-            assert_eq!(replay.completions.len(), settled.completions.len());
-            assert!(history.recovery_atom_starts(None, 128).await?.is_empty());
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-
-    #[tokio::test]
-    async fn same_effect_text_boundary_retains_preterminal_prefix_after_the_current_atom_retires()
-    -> Result<()> {
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "same effect cut")
-                    .await?,
-            );
-            let history =
-                HistoryStore::open(&env._temp.path().join("same-effect.sqlite"), &thread.id)
-                    .await?;
-            history.prepare_write().await?;
-            let database = history
-                .conversation_database_id()
-                .await?
-                .context("database")?;
-            let chat = Session::new(history.clone(), TimelineEpoch::new("same-effect-cut")?);
-            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(database.clone())?;
-            let turn = TurnRecord {
-                turn_id: "boundary-turn".into(),
-                input_id: None,
-                state: TurnState::Running,
-                elapsed_ms: None,
-                model_steps: 1,
-            };
-            let mut state = ThreadSnapshot {
-                turns: vec![turn.clone()].into(),
-                attempts: vec![RequestAttempt::new(
-                    "boundary-turn".into(),
-                    "boundary-attempt".into(),
-                    0,
-                    AttemptStatus::Running,
-                )]
-                .into(),
-                ..Default::default()
-            };
-            let effect = |sequence| ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence,
-                committed_at: 10 + sequence as i64,
-                ..Default::default()
-            };
-            let mut first = effect(1);
-            first.turn = Some(turn);
-            first.model_member_starts = vec![started("A")].into();
-            publish(&mut projection, &history, &chat, &thread, &state, &first).await?;
-            let part = ObservedPart::new(started("A").identity).appended("BOUNDARY_PREFIX");
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id: "boundary-attempt".into(),
-                progress: ModelProgress::new(1, vec![part]),
-            });
-            projection.stream(&chat, &thread, &state, 1).await?;
-            let mut second = effect(2);
-            let mut text = started("T");
-            text.identity = ObservedPartIdentity::Provider(ProviderPartIdentity {
-                item_id: "T".into(),
-                output_index: None,
-                content_index: 0,
-                item_kind: ObservedItemKind::Text(pl_core::model::ModelTextChannel::Final),
-                part: ObservedPartKind::OutputText,
-            });
-            second.model_member_content_available = vec![content_available(&text)];
-            second.model_member_starts = vec![text].into();
-            let receipt = ModelMemberReceipt {
-                item: CompletionPresentationItem {
-                    provider_item_id: "A".into(),
-                    output_index: None,
-                    kind: CompletionPresentationItemKind::Reasoning,
-                    parts: vec![CompletionPresentationPart {
-                        kind: CompletionPresentationPartKind::ReasoningText,
-                        content_index: 0,
-                        provider_part_id: None,
-                        text: "FUTURE_ORIGINAL".into(),
-                    }],
-                },
-                state: ModelMemberState::Completed,
-            };
-            second.model_members = vec![pl_core::model::ModelCompletedMember {
-                turn_id: "boundary-turn".into(),
-                attempt_id: "boundary-attempt".into(),
-                generation: 0,
-                member_id: "A".into(),
-                payload: OpaquePayload::new(
-                    "pl.model.completed-member",
-                    1,
-                    serde_json::to_string(&receipt)?,
-                )?,
-            }]
-            .into();
-            let (_, mut prepared) = projection.prepare(&thread, &second, &state, false).await?;
-            let ended = prepared
-                .current
-                .lifecycle
-                .iter()
-                .find(|atom| atom.kind == ChatAtomKind::Reasoning)
-                .unwrap();
-            let a_id = ended.identity.clone();
-            assert!(
-                prepared
-                    .current_state
-                    .as_ref()
-                    .unwrap()
-                    .projection()
-                    .atoms
-                    .iter()
-                    .all(|atom| atom.id != a_id)
-            );
-            assert!(
-                projection.preview_fields(&a_id).is_none(),
-                "the producer really retired the old owner"
-            );
-            // Mutation after preparation cannot change this effect's saved boundary material.
-            projection.store_preview(
-                a_id.clone(),
-                LivePreview {
-                    fields: BTreeMap::from([(
-                        BodyKey::Part(PresentationPart::ReasoningText(0)),
-                        ContentBlock::from_text("LATEST_WRONG"),
-                    )]),
-                    shape: ExecutionShape::Thinking(ThreadThinkingItem::new(
-                        Vec::new(),
-                        Vec::new(),
-                        ThreadContentLifecycle::streaming(),
-                    )),
-                    observed: None,
-                    observed_version: 9,
-                    model_part: None,
-                },
-            );
-            projection.publish_prepared(&chat, &mut prepared).await?;
-            super::restore_tests::save(&history, &second, &prepared).await?;
-            let delta = prepared.display.as_ref().unwrap();
-            let frozen = delta
-                .members
-                .iter()
-                .find(|member| {
-                    member.head.record.atom.id == a_id
-                        && matches!(
-                            member.head.record.content_source,
-                            pl_protocol::DisplayContentSource::FrozenObservation { .. }
-                        )
-                })
-                .unwrap();
-            let terminal = delta
-                .members
-                .iter()
-                .find(|member| member.head.record.atom.id == a_id && member.terminal)
-                .unwrap();
-            assert_ne!(frozen.head.member_key, terminal.head.member_key);
-            assert_eq!(frozen.head.record.end_fact, None);
-            assert_eq!(terminal.head.record.start_fact, None);
-            let reference = &frozen.head.record.atom.contents[0].reference;
-            let pl_protocol::ContentTarget::Body { owner, key } = &reference.target else {
-                panic!()
-            };
-            let read = ChatHistory::read_content(
-                &history,
-                &ContentReadRequest {
-                    epoch: chat.epoch(),
-                    reference: pl_core::chat::ContentRef::Body(pl_core::chat::ChatContentKey {
-                        owner: crate::studio::conversation_identity::content_owner_key(owner)?,
-                        key: key.clone(),
-                    }),
-                    offset: 0,
-                    max_bytes: 64,
-                    generation: None,
-                },
-            )
-            .await?;
-            assert!(read.sealed);
-            assert_eq!(read.bytes.as_bytes(), b"BOUNDARY_PREFIX");
-            let (payload, texts) =
-                read_frozen_payload(&history, &chat, &frozen.head.record).await?;
-            assert_eq!(payload["type"], "thinking");
-            assert_eq!(payload["data"]["outcome"]["kind"], "streaming");
-            assert_eq!(texts, ["BOUNDARY_PREFIX"]);
-            assert_eq!(prepared.completions.len(), 1);
-            let digest = delta.digest()?;
-            super::restore_tests::save(&history, &second, &prepared).await?;
-            assert_eq!(prepared.display.as_ref().unwrap().digest()?, digest);
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-
-    #[tokio::test]
-    async fn nested_task_invocation_survives_the_production_projection_and_cold_history()
-    -> Result<()> {
-        use pl_core::{
-            model::ModelToolCall,
-            thread::{
-                ToolDelivery, ToolDeliveryTarget, ToolOutcome,
-                task::{TaskRecord, TaskStatus},
-            },
-            tool::ToolOutput,
-        };
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "nested projection regression")
-                    .await?,
-            );
-            let path = env._temp.path().join("nested-projection.sqlite");
-            let history = HistoryStore::open(&path, &thread.id).await?;
-            history.prepare_write().await?;
-            let database = history
-                .conversation_database_id()
-                .await?
-                .context("database")?;
-            let chat = Session::new(history.clone(), TimelineEpoch::new("nested-hot")?);
-            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-            let mut projection = LiveProjection::new();
-            projection.bind_execution_history(channel.order_index(), history.clone())?;
-            projection.bind_conversation_identity(database)?;
-            let turn = TurnRecord {
-                turn_id: "nested-turn".into(),
-                input_id: None,
-                state: TurnState::Running,
-                elapsed_ms: None,
-                model_steps: 1,
-            };
-            let call = ModelToolCall {
-                call_id: "outer:nested:1".into(),
-                tool_id: "exec_command".into(),
-                arguments: OpaquePayload::new(
-                    "application/json",
-                    1,
-                    "{\"command\":\"printf original\"}",
-                )?,
-                presentation_contract: None,
-                rejection: None,
-            };
-            let mut task = TaskRecord {
-                id: format!("task:{}", call.call_id),
-                call_id: call.call_id.clone(),
-                tool_id: call.tool_id.clone(),
-                turn_id: turn.turn_id.clone(),
-                revision: 1,
-                status: TaskStatus::Running,
-                cancel_requested: false,
-                acknowledgement: None,
-                started_sequence: Some(1),
-                parent_call_id: Some("outer".into()),
-                invocation: Some(call.clone()),
-            };
-            let mut state = ThreadSnapshot {
-                turns: vec![turn.clone()].into(),
-                ..Default::default()
-            };
-            state.tasks.insert(task.id.clone(), task.clone());
-            let mut effect = ThreadEffectBatch {
-                thread_id: thread.id.clone(),
-                sequence: 1,
-                committed_at: 1,
-                turn: Some(turn),
-                tasks: vec![task.clone()].into(),
-                ..Default::default()
-            };
-            // There is deliberately no fabricated model call in context: Task owns this invocation.
-            let prepared =
-                publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
-            let id = super::super::order::tool_id(&call.call_id);
-            assert!(prepared.current.lifecycle.iter().any(|fact| {
-                fact.identity == id
-                    && fact
-                        .tool
-                        .as_ref()
-                        .is_some_and(|tool| tool.call_id == call.call_id)
-            }));
-            let item = history
-                .execution_item(&id)
-                .await?
-                .context("saved nested start")?;
-            assert_eq!(
-                item.tool().context("tool")?.invocation().arguments(),
-                call.arguments.content()
-            );
-            task.revision = 2;
-            task.status = TaskStatus::Succeeded;
-            state.tasks.insert(task.id.clone(), task.clone());
-            let delivery = ToolDelivery {
-                target: ToolDeliveryTarget::Nested {
-                    parent_call_id: "outer".into(),
-                },
-                call_id: call.call_id.clone(),
-                tool_id: call.tool_id.clone(),
-                output: ToolOutput::new(
-                    OpaquePayload::text("PRIVATE_ORIGINAL"),
-                    vec![pl_core::context::ContextContent::Text {
-                        text: "PRIVATE_ORIGINAL".into(),
-                    }],
-                ),
-                delivered_context: vec![],
-                outcome: ToolOutcome::Succeeded,
-            };
-            state.deliveries = vec![delivery.clone()].into();
-            effect.sequence = 2;
-            effect.committed_at = 2;
-            effect.turn = None;
-            effect.tasks = vec![task].into();
-            effect.deliveries = vec![delivery].into();
-            publish(&mut projection, &history, &chat, &thread, &state, &effect).await?;
-            assert!(state.context.records.is_empty());
-            drop(projection);
-            drop(chat);
-            drop(history);
-            let cold = HistoryStore::open(&path, &thread.id).await?;
-            let item = cold
-                .execution_item(&id)
-                .await?
-                .context("cold nested item")?;
-            let tool = item.tool().context("cold tool")?;
-            assert_eq!(tool.invocation().name(), "exec_command");
-            assert_eq!(
-                tool.terminal_output().context("terminal output")?.result(),
-                "PRIVATE_ORIGINAL"
-            );
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-}
-
-#[cfg(test)]
-mod restore_tests {
-    //! Activation must make saved content available before the next reliable effect is prepared.
-    use super::*;
-    use crate::studio::storage::{
-        history::{EffectCommit, HistoryStore},
-        thread_writer::HistoryChannel,
-    };
-    use pl_core::{
-        chat::{ChatHistory, ContentReadRequest, TimelineEpoch},
-        model::{
-            ActiveModelProgress, ModelProgress, ModelStartedMember, ObservedPart,
-            ProviderPartIdentity,
-        },
-        thread::{AttemptOutcome, AttemptStatus, RequestAttempt, TurnRecord, TurnState},
-    };
-
-    pub(super) async fn save(
-        history: &HistoryStore,
-        effect: &ThreadEffectBatch,
-        prepared: &PreparedEffect,
-    ) -> anyhow::Result<()> {
-        history
-            .commit_effect(
-                effect.sequence,
-                EffectCommit {
-                    turns: &prepared.turns,
-                    execution_order: prepared.execution_order,
-                    completions: &prepared.completions,
-                    current: &prepared.current,
-                    rolled_back_turns: &Default::default(),
-                    identities: &[],
-                    messages: &[],
-                    receipts: &[],
-                    tasks: &effect.tasks,
-                    deliveries: &effect.deliveries,
-                    delivery_repairs: &[],
-                    attempt: effect.attempt.as_ref(),
-                },
-            )
-            .await
-    }
-
-    #[tokio::test]
-    async fn compaction_current_restores_without_an_item_and_settles_each_real_outcome()
-    -> anyhow::Result<()> {
-        use anyhow::Context as _;
-        use pl_core::thread::{
-            ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome,
-        };
-        use pl_protocol::{
-            ChatActiveStatus, ChatAtom, ChatAtomKind, ChatAtomLifecycle, ChatDeliveryKind,
-            ChatFactPosition, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
-        };
-
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-            let thread = pl_protocol::Thread::from(
-                env.runtime
-                    .create_thread(&env.project.id, "compaction restore")
-                    .await?,
-            );
-            for (case, outcome, terminal, associated) in [
-                (
-                    "changed",
-                    Outcome::Changed {
-                        context_revision: 9,
-                    },
-                    ChatTerminalOutcome::Completed,
-                    true,
-                ),
-                (
-                    "unchanged",
-                    Outcome::Unchanged,
-                    ChatTerminalOutcome::Completed,
-                    false,
-                ),
-                (
-                    "failed",
-                    Outcome::Failed {
-                        message: "provider refused".into(),
-                    },
-                    ChatTerminalOutcome::Failed,
-                    true,
-                ),
-                (
-                    "cancelled",
-                    Outcome::Cancelled,
-                    ChatTerminalOutcome::Cancelled,
-                    false,
-                ),
-            ] {
-                let history = HistoryStore::open(
-                    &env._temp.path().join(format!("compaction-{case}.sqlite")),
-                    &thread.id,
-                )
-                .await?;
-                history.prepare_write().await?;
-                let database = history
-                    .conversation_database_id()
-                    .await?
-                    .context("database")?;
-                let session = Session::new(history.clone(), TimelineEpoch::new(case)?);
-                let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-                let mut projection = LiveProjection::new();
-                projection.bind_execution_history(channel.order_index(), history.clone())?;
-                projection.bind_conversation_identity(database.clone())?;
-                let state = ThreadSnapshot::default();
-                let turn_id = associated.then(|| "actual-turn".to_owned());
-                let attempt_id = associated.then(|| "actual-attempt".to_owned());
-                let start_position = ChatFactPosition {
-                    effect_seq: 1,
-                    suborder: 1,
-                };
-                let source = ChatSourceId::Operation {
-                    operation_id: case.into(),
-                };
-                let effect = ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 1,
-                    committed_at: 10,
-                    context_compactions: vec![Event::Started {
-                        operation_id: case.into(),
-                        turn_id: turn_id.clone(),
-                        attempt_id: attempt_id.clone(),
-                    }]
-                    .into(),
-                    ..Default::default()
-                };
-                let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-                projection.publish_prepared(&session, &mut prepared).await?;
-                assert_eq!(session.head_seq(), 0);
-                assert!(prepared.turns.is_empty() && prepared.completions.is_empty());
-                let active = prepared
-                    .current
-                    .projection()
-                    .atoms
-                    .first()
-                    .context("active compaction")?
-                    .clone();
-                assert_eq!(active.kind, ChatAtomKind::Compaction);
-                assert_eq!(active.source, source);
-                assert_eq!(active.delivery, ChatDeliveryKind::Independent);
-                assert_eq!(active.turn_id, turn_id);
-                assert_eq!(active.attempt_id, attempt_id);
-                assert_eq!(
-                    active.lifecycle,
-                    ChatAtomLifecycle::Active {
-                        started: Some(start_position),
-                        status: ChatActiveStatus::Running,
-                    }
-                );
-                assert!(active.completion_seq.is_none() && active.payload.is_none());
-                save(&history, &effect, &prepared).await?;
-                drop(projection);
-                // The reliable Started fact suffices; no current snapshot or business item was saved.
-                let saved = history
-                    .conversation_current()
-                    .await?
-                    .context("saved current")?;
-                assert!(saved.atoms.is_empty());
-                assert_eq!(
-                    history.recovery_atom_starts(None, 128).await?,
-                    vec![active.clone()]
-                );
-                assert!(!saved.execution_present);
-                assert!(
-                    saved.active.is_none(),
-                    "cold facts do not claim a resident execution phase"
-                );
-                let mut restored = LiveProjection::new();
-                restored.bind_execution_history(channel.order_index(), history.clone())?;
-                restored.bind_conversation_identity(database)?;
-                restored.restore_current(&session, &thread, &state).await?;
-                assert_eq!(
-                    restored
-                        .current_state()
-                        .context("restored current")?
-                        .projection()
-                        .atoms,
-                    vec![active.clone()]
-                );
-                let unchanged = ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 2,
-                    committed_at: 11,
-                    ..Default::default()
-                };
-                let mut prepared = restored
-                    .prepare_committed(&thread, &unchanged, &state)
-                    .await?;
-                restored.publish_prepared(&session, &mut prepared).await?;
-                assert!(prepared.completions.is_empty());
-                assert_eq!(prepared.current.projection().atoms, vec![active.clone()]);
-                let effect = ThreadEffectBatch {
-                    thread_id: thread.id.clone(),
-                    sequence: 3,
-                    committed_at: 12,
-                    context_compactions: vec![Event::Finished {
-                        operation_id: case.into(),
-                        outcome,
-                    }]
-                    .into(),
-                    ..Default::default()
-                };
-                let (_, mut prepared) = restored.prepare(&thread, &effect, &state, false).await?;
-                restored.publish_prepared(&session, &mut prepared).await?;
-                assert_eq!(session.head_seq(), 1);
-                assert_eq!(prepared.completions.len(), 1);
-                let atom: ChatAtom =
-                    serde_json::from_slice(&prepared.completions[0].header.metadata)?;
-                assert_eq!(atom.id, active.id);
-                assert_eq!(atom.source, source);
-                assert_eq!(atom.delivery, ChatDeliveryKind::Independent);
-                assert_eq!(atom.turn_id, turn_id);
-                assert_eq!(atom.attempt_id, attempt_id);
-                assert_eq!(atom.started_at, Some(10));
-                let end_position = ChatFactPosition {
-                    effect_seq: 3,
-                    suborder: 1,
-                };
-                assert_eq!(
-                    atom.lifecycle,
-                    ChatAtomLifecycle::Terminal {
-                        started: Some(start_position),
-                        ended: Some(end_position),
-                        outcome: terminal,
-                    }
-                );
-                assert!(prepared.current.projection().atoms.is_empty());
-                assert!(prepared.current.projection().active.is_none());
-                assert!(
-                    prepared
-                        .current
-                        .source_changes
-                        .iter()
-                        .any(|state| state.source == source
-                            && state.lifecycle == ChatSourceLifecycle::Ended { outcome: terminal })
-                );
-                save(&history, &effect, &prepared).await?;
-                assert!(
-                    history
-                        .conversation_current()
-                        .await?
-                        .context("terminal saved current")?
-                        .atoms
-                        .is_empty()
-                );
-                let mut repeated = prepared.clone();
-                restored.publish_prepared(&session, &mut repeated).await?;
-                assert!(Arc::ptr_eq(&prepared, &repeated));
-                assert!(Arc::ptr_eq(&prepared.completions, &repeated.completions));
-                save(&history, &effect, &repeated).await?;
-                assert_eq!(session.head_seq(), 1);
-            }
-            Ok(())
-        }
-        .await;
-        env.finish(result).await
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    enum Settlement {
-        Completed,
-        Failed,
-        Cancelled,
-    }
-
-    #[tokio::test]
-    async fn cold_completion_uses_its_full_receipt_without_restoring_progress() -> anyhow::Result<()>
-    {
-        immediate_settlement(Settlement::Completed).await
-    }
-
-    #[tokio::test]
-    async fn resident_failure_freezes_its_accepted_prefix_only_at_terminal() -> anyhow::Result<()> {
-        immediate_settlement(Settlement::Failed).await
-    }
-
-    #[tokio::test]
-    async fn resident_cancellation_freezes_its_accepted_prefix_only_at_terminal()
-    -> anyhow::Result<()> {
-        immediate_settlement(Settlement::Cancelled).await
-    }
-
-    async fn immediate_settlement(settlement: Settlement) -> anyhow::Result<()> {
-        use anyhow::Context as _;
-        use pl_core::context::OpaquePayload;
-        use pl_model::{
-            completion::{
-                CompletionPresentationItem, CompletionPresentationItemKind,
-                CompletionPresentationPart, CompletionPresentationPartKind,
-            },
-            runtime::{ModelMemberReceipt, ModelMemberState},
-        };
-
-        let env = crate::runtime_test_support::Environment::new(vec![], vec![]).await?;
-        let result = async {
-        let thread = pl_protocol::Thread::from(
-            env.runtime
-                .create_thread(&env.project.id, "restore immediate completion")
-                .await?,
-        );
-        // Synthetic effects use a real, separate database, not the Runtime coordinator's clock.
-        let history =
-            HistoryStore::open(&env._temp.path().join("restore-content.sqlite"), &thread.id)
-                .await?;
-        history.prepare_write().await?;
-        let database = history
-            .conversation_database_id()
-            .await?
-            .context("database")?;
-        let chat = Session::new(history.clone(), TimelineEpoch::new("before-activation")?);
-        let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
-        let mut projection = LiveProjection::new();
-        projection.bind_execution_history(channel.order_index(), history.clone())?;
-        projection.bind_conversation_identity(database.clone())?;
-        let turn = TurnRecord {
-            turn_id: "restore-turn".into(),
-            input_id: None,
-            state: TurnState::Running,
-            elapsed_ms: None,
-            model_steps: 1,
-        };
-        let mut state = ThreadSnapshot {
-            turns: vec![turn.clone()].into(),
-            attempts: vec![RequestAttempt::new(
-                "restore-turn".into(),
-                "restore-attempt".into(),
-                0,
-                AttemptStatus::Running,
-            )]
-            .into(),
-            ..Default::default()
-        };
         let effect = ThreadEffectBatch {
             thread_id: thread.id.clone(),
             sequence: 1,
             committed_at: 10,
             turn: Some(turn),
+            tasks: Arc::from([task]),
             ..Default::default()
         };
-        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        save(&history, &effect, &prepared).await?;
-        let start = ModelStartedMember {
-            turn_id: "restore-turn".into(),
-            attempt_id: "restore-attempt".into(),
-            generation: 0,
-            identity: ObservedPartIdentity::Provider(ProviderPartIdentity {
-                item_id: "restore-text".into(),
-                output_index: None,
-                content_index: 0,
-                item_kind: ObservedItemKind::Text(ModelTextChannel::Final),
-                part: ObservedPartKind::OutputText,
-            }),
-        };
-        let mut part = ObservedPart::new(start.identity.clone());
-        let effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 2,
-            committed_at: 11,
-            model_member_starts: vec![start].into(),
-            ..Default::default()
-        };
-        let (_, mut prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        projection.publish_prepared(&chat, &mut prepared).await?;
-        save(&history, &effect, &prepared).await?;
+        let (_, prepared) = projection.prepare(&thread, &effect, &state, false).await?;
+        let current = prepared.current_state.context("current State")?;
+        let tool_id = super::super::order::tool_id(&invocation.call_id);
+        let atom = current
+            .projection()
+            .atoms
+            .iter()
+            .find(|atom| atom.id == tool_id && atom.kind == ChatAtomKind::ToolCall)
+            .context("nested tool invocation")?;
+        assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
+        assert_eq!(atom.turn_id.as_deref(), Some("nested-turn"));
+        assert_eq!(
+            atom.tool.as_ref().map(|tool| tool.call_id.as_str()),
+            Some("outer:nested:1")
+        );
+        assert!(state.context.records.is_empty());
+        let arguments = current
+            .content(&atom.contents[0].reference)
+            .context("nested invocation arguments")?
+            .content();
+        assert_eq!(
+            arguments.data.range(0, arguments.data.len())?.as_bytes(),
+            invocation.arguments.content().as_bytes()
+        );
+        channel.stop_and_join().await?;
+        Ok(())
+    }
 
-        let body = "新".repeat(50_000);
-        // Exercise the real observation path: two authoritative replacements advance the original
-        // current owner's content generation to 3. No private preview/generation state is edited.
-        for (sequence, text) in [(3, "old body"), (4, "replacement"), (5, body.as_str())] {
-            part = part.authorized(text);
-            state.commit_sequence = sequence;
-            state.model_progress = Some(ActiveModelProgress {
-                attempt_id: "restore-attempt".into(),
-                progress: ModelProgress::new(sequence, vec![part.clone()]),
-            });
-            projection.stream(&chat, &thread, &state, sequence).await?;
-            let effect = ThreadEffectBatch {
+    #[tokio::test]
+    async fn compaction_current_settles_each_real_outcome_without_a_history_item() -> Result<()> {
+        use pl_core::thread::{
+            ContextCompactionEvent as Event, ContextCompactionOutcome as Outcome,
+        };
+        use pl_protocol::{
+            ChatAtomKind, ChatAtomLifecycle, ChatSourceId, ChatSourceLifecycle, ChatTerminalOutcome,
+        };
+
+        let directory = tempfile::tempdir()?;
+        let thread = pl_protocol::Thread::placeholder("compaction-current");
+        for (case, outcome, terminal, associated) in [
+            (
+                "changed",
+                Outcome::Changed {
+                    context_revision: 9,
+                },
+                ChatTerminalOutcome::Completed,
+                true,
+            ),
+            (
+                "unchanged",
+                Outcome::Unchanged,
+                ChatTerminalOutcome::Completed,
+                false,
+            ),
+            (
+                "failed",
+                Outcome::Failed {
+                    message: "provider refused".into(),
+                },
+                ChatTerminalOutcome::Failed,
+                true,
+            ),
+            (
+                "cancelled",
+                Outcome::Cancelled,
+                ChatTerminalOutcome::Cancelled,
+                false,
+            ),
+        ] {
+            let history = HistoryStore::open(
+                directory.path().join(format!("compaction-{case}.sqlite")),
+                &thread.id,
+                HistoryLimits {
+                    pending_events: 64,
+                    pending_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+            let channel = HistoryChannel::new(Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            let mut projection = LiveProjection::new();
+            projection.bind_execution_history(
+                channel.order_index(),
+                RuntimeEpoch::new(),
+                history,
+            )?;
+            let turn_id = associated.then(|| format!("{case}-turn"));
+            let attempt_id = associated.then(|| format!("{case}-attempt"));
+            let source = ChatSourceId::Operation {
+                operation_id: case.into(),
+            };
+            let start = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
-                sequence,
-                committed_at: sequence as i64 + 10,
+                sequence: 1,
+                committed_at: 10,
+                context_compactions: Arc::from([Event::Started {
+                    operation_id: case.into(),
+                    turn_id: turn_id.clone(),
+                    attempt_id: attempt_id.clone(),
+                }]),
                 ..Default::default()
             };
-            let (_, mut next) = projection.prepare(&thread, &effect, &state, false).await?;
-            projection.publish_prepared(&chat, &mut next).await?;
-            save(&history, &effect, &next).await?;
-            prepared = next;
-        }
-        let saved_atom = prepared.current.projection().atoms[0].clone();
-        assert!(prepared.current.contents.is_empty());
-        let saved_content = prepared.current_state.as_ref().context("current owner")?
-            .contents().values().find(|content| content.descriptor.key.key == "body")
-            .context("active body")?.content();
-        assert_eq!(saved_content.descriptor.generation, 3);
-        assert_eq!(saved_content.descriptor.byte_length, 150_000);
-        let receipt = ModelMemberReceipt {
-            item: CompletionPresentationItem {
-                provider_item_id: "restore-text".into(),
-                output_index: None,
-                kind: CompletionPresentationItemKind::Text(
-                    pl_protocol::trace::TraceTextChannel::Final,
-                ),
-                parts: vec![CompletionPresentationPart {
-                    content_index: 0,
-                    provider_part_id: None,
-                    text: body.clone(),
-                    kind: CompletionPresentationPartKind::OutputText,
-                }],
-            },
-            state: ModelMemberState::Completed,
-        };
-        let mut effect = ThreadEffectBatch {
-            thread_id: thread.id.clone(),
-            sequence: 6,
-            committed_at: 20,
-            model_members: vec![pl_core::model::ModelCompletedMember {
-                turn_id: "restore-turn".into(),
-                attempt_id: "restore-attempt".into(),
-                generation: 0,
-                member_id: "restore-text".into(),
-                payload: OpaquePayload::new(
-                    "pl.model.completed-member",
-                    1,
-                    serde_json::to_string(&receipt)?,
-                )?,
-            }]
-            .into(),
-            ..Default::default()
-        };
-        let expected_outcome = match settlement {
-            Settlement::Completed => pl_protocol::ChatTerminalOutcome::Completed,
-            Settlement::Failed | Settlement::Cancelled => {
-                // A terminal attempt may have no member receipt: its admitted preview is finalized
-                // through the original attempt path, preserving the same saved body and refs.
-                let error = Arc::new(pl_core::model::ModelError {
-                    details: None,
-                    kind: match settlement {
-                        Settlement::Cancelled => pl_core::model::ModelFailureKind::Cancelled,
-                        _ => pl_core::model::ModelFailureKind::Unavailable,
-                    },
-                    usage: Box::default(),
-                    source: None,
-                });
-                let (status, outcome, terminal) = match settlement {
-                    Settlement::Failed => (
-                        AttemptStatus::Failed,
-                        AttemptOutcome::Failed(error),
-                        pl_protocol::ChatTerminalOutcome::Failed,
-                    ),
-                    Settlement::Cancelled => (
-                        AttemptStatus::Cancelled,
-                        AttemptOutcome::Cancelled { result: Err(error) },
-                        pl_protocol::ChatTerminalOutcome::Cancelled,
-                    ),
-                    Settlement::Completed => unreachable!(),
-                };
-                state.attempts = vec![RequestAttempt::new(
-                    "restore-turn".into(),
-                    "restore-attempt".into(),
-                    0,
-                    status,
-                )]
-                .into();
-                state.model_progress = None;
-                effect.model_members = Arc::from([]);
-                effect.attempt = Some(pl_core::thread::journal::AttemptUpdate {
-                    turn_id: "restore-turn".into(),
-                    attempt_id: "restore-attempt".into(),
-                    retry_of: None,
-                    input_revision: 0,
-                    request_metadata: None,
-                    usage_binding: None,
-                    tool_projection: None,
-                    tools: Arc::from([]),
+            let (_, prepared) = projection
+                .prepare(&thread, &start, &ThreadSnapshot::default(), false)
+                .await?;
+            let current = prepared.current_state.context("active compaction")?;
+            let atom = current
+                .projection()
+                .atoms
+                .iter()
+                .find(|atom| atom.kind == ChatAtomKind::Compaction)
+                .context("current compaction atom")?;
+            assert_eq!(atom.source, source);
+            assert_eq!(atom.turn_id, turn_id);
+            assert_eq!(atom.attempt_id, attempt_id);
+            assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
+            assert!(atom.contents.is_empty());
+
+            let finish = ThreadEffectBatch {
+                thread_id: thread.id.clone(),
+                sequence: 2,
+                committed_at: 20,
+                context_compactions: Arc::from([Event::Finished {
+                    operation_id: case.into(),
                     outcome,
-                    input_estimate: None,
-                });
-                terminal
-            }
-        };
-        state.commit_sequence = effect.sequence;
-        let restored_chat = Session::new(history.clone(), TimelineEpoch::new("after-activation")?);
-        let mut restored = if matches!(settlement, Settlement::Completed) {
-            let mut owner = LiveProjection::new();
-            // The Runtime's original index owns execution placement, independently of
-            // this dropped/re-created product projection and its discarded progress.
-            owner.bind_execution_history(channel.order_index(), history.clone())?;
-            owner.bind_conversation_identity(database)?;
-            owner.restore_current(&restored_chat, &thread, &state).await?;
-            assert!(owner.current_state().context("restored current")?.contents().is_empty());
-            owner
-        } else {
-            projection
-        };
-        let restored_snapshot = restored.current_state();
-
-        // Nothing warms the restored owner between restore_current and its first reliable effect.
-        let (_, mut completed) = restored.prepare(&thread, &effect, &state, false).await?;
-        let content = completed
-            .completion_drafts
-            .as_ref()
-            .context("completion drafts")?
-            .iter()
-            .flat_map(|draft| draft.contents.values())
-            .find(|content| content.descriptor.key == saved_content.descriptor.key)
-            .context("completion body")?
-            .clone();
-        eprintln!(
-            "restore immediate {settlement:?}: saved_generation={}, bytes={}, completion_generation={}",
-            saved_content.descriptor.generation,
-            saved_content.descriptor.byte_length,
-            content.descriptor.generation
-        );
-        restored
-            .publish_prepared(&restored_chat, &mut completed)
-            .await?;
-        save(&history, &effect, &completed).await?;
-        let expected_generation = if matches!(settlement, Settlement::Completed) { 1 } else { 3 };
-        assert_eq!(content.descriptor.generation, expected_generation);
-        assert_eq!(content.data.range(0, 150_000)?.as_bytes(), body.as_bytes());
-        let completed_atom = completed.completions.iter()
-            .map(|record| serde_json::from_slice::<pl_protocol::ChatAtom>(&record.header.metadata))
-            .collect::<Result<Vec<_>, _>>()?.into_iter()
-            .find(|atom| atom.id == saved_atom.id).context("settled atom")?;
-        assert_eq!(completed_atom.source, saved_atom.source);
-        assert_eq!(completed_atom.source_order, saved_atom.source_order);
-        assert!(matches!(completed_atom.lifecycle, pl_protocol::ChatAtomLifecycle::Terminal {outcome,..}
-            if outcome == expected_outcome));
-        assert!(completed_atom.source_state.is_none());
-        if matches!(settlement, Settlement::Completed) {
-            let snapshot = restored_snapshot.context("restored current")?;
-            assert!(snapshot.projection().previews.is_empty());
-            assert!(snapshot.contents().is_empty());
-        }
-        let mut bytes = Vec::new();
-        while bytes.len() < body.len() {
-            let window = ChatHistory::read_content(&history, &ContentReadRequest {
-                epoch: restored_chat.epoch(), reference: pl_core::chat::ContentRef::Body(content.descriptor.key.clone()),
-                offset: bytes.len() as u64, max_bytes: 64 * 1024, generation: Some(expected_generation),
-            }).await?;
-            assert_eq!(window.available_through, 150_000);
-            assert!(window.sealed);
-            assert!(!window.bytes.as_bytes().is_empty());
-            bytes.extend_from_slice(window.bytes.as_bytes());
-        }
-        assert_eq!(bytes, body.as_bytes());
-        Ok(())
-    }
-    .await;
-        env.finish(result).await
-    }
-}
-
-#[cfg(test)]
-mod completion_tests {
-    use super::*;
-
-    fn original_result_bytes(result: &TurnResult) -> u64 {
-        let identities = result.identities().fold(0_u64, |bytes, id| {
-            bytes
-                .saturating_add(id.len() as u64)
-                .saturating_add(RETAINED_ENTRY_OVERHEAD)
-        });
-        let mut bytes = result.finals.iter().chain(result.commentary.iter()).fold(
-            identities,
-            |bytes, (key, text)| {
-                bytes
-                    .saturating_add(key.1.len() as u64)
-                    .saturating_add(text.len() as u64)
-                    .saturating_add(RETAINED_ENTRY_OVERHEAD)
-            },
-        );
-        if let Some((_, tool)) = &result.last_tool {
-            bytes = bytes.saturating_add(tool_bytes(tool));
-        }
-        if let Some(finish) = &result.finish {
-            bytes = bytes
-                .saturating_add(finish.message.len() as u64)
-                .saturating_add(
-                    finish
-                        .feedback_message
-                        .as_ref()
-                        .map_or(0, |body| body.len()) as u64,
-                )
-                .saturating_add(finish.review.as_ref().map_or(0, |review| {
-                    review.summary.len() + review.reviewed_version.len()
-                }) as u64);
-        }
-        bytes
-    }
-
-    fn result_item(id: &str, ordinal: u64, revision: u64, state: ExecutionShape) -> ExecutionItem {
-        ExecutionItem::new(
-            id.into(),
-            "thread".into(),
-            "turn".into(),
-            ordinal,
-            revision,
-            10,
-            10,
-            state,
-        )
-    }
-
-    #[test]
-    fn turn_result_identity_charge_matches_original_sum_across_revisions_and_restore() {
-        let text = |channel, body: &str| {
-            ExecutionShape::Text(ThreadTextItem::new(
-                channel,
-                body.into(),
-                Vec::new(),
-                ThreadContentLifecycle::completed(10),
-            ))
-        };
-        let mut items = vec![
-            result_item(
-                "reasoning-a",
-                1,
-                1,
-                ExecutionShape::Thinking(ThreadThinkingItem::new(
-                    Vec::new(),
-                    vec!["first reasoning".into()],
-                    ThreadContentLifecycle::completed(10),
-                )),
-            ),
-            result_item(
-                "reasoning-b",
-                2,
-                1,
-                ExecutionShape::Thinking(ThreadThinkingItem::new(
-                    Vec::new(),
-                    vec!["second reasoning".into()],
-                    ThreadContentLifecycle::completed(10),
-                )),
-            ),
-            result_item("final-b", 4, 1, text(ThreadTextChannel::Final, "β")),
-            result_item("final-a", 3, 1, text(ThreadTextChannel::Final, "α")),
-            result_item("final-a", 3, 2, text(ThreadTextChannel::Final, "revised α")),
-            result_item("final-a", 9, 3, text(ThreadTextChannel::Final, "moved α")),
-        ];
-        for index in 0..TURN_COMMENTARY_PARTS + 2 {
-            items.push(result_item(
-                &format!("commentary-{index:02}"),
-                10 + index as u64,
-                1,
-                text(
-                    ThreadTextChannel::Commentary,
-                    &format!("commentary {index}"),
-                ),
-            ));
-        }
-        let mut result = TurnResult::default();
-        assert_eq!(result.retained_bytes(), std::mem::size_of::<u64>() as u64);
-        for item in &items {
-            result.observe(item);
-            assert_eq!(
-                result.retained_bytes(),
-                original_result_bytes(&result).saturating_add(std::mem::size_of::<u64>() as u64)
+                }]),
+                ..Default::default()
+            };
+            let (_, prepared) = projection
+                .prepare(&thread, &finish, &ThreadSnapshot::default(), false)
+                .await?;
+            let current = prepared.current_state.context("settled compaction")?;
+            assert!(
+                current
+                    .projection()
+                    .atoms
+                    .iter()
+                    .all(|atom| atom.kind != ChatAtomKind::Compaction)
             );
-        }
-        let identities = items
-            .iter()
-            .map(|item| item.id.as_str())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(result.identities().collect::<BTreeSet<_>>(), identities);
-        assert_eq!(
-            result.final_text().as_deref(),
-            Some("revised α\n\nβ\n\nmoved α")
-        );
-        assert_eq!(
-            result.commentary(),
-            (2..TURN_COMMENTARY_PARTS + 2)
-                .map(|index| format!("commentary {index}"))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        );
-        let before = result.retained_bytes();
-        result.observe(items.last().unwrap());
-        assert_eq!(
-            result.retained_bytes(),
-            before,
-            "repeated identity/body was charged twice"
-        );
-        let cloned = result.clone();
-        let restored = TurnResult::from_items(&items);
-        for equivalent in [&cloned, &restored] {
-            assert_eq!(equivalent.retained_bytes(), before);
-            assert_eq!(equivalent.identities().collect::<BTreeSet<_>>(), identities);
-            assert_eq!(equivalent.final_text(), result.final_text());
-            assert_eq!(equivalent.commentary(), result.commentary());
-        }
-    }
-
-    fn store_retention_entry(projection: &mut LiveProjection, ordinal: usize, revision: u64) {
-        let id = format!("part-{ordinal:04}");
-        let body = format!("body {ordinal}, revision {revision}");
-        let shape = ExecutionShape::Text(ThreadTextItem::new(
-            ThreadTextChannel::Final,
-            body.clone(),
-            Vec::new(),
-            ThreadContentLifecycle::streaming(),
-        ));
-        let item = result_item(&id, ordinal as u64, revision, shape.clone());
-        projection.store_item(item.clone());
-        projection.fact(&item);
-        projection.raise_revision(&id, revision);
-        projection.store_preview(
-            id.clone(),
-            LivePreview {
-                fields: BTreeMap::from([(BodyKey::Body, ContentBlock::from_text(&body))]),
-                observed: Some(ObservedKey::Provider(
-                    0,
-                    Arc::from(id),
-                    PresentationPart::OutputText(0),
-                )),
-                shape,
-                observed_version: revision,
-                model_part: None,
-            },
-        );
-    }
-
-    fn assert_retention_tables(projection: &LiveProjection) {
-        let items = projection.items.values().fold(0_u64, |bytes, item| {
-            bytes.saturating_add(charged_item_bytes(item))
-        });
-        let facts = projection.facts.iter().fold(0_u64, |bytes, (id, fact)| {
-            bytes.saturating_add(fact_bytes(id, fact))
-        });
-        let previews = projection
-            .previews
-            .iter()
-            .fold(0_u64, |bytes, (id, preview)| {
-                bytes.saturating_add(preview_bytes(id, preview))
-            });
-        let revisions = projection
-            .revisions
-            .keys()
-            .fold(0_u64, |bytes, id| bytes.saturating_add(revision_bytes(id)));
-        assert_eq!(
-            (
-                projection.items_bytes,
-                projection.facts_bytes,
-                projection.previews_bytes,
-                projection.revisions_bytes
-            ),
-            (items, facts, previews, revisions)
-        );
-        let observed = projection
-            .previews
-            .values()
-            .filter_map(|preview| {
-                preview.observed.as_ref().map(|key| {
-                    (
-                        key.clone(),
-                        ObservedVersion {
-                            content: preview.observed_version,
-                            ended: preview.shape.is_terminal(),
-                            model_part: preview.model_part,
-                        },
+            assert!(current.projection().sources.iter().any(|state| {
+                state.source == source
+                    && matches!(
+                        state.lifecycle,
+                        ChatSourceLifecycle::Ended { outcome } if outcome == terminal
                     )
-                })
-            })
-            .collect::<HashMap<_, _>>();
-        assert!(
-            projection.observed == observed,
-            "observation mirror differs from retained previews"
-        );
-    }
-
-    #[test]
-    fn retain_preserves_running_totals_and_observed_mirror_with_and_without_pruning() {
-        let mut projection = LiveProjection::new();
-        let turn = pl_core::thread::TurnRecord {
-            turn_id: "turn".into(),
-            input_id: None,
-            state: TurnState::Running,
-            elapsed_ms: None,
-            model_steps: 1,
-        };
-        let mut state = ThreadSnapshot {
-            turns: vec![turn.clone()].into(),
-            ..Default::default()
-        };
-        store_retention_entry(&mut projection, 0, 1);
-        store_retention_entry(&mut projection, 1, 1);
-        store_retention_entry(&mut projection, 1, 22);
-        assert_retention_tables(&projection);
-        let before = (
-            projection.items_bytes,
-            projection.facts_bytes,
-            projection.previews_bytes,
-            projection.revisions_bytes,
-        );
-        projection.retain(&state);
-        assert_retention_tables(&projection);
-        assert_eq!(projection.facts.len(), 2);
-        assert_eq!(
-            (
-                projection.items_bytes,
-                projection.facts_bytes,
-                projection.previews_bytes,
-                projection.revisions_bytes
-            ),
-            before
-        );
-
-        for ordinal in 2..=LIVE_ITEM_WINDOW {
-            store_retention_entry(&mut projection, ordinal, 1);
+            }));
+            channel.stop_and_join().await?;
         }
-        assert_retention_tables(&projection);
-        assert_eq!(projection.facts.len(), LIVE_ITEM_WINDOW + 1);
-        projection.retain(&state);
-        assert_retention_tables(&projection);
-        assert_eq!(
-            (
-                projection.items.len(),
-                projection.facts.len(),
-                projection.previews.len(),
-                projection.revisions.len()
-            ),
-            (
-                LIVE_ITEM_WINDOW,
-                LIVE_ITEM_WINDOW,
-                LIVE_ITEM_WINDOW,
-                LIVE_ITEM_WINDOW
-            )
-        );
-        assert!(!projection.facts.contains_key("part-0000"));
-        assert!(
-            projection
-                .facts
-                .contains_key(&format!("part-{LIVE_ITEM_WINDOW:04}"))
-        );
-        projection.retain(&state);
-        assert_retention_tables(&projection);
-
-        state.turns = vec![pl_core::thread::TurnRecord {
-            turn_id: "next-turn".into(),
-            ..turn
-        }]
-        .into();
-        projection.retain(&state);
-        assert_retention_tables(&projection);
-        assert!(
-            projection.items.is_empty()
-                && projection.facts.is_empty()
-                && projection.previews.is_empty()
-                && projection.revisions.is_empty()
-        );
-        assert!(projection.observed.is_empty());
-        projection.retain(&state);
-        assert_retention_tables(&projection);
-    }
-
-    #[test]
-    fn interrupted_reasoning_uses_runtime_fields_and_execution_placement() -> anyhow::Result<()> {
-        let mut projection = LiveProjection::new();
-        let id = super::super::order::presentation_id(
-            "attempt",
-            0,
-            "provider-item",
-            Some(PresentationPart::ReasoningText(0)),
-        );
-        projection.store_fact(
-            id.clone(),
-            Fact {
-                ordinal: 42,
-                revision: 9,
-                created_at: 10,
-                turn_id: "turn".into(),
-            },
-        );
-        projection.store_preview(
-            id.clone(),
-            LivePreview {
-                fields: BTreeMap::from([(
-                    BodyKey::Part(PresentationPart::ReasoningText(0)),
-                    ContentBlock::from_text("received reasoning prefix"),
-                )]),
-                observed: None,
-                shape: ExecutionShape::Thinking(ThreadThinkingItem::new(
-                    Vec::new(),
-                    Vec::new(),
-                    ThreadContentLifecycle::streaming(),
-                )),
-                observed_version: 8,
-                model_part: None,
-            },
-        );
-        let items = projection.attempt_preview_items("thread", "attempt", "turn")?;
-        assert_eq!(items.len(), 1);
-        let (actual_id, item) = &items[0];
-        assert_eq!(actual_id, &id);
-        assert_eq!((item.ordinal, item.revision, item.created_at), (42, 9, 10));
-        let ExecutionShape::Thinking(thinking) = item.state() else {
-            anyhow::bail!("thinking preview lost its execution kind");
-        };
-        assert_eq!(thinking.content(), ["received reasoning prefix"]);
-        assert!(
-            !item.is_terminal(),
-            "only the subsequent reliable effect closes the prefix"
-        );
         Ok(())
-    }
-
-    #[test]
-    fn terminal_tool_with_pending_interaction_does_not_seed_a_sealed_completion() {
-        let tool = ThreadToolItem::new(
-            pl_protocol::ThreadToolInvocation::new("call".into(), "ask".into(), "{}".into()),
-            ThreadToolState::Interrupted(pl_protocol::InterruptedThreadTool::new(
-                10,
-                "waiting".into(),
-            )),
-        )
-        .with_user_input(Some(pl_protocol::ThreadToolUserInput::new(
-            "interaction".into(),
-            Vec::new(),
-            pl_protocol::ThreadToolUserInputState::Pending,
-        )));
-        let item = ExecutionItem::new(
-            "tool:4:call".into(),
-            "thread".into(),
-            "turn".into(),
-            1,
-            1,
-            10,
-            10,
-            ExecutionShape::Tool(tool),
-        );
-        assert!(!completion_ready(&item));
-        let mut projection = LiveProjection::new();
-        projection.seed(vec![item.clone()], BTreeSet::new());
-        assert!(
-            !projection
-                .order_index
-                .as_ref()
-                .is_some_and(|index| index.is_sealed(&item.id))
-        );
-        let ExecutionShape::Tool(tool) = item.state() else {
-            unreachable!()
-        };
-        let answered = item.clone().with_state(ExecutionShape::Tool(
-            ThreadToolItem::new(tool.invocation().clone(), tool.state().clone()).with_user_input(
-                Some(pl_protocol::ThreadToolUserInput::new(
-                    "interaction".into(),
-                    Vec::new(),
-                    pl_protocol::ThreadToolUserInputState::Cancelled,
-                )),
-            ),
-        ));
-        assert!(completion_ready(&answered));
     }
 }

@@ -22,7 +22,7 @@ TimelineDisplayUnit _single({
     id: blockId,
     blockOrder: 2,
     body: SingleDisplayBlock(
-      visibility: SingleVisibility.content,
+      visibility: HistorySingleVisibility.content,
       record: DisplayRecord(
         atom: ChatAtom(
           id: 'background-message-atom',

@@ -1,9 +1,9 @@
 use sea_orm::DatabaseConnection;
 use std::path::PathBuf;
 
+use crate::history::{HistoryLimits, HistoryStore};
 use crate::studio::paths::StudioPaths;
 use crate::studio::storage::coordinator::ThreadPersistenceCoordinator;
-use crate::studio::storage::history::HistoryStore;
 use crate::studio::storage::{calls::CallsStore, state::StateStore};
 
 pub(crate) mod agent_close;
@@ -80,46 +80,65 @@ impl StudioStore {
         workspace_id: &str,
         thread_id: &str,
     ) -> anyhow::Result<HistoryStore> {
-        let _admission = self.history_admission.read().await;
         self.ensure_delete_read_allowed(thread_id).await?;
         if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
             return Ok(shared);
         }
-        let opened = HistoryStore::open(
-            &self
-                .session_paths(workspace_id, thread_id)?
-                .history_database(),
-            thread_id,
-        )
-        .await?;
+        let _maintenance = self.history_admission.write().await;
+        self.ensure_delete_read_allowed(thread_id).await?;
+        if let Some(shared) = self.thread_persistence.shared_history(thread_id) {
+            return Ok(shared);
+        }
+        let session = self.session_paths(workspace_id, thread_id)?;
+        let path = session.history_database();
+        if !tokio::fs::try_exists(&path).await? {
+            let state = self.state_for(workspace_id, thread_id)?;
+            // Only the named maintenance boundary may import a v2 TOML-only session. A normal
+            // current file wins; stale legacy originals are retained as evidence, never a fallback.
+            if state.load_current().await?.is_none() && state.legacy_checkpoint().await?.is_some() {
+                self.thread_persistence.retire_history_for_upgrade(thread_id).await?;
+                let legacy = crate::studio::storage::history::HistoryStore::open(&path, thread_id).await?;
+                let imported = state.legacy_prepare(&legacy).await;
+                let closed = legacy.close_for_deletion().await;
+                imported?;
+                closed?;
+            }
+        }
+        if tokio::fs::try_exists(&path).await? {
+            self.thread_persistence
+                .retire_history_for_upgrade(thread_id)
+                .await?;
+            crate::history::upgrade_history(&path, thread_id, session.root()).await?;
+        }
+        let opened = HistoryStore::open(&path, thread_id, HistoryLimits::default()).await?;
         Ok(self
             .thread_persistence
             .install_shared_history(thread_id, &opened))
     }
 
-    /// One session per live Thread, shared by the writer and every content reader.
-    /// Opening a cold view does not activate a Thread or create a database file.
-    #[cfg(test)]
-    pub(crate) async fn chat_session(
+    /// Opens an existing history independently from current; schema 24 alone uses maintenance.
+    pub(crate) async fn open_history_reader(
         &self,
         thread_id: &str,
-    ) -> anyhow::Result<pl_core::chat::Session> {
-        let session = self.registered_session_paths(thread_id)?;
-        self.chat_session_for(session.workspace_id(), thread_id)
-            .await
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn chat_session_for(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-    ) -> anyhow::Result<pl_core::chat::Session> {
-        Ok(self
-            .conversation_store_for(workspace_id, thread_id)
-            .await?
-            .session()
-            .clone())
+    ) -> anyhow::Result<crate::history::HistoryReader> {
+        self.ensure_delete_read_allowed(thread_id).await?;
+        if let Some(history) = self.thread_persistence.shared_history(thread_id) {
+            return Ok(history.reader());
+        }
+        let _maintenance = self.history_admission.write().await;
+        if let Some(history) = self.thread_persistence.shared_history(thread_id) {
+            return Ok(history.reader());
+        }
+        let paths = self.registered_session_paths(thread_id)?;
+        let path = paths.history_database();
+        crate::history::upgrade_history(&path, thread_id, paths.root()).await?;
+        crate::history::HistoryStore::open_reader(
+            path,
+            thread_id,
+            crate::history::HistoryLimits::default(),
+        )
+        .await
+        .map_err(anyhow::Error::from)
     }
 
     pub(crate) async fn conversation_store(
@@ -142,8 +161,11 @@ impl StudioStore {
         if let Some(active) = self.thread_persistence.conversation_store(thread_id) {
             return Ok(active);
         }
+        let state = self.state_for(workspace_id, thread_id)?;
         let session = crate::studio::conversation_store::ConversationStore::new(
             self.history_for(workspace_id, thread_id).await?,
+            state,
+            self.thread_persistence.clone(),
         )?;
         Ok(self
             .thread_persistence

@@ -109,6 +109,12 @@ impl From<serde_json::Error> for BridgeError {
     }
 }
 
+impl From<pl_studio_runtime::history::HistoryError> for BridgeError {
+    fn from(error: pl_studio_runtime::history::HistoryError) -> Self {
+        Self::from(anyhow::Error::new(error))
+    }
+}
+
 impl From<pl_protocol::PureError> for BridgeError {
     fn from(error: pl_protocol::PureError) -> Self {
         Self::from(anyhow::Error::new(error))

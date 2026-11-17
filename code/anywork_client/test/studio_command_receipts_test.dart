@@ -210,8 +210,11 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(String threadId) =>
-      Future.value(ScriptedConversationStateFeed(threadId: threadId));
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) => Future.value(ScriptedCurrentReader(threadId: threadId));
 
   @override
   Future<void> compactThread(String threadId) {
@@ -419,10 +422,11 @@ final class _RouteConflictFeed extends ScriptedConversationFeed {
 
 /// A state feed whose native close stays observable and gateable, mirroring
 /// [_RouteConflictFeed] on the independent state channel.
-final class _RouteConflictStateFeed extends ScriptedConversationStateFeed {
+final class _RouteConflictStateFeed extends ScriptedCurrentReader {
   _RouteConflictStateFeed({
     required super.threadId,
     required super.states,
+    super.initialView,
     required this.onClose,
   });
 
@@ -481,9 +485,11 @@ final class _RouteConflictTransport extends _Transport {
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async {
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) async {
     final index = stateBindings.length;
     // Frames may have no consumer when opening is retired immediately.
     final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
@@ -494,6 +500,9 @@ final class _RouteConflictTransport extends _Transport {
     return _RouteConflictStateFeed(
       threadId: threadId,
       states: binding.stream,
+      initialView: currentViewForWorkspace(
+        _workspace(revision: index + 1, routeRevision: 3),
+      ),
       onClose: () => onStateFeedClose?.call(index) ?? Future<void>.value(),
     );
   }
@@ -939,7 +948,7 @@ Future<AnyworkClient> _client(
       .attachConsumer(consumer, demand: _demand);
   _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
-  await scriptedStateFeed('thread');
+  await scriptedCurrentReader('thread');
   final feed = transport.contentWindows.single;
   await feed.acknowledged(1);
   await client.conversations.session('thread').deliverWorkspace(_workspace());
@@ -2600,7 +2609,7 @@ void main() {
           expect(report.complete, isFalse);
           expect(
             report.unresolved.map((resource) => resource.owner),
-            contains('conversation-state:thread'),
+            contains('current-state:thread'),
             reason: 'the gated state cleanup stays owned for retry',
           );
         }
@@ -3854,7 +3863,7 @@ void main() {
         .content
         .attachConsumer(TestCompletionConsumer(), demand: _demand);
     client.conversations.setVisibleThread('thread');
-    await scriptedStateFeed('thread');
+    await scriptedCurrentReader('thread');
     await transport.contentWindows.single.acknowledged(1);
     await client.conversations
         .session('thread')

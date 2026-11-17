@@ -1,21 +1,19 @@
-//! Explicit bounded completion coverage and reliable final verification on the original read lease.
+//! Bounded bot-reply decoding from immutable History originals and current previews.
 
 use super::projection::{ReplyProjection, gap};
-use crate::studio::{ConversationReader, StudioRuntime};
-use pl_protocol::{
-    ActivitySnapshot, ChatAtomKind, ChatAtomLifecycle, ChatContentRole, ChatSourceId,
-    CompletedEntry, ContentOwner, ContentRange, ContentRef, ContentTarget, PayloadData, ReadDemand,
-    ThreadTextChannel, TurnState,
+use crate::history::{
+    HistoryDemand, HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventDetail,
+    HistoryEventsQuery, HistoryReader, HistoryRowHead, HistoryTurnState,
 };
+use pl_protocol::{ChatAtomKind, ChatSourceId, ThreadTextChannel, TurnState};
 use serde::Deserialize;
-use std::collections::BTreeSet;
 
 pub(super) const MAX_TURN_CONTENT_ITEMS: usize = 16_384;
 pub(super) const MAX_TURN_BODY_BYTES: usize = 800_000;
 const WINDOW_BYTES: u32 = 32 * 1024;
 
-pub(super) fn demand() -> ReadDemand {
-    ReadDemand {
+pub(super) fn demand() -> pl_protocol::ReadDemand {
+    pl_protocol::ReadDemand {
         max_items: 100,
         max_bytes: 256 * 1024,
     }
@@ -37,7 +35,6 @@ pub(super) enum FinalText {
 #[derive(Clone)]
 pub(super) struct ReplyItem {
     pub(super) member_id: String,
-    /// Frozen payload/content owner, which may differ from the stable member.
     pub(super) id: String,
     pub(super) kind: ReplyItemKind,
 }
@@ -73,7 +70,7 @@ pub(super) struct Body {
     key: String,
     pub(super) byte_length: u64,
     inline: Option<Vec<u8>>,
-    reference: Option<ContentRef>,
+    reference: Option<HistoryEventBodyRef>,
 }
 
 #[derive(Deserialize)]
@@ -87,74 +84,142 @@ struct Envelope {
     bodies: Vec<Body>,
 }
 
-/// Decode only the frozen public envelope. Unknown/bad payload is a gap, never
-/// permission to silently omit a possible Final. No private checkpoint fallback.
-pub(super) async fn decode_entry(
-    reader: &ConversationReader,
-    entry: &CompletedEntry,
+pub(super) async fn history_turn_items(
+    reader: &HistoryReader,
     turn_id: &str,
-) -> Result<Option<ReplyItem>, FinalError> {
-    let source = &entry.atom;
-    let id = entry.record_id.as_str();
-    if id.is_empty()
-        || entry.completion_seq == 0
-        || source.completion_item_id.as_deref() != Some(id)
-        || source.completion_seq != Some(entry.completion_seq)
-        || !matches!(source.lifecycle, ChatAtomLifecycle::Terminal { .. })
-    {
-        return Err(gap(
-            "reply completion identity or publication position conflict",
+) -> Result<Vec<ReplyItem>, FinalError> {
+    let mut cursor = None;
+    let mut items = Vec::new();
+    loop {
+        let page = reader
+            .events_page(
+                HistoryEventsQuery::Turn {
+                    turn_id: turn_id.to_owned(),
+                },
+                None,
+                cursor,
+                HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await
+            .map_err(|error| read_failure("reply Turn originals failed", error))?;
+        for detail in page.entries {
+            if detail.header.original.is_some()
+                && let Some(item) = decode_original(reader, &detail, turn_id).await?
+            {
+                items.push((detail.header.seq, item));
+                if items.len() > MAX_TURN_CONTENT_ITEMS {
+                    return Err(FinalError::Attention(
+                        "reply Turn exceeded its completion-record budget".into(),
+                    ));
+                }
+            }
+        }
+        let Some(next) = page.next else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    items.sort_by_key(|(seq, _)| *seq);
+    let items = items.into_iter().map(|(_, item)| item).collect::<Vec<_>>();
+    let bytes = items
+        .iter()
+        .try_fold(0usize, |bytes, item| {
+            bytes.checked_add(item.preview_bytes())
+        })
+        .ok_or_else(|| gap("reply body size overflow"))?;
+    if bytes > MAX_TURN_BODY_BYTES {
+        return Err(FinalError::Attention(
+            "reply Turn exceeded its body budget".into(),
         ));
     }
-    let payload = source
-        .payload
-        .as_ref()
-        .ok_or_else(|| gap("terminal reply atom has no frozen payload"))?;
-    let atom = ReplyMetadata {
-        id: source.id.clone(),
-        source: source.source.clone(),
-        turn_id: source.turn_id.clone(),
-        kind: source.kind,
-        tool: source.tool.clone(),
-        text_channel: source.text_channel,
-        contents: source.contents.clone(),
+    Ok(items)
+}
+
+pub(super) async fn history_turn_terminal(
+    reader: &HistoryReader,
+    turn_id: &str,
+) -> Result<bool, FinalError> {
+    let mut cursor = None;
+    loop {
+        let page = reader
+            .events_page(
+                HistoryEventsQuery::Turn {
+                    turn_id: turn_id.to_owned(),
+                },
+                None,
+                cursor,
+                HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await
+            .map_err(|error| read_failure("reply Turn head failed", error))?;
+        for entry in page.entries {
+            match entry.head {
+                Some(HistoryRowHead::Turn(head))
+                    if matches!(
+                        head.state,
+                        HistoryTurnState::Completed
+                            | HistoryTurnState::Cancelled
+                            | HistoryTurnState::Failed
+                            | HistoryTurnState::BudgetLimited
+                    ) =>
+                {
+                    return Ok(true);
+                }
+                Some(HistoryRowHead::Single(HistoryEntityHead {
+                    state: HistoryEntityState::KnownTerminal { .. },
+                    ..
+                }))
+                | Some(HistoryRowHead::Member(HistoryEntityHead {
+                    state: HistoryEntityState::KnownTerminal { .. },
+                    ..
+                })) => return Ok(true),
+                _ => {}
+            }
+        }
+        let Some(next) = page.next else {
+            return Ok(false);
+        };
+        cursor = Some(next);
+    }
+}
+
+async fn decode_original(
+    reader: &HistoryReader,
+    detail: &HistoryEventDetail,
+    target_turn: &str,
+) -> Result<Option<ReplyItem>, FinalError> {
+    let head = match detail.head.as_ref() {
+        Some(HistoryRowHead::Single(head) | HistoryRowHead::Member(head)) => head,
+        _ => return Ok(None),
     };
-    if atom.id.is_empty() || source_identity(&atom.source).is_empty() {
-        return Err(gap("reply item has no identity"));
-    }
-    if let ChatSourceId::ForegroundTurn { turn_id } = &atom.source
-        && atom.turn_id.as_deref() != Some(turn_id)
-    {
-        return Err(gap("reply source and Turn identity conflict"));
-    }
-    // A received external message remains input data. Its claimed channel,
-    // outcome or payload cannot authorize a bot response or a Turn terminal.
-    if matches!(atom.source, ChatSourceId::InboxMessage { .. }) {
+    let id = detail
+        .header
+        .entity_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| gap("reply original has no entity identity"))?;
+    if detail.header.turn_id.as_deref() != Some(target_turn) {
         return Ok(None);
     }
-    if let PayloadData::Deferred { reference, .. } = payload
-        && (reference.database_id.is_empty()
-            || !matches!(&reference.target, ContentTarget::ItemPayload { item_id } if item_id == id))
-    {
-        return Err(gap("deferred reply payload identity conflict"));
+    if matches!(&head.source, ChatSourceId::InboxMessage { .. }) {
+        return Ok(None);
     }
-    // Metadata only selects candidates; it does not authorize delivery. Avoid
-    // fetching arbitrary tool logs (which can be much larger than the reply budget).
-    // A candidate still needs its actual frozen output receipt decoded below.
-    if atom.kind == ChatAtomKind::ToolCall
-        && (atom
+    if head.kind == ChatAtomKind::ToolCall
+        && head
             .tool
             .as_ref()
             .is_none_or(|tool| tool.name != pl_tool::file_display::TOOL_SHOW_FILES)
-            || atom.turn_id.as_deref() != Some(turn_id)
-            || !matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id: source } if source == turn_id))
     {
         return Ok(None);
     }
-    // Main also includes work now. Its known domain is sufficient to skip
-    // unrelated payloads; Unknown never grants permission to omit a possible Final.
     if !matches!(
-        atom.kind,
+        &head.kind,
         ChatAtomKind::Text
             | ChatAtomKind::ToolCall
             | ChatAtomKind::Interaction
@@ -164,119 +229,18 @@ pub(super) async fn decode_entry(
     ) {
         return Ok(None);
     }
-    let bytes = match payload {
-        PayloadData::Inline { bytes } => {
-            check_length(bytes.len() as u64)?;
-            bytes.clone()
-        }
-        PayloadData::Deferred {
-            reference,
-            byte_length,
-        } => read_bytes(reader, reference, *byte_length, true).await?,
-    };
-    decode_envelope(reader, &atom, id, &bytes, turn_id).await
-}
-
-/// Read only a bounded actual Final body. Activity carries references, never
-/// authorizes commentary by display role, and never proves Turn completion.
-pub(super) async fn decode_activity(
-    reader: &ConversationReader,
-    snapshot: &ActivitySnapshot,
-    turn_id: &str,
-    index: usize,
-) -> Result<Option<(String, String)>, FinalError> {
-    let atom = &snapshot.entries[index].atom;
-    if atom.turn_id.as_deref() != Some(turn_id)
-        || atom.kind != ChatAtomKind::Text
-        || atom.text_channel != Some(ThreadTextChannel::Final)
-        || !matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id: source } if source == turn_id)
-        || !matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. })
-    {
-        return Ok(None);
-    }
-    let mut bodies = atom
-        .contents
-        .iter()
-        .filter(|content| content.role == ChatContentRole::Body);
-    let body = bodies
-        .next()
-        .ok_or_else(|| gap("active Final has no body reference"))?;
-    if bodies.next().is_some() || atom.id.is_empty() {
-        return Err(gap("active Final body identity conflict"));
-    }
-    if !matches!(&body.reference.target,
-        ContentTarget::Body { owner: ContentOwner::Item { item_id }, key }
-        if item_id == &atom.id && key == "body")
-    {
-        return Err(gap("active Final content ownership conflict"));
-    }
-    let window = reader
-        .read_content(
-            &body.reference,
-            ContentRange {
-                offset: 0,
-                max_bytes: WINDOW_BYTES,
-            },
-        )
-        .await
-        .map_err(|error| read_failure("active Final content range failed", error))?;
-    check_length(window.available_through)?;
-    if window.offset != 0
-        || window.bytes.len() > WINDOW_BYTES as usize
-        || window.bytes.len() as u64 > window.available_through
-        || window.generation.is_empty()
-        || window.bytes.is_empty() && window.available_through > 0
-    {
-        return Err(gap("active Final content range coverage conflict"));
-    }
-    let text = match String::from_utf8(window.bytes) {
-        Ok(text) => text,
-        Err(error)
-            if error.utf8_error().error_len().is_none()
-                && (error.as_bytes().len() as u64) < window.available_through =>
-        {
-            let through = error.utf8_error().valid_up_to();
-            String::from_utf8(error.into_bytes()[..through].to_vec())
-                .map_err(|_| gap("invalid active Final UTF-8 prefix"))?
-        }
-        Err(_) => return Err(gap("invalid active Final UTF-8")),
-    };
-    Ok(Some((atom.id.clone(), text)))
-}
-
-fn source_identity(source: &ChatSourceId) -> &str {
-    match source {
-        ChatSourceId::ForegroundTurn { turn_id } => turn_id,
-        ChatSourceId::Input { input_id } => input_id,
-        ChatSourceId::InboxMessage {
-            source_id,
-            message_id,
-        } => {
-            if source_id.is_empty() {
-                ""
-            } else {
-                message_id
-            }
-        }
-        ChatSourceId::BackgroundResult { message_id } => message_id,
-        ChatSourceId::Operation { operation_id } => operation_id,
-        ChatSourceId::Receipt { receipt_id } => receipt_id,
-    }
-}
-
-struct ReplyMetadata {
-    id: String,
-    source: ChatSourceId,
-    turn_id: Option<String>,
-    kind: ChatAtomKind,
-    tool: Option<pl_protocol::ChatToolIdentity>,
-    text_channel: Option<ThreadTextChannel>,
-    contents: Vec<pl_protocol::ChatAtomContent>,
+    let payload = detail
+        .payload_ref
+        .as_ref()
+        .ok_or_else(|| gap("reply original has no canonical payload"))?;
+    let bytes = read_bytes(reader, payload, true).await?;
+    decode_envelope(reader, head, detail, id, &bytes, target_turn).await
 }
 
 async fn decode_envelope(
-    reader: &ConversationReader,
-    atom: &ReplyMetadata,
+    reader: &HistoryReader,
+    head: &HistoryEntityHead,
+    detail: &HistoryEventDetail,
     id: &str,
     bytes: &[u8],
     target: &str,
@@ -286,38 +250,27 @@ async fn decode_envelope(
     if envelope.contract != "anywork.chat/1" {
         return Err(gap("unsupported reply envelope contract"));
     }
-    if envelope.turn_id != atom.turn_id {
-        return Err(gap("reply metadata and frozen payload Turn conflict"));
+    if envelope.turn_id.as_deref() != Some(target) {
+        return Ok(None);
     }
-    let expected = match atom.kind {
+    let expected = match &head.kind {
         ChatAtomKind::Text => Some("text"),
-        ChatAtomKind::Interaction => Some("tool"),
-        ChatAtomKind::ToolCall => Some("tool"),
+        ChatAtomKind::Interaction | ChatAtomKind::ToolCall => Some("tool"),
         ChatAtomKind::Plan => Some("plan"),
         ChatAtomKind::TurnReceipt => Some("turn"),
         ChatAtomKind::Unknown => None,
-        _ => unreachable!("unrelated domain payloads are not decoded"),
+        _ => return Ok(None),
     };
     if expected.is_some_and(|kind| kind != envelope.kind) {
         return Err(gap("reply metadata and frozen payload domain conflict"));
     }
-    if atom.kind == ChatAtomKind::Unknown
-        && !matches!(envelope.kind.as_str(), "text" | "turn" | "tool" | "plan")
-    {
-        return Err(gap(
-            "unknown reply domain cannot prove an unrelated payload",
-        ));
-    }
-    if let Some(tool) = &atom.tool
+    if let Some(tool) = &head.tool
         && (envelope.data["invocation"]["toolCallId"].as_str() != Some(tool.call_id.as_str())
             || envelope.data["invocation"]["name"].as_str() != Some(tool.name.as_str()))
     {
         return Err(gap(
             "reply metadata and frozen payload tool identity conflict",
         ));
-    }
-    if envelope.turn_id.as_deref() != Some(target) {
-        return Ok(None);
     }
     let kind = match envelope.kind.as_str() {
         "text" => {
@@ -329,38 +282,20 @@ async fn decode_envelope(
                     .ok_or_else(|| gap("reply text lacks channel"))?,
             )
             .map_err(|error| gap(&format!("invalid reply text channel: {error}")))?;
-            if atom.text_channel != Some(channel) {
+            if head.text_channel.as_ref() != Some(&channel) {
                 return Err(gap("reply metadata and frozen payload channel conflict"));
             }
             if channel != ThreadTextChannel::Final {
                 return Ok(None);
             }
-            let mut bodies = envelope
-                .bodies
-                .into_iter()
-                .filter(|body| body.key == "body");
-            let body = bodies
-                .next()
-                .ok_or_else(|| gap("canonical Final lacks explicit body manifest"))?;
-            if bodies.next().is_some() {
-                return Err(gap("canonical Final has duplicate body manifests"));
-            }
-            body.validate(id)?;
-            for content in &atom.contents {
-                if content.role == ChatContentRole::Body
-                    && (content.reference.database_id.is_empty()
-                        || !matches!(&content.reference.target,
-                            ContentTarget::Body { owner: ContentOwner::Item { item_id }, key }
-                                if item_id == id && key == &body.key)
-                        || body
-                            .reference
-                            .as_ref()
-                            .is_some_and(|reference| reference != &content.reference))
-                {
-                    return Err(gap("reply metadata and frozen body ownership conflict"));
+            let body = unique_body(&envelope.bodies, "body", detail, id)?;
+            let bytes = body.read(reader, true).await?;
+            let preview = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(error) => {
+                    return Err(gap(&format!("canonical Final body is not UTF-8: {error}")));
                 }
-            }
-            let preview = body.read(reader, false).await?;
+            };
             ReplyItemKind::Final { body, preview }
         }
         "turn" => {
@@ -374,45 +309,27 @@ async fn decode_envelope(
             .map_err(|error| gap(&format!("invalid canonical TurnState: {error}")))?;
             if state.completed_at().is_none() {
                 return Err(gap(
-                    "completed reply message contains nonterminal TurnState",
+                    "completed reply original contains nonterminal TurnState",
                 ));
             }
             ReplyItemKind::Terminal(state)
         }
         "tool" => {
-            if atom.kind == ChatAtomKind::ToolCall
-                && atom
-                    .tool
-                    .as_ref()
-                    .is_some_and(|tool| tool.name == pl_tool::file_display::TOOL_SHOW_FILES)
+            if head.kind == ChatAtomKind::ToolCall
                 && envelope.data["invocation"]["presentationContract"].as_str()
                     == Some(pl_tool::file_display::FILE_DISPLAY_PRESENTATION)
                 && envelope.data["state"]["kind"].as_str() == Some("succeeded")
-                && matches!(&atom.source, ChatSourceId::ForegroundTurn { turn_id } if turn_id == target)
             {
                 let call_id = envelope.data["invocation"]["toolCallId"]
                     .as_str()
                     .filter(|id| !id.is_empty())
                     .ok_or_else(|| gap("file display lacks frozen tool call identity"))?;
-                let mut artifacts = envelope
-                    .bodies
-                    .iter()
-                    .filter(|body| body.key == "tool.output-artifacts");
-                let body = artifacts
-                    .next()
-                    .ok_or_else(|| gap("file display lacks reliable output artifacts"))?;
-                if artifacts.next().is_some() {
-                    return Err(gap("file display has duplicate artifact bodies"));
-                }
-                body.validate(id)?;
+                let body = unique_body(&envelope.bodies, "tool.output-artifacts", detail, id)?;
                 let bytes = body.read(reader, true).await?;
-                let artifacts: Vec<serde_json::Value> = serde_json::from_str(&bytes)
+                let artifacts: Vec<serde_json::Value> = serde_json::from_slice(&bytes)
                     .map_err(|error| gap(&format!("malformed display artifacts: {error}")))?;
                 let mut receipt = None;
                 for artifact in artifacts {
-                    // The producer adds this explicit ContextContent wrapper only after
-                    // decoding the actual output payload. Bare resources and opaque model
-                    // context are not display authorization.
                     if artifact["kind"].as_str() != Some("opaque") {
                         continue;
                     }
@@ -429,7 +346,7 @@ async fn decode_envelope(
                 }
                 let receipt = receipt.ok_or_else(|| gap("file display has no verified receipt"))?;
                 return Ok(Some(ReplyItem {
-                    member_id: atom.id.clone(),
+                    member_id: id.into(),
                     id: id.into(),
                     kind: ReplyItemKind::Files {
                         call_id: call_id.into(),
@@ -443,8 +360,8 @@ async fn decode_envelope(
                 .get("userInput")
                 .filter(|value| !value.is_null())
             else {
-                if atom.kind == ChatAtomKind::Interaction {
-                    return Err(gap("reply Interaction metadata lacks frozen user input"));
+                if head.kind == ChatAtomKind::Interaction {
+                    return Err(gap("reply Interaction original lacks frozen user input"));
                 }
                 return Ok(None);
             };
@@ -465,55 +382,54 @@ async fn decode_envelope(
         _ => return Err(gap("unsupported target reply payload type")),
     };
     Ok(Some(ReplyItem {
-        member_id: atom.id.clone(),
+        member_id: id.into(),
         id: id.into(),
         kind,
     }))
 }
 
+fn unique_body<'a>(
+    bodies: &'a [Body],
+    key: &str,
+    detail: &HistoryEventDetail,
+    _id: &str,
+) -> Result<Body, FinalError> {
+    let mut matching = bodies.iter().filter(|body| body.key == key);
+    let body = matching
+        .next()
+        .cloned()
+        .ok_or_else(|| gap("canonical reply body is missing"))?;
+    if matching.next().is_some() {
+        return Err(gap("canonical reply body has duplicate declarations"));
+    }
+    body.validate(detail, _id)?;
+    Ok(body)
+}
+
 impl Body {
-    fn validate(&self, item: &str) -> Result<(), FinalError> {
+    fn validate(&self, detail: &HistoryEventDetail, _item: &str) -> Result<(), FinalError> {
         check_length(self.byte_length)?;
         match (&self.inline, &self.reference) {
             (Some(bytes), None) if bytes.len() as u64 == self.byte_length => Ok(()),
             (None, Some(reference))
-                if matches!(&reference.target,
-                ContentTarget::Body { owner: ContentOwner::Item { item_id }, key } if item_id == item && key == &self.key) =>
+                if reference.owner_event_id == detail.header.event_id
+                    && reference.body_key == self.key
+                    && reference.byte_length == self.byte_length
+                    && reference.byte_start == 0 =>
             {
                 Ok(())
             }
             _ => Err(gap(
-                "canonical Final body manifest identity or length conflict",
+                "canonical reply body reference identity or length conflict",
             )),
         }
     }
 
-    async fn read(
-        &self,
-        reader: &ConversationReader,
-        complete: bool,
-    ) -> Result<String, FinalError> {
-        let bytes = match (&self.inline, &self.reference) {
-            (Some(bytes), None) => bytes.clone(),
-            (None, Some(reference)) => {
-                read_bytes(reader, reference, self.byte_length, complete).await?
-            }
-            _ => return Err(gap("canonical Final body manifest has no unique source")),
-        };
-        match String::from_utf8(bytes) {
-            Ok(text) => Ok(text),
-            Err(error)
-                if !complete
-                    && self.reference.is_some()
-                    && error.utf8_error().error_len().is_none() =>
-            {
-                // A byte window may end inside a scalar. Only this incomplete
-                // boundary is omitted from the preview; malformed bytes still fail.
-                let through = error.utf8_error().valid_up_to();
-                String::from_utf8(error.into_bytes()[..through].to_vec())
-                    .map_err(|_| gap("invalid canonical Final UTF-8 prefix"))
-            }
-            Err(error) => Err(gap(&format!("canonical Final body is not UTF-8: {error}"))),
+    async fn read(&self, reader: &HistoryReader, complete: bool) -> Result<Vec<u8>, FinalError> {
+        match (&self.inline, &self.reference) {
+            (Some(bytes), None) => Ok(bytes.clone()),
+            (None, Some(reference)) => read_bytes(reader, reference, complete).await,
+            _ => Err(gap("canonical reply body has no unique source")),
         }
     }
 }
@@ -527,77 +443,55 @@ fn check_length(length: u64) -> Result<(), FinalError> {
     Ok(())
 }
 
-/// Bounded ranges are issued before allocating the object. In particular a Deferred
-/// ItemPayload exceeding the bot budget is rejected before any full-object read.
 async fn read_bytes(
-    reader: &ConversationReader,
-    reference: &ContentRef,
-    length: u64,
+    reader: &HistoryReader,
+    reference: &HistoryEventBodyRef,
     complete: bool,
 ) -> Result<Vec<u8>, FinalError> {
-    check_length(length)?;
+    check_length(reference.byte_length)?;
     let mut bytes = Vec::new();
-    let mut generation = None;
     loop {
         let offset = bytes.len() as u64;
-        let max_bytes = WINDOW_BYTES.min((length - offset).max(1) as u32);
+        let max_bytes = WINDOW_BYTES.min((reference.byte_length - offset).max(1) as u32);
         let window = reader
-            .read_content(reference, ContentRange { offset, max_bytes })
+            .read_body(reference.clone(), offset, max_bytes)
             .await
-            .map_err(|error| read_failure("canonical reply content range failed", error))?;
+            .map_err(|error| read_failure("canonical reply history range failed", error))?;
         if window.offset != offset
-            || window.available_through != length
-            || !window.sealed
-            || window.generation.is_empty()
-            || generation
-                .as_ref()
-                .is_some_and(|old| old != &window.generation)
+            || window.total_length != reference.byte_length
             || window.bytes.len() > max_bytes as usize
-            || offset + window.bytes.len() as u64 > length
-            || window.bytes.is_empty() && offset < length
+            || offset + window.bytes.len() as u64 > reference.byte_length
+            || window.bytes.is_empty() && offset < reference.byte_length
         {
             return Err(gap(
-                "canonical reply content range identity, generation or coverage conflict",
+                "canonical reply history range identity or coverage conflict",
             ));
         }
-        generation = Some(window.generation);
         bytes.extend(window.bytes);
-        if bytes.len() as u64 == length || !complete {
+        if bytes.len() as u64 == reference.byte_length || !complete {
             return Ok(bytes);
         }
     }
 }
 
-/// Only completed messages already accepted by this feed are used. Its original
-/// page ceiling is not reopened with a cursor from another lease. Append ordering
-/// plus recovered prefix covers the exact target; the barrier establishes durable
-/// save coverage before any terminal platform action (including failure/cancel).
-pub(super) async fn collect_complete_turn_text(
-    runtime: &StudioRuntime,
-    reader: &ConversationReader,
+pub(super) fn collect_complete_turn_text(
     projection: &ReplyProjection,
 ) -> Result<FinalText, FinalError> {
     let items = projection.completed()?;
-    runtime
-        .synchronize_thread_observation(reader.thread_id())
-        .await
-        .map_err(|error| read_failure("thread observation barrier failed", error))?;
-    // Even all-inline/empty replies must recheck the original read qualification
-    // after the barrier; closing/replacing a lease must not authorize a final send.
-    reader
-        .ensure()
-        .map_err(|error| read_failure("canonical terminal read qualification failed", error))?;
     let mut text = String::new();
     for item in items {
         if let ReplyItemKind::Final { body, preview } = &item.kind {
-            let value = body.read(reader, true).await?;
-            if !value.starts_with(preview) {
-                return Err(gap("canonical Final does not cover accepted preview"));
+            if preview.len() as u64 != body.byte_length {
+                return Err(gap(
+                    "canonical Final preview does not cover the complete body",
+                ));
             }
-            if text.len().saturating_add(value.len()) > MAX_TURN_BODY_BYTES {
-                check_length(MAX_TURN_BODY_BYTES as u64 + 1)?;
+            if text.len().saturating_add(preview.len()) > MAX_TURN_BODY_BYTES {
+                return Err(FinalError::Attention(
+                    "canonical turn content exceeded 800000 UTF-8 bytes".into(),
+                ));
             }
-            text.push_str(&value);
+            text.push_str(preview);
         }
     }
     if text.trim().is_empty() {
@@ -607,38 +501,28 @@ pub(super) async fn collect_complete_turn_text(
     }
 }
 
-/// Continuations are opaque and local to the original lease. Bound both scanned
-/// items and requests, so even advancing empty pages cannot cause an unbounded walk.
-#[derive(Default)]
-pub(super) struct Coverage {
-    inspected: usize,
-    pages: usize,
-    cursors: BTreeSet<String>,
-}
-impl Coverage {
-    pub(super) fn page(&mut self, entries: &[CompletedEntry]) -> Result<(), FinalError> {
-        self.pages = self.pages.saturating_add(1);
-        self.admit(entries)
+pub(super) fn activity_preview(
+    atom: &pl_protocol::CurrentAtom,
+    body: &pl_protocol::CurrentContentPreview,
+    turn_id: &str,
+) -> Option<String> {
+    if atom.turn_id.as_deref() != Some(turn_id)
+        || atom.kind != ChatAtomKind::Text
+        || atom.text_channel != Some(ThreadTextChannel::Final)
+        || !matches!(
+            &atom.lifecycle,
+            pl_protocol::ChatAtomLifecycle::Active { .. }
+        )
+        || body.id != atom.id
+        || body.role != pl_protocol::CurrentContentRole::Response
+    {
+        return None;
     }
-    pub(super) fn admit(&mut self, entries: &[CompletedEntry]) -> Result<(), FinalError> {
-        self.inspected = self.inspected.saturating_add(entries.len());
-        if self.inspected > MAX_TURN_CONTENT_ITEMS || self.pages > MAX_TURN_CONTENT_ITEMS {
-            return Err(FinalError::Attention(
-                "canonical turn coverage exceeded 16384 completion records or pages".into(),
-            ));
-        }
-        Ok(())
-    }
-    pub(super) fn cursor(&mut self, token: &str) -> Result<(), FinalError> {
-        if token.is_empty() || !self.cursors.insert(token.to_owned()) {
-            return Err(gap("canonical reply cursor did not advance"));
-        }
-        Ok(())
-    }
+    Some(body.text.clone())
 }
 
-pub(super) fn read_failure(context: &str, error: anyhow::Error) -> FinalError {
-    let error = crate::studio_error_from_anyhow(error);
+pub(super) fn read_failure(context: &str, error: impl Into<anyhow::Error>) -> FinalError {
+    let error = crate::studio_error_from_anyhow(error.into());
     let diagnostic = format!(
         "{context}: {} (correlation id: {})",
         error.code.label(),

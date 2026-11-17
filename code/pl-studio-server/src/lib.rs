@@ -48,6 +48,7 @@ pub(crate) struct AppState {
     streams: Arc<Semaphore>,
     shutdown: CancellationToken,
     conversations: Arc<conversation::Conversations>,
+    timelines: Arc<timeline::Timelines>,
 }
 
 impl AppState {
@@ -58,6 +59,7 @@ impl AppState {
             streams: Arc::new(Semaphore::new(MAX_STREAMS)),
             shutdown,
             conversations: Arc::new(conversation::Conversations::default()),
+            timelines: Arc::new(timeline::Timelines::default()),
         }
     }
 }
@@ -89,6 +91,7 @@ pub async fn serve(options: ServerOptions) -> anyhow::Result<()> {
         .context("Studio HTTP server failed");
     shutdown.cancel();
     state.conversations.shutdown().await;
+    state.timelines.shutdown().await;
     let shutdown_result = runtime.shutdown_runtime().await;
     result?;
     shutdown_result?;
@@ -118,8 +121,11 @@ async fn limit_normal_requests(
         || (path.starts_with("/api/v1/threads/")
             && (path.ends_with("/events")
                 || path.ends_with("/contents/watch")
-                || path.ends_with("/timeline/next")
-                || path.ends_with("/timeline/close")))
+                || path.ends_with("/history/changed")
+                || path.ends_with("/current/watch")
+                || path.ends_with("/current/body/watch")
+                || path.ends_with("/history/close")
+                || path.ends_with("/current/close")))
     {
         return next.run(request).await;
     }

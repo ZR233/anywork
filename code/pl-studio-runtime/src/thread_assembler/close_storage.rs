@@ -5,7 +5,7 @@ use futures::{
     FutureExt,
     future::{BoxFuture, Shared},
 };
-use pl_core::thread::{ThreadCheckpoint, ThreadError, ThreadLifecycle};
+use pl_core::thread::{ThreadError, ThreadLifecycle, current::ThreadCurrent};
 use std::sync::Arc;
 
 type AttachmentCompletion = Shared<BoxFuture<'static, Result<(), Arc<ThreadError>>>>;
@@ -24,7 +24,7 @@ pub(crate) enum CloseStorage {
     },
     Pending {
         record: Box<pl_protocol::Thread>,
-        checkpoint: Box<ThreadCheckpoint>,
+        current: Box<ThreadCurrent>,
     },
     Initialized(Arc<ThreadStorageBinding>),
     Attaching {
@@ -137,8 +137,8 @@ impl SessionRuntime {
         }
         // A cold descendant may still use a supported old history format even when the root
         // was already opened. Prepare its storage through the shared recovery boundary before
-        // decoding a current checkpoint; no model, tools or execution identity are restored.
-        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+        // decoding a complete current document; no model, tools or execution identity are restored.
+        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
             &services.store,
             record,
         )
@@ -146,18 +146,18 @@ impl SessionRuntime {
         .map_err(preparation_storage_error)?
         .ok_or_else(|| {
             ThreadAssemblyError::Identity(format!(
-                "archive checkpoint is unconfirmed for {}",
+                "archive current is unconfirmed for {}",
                 record.id
             ))
         })?;
-        services.install_storage_owner(self, record, checkpoint, EntryPurpose::CloseStorage)?;
+        services.install_storage_owner(self, record, current, EntryPurpose::CloseStorage)?;
         Ok(())
     }
 
     pub(super) async fn attach_execution_storage(
         &self,
         id: &str,
-        storage: pl_core::thread::cold::ColdStoreHandle,
+        storage: crate::studio::storage::thread_writer::ThreadStorageSink,
     ) -> Result<(), ThreadAssemblyError> {
         let services = { self.0.state().agent_services.clone() };
         let preparation = match &services {
@@ -221,9 +221,21 @@ impl SessionRuntime {
                 conversation,
             ))
         });
-        let completion = async move { thread.attach_storage(storage).await.map_err(Arc::new) }
-            .boxed()
-            .shared();
+        let current = binding.as_ref().map(|binding| binding.conversation.clone());
+        let completion = async move {
+            if let Some(current) = current {
+                current.attach_current(thread).await.map_err(|source| {
+                    Arc::new(ThreadError::Storage(Arc::new(
+                        pl_core::thread::cold::ColdStoreError {
+                            source: source.into_boxed_dyn_error(),
+                        },
+                    )))
+                })?;
+            }
+            Ok(())
+        }
+        .boxed()
+        .shared();
         self.0
             .state()
             .entries
@@ -350,7 +362,7 @@ impl SessionRuntime {
                     }
                     return Err(ThreadAssemblyError::Identity(id.to_owned()));
                 }
-                Some(CloseStorage::Pending { record, checkpoint }) => {
+                Some(CloseStorage::Pending { record, current }) => {
                     let services = self
                         .0
                         .state()
@@ -360,7 +372,7 @@ impl SessionRuntime {
                     let binding = Arc::new(
                         services
                             .factory
-                            .child_close_storage(&record, &checkpoint)
+                            .child_close_storage(&record, &current)
                             .await?,
                     );
                     {
@@ -400,11 +412,20 @@ impl SessionRuntime {
                     let gate = state
                         .storage_attachment_gate
                         .take_if(|gate| gate.thread_id == id);
-                    let storage = binding.storage.clone();
+                    let conversation = binding.conversation.clone();
                     // No Registry/Entry owner is captured, so retaining this future cannot form
                     // a cycle. A completed result is retained even if no waiter remains.
                     let completion: AttachmentCompletion = async move {
-                        thread.attach_storage(storage).await.map_err(Arc::new)?;
+                        conversation
+                            .attach_current(thread)
+                            .await
+                            .map_err(|source| {
+                                Arc::new(ThreadError::Storage(Arc::new(
+                                    pl_core::thread::cold::ColdStoreError {
+                                        source: source.into_boxed_dyn_error(),
+                                    },
+                                )))
+                            })?;
                         #[cfg(test)]
                         if let Some(gate) = gate {
                             let _ = gate.attached.send(());

@@ -8,6 +8,7 @@ import '../live_status/live_status_state.dart';
 import '../state/timeline_display_diagnostics.dart';
 import '../state/timeline_display_unit.dart';
 import '../state/timeline_image_resources.dart';
+import '../../../../presentation/view_models/timeline_session_owner.dart';
 import '../widgets/conversation_activity_bar.dart';
 import '../widgets/timeline_display_unit_view.dart';
 import 'completion_run_connector.dart';
@@ -44,7 +45,7 @@ class ConversationCurrentConnector extends StatefulWidget {
   final String? turnId;
   final String? activityId;
   final ConversationLiveSection section;
-  final ConversationQueries content;
+  final TimelineDisplayLease content;
   final TimelineDisplayUnit Function(LiveDisplayBlock, bool) liveUnit;
   final TimelineImageResources images;
   final Future<Uint8List> Function(String) readAttachment;
@@ -222,7 +223,7 @@ class _CurrentState extends State<ConversationCurrentConnector>
               activity: surface.mergedActivityFor(block.id),
             ),
             SingleDisplayBlock(
-              visibility: SingleVisibility.finalEmptyAfterContent,
+              visibility: HistorySingleVisibility.finalEmptyAfterContent,
             ) =>
               const Text('该输出的最终内容为空'),
             SingleDisplayBlock(:final record) => TimelineMemberAtom(
@@ -231,7 +232,8 @@ class _CurrentState extends State<ConversationCurrentConnector>
               displayId: block.id,
               executionPresent: window.executionPresent,
               retirement: _retirements[block.id],
-              content: widget.content,
+              threadId: widget.threadId,
+              currentReader: widget.content.current,
               isActive: () =>
                   isCurrent && _retirements[block.id]?.value == false,
               images: widget.images,

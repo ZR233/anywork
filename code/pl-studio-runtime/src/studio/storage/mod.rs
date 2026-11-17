@@ -1,20 +1,7 @@
 pub(crate) mod calls;
 pub(crate) mod coordinator;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
 mod current_file;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "current-only API is intentionally not wired to production before #470"
-    )
-)]
+pub(crate) use current_file::{read_for_upgrade, verify_for_upgrade};
 pub(crate) mod current_writer;
 pub(crate) mod history;
 pub(crate) mod state;
@@ -2578,7 +2565,7 @@ mod mode_migration_tests {
             let db = raw_database(&path).await?;
             let content_prepared = applied_migrations(&db).await?;
             let (read_only, _) = store
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("prepared content is readable before lifecycle recovery")?;
             assert_eq!(
@@ -2646,7 +2633,7 @@ mod mode_migration_tests {
             drop(store);
             let reopened = HistoryStore::open(&path, "migration").await?;
             let (read_only, _) = reopened
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("pending workspace lifecycle does not invalidate prepared content")?;
             assert_eq!(
@@ -2666,7 +2653,7 @@ mod mode_migration_tests {
                 "Schema must not advance workspace lifecycle after ModelAccess was applied"
             );
             let (read_only, _) = reopened
-                .read_only_checkpoint_with_latest_turn()
+                .legacy_test_checkpoint_with_latest_turn()
                 .await?
                 .context("content preparation retains the existing checkpoint")?;
             assert_eq!(
@@ -3099,7 +3086,7 @@ mod mode_migration_tests {
         let cold = HistoryStore::open(&path, "migration").await?;
         assert_eq!(
             serde_json::to_value(
-                cold.read_only_checkpoint_with_latest_turn()
+                cold.legacy_test_checkpoint_with_latest_turn()
                     .await?
                     .context("cold checkpoint after upgrade")?
                     .0
@@ -4169,7 +4156,7 @@ mod mode_migration_tests {
         assert_eq!(recovered.state_revision, 1);
         let foreign = store
             .state_for(&thread.workspace_id, "other-thread")?
-            .prepare_recovery(&history)
+            .legacy_prepare(&history)
             .await
             .expect_err("错 Thread 的 history 句柄必须失败闭锁");
         assert!(

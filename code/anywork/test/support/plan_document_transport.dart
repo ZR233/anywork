@@ -2,62 +2,93 @@ import 'dart:async';
 
 import 'package:anywork_client/studio_client.dart';
 
-import 'mapped_conversation_feed.dart';
 import 'recording_demo_transport.dart';
 
 /// Only delays/fails transport delivery; Demo owns the actual document bytes.
-class PlanDocumentTransport extends RecordingDemoTransport {
+final class PlanDocumentTransport extends RecordingDemoTransport {
   Completer<void>? nextInitialGate;
   Completer<void>? nextReadGate;
   Object? nextReadError;
   int? responseMaxBytes;
   final reads = <PlanDocumentRead>[];
-  int businessReads = 0;
-  int completedReads = 0;
   int olderReads = 0;
   bool controlInteractionPages = false;
   final interactionPages =
       <(CurrentCollectionRef, String?, Completer<CurrentCollectionPage>)>[];
 
   @override
-  Future<TimelineReader> openTimelineReader(
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
+    required int currentProtocolVersion,
     required ReadDemand demand,
   }) async {
     final gate = nextInitialGate;
     nextInitialGate = null;
-    final feed = await super.openTimelineReader(
+    final reader = await super.openCurrentReader(
       threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
+      currentProtocolVersion: currentProtocolVersion,
       demand: demand,
-    );
-    (feed as RecordingTimelineReader).initialGate = gate;
-    return MappedTimelineReader(feed, reader: _PlanReader(feed.reader, this));
+    ) as RecordingCurrentReader;
+    await gate?.future;
+    return _PlanCurrentReader(reader, this);
   }
 }
 
-class PlanDocumentRead {
+final class PlanDocumentRead {
   PlanDocumentRead(this.reference, this.range, this.gate, this.error);
-  final ContentRef reference;
+  final CurrentContentRef reference;
   final ContentRange range;
   final Completer<void>? gate;
   final Object? error;
   bool delivered = false;
 }
 
-class _PlanReader implements ConversationReader {
-  _PlanReader(this.inner, this.transport);
-  final ConversationReader inner;
+final class _PlanCurrentReader implements CurrentReader {
+  _PlanCurrentReader(this.inner, this.transport);
+
+  final RecordingCurrentReader inner;
   final PlanDocumentTransport transport;
 
   @override
+  OpenCurrent get metadata => inner.metadata;
+  @override
   String get threadId => inner.threadId;
   @override
-  Future<ContentWindow> readContent({
-    required ContentRef reference,
+  CurrentView get initialView => inner.initialView;
+  @override
+  Future<CurrentView> snapshot(ReadDemand demand) => inner.snapshot(demand);
+  @override
+  Future<CurrentWatch> watch({
+    CurrentRevision? after,
+    required ReadDemand demand,
+  }) => inner.watch(after: after, demand: demand);
+  @override
+  Future<CurrentBodyWatch> watchBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  }) => inner.watchBody(reference: reference, range: range);
+
+  @override
+  Future<CurrentCollectionPage> pageCollection({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  }) {
+    if (transport.controlInteractionPages) {
+      final result = Completer<CurrentCollectionPage>();
+      transport.interactionPages.add((reference, continuation, result));
+      return result.future;
+    }
+    return inner.pageCollection(
+      reference: reference,
+      continuation: continuation,
+      demand: demand,
+    );
+  }
+
+  @override
+  Future<ContentWindow> readBody({
+    required CurrentContentRef reference,
     required ContentRange range,
   }) async {
     final read = PlanDocumentRead(
@@ -69,8 +100,7 @@ class _PlanReader implements ConversationReader {
     transport.nextReadGate = null;
     transport.nextReadError = null;
     transport.reads.add(read);
-    // Capture a real window before delaying delivery, including across versions.
-    final window = await inner.readContent(
+    final window = await inner.readBody(
       reference: reference,
       range: ContentRange(
         offset: range.offset,
@@ -81,64 +111,6 @@ class _PlanReader implements ConversationReader {
     read.delivered = true;
     if (read.error case final error?) throw error;
     return window;
-  }
-
-  @override
-  Future<ThreadBusinessRefs> readBusinessRefs() {
-    transport.businessReads++;
-    return inner.readBusinessRefs();
-  }
-
-  @override
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
-    required ReadDemand demand,
-  }) {
-    transport.completedReads++;
-    return inner.readCompleted(recordId: recordId, demand: demand);
-  }
-
-  @override
-  Future<ChatBatch> loadOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
-    transport.olderReads++;
-    return inner.loadOlder(before: before, demand: demand);
-  }
-
-  @override
-  Future<ContentManifestPage> listContents({
-    required String itemId,
-    String? continuation,
-    required ReadDemand demand,
-  }) => inner.listContents(
-    itemId: itemId,
-    continuation: continuation,
-    demand: demand,
-  );
-  @override
-  ConversationContentWatch watchContent({
-    required ContentRef reference,
-    required ContentRange range,
-  }) => inner.watchContent(reference: reference, range: range);
-  @override
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) {
-    if (transport.controlInteractionPages) {
-      // Only control delivery; State and the SDK retain reference qualification.
-      final result = Completer<CurrentCollectionPage>();
-      transport.interactionPages.add((reference, continuation, result));
-      return result.future;
-    }
-    return inner.pageCurrent(
-      reference: reference,
-      continuation: continuation,
-      demand: demand,
-    );
   }
 
   @override

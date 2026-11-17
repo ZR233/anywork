@@ -1,7 +1,7 @@
 use super::{Observation, config, http, saved, sqlite, wire};
 use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
-    completed_turn_from_children, completed_turn_records, content_bytes,
+    HISTORY_OBSERVATION_BYTES, assert_completed_turn, body_text, open_current, originals_for_turn,
+    read_original, scan_main, turn_detail, turn_head_for_input,
 };
 use anyhow::{Context, Result, bail, ensure};
 use pl_protocol::studio::{
@@ -10,7 +10,7 @@ use pl_protocol::studio::{
     SaveBotRequest, SetAccountModelConnectionRequest, SetThreadModeRequest, SettingsFieldUpdate,
     StudioPromptInput, SubmitPromptRequest, UpdateSettingsFieldRequest,
 };
-use pl_protocol::{ChatAtomKind, ChatScope, ContentRef, ThreadStatus, TurnState};
+use pl_protocol::{ThreadStatus, TurnState};
 use pl_provider_fixture::{
     agent_definitions::{
         AgentPhase, CHILD_MODEL, COMPACT_MODEL, FUTURE_MODEL, ROOT_MODEL, USER_MODEL_NEW,
@@ -389,8 +389,8 @@ impl Observation<'_> {
             message_id(AgentPhase::ColdFeishu)
         );
         let cold_deadline = Instant::now() + http::PREDICATE_TIMEOUT;
-        let mut cold_remaining = CHAT_OBSERVATION_BYTES;
-        let (_, before_cold) = cold_main_chat(
+        let mut cold_remaining = HISTORY_OBSERVATION_BYTES;
+        let (before_read, before_cold) = cold_main_chat(
             self.session.http()?,
             &feishu,
             &mut cold_remaining,
@@ -398,12 +398,12 @@ impl Observation<'_> {
         )
         .await?;
         ensure!(
-            !before_cold.iter().any(|payload| {
-                payload["type"] == "turn"
-                    && payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
+            !before_cold.iter().any(|original| {
+                original.payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             }),
             "cold platform input already existed before this inbound"
         );
+        before_read.close().await?;
         self.ingress(&bot, AgentPhase::ColdFeishu).await?;
         let cold_bindings = sqlite::thread_bindings(&self.session.home, &bot).await?;
         let cold_binding = cold_bindings
@@ -426,20 +426,21 @@ impl Observation<'_> {
         .await?;
         let cold_user_inputs = cold_timeline
             .iter()
-            .filter(|payload| {
-                payload["type"] == "text"
-                    && payload["data"]["channel"] == "user"
-                    && payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
+            .filter(|original| {
+                original.head.text_channel == Some(pl_protocol::ThreadTextChannel::User)
+                    && original.payload["data"]["inputId"].as_str() == Some(cold_input.as_str())
             })
             .collect::<Vec<_>>();
         ensure!(
             cold_user_inputs.len() == 1,
             "original Feishu Thread has no unique visible input for current platform message"
         );
-        let cold_turn = cold_user_inputs[0]["turnId"]
-            .as_str()
+        let cold_turn = cold_user_inputs[0]
+            .event
+            .turn_id
+            .as_deref()
             .context("cold user input omitted its owning Turn identity")?;
-        completed_turn_from_children(
+        assert_completed_turn(
             &cold_read,
             cold_turn,
             Some(&cold_input),
@@ -450,70 +451,54 @@ impl Observation<'_> {
         .await?;
         let mut user_marker = false;
         let mut final_marker = false;
-        for payload in &cold_timeline {
-            if payload["type"] != "text" || payload["turnId"].as_str() != Some(cold_turn) {
+        for original in &cold_timeline {
+            if original.event.turn_id.as_deref() != Some(cold_turn) {
                 continue;
             }
-            let channel = payload["data"]["channel"]
-                .as_str()
-                .context("cold text omitted channel")?;
+            let channel = original
+                .head
+                .text_channel
+                .context("cold text omitted typed channel")?;
             ensure!(
-                matches!(channel, "user" | "commentary" | "final" | "parentAgent"),
-                "unknown cold text channel {channel}"
+                matches!(
+                    channel,
+                    pl_protocol::ThreadTextChannel::User
+                        | pl_protocol::ThreadTextChannel::Commentary
+                        | pl_protocol::ThreadTextChannel::Final
+                        | pl_protocol::ThreadTextChannel::ParentAgent
+                ),
+                "unknown cold text channel {channel:?}"
             );
-            if !matches!(channel, "user" | "final") {
+            if !matches!(
+                channel,
+                pl_protocol::ThreadTextChannel::User | pl_protocol::ThreadTextChannel::Final
+            ) {
                 continue;
             }
-            let mut bodies = payload["bodies"]
-                .as_array()
-                .context("cold text omitted bodies")?
-                .iter()
-                .filter(|body| body["key"] == "body");
-            let body = bodies.next().context("cold text omitted its text body")?;
-            ensure!(
-                bodies.next().is_none(),
-                "cold text has duplicate body manifests"
-            );
-            let length = body["byteLength"]
-                .as_u64()
-                .context("cold text omitted byteLength")?;
-            let bytes = match (body.get("inline"), body.get("reference")) {
-                (Some(inline), None) => {
-                    let bytes: Vec<u8> = serde_json::from_value(inline.clone())?;
-                    ensure!(
-                        bytes.len() as u64 == length,
-                        "cold inline text length mismatch"
-                    );
-                    bytes
-                }
-                (None, Some(reference)) => {
-                    let reference: ContentRef = serde_json::from_value(reference.clone())?;
-                    content_bytes(
-                        &cold_read,
-                        &reference,
-                        length,
-                        &mut cold_remaining,
-                        cold_deadline,
-                    )
-                    .await?
-                }
-                _ => bail!("cold text must contain exactly one inline body or reference"),
-            };
-            let text = String::from_utf8(bytes).context("cold text body is not UTF-8")?;
-            user_marker |= channel == "user" && text == AgentPhase::ColdFeishu.marker();
-            final_marker |= channel == "final" && text == "Agent observation ColdFeishu complete.";
+            let body = original
+                .text_body()?
+                .context("cold text omitted its typed History body")?;
+            let text = body_text(&cold_read, body, &mut cold_remaining, cold_deadline).await?;
+            user_marker |= channel == pl_protocol::ThreadTextChannel::User
+                && text == AgentPhase::ColdFeishu.marker();
+            final_marker |= channel == pl_protocol::ThreadTextChannel::Final
+                && text == "Agent observation ColdFeishu complete.";
         }
         ensure!(
             user_marker && final_marker,
             "current original-Thread input/Final does not bind the actual cold request marker"
         );
+        cold_read.close().await?;
         self.write("agent-definition-cold-feishu-timeline.json", &cold_timeline)?;
         let main_cold = self.saved(&main, "main-cold").await?;
         let feishu_cold = self.saved(&feishu, "feishu-cold").await?;
         ensure!(
-            feishu_cold.state_revision > feishu_before_restart.state_revision
-                && feishu_cold.history_fence > feishu_before_restart.history_fence,
-            "original Feishu checkpoint/history did not advance for the cold inbound"
+            feishu_cold.context_revision > feishu_before_restart.context_revision
+                && feishu_cold
+                    .history_seq
+                    .zip(feishu_before_restart.history_seq)
+                    .is_some_and(|(after, before)| after > before),
+            "original Feishu Current context and independent history did not advance for the cold inbound"
         );
         ensure!(
             main_cold.instructions == main_before_restart.instructions
@@ -534,12 +519,21 @@ impl Observation<'_> {
     }
 
     pub(super) async fn submit(&self, id: &str, phase: AgentPhase) -> Result<()> {
-        let snapshot = self.session.http()?.read_thread(id).await?;
+        let current = open_current(self.session.http()?, id).await?;
+        let observed = current.snapshot(crate::support::current_demand()).await;
+        let view = match (observed, current.close().await) {
+            (Ok(view), Ok(())) => view,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close_error)) => {
+                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+            }
+        };
         ensure!(
-            snapshot.active_turn.is_none(),
+            view.state.active_turn.is_none(),
             "submit {phase:?} while previous Turn is active"
         );
-        let route = snapshot
+        let route = view
+            .state
             .model_route
             .as_ref()
             .context("public root route revision missing")?;
@@ -570,37 +564,130 @@ impl Observation<'_> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
             let input_id = input(phase).input_id;
-            let mut remaining = CHAT_OBSERVATION_BYTES;
-            let (mut read, page) = self
-                .session
-                .http()?
-                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
-                .await?;
-            charge_chat_batch(&page, &mut remaining)?;
-            loop {
-                let notification = read.next_notification(deadline).await?;
-                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
-                    notification.notification
-                else {
-                    continue;
+            let mut remaining = HISTORY_OBSERVATION_BYTES;
+            let history = self.session.http()?.open_history(id).await?;
+            let current =
+                match open_current(self.session.http()?, id).await {
+                    Ok(current) => current,
+                    Err(error) => {
+                        return match history.close().await {
+                            Ok(()) => Err(error),
+                            Err(close_error) => Err(error
+                                .context(format!("History close also failed: {close_error:#}"))),
+                        };
+                    }
                 };
-                if turn.input_id.as_deref() != Some(input_id.as_str()) {
-                    continue;
+            let observed = async {
+                let initial = current.snapshot(crate::support::current_demand()).await?;
+                let mut watch = current
+                    .watch(
+                        Some(initial.revision.clone()),
+                        crate::support::current_demand(),
+                    )
+                    .await?;
+                let mut head = loop {
+                    if let Some(head) =
+                        turn_head_for_input(&history, &input_id, &mut remaining, deadline).await?
+                    {
+                        break head;
+                    }
+                    ensure!(
+                        Instant::now() < deadline,
+                        "History never exposed a Turn for input {input_id}"
+                    );
+                    tokio::time::sleep(http::POLL).await;
+                };
+                while matches!(
+                    head.state,
+                    pl_studio_runtime::history::HistoryTurnState::Unknown
+                        | pl_studio_runtime::history::HistoryTurnState::Queued
+                        | pl_studio_runtime::history::HistoryTurnState::Running
+                ) {
+                    let frame = watch
+                        .next(deadline)
+                        .await?
+                        .context("Current watch ended before the submitted Turn completed")?;
+                    if let pl_protocol::CurrentFrame::Notification { notification, .. } = frame {
+                        if let pl_protocol::ThreadNotification::TurnCompleted { turn } =
+                            notification.notification
+                            && turn.input_id.as_deref() == Some(input_id.as_str())
+                        {
+                            ensure!(
+                                turn.id == head.turn_id,
+                                "Current completion named a different Turn"
+                            );
+                            loop {
+                                head = turn_head_for_input(
+                                    &history,
+                                    &input_id,
+                                    &mut remaining,
+                                    deadline,
+                                )
+                                .await?
+                                .context("History discarded the completed input Turn")?;
+                                if !matches!(
+                                    head.state,
+                                    pl_studio_runtime::history::HistoryTurnState::Unknown
+                                        | pl_studio_runtime::history::HistoryTurnState::Queued
+                                        | pl_studio_runtime::history::HistoryTurnState::Running
+                                ) {
+                                    break;
+                                }
+                                ensure!(
+                                    Instant::now() < deadline,
+                                    "notified Turn {} did not durably settle",
+                                    head.turn_id
+                                );
+                                tokio::time::sleep(http::POLL).await;
+                            }
+                        }
+                    }
                 }
-                match turn.state {
-                    TurnState::Completed(_) => {
-                        let snapshot = self.session.http()?.read_thread(id).await?;
+                match head.state {
+                    pl_studio_runtime::history::HistoryTurnState::Completed => {
+                        let turn = turn_detail(&history, &head, &mut remaining, deadline).await?;
                         ensure!(
-                            snapshot.thread.id == id
-                                && snapshot.active_turn.is_none()
-                                && snapshot.thread.status == ThreadStatus::Idle,
+                            turn.input_id.as_deref() == Some(input_id.as_str())
+                                && matches!(turn.state, TurnState::Completed(_)),
+                            "History Turn head completed but immutable detail did not"
+                        );
+                        let view = loop {
+                            let view = current.snapshot(crate::support::current_demand()).await?;
+                            if view.state.active_turn.is_none()
+                                && view.state.thread.status == ThreadStatus::Idle
+                            {
+                                break view;
+                            }
+                            ensure!(
+                                Instant::now() < deadline,
+                                "Current did not settle to idle after Turn {}",
+                                head.turn_id
+                            );
+                            tokio::time::sleep(http::POLL).await;
+                        };
+                        ensure!(
+                            view.state.thread.id == id
+                                && view.state.active_turn.is_none()
+                                && view.state.thread.status == ThreadStatus::Idle,
                             "successful Turn State did not leave the target Thread idle"
                         );
-                        return Ok(());
+                        Ok(())
                     }
-                    outcome => bail!("Agent phase {phase:?} Turn {} failed: {outcome:?}", turn.id),
+                    state => bail!(
+                        "Agent phase {phase:?} Turn {} failed: {state:?}",
+                        head.turn_id
+                    ),
                 }
             }
+            .await;
+            let closed_history = history.close().await;
+            let closed_current = current.close().await;
+            combine_closed(
+                observed,
+                closed_history,
+                closed_current,
+                "Agent completion reads",
+            )
         })
         .await
         .context("Agent completion observation exceeded its deadline")?
@@ -617,10 +704,18 @@ impl Observation<'_> {
                 }
             }
         };
-        let snapshot = self.session.http()?.read_thread(id).await?;
+        let current = open_current(self.session.http()?, id).await?;
+        let observed = current.snapshot(crate::support::current_demand()).await;
+        let view = match (observed, current.close().await) {
+            (Ok(view), Ok(())) => view,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close_error)) => {
+                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+            }
+        };
         self.write(
             &format!("agent-definition-{label}.json"),
-            &serde_json::json!({"publicSnapshot": snapshot, "saved": &value}),
+            &serde_json::json!({"current": view, "saved": &value}),
         )?;
         Ok(value)
     }
@@ -788,7 +883,7 @@ impl Observation<'_> {
     async fn mode(&self, id: &str, mode: &str) -> Result<()> {
         let previous = saved::load(&self.session.home, id)
             .await?
-            .context("Mode change has no initial durable checkpoint")?;
+            .context("Mode change has no initial saved Current")?;
         let operation = format!("agent-mode-{id}-{mode}");
         let reply = self
             .session
@@ -818,30 +913,38 @@ impl Observation<'_> {
             .filter(|target| target.resource_key == format!("thread-state:{id}"))
             .collect::<Vec<_>>();
         ensure!(
-            targets.len() == 1
-                && !targets[0].owner_epoch.is_empty()
-                && targets[0].revision > previous.state_revision,
+            targets.len() == 1 && !targets[0].owner_epoch.is_empty() && targets[0].revision > 0,
             "Mode receipt has no unique newer Thread commit target"
         );
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         let committed = loop {
             if let Some(current) = saved::load(&self.session.home, id).await?
-                && current.state_revision >= targets[0].revision
+                && current.instruction_revision > previous.instruction_revision
+                && current.instructions.blocks("modeDefinition")
+                    != previous.instructions.blocks("modeDefinition")
             {
                 break current;
             }
             ensure!(
                 Instant::now() < deadline,
-                "Mode commit did not reach its durable history/checkpoint barrier"
+                "Mode update was not persisted in the independent Current JSON"
             );
             tokio::time::sleep(http::POLL).await;
         };
         committed
             .instructions
             .assert_mode_update_preserves_agent_and_non_model_sources(&previous.instructions)?;
-        let snapshot = self.session.http()?.read_thread(id).await?;
+        let current = open_current(self.session.http()?, id).await?;
+        let observed = current.snapshot(crate::support::current_demand()).await;
+        let view = match (observed, current.close().await) {
+            (Ok(view), Ok(())) => view,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close_error)) => {
+                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+            }
+        };
         ensure!(
-            snapshot
+            view.state
                 .thread
                 .mode
                 .as_ref()
@@ -850,7 +953,7 @@ impl Observation<'_> {
         );
         self.write(
             &format!("agent-definition-mode-{id}-{mode}.json"),
-            &serde_json::json!({"reply":reply, "publicSnapshot":snapshot, "saved":committed}),
+            &serde_json::json!({"reply":reply, "current":view, "saved":committed}),
         )?;
         Ok(())
     }
@@ -940,89 +1043,95 @@ impl Observation<'_> {
         wire::output(&requests[1], &phase.action_call())?;
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
-            let mut remaining = CHAT_OBSERVATION_BYTES;
-            let (mut read, _) = self
-                .session
-                .http()?
-                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
-                .await?;
+            let mut remaining = HISTORY_OBSERVATION_BYTES;
+            let read = self.session.http()?.open_history(id).await?;
             let input_id = input(phase).input_id;
             let target_turn = loop {
-                let notification = read.next_notification(deadline).await?;
-                let pl_protocol::ThreadNotification::TurnCompleted { turn } =
-                    notification.notification
-                else {
-                    continue;
-                };
-                if turn.input_id.as_deref() != Some(input_id.as_str()) {
-                    continue;
+                if let Some(head) =
+                    turn_head_for_input(&read, &input_id, &mut remaining, deadline).await?
+                {
+                    break head;
                 }
                 ensure!(
-                    matches!(turn.state, TurnState::Completed(_)),
-                    "refusal probe Turn did not complete: {:?}",
-                    turn.state
+                    Instant::now() < deadline,
+                    "refusal probe never exposed a Turn for input {input_id}"
                 );
-                break turn.id;
+                tokio::time::sleep(http::POLL).await;
             };
-            let (read, _) = self
-                .session
-                .http()?
-                .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
-                .await?;
-            let (records_read, entries) =
-                completed_turn_records(&read, &target_turn, &mut remaining, deadline).await?;
-            let mut found_tool = false;
-            for entry in entries {
-                let Some(payload) =
-                    completed_entry_payload(&records_read, &entry, &mut remaining, deadline)
-                        .await?
-                else {
-                    continue;
-                };
-                if payload["type"] != "tool" {
-                    continue;
-                }
-                let call_id = payload["data"]["invocation"]["toolCallId"]
-                    .as_str()
-                    .context("completed tool omitted call identity")?;
-                if call_id != phase.action_call() {
-                    continue;
-                }
-                let state = payload["data"]["state"]["kind"]
-                    .as_str()
-                    .context("completed tool omitted state")?;
-                ensure!(
-                    matches!(state, "failed" | "denied"),
-                    "forbidden spawn was not rejected: {state}"
-                );
-                let metadata = &payload["data"]["state"];
-                if state == "failed" {
-                    metadata["failedAt"]
-                        .as_i64()
-                        .context("failed spawn omitted failedAt")?;
-                    serde_json::from_value::<pl_protocol::ThreadToolFailure>(
-                        metadata
-                            .get("failure")
-                            .context("failed spawn omitted failure")?
-                            .clone(),
-                    )
-                    .context("failed spawn had invalid failure metadata")?;
-                } else {
-                    metadata["deniedAt"]
-                        .as_i64()
-                        .context("denied spawn omitted deniedAt")?;
-                    metadata["reason"]
-                        .as_str()
-                        .context("denied spawn omitted reason")?;
-                }
-                found_tool = true;
-                break;
-            }
             ensure!(
-                found_tool,
-                "rejected real tool record missing from its Turn"
+                target_turn.state == pl_studio_runtime::history::HistoryTurnState::Completed,
+                "refusal probe Turn did not complete: {:?}",
+                target_turn.state
             );
-            Ok(())
+            let observed = async {
+                let entries =
+                    originals_for_turn(&read, &target_turn.turn_id, &mut remaining, deadline)
+                        .await?;
+                let mut found_tool = false;
+                for entry in entries {
+                    if entry.head.kind != pl_protocol::ChatAtomKind::ToolCall
+                        || entry.payload["type"] != "tool"
+                    {
+                        continue;
+                    }
+                    let call_id = entry.payload["data"]["invocation"]["toolCallId"]
+                        .as_str()
+                        .context("completed tool omitted call identity")?;
+                    if call_id != phase.action_call()
+                        || entry.head.tool.as_ref().map(|tool| tool.call_id.as_str())
+                            != Some(call_id)
+                    {
+                        continue;
+                    }
+                    let state = entry.payload["data"]["state"]["kind"]
+                        .as_str()
+                        .context("completed tool omitted state")?;
+                    ensure!(
+                        matches!(state, "failed" | "denied"),
+                        "forbidden spawn was not rejected: {state}"
+                    );
+                    ensure!(
+                        entry.tool_arguments_body()?.is_some(),
+                        "rejected tool omitted its original arguments body"
+                    );
+                    let _ = entry.tool_output_body()?;
+                    let metadata = &entry.payload["data"]["state"];
+                    if state == "failed" {
+                        metadata["failedAt"]
+                            .as_i64()
+                            .context("failed spawn omitted failedAt")?;
+                        serde_json::from_value::<pl_protocol::ThreadToolFailure>(
+                            metadata
+                                .get("failure")
+                                .context("failed spawn omitted failure")?
+                                .clone(),
+                        )
+                        .context("failed spawn had invalid failure metadata")?;
+                    } else {
+                        metadata["deniedAt"]
+                            .as_i64()
+                            .context("denied spawn omitted deniedAt")?;
+                        metadata["reason"]
+                            .as_str()
+                            .context("denied spawn omitted reason")?;
+                    }
+                    found_tool = true;
+                    break;
+                }
+                ensure!(
+                    found_tool,
+                    "rejected real tool record missing from its Turn"
+                );
+                Ok(())
+            }
+            .await;
+            match (observed, read.close().await) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(error), Err(close_error)) => {
+                    Err(error.context(format!("History close also failed: {close_error:#}")))
+                }
+            }
         })
         .await
         .context("rejected tool observation exceeded its deadline")?
@@ -1036,54 +1145,76 @@ async fn cold_main_chat(
     id: &str,
     remaining: &mut usize,
     deadline: Instant,
-) -> Result<(http::ChatRead, Vec<serde_json::Value>)> {
+) -> Result<(http::HistoryRead, Vec<crate::support::HistoryOriginal>)> {
     tokio::time::timeout_at(deadline.into(), async {
-        let (read, mut page) = http
-            .open_chat(id, ChatScope::conversation(None), CHAT_DEMAND)
-            .await?;
-        let mut payloads = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for _ in 0..256 {
-            charge_chat_batch(&page, remaining)?;
-            for entry in &page.entries {
-                if entry.atom.kind != ChatAtomKind::Text {
+        let read = http.open_history(id).await?;
+        let observed = async {
+            let main = scan_main(&read, remaining, deadline).await?;
+            ensure!(
+                main.rows > 0,
+                "cold Main cut exposed no visible top-level row"
+            );
+            let mut originals = Vec::new();
+            for head in main.entities {
+                if head.kind != pl_protocol::ChatAtomKind::Text {
                     continue;
                 }
-                if let Some(payload) =
-                    completed_entry_payload(&read, entry, remaining, deadline).await?
-                {
-                    if payload["type"] == "text" {
-                        let turn_id = payload["turnId"]
-                            .as_str()
-                            .context("cold text payload omitted turn identity")?;
-                        let text_channel = entry
-                            .atom
-                            .text_channel
-                            .context("cold text omitted explicit text_channel")?;
-                        ensure!(
-                            entry.atom.kind == ChatAtomKind::Text
-                                && entry.atom.turn_id.as_deref() == Some(turn_id)
-                                && payload["data"]["channel"]
-                                    == serde_json::to_value(text_channel)?,
-                            "cold text completion identity/channel disagreed with original payload"
-                        );
-                    }
-                    payloads.push(payload);
+                let original = read_original(&read, &head, remaining, deadline).await?;
+                ensure!(
+                    original.head.text_channel.is_some() && original.payload["type"] == "text",
+                    "cold text completion identity/channel disagreed with original payload"
+                );
+                originals.push(original);
+            }
+            Ok(originals)
+        }
+        .await;
+        match observed {
+            Ok(originals) => Ok((read, originals)),
+            Err(error) => {
+                let closed = read.close().await;
+                if let Err(close_error) = closed {
+                    Err(error.context(format!("History close also failed: {close_error:#}")))
+                } else {
+                    Err(error)
                 }
             }
-            let Some(before) = page.before.take() else {
-                return Ok((read, payloads));
-            };
-            ensure!(
-                seen.insert(before.clone()),
-                "cold Main continuation did not advance"
-            );
-            page = read.load_older(&before, CHAT_DEMAND).await?;
         }
-        bail!("cold Main cut exceeded bounded pages; absence/uniqueness is unproven")
     })
     .await
     .context("cold Main observation exceeded its deadline")?
+}
+
+fn combine_closed<T>(
+    observed: Result<T>,
+    history_closed: Result<()>,
+    current_closed: Result<()>,
+    scope: &str,
+) -> Result<T> {
+    let mut close_errors = Vec::new();
+    if let Err(error) = history_closed {
+        close_errors.push(format!("history: {error:#}"));
+    }
+    if let Err(error) = current_closed {
+        close_errors.push(format!("current: {error:#}"));
+    }
+    match observed {
+        Ok(value) if close_errors.is_empty() => Ok(value),
+        Err(error) => {
+            let mut message = format!("{error:#}");
+            if !close_errors.is_empty() {
+                message.push_str(&format!(
+                    "; {scope} close also failed: {}",
+                    close_errors.join("; ")
+                ));
+            }
+            Err(anyhow::anyhow!(message))
+        }
+        Ok(_) => Err(anyhow::anyhow!(
+            "{scope} close failed: {}",
+            close_errors.join("; ")
+        )),
+    }
 }
 
 fn input(phase: AgentPhase) -> StudioPromptInput {

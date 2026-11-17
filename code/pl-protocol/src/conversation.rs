@@ -1,13 +1,10 @@
-//! 不可变完成原件及其读取模型。完成级消费者按真实业务条件读取；
-//! GUI 的整组交接使用独立 presentation 协议，真实业务当前态仍由 State 维护。
+//! Producer metadata and shared bounded read shapes. Current and History have independent ports.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 mod atom;
-mod completed;
 pub use atom::*;
-pub use completed::*;
 
 use crate::studio::{StudioError, StudioErrorCode, StudioErrorReason};
 

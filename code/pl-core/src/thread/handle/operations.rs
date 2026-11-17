@@ -24,6 +24,19 @@ impl ThreadHandle {
         Ok(())
     }
 
+    /// Reads a bounded page of the Current owner's original immutable history exports.
+    /// The consumer releases them explicitly after its reliable queue accepts ownership.
+    pub fn history_export_page(
+        &self,
+        after: u64,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
+        if after > self.snapshot().commit_sequence {
+            return Err(ThreadError::InvalidContext);
+        }
+        self.effect_window.current_page(after, limit.get())
+    }
+
     /// Continues a restored, paused current using the owner's currently configured services.
     /// Saved model parameters remain diagnostic observations; they do not bind the new request.
     pub async fn resume_current(

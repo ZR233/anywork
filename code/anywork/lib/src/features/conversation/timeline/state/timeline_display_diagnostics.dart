@@ -63,7 +63,7 @@ abstract interface class TimelineCurrentCollectionDisplay {
 
 abstract interface class TimelineCurrentWindowDisplay {
   String get id;
-  ContentRef get reference;
+  Object get reference;
   int get offset;
   ContentWindow? get window;
   Object? get error;

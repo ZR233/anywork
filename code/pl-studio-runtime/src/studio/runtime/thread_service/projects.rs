@@ -2879,15 +2879,14 @@ mod standalone_tests {
                 &private_agent,
                 |id| catalog.get_agent(id).map(|agent| agent.thread_id),
             )?;
-            let checkpoint = runtime
+            let current = runtime
                 .store
-                .history(&protocol.id)
+                .state_for(&protocol.workspace_id, &protocol.id)?
+                .load_current()
                 .await?
-                .checkpoint()
-                .await?
-                .context("seeded durable earlier checkpoint")?;
-            eprintln!("private crash fixture: seeded protocol and checkpoint read");
-            let old_fence = checkpoint.history_fence;
+                .context("seeded durable earlier current")?;
+            eprintln!("private crash fixture: seeded protocol and current read");
+            let old_fence = current.snapshot_revision;
             let physical = close_factory(&runtime.store)?;
             runtime
                 .store
@@ -2927,8 +2926,7 @@ mod standalone_tests {
                     .await?;
             }
             let sink =
-                ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), Some(&checkpoint))
-                    .await?;
+                ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), None).await?;
             let _projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
             let storage = if receipt {
                 ColdStoreHandle::new(sink)
@@ -2943,7 +2941,6 @@ mod standalone_tests {
                 protocol.parent_thread_id.clone(),
                 &workspace,
             );
-            spec.checkpoint = Some(checkpoint);
             spec.cold_store = Some(storage);
             spec.initial_extensions.insert(
                 String::new(),
@@ -2990,7 +2987,7 @@ mod standalone_tests {
             seed_private_crash_fixture(base).await?;
             let mut command = tokio::process::Command::new(std::env::current_exe()?);
             command
-        .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash")
+        .arg("archive_original_required_receipt_is_not_replaced_by_a_cold_current_after_crash")
         .arg("--nocapture")
         .env("ANYWORK_ARCHIVE_PRIVATE_CRASH_FIXTURE", base)
         .kill_on_drop(true);
@@ -3019,7 +3016,7 @@ mod standalone_tests {
         }
 
         #[tokio::test]
-        async fn archive_original_required_receipt_is_not_replaced_by_a_cold_checkpoint_after_crash()
+        async fn archive_original_required_receipt_is_not_replaced_by_a_cold_current_after_crash()
         -> Result<()> {
             const CHILD: &str = "ANYWORK_ARCHIVE_PRIVATE_CRASH_FIXTURE";
             if let Some(base) = std::env::var_os(CHILD) {
@@ -3061,12 +3058,14 @@ mod standalone_tests {
                 } else {
                     let before = runtime
                         .store
-                        .history("required-private")
+                        .state_for(&project.id, "required-private")?
+                        .load_current()
                         .await?
-                        .checkpoint()
-                        .await?
-                        .unwrap();
-                    assert_eq!(before.history_fence, evidence["oldFence"].as_u64().unwrap());
+                        .context("cold current")?;
+                    assert_eq!(
+                        before.snapshot_revision,
+                        evidence["oldFence"].as_u64().unwrap()
+                    );
                 }
                 let result = tokio::time::timeout(
                     Duration::from_secs(10),
@@ -3477,7 +3476,6 @@ mod standalone_tests {
         use super::*;
         use crate::studio::{
             agent_host::worktree_lease::{WorkspaceEndpoint, WorkspaceIdentity},
-            runtime::conversation_reader::ConversationReader,
             storage_fault_test_support::{ThreadStorageSink, spawn_live_projection_for_thread},
             store::{
                 directory::DirectoryDelta, thread_delete::DeletePhase,
@@ -3835,7 +3833,6 @@ mod standalone_tests {
             let unsaved_sequence = owner.snapshot().commit_sequence;
             assert!(durable < unsaved_sequence);
             assert!(runtime.thread_observations.live_feed(&root.id).is_some());
-            let history = runtime.store.history(&root.id).await?;
 
             tokio::time::timeout(
                 std::time::Duration::from_secs(15),
@@ -3877,14 +3874,6 @@ mod standalone_tests {
                     .is_none()
             );
             assert!(!host.root().exists());
-            let closed = history
-                .parent_report(1)
-                .await
-                .expect_err("the original pool must reject reads after deletion");
-            ensure!(
-                format!("{closed:#}").contains("permanently closed"),
-                "{closed:#}"
-            );
             runtime.shutdown_runtime().await?;
             Ok(())
         }
@@ -4162,18 +4151,16 @@ mod standalone_tests {
                         .await?
                         .context("archive reply")?;
                 }
-                let feed = runtime
-                    .open_conversation_feed(
+                let old_current = runtime
+                    .open_current_reader(
                         &root.id,
-                        pl_protocol::ChatScope::conversation(None),
+                        pl_protocol::CURRENT_PROTOCOL_VERSION,
                         pl_protocol::ReadDemand {
                             max_items: 16,
                             max_bytes: 65536,
                         },
                     )
                     .await?;
-                let reader: ConversationReader = feed.reader().clone();
-                let old_history = runtime.store.history(&root.id).await?;
                 let root_host = runtime.store.session_paths(&project.id, &root.id)?;
                 let child_host = runtime.store.session_paths(&project.id, &child.id)?;
                 let grandchild_host = runtime.store.session_paths(&project.id, &grandchild.id)?;
@@ -4208,12 +4195,14 @@ mod standalone_tests {
                     Some(neighbor.id.as_str())
                 );
                 assert!(
-                    reader.ensure().is_err(),
-                    "an old reader must lose its read qualification"
-                );
-                assert!(
-                    old_history.conversation_database_id().await.is_err(),
-                    "the original pools must close"
+                    old_current
+                        .snapshot(pl_protocol::ReadDemand {
+                            max_items: 16,
+                            max_bytes: 65536,
+                        })
+                        .await
+                        .is_err(),
+                    "an old CurrentReader must lose its read qualification"
                 );
                 for host in [root_host, child_host, grandchild_host, private_host] {
                     assert!(!host.root().exists());
@@ -4274,13 +4263,12 @@ mod standalone_tests {
                     b"neighbor artifact"
                 );
                 assert!(
-                    runtime
+                    !runtime
                         .store
-                        .history(&neighbor.id)
+                        .open_history_reader(&neighbor.id)
                         .await?
-                        .conversation_database_id()
-                        .await?
-                        .is_some()
+                        .database_id()
+                        .is_empty()
                 );
                 assert!(
                     runtime
@@ -4523,13 +4511,12 @@ mod standalone_tests {
                 assert!(!host.root().exists());
                 assert!(!workspace.join(SessionFiles::new(&root.id).root()).exists());
                 assert!(
-                    runtime
+                    !runtime
                         .store
-                        .history(&neighbor.id)
+                        .open_history_reader(&neighbor.id)
                         .await?
-                        .conversation_database_id()
-                        .await?
-                        .is_some()
+                        .database_id()
+                        .is_empty()
                 );
                 runtime.shutdown_runtime().await?;
             }

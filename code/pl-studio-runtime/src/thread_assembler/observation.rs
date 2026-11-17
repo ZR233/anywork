@@ -1,5 +1,6 @@
 //! Product observation registration; callbacks execute outside the registry lock.
 use super::*;
+use anyhow::Context as _;
 
 type Observe = dyn Fn(String, ThreadHandle, Arc<crate::session::NativeResources>) + Send + Sync;
 type BeforeClose = dyn Fn(
@@ -15,11 +16,10 @@ type Drain = dyn Fn(String, ClosePurpose) -> futures::future::BoxFuture<'static,
 type Synchronize = dyn Fn(String) -> futures::future::BoxFuture<'static, Result<(), ThreadAssemblyError>>
     + Send
     + Sync;
-/// Durable record of one accepted message identity inside a Thread's history.
+/// Settled record of one message identity in the recipient's saved Current.
 ///
-/// The index is the authority a delivery uses once it left core's bounded resident window. A
-/// migrated row may prove that the identity was accepted without proving the body, which must never
-/// be re-delivered as new work.
+/// The Current inbox or its bounded consumed-identity ledger is the authority a delivery uses once
+/// it left the resident queue. An identity without a verifiable body is never re-delivered as work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DurableMessageIdentity {
     /// The accepted body digest and its original admission sequence.
@@ -28,7 +28,189 @@ pub(crate) enum DurableMessageIdentity {
     Unverifiable,
 }
 
-/// Admission is not durability. Only the parent's existing history index proves final delivery.
+#[cfg(test)]
+async fn history_message_identity(
+    history: &crate::history::HistoryStore,
+    message_id: &str,
+) -> anyhow::Result<Option<DurableMessageIdentity>> {
+    let reader = history.reader();
+    let page = reader
+        .events_page(
+            crate::history::HistoryEventsQuery::Message {
+                message_id: message_id.to_owned(),
+            },
+            None,
+            None,
+            crate::history::HistoryDemand {
+                max_rows: 16,
+                max_bytes: 1024 * 1024,
+            },
+        )
+        .await?;
+    for entry in page.entries {
+        let Some(reference) = entry.payload_ref else {
+            continue;
+        };
+        let mut bytes = Vec::with_capacity(reference.byte_length as usize);
+        let mut offset = 0_u64;
+        while offset < reference.byte_length {
+            let window = reader
+                .read_body(
+                    reference.clone(),
+                    offset,
+                    (reference.byte_length - offset).min(64 * 1024) as u32,
+                )
+                .await?;
+            anyhow::ensure!(
+                !window.bytes.is_empty(),
+                "message identity body did not advance"
+            );
+            offset = offset
+                .checked_add(window.bytes.len() as u64)
+                .context("message identity body length overflow")?;
+            bytes.extend(window.bytes);
+        }
+        let fact = if let Ok(fact) =
+            serde_json::from_slice::<crate::history::HistoryBusinessFact>(&bytes)
+        {
+            fact
+        } else {
+            let opaque: pl_core::context::OpaquePayload =
+                serde_json::from_slice(&bytes).context("decode message identity wrapper")?;
+            serde_json::from_str(opaque.content()).context("decode message identity payload")?
+        };
+        if let crate::history::HistoryBusinessFact::MessageIdentity { message, sequence } = fact
+            && message.id == message_id
+        {
+            return Ok(Some(DurableMessageIdentity::Proven {
+                sequence,
+                digest: message.digest(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+async fn history_parent_report(
+    history: &crate::history::HistoryStore,
+    thread: &str,
+    terminal: u64,
+) -> anyhow::Result<Option<pl_core::thread::inbox::ThreadMessage>> {
+    crate::studio::history_delivery::parent_report(&history.reader(), thread, terminal).await
+}
+#[cfg(test)]
+async fn history_terminal_report_sequences(
+    history: &crate::history::HistoryStore,
+    after: u64,
+) -> anyhow::Result<Vec<(u64, u64)>> {
+    Ok(crate::studio::history_delivery::reports(
+        &history.reader(),
+        history.thread_id(),
+        Some(after),
+        true,
+        1024 * 1024,
+    )
+    .await?
+    .into_iter()
+    .map(|report| (report.event_seq, report.terminal_sequence))
+    .collect())
+}
+
+pub(super) async fn latest_terminal_turn(
+    reader: &crate::history::HistoryReader,
+) -> anyhow::Result<Option<pl_protocol::Turn>> {
+    let mut cursor = None;
+    loop {
+        let page = reader
+            .turns_page(
+                None,
+                cursor,
+                crate::history::HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        for entry in page.entries {
+            let crate::history::HistoryRowHead::Turn(head) = entry.head else {
+                continue;
+            };
+            if !matches!(
+                head.state,
+                crate::history::HistoryTurnState::Completed
+                    | crate::history::HistoryTurnState::Cancelled
+                    | crate::history::HistoryTurnState::Failed
+                    | crate::history::HistoryTurnState::BudgetLimited
+            ) {
+                continue;
+            }
+            let detail_event_id = head
+                .detail_event_id
+                .context("terminal Turn has no immutable detail")?;
+            let detail = reader
+                .read_event(
+                    detail_event_id.clone(),
+                    crate::history::HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 1024 * 1024,
+                    },
+                )
+                .await?;
+            let mut body_cursor = None;
+            loop {
+                let bodies = reader
+                    .list_bodies(
+                        detail.header.event_id.clone(),
+                        body_cursor,
+                        crate::history::HistoryDemand {
+                            max_rows: 128,
+                            max_bytes: 64 * 1024,
+                        },
+                    )
+                    .await?;
+                for body in bodies.entries {
+                    if body.body_key != "turn_detail" {
+                        continue;
+                    }
+                    let mut bytes = Vec::with_capacity(body.reference.byte_length as usize);
+                    let mut offset = 0_u64;
+                    while offset < body.reference.byte_length {
+                        let window = reader
+                            .read_body(
+                                body.reference.clone(),
+                                offset,
+                                (body.reference.byte_length - offset).min(64 * 1024) as u32,
+                            )
+                            .await?;
+                        anyhow::ensure!(
+                            !window.bytes.is_empty(),
+                            "Turn detail body did not advance"
+                        );
+                        offset = offset
+                            .checked_add(window.bytes.len() as u64)
+                            .context("Turn detail body length overflow")?;
+                        bytes.extend(window.bytes);
+                    }
+                    return serde_json::from_slice(&bytes)
+                        .map(Some)
+                        .context("decode immutable Turn detail");
+                }
+                let Some(next) = bodies.next else {
+                    break;
+                };
+                body_cursor = Some(next);
+            }
+            return Err(anyhow::anyhow!("terminal Turn detail body is missing"));
+        }
+        let Some(next) = page.next else {
+            return Ok(None);
+        };
+        cursor = Some(next);
+    }
+}
+
+/// Admission is not durability. Only the parent's saved Current identity proves final delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParentMessageDelivery {
     Accepted { message_id: String, sequence: u64 },
@@ -210,11 +392,11 @@ impl SessionRuntime {
         )
     }
 
-    /// Bind close completion to each actual terminal effect's original report ID and the
-    /// parent's accepted/durable sequence. A skipped publication can never be a successful ACK.
+    /// Settle explicit pending Native delivery markers for this child and wait for the retained
+    /// terminal operation. History rows that have no marker are not inferred as owed deliveries.
     pub(crate) async fn acknowledge_parent_reports(
         &self,
-        store: &crate::studio::StudioStore,
+        _store: &crate::studio::StudioStore,
         child: &pl_protocol::Thread,
     ) -> Result<ParentReportAcknowledgement, ThreadAssemblyError> {
         if let Some(parent) = child.parent_thread_id.as_deref()
@@ -228,111 +410,64 @@ impl SessionRuntime {
             operation: "acknowledge terminal parent reports",
             source: source.into_boxed_dyn_error(),
         };
-        let history = store.history(&child.id).await.map_err(failure)?;
+        let parent = child
+            .parent_thread_id
+            .as_deref()
+            .context("terminal child has no parent").map_err(failure)?;
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .ok_or(ThreadAssemblyError::Closed)?;
+        let parent_record = services.record(parent).await.map_err(failure)?;
+        let had_pending = self
+            .pending_native_deliveries(&parent_record)
+            .await
+            .map_err(failure)?
+            .iter()
+            .any(|pending| {
+                matches!(
+                    pending.source(),
+                    super::pending_delivery::PendingNativeDeliverySource::Terminal {
+                        child_id,
+                        ..
+                    } if child_id == &child.id
+                )
+            });
         Box::pin(self.recover_saved_review_deliveries(child))
             .await
             .map_err(failure)?;
         self.join_review_delivery(&child.id)
             .await
             .map_err(failure)?;
-        let mut after = 0;
-        let mut acknowledged = false;
-        let mut synchronized = false;
-        loop {
-            let sequences = history
-                .terminal_report_sequences(after)
-                .await
-                .map_err(failure)?;
-            if sequences.is_empty() {
-                let mut cursor = String::new();
-                loop {
-                    let facts = history
-                        .review_delivery_exceptions(&cursor)
-                        .await
-                        .map_err(failure)?;
-                    if facts.is_empty() {
-                        break;
-                    }
-                    for fact in facts {
-                        let parent = child.parent_thread_id.as_deref().ok_or_else(|| {
-                            failure(anyhow::anyhow!("review delivery exception has no parent"))
-                        })?;
-                        cursor = fact.message.id.clone();
-                        self.acknowledge_review_exception(parent, fact.message, false)
-                            .await
-                            .map_err(failure)?;
-                        acknowledged = true;
-                    }
-                }
-                return Ok(if acknowledged {
-                    ParentReportAcknowledgement::Proven
-                } else {
-                    ParentReportAcknowledgement::Absent
-                });
-            }
-            for sequence in sequences {
-                let parent = child
-                    .parent_thread_id
-                    .as_deref()
-                    .ok_or_else(|| failure(anyhow::anyhow!("terminal child has no parent")))?;
-                let message_id =
-                    crate::studio::agent_close::terminal_report_id(&child.id, sequence);
-                let original = history.parent_report(sequence).await.map_err(failure)?;
-                // An earlier delivery can already be durable while receiver cleanup failed or its
-                // waiter was cancelled. Do not skip the remaining owner just because its ACK exists.
-                self.finish_report_receiver(parent).await?;
-                let mut receipt = self.durable_message_identity(parent, &message_id).await?;
-                if receipt.is_none() && !synchronized && self.observed_thread(parent).is_some() {
-                    // This is only a fixed handoff wait, never a substitute for the identity check.
-                    self.synchronize_observation(parent).await?;
-                    synchronized = true;
-                    receipt = self.durable_message_identity(parent, &message_id).await?;
-                }
-                if receipt.is_none() {
-                    let message = original.clone().ok_or_else(|| failure(anyhow::anyhow!(
-                        "parent report {message_id} lacks its original durable body; later checkpoints cannot reconstruct original permissions or messages"
-                    )))?;
-                    let services = self
-                        .0
-                        .state()
-                        .agent_services
-                        .clone()
-                        .ok_or(ThreadAssemblyError::Closed)?;
-                    services
-                        .redeliver_parent_report(self, parent, message)
-                        .await
-                        .map_err(failure)?;
-                    receipt = self.durable_message_identity(parent, &message_id).await?;
-                }
-                match receipt {
-                    Some(DurableMessageIdentity::Proven {
-                        sequence: accepted,
-                        digest,
-                    }) => {
-                        if let Some(original) = original
-                            && original.digest() != digest
-                        {
-                            return Err(failure(anyhow::anyhow!(
-                                "parent report {message_id} durable body differs from its original handoff"
-                            )));
-                        }
-                        tracing::trace!(child_id = child.id, %message_id, parent_sequence = accepted, "terminal report durable receipt verified");
-                    }
-                    Some(DurableMessageIdentity::Unverifiable) => {
-                        return Err(failure(anyhow::anyhow!(
-                            "parent report {message_id} has no verifiable durable receipt"
-                        )));
-                    }
-                    None => {
-                        return Err(failure(anyhow::anyhow!(
-                            "parent report {message_id} was not durably delivered; child history is retained"
-                        )));
-                    }
-                }
-                acknowledged = true;
-                after = sequence;
-            }
+        let remaining = self
+            .pending_native_deliveries(&parent_record)
+            .await
+            .map_err(failure)?
+            .into_iter()
+            .filter(|pending| {
+                matches!(
+                    pending.source(),
+                    super::pending_delivery::PendingNativeDeliverySource::Terminal {
+                        child_id,
+                        ..
+                    } if child_id == &child.id
+                )
+            })
+            .map(|pending| pending.message().id.clone())
+            .collect::<Vec<_>>();
+        if !remaining.is_empty() {
+            return Err(failure(anyhow::anyhow!(
+                "parent reports were not settled: {}",
+                remaining.join(", ")
+            )));
         }
+        Ok(if had_pending {
+            ParentReportAcknowledgement::Proven
+        } else {
+            ParentReportAcknowledgement::Absent
+        })
     }
     pub(super) fn prepare_close(
         &self,
@@ -400,7 +535,7 @@ impl SessionRuntime {
         })
     }
 
-    /// Adjudicates one message delivery against the target Thread's durable identity index.
+    /// Adjudicates one message delivery against the target Thread's saved Current identity.
     ///
     /// Every admission site must run this before it accepts a message as new work, because a delivery
     /// whose resident copy is gone would otherwise be admitted a second time. The result is the
@@ -777,20 +912,37 @@ mod storage_fault_tests {
                 Some(Arc::new(move |id, message| {
                     let store = messages.clone();
                     Box::pin(async move {
-                        Ok(store
-                            .history(&id)
+                        let paths = store.registered_session_paths(&id).map_err(storage_error)?;
+                        let state = store
+                            .state_for(paths.workspace_id(), &id)
+                            .map_err(storage_error)?;
+                        let current = state
+                            .load_current()
                             .await
                             .map_err(storage_error)?
-                            .message_identity(&message)
-                            .await
-                            .map_err(storage_error)?
-                            .map(|receipt| match receipt.digest {
-                                Some(digest) => DurableMessageIdentity::Proven {
-                                    sequence: receipt.sequence,
-                                    digest,
-                                },
-                                None => DurableMessageIdentity::Unverifiable,
+                            .ok_or_else(|| {
+                                storage_error(anyhow::anyhow!("message owner has no current"))
+                            })?;
+                        let snapshot = current.state.to_paused_snapshot();
+                        if let Some(record) = snapshot
+                            .inbox
+                            .iter()
+                            .find(|record| record.message.id == message)
+                        {
+                            Ok(Some(DurableMessageIdentity::Proven {
+                                sequence: record.sequence,
+                                digest: record.message.digest(),
                             }))
+                        } else {
+                            Ok(snapshot
+                                .consumed_message_identities
+                                .iter()
+                                .find(|identity| identity.id == message)
+                                .map(|identity| DurableMessageIdentity::Proven {
+                                    sequence: identity.sequence,
+                                    digest: identity.digest.clone(),
+                                }))
+                        }
                     })
                 })),
                 |_, _, _| Box::pin(async { Ok(()) }),
@@ -848,10 +1000,14 @@ mod storage_fault_tests {
                 protocol.workspace_path = workspace.to_string_lossy().into_owned();
             }
             register_test_thread(&self.store, &protocol).await?;
-            let checkpoint = self.store.history(id).await?.checkpoint().await?;
-            let sink =
-                ThreadStorageSink::new(self.store.clone(), protocol, checkpoint.as_ref()).await?;
-            let thread = ThreadHandle::resume_without_model(id.into(), checkpoint)?;
+            let sink = ThreadStorageSink::new(self.store.clone(), protocol, None).await?;
+            let thread = ThreadHandle::restore_current(
+                pl_core::thread::current::ThreadCurrent::new(
+                    id.into(),
+                    pl_core::thread::current::RuntimeEpoch::new(),
+                ),
+                None,
+            )?;
             thread
                 .attach_storage(ColdStoreHandle::new(sink.clone()))
                 .await?;
@@ -902,7 +1058,7 @@ mod storage_fault_tests {
         }
     }
 
-    /// Real checkpoint rejection leaves the close owner registered; retry must use the same
+    /// Real current publication rejection leaves the close owner registered; retry must use the same
     /// request authorization while an ordinary close still cannot consume explicit Cleanup.
     #[tokio::test]
     async fn cancelled_unpublished_cleanup_keeps_the_real_preparer_until_disposal_joins()
@@ -1019,8 +1175,7 @@ mod storage_fault_tests {
     }
 
     #[tokio::test]
-    async fn rejected_close_checkpoint_keeps_cleanup_request_retryable_without_early_cleanup()
-    -> Result<()> {
+    async fn sealed_cleanup_cannot_consume_the_preserve_disposition() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let fixture = Fixture::new(store.clone())?;
@@ -1030,30 +1185,6 @@ mod storage_fault_tests {
         fixture
             .owner
             .freeze_agent_close_disposition("child", WorkspaceRelease::Preserve)?;
-        let history = store.history("child").await?;
-        let before = history
-            .checkpoint()
-            .await?
-            .context("durable close intent")?;
-        let db = sea_orm::Database::connect(
-            crate::studio::paths::sqlite_file_options(
-                &store
-                    .session_paths("project-test", "child")?
-                    .history_database(),
-                crate::studio::paths::SqliteFileMode::Create,
-                |options| options,
-            )
-            .await?,
-        )
-        .await?;
-        db.execute_unprepared("CREATE TRIGGER reject_closed_checkpoint BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'controlled closed checkpoint rejection'); END").await?;
-        assert!(fixture.owner.close("child").await.is_err());
-        assert!(fixture.owner.0.state().entries.contains_key("child"));
-        assert!(fixture.closes.lock().unwrap().is_empty());
-        assert_eq!(
-            history.checkpoint().await?.unwrap().history_fence,
-            before.history_fence
-        );
         let targets = vec![(1, "child".to_owned())];
         let seal = fixture
             .owner
@@ -1067,26 +1198,10 @@ mod storage_fault_tests {
                 .is_err()
         );
         drop(seal);
-        let generation = store
-            .thread_persistence()
-            .history_channel("child")
-            .subscribe()
-            .borrow()
-            .fault_generation;
-        db.execute_unprepared("DROP TRIGGER reject_closed_checkpoint")
-            .await?;
-        store
-            .thread_persistence()
-            .retry_history("child", generation)
-            .await?;
         fixture.owner.close("child").await?;
         assert_eq!(
             *fixture.closes.lock().unwrap(),
             vec![WorkspaceRelease::Preserve]
-        );
-        assert_eq!(
-            history.checkpoint().await?.unwrap().state.lifecycle,
-            ThreadLifecycle::Closed
         );
         assert!(fixture.owner.close_session().await.is_empty());
         fixture.stop_writers().await?;
@@ -1142,9 +1257,7 @@ mod storage_fault_tests {
             message.clone(),
         )
         .await?;
-        let checkpoint = store.history("child").await?.checkpoint().await?;
-        let child_sink =
-            ThreadStorageSink::new(store.clone(), child.clone(), checkpoint.as_ref()).await?;
+        let child_sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
         spawn_live_projection(&child_sink);
         let mut closed = ticket("child", 2);
         closed.checkpoint.state.lifecycle = ThreadLifecycle::Closed;
@@ -1156,27 +1269,18 @@ mod storage_fault_tests {
             .stop_and_join()
             .await?;
         assert_eq!(
-            store
-                .history("child")
-                .await?
-                .terminal_report_sequences(0)
-                .await?,
-            vec![1]
+            history_terminal_report_sequences(&store.history("child").await?, 0).await?,
+            vec![(1, 1)]
         );
-        assert_eq!(
-            store
-                .history("child")
+        let child_history = store.history("child").await?;
+        assert!(
+            history_parent_report(&child_history, "child", 1)
                 .await?
-                .terminal_report_sequence("original-terminal-turn")
-                .await?,
-            Some(1)
+                .is_some()
         );
         // Recovery must retry the projection's original saved bytes, never a second body with
         // the same terminal ID. The real services below also own cold delivery reconciliation.
-        let original = store
-            .history("child")
-            .await?
-            .parent_report(1)
+        let original = history_parent_report(&child_history, "child", 1)
             .await?
             .context("original durable terminal report")?;
         assert_eq!(original, message);
@@ -1208,18 +1312,28 @@ mod storage_fault_tests {
                         );
                         // Observe the negative live-send result before any explicit recovery.
                         // Full ACK recovery may take this same gate and belongs to phase B.
+                        let parent_history = source.history("parent").await?;
                         assert!(
-                            source
-                                .history("parent")
-                                .await?
-                                .message_identity(&first_message.id)
+                            history_message_identity(&parent_history, &first_message.id)
                                 .await?
                                 .is_none()
                         );
                         let history = source.history(&target.id).await?;
-                        assert_eq!(history.terminal_report_sequences(0).await?, vec![1]);
-                        assert_eq!(history.parent_report(1).await?, Some(first_message));
-                        assert!(history.checkpoint().await?.is_some());
+                        assert_eq!(
+                            history_terminal_report_sequences(&history, 0).await?,
+                            vec![(1, 1)]
+                        );
+                        assert_eq!(
+                            history_parent_report(&history, &target.id, 1).await?,
+                            Some(first_message)
+                        );
+                        assert!(
+                            source
+                                .state_for(&target.workspace_id, &target.id)?
+                                .load_current()
+                                .await?
+                                .is_some()
+                        );
                         assert!(source.agent_close(&target.id).await?.is_none());
                         drop(_parent_resources);
                         Ok(())
@@ -1235,16 +1349,20 @@ mod storage_fault_tests {
             .send(())
             .map_err(|_| anyhow::anyhow!("publication gate closed"))?;
         job.await??;
+        let parent_history = store.history("parent").await?;
         assert!(
-            store
-                .history("parent")
-                .await?
-                .message_identity(&message_id)
+            history_message_identity(&parent_history, &message_id)
                 .await?
                 .is_none()
         );
         assert!(store.agent_close("child").await?.is_none());
-        assert!(store.history("child").await?.checkpoint().await?.is_some());
+        assert!(
+            store
+                .state_for("project-test", "child")?
+                .load_current()
+                .await?
+                .is_some()
+        );
         assert!(shutdown.await.is_empty());
         fixture.stop_writers().await?;
         drop(parent);
@@ -1277,16 +1395,20 @@ mod storage_fault_tests {
                 sequence
             }
         );
-        let receipt = store
-            .history("parent")
+        let DurableMessageIdentity::Proven {
+            sequence: receipt_sequence,
+            digest,
+        } = history_message_identity(&parent_history, &message_id)
             .await?
-            .message_identity(&message_id)
-            .await?
-            .context("exact durable parent report")?;
-        assert_eq!(receipt.sequence, sequence);
-        assert_eq!(receipt.digest.as_deref(), Some(original.digest().as_str()));
+            .context("exact durable parent report")?
+        else {
+            unreachable!("helper only returns proven identities")
+        };
+        assert_eq!(receipt_sequence, sequence);
+        assert_eq!(digest, original.digest());
+        let child_history = store.history("child").await?;
         assert_eq!(
-            store.history("child").await?.parent_report(1).await?,
+            history_parent_report(&child_history, "child", 1).await?,
             Some(original)
         );
         assert_eq!(
@@ -1299,12 +1421,12 @@ mod storage_fault_tests {
             1
         );
         assert!(
-            store
-                .history("parent")
-                .await?
-                .message_identity(&crate::studio::agent_close::terminal_report_id("child", 2))
-                .await?
-                .is_none()
+            history_message_identity(
+                &parent_history,
+                &crate::studio::agent_close::terminal_report_id("child", 2)
+            )
+            .await?
+            .is_none()
         );
         let absent = Fixture::protocol("no-terminal", Some("parent"));
         register_test_thread(&store, &absent).await?;
@@ -1352,13 +1474,12 @@ mod storage_fault_tests {
                     .iter()
                     .all(|release| *release == WorkspaceRelease::Preserve)
             );
-            let checkpoint = store
-                .history("parent")
+            let current = store
+                .state_for("project-test", "parent")?
+                .load_current()
                 .await?
-                .checkpoint()
-                .await?
-                .context("durable closed checkpoint")?;
-            assert_eq!(checkpoint.state.lifecycle, ThreadLifecycle::Closed);
+                .context("durable closed current")?;
+            assert_eq!(current.state.lifecycle, ThreadLifecycle::Closed);
             fixture
                 .fail_drain_after_writer
                 .store(false, Ordering::SeqCst);
@@ -1416,16 +1537,19 @@ mod storage_fault_tests {
                 &self,
                 identity: &ThreadActivation,
             ) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
-                let checkpoint = self
+                let paths = self
                     .0
-                    .history(identity.id())
-                    .await
+                    .registered_session_paths(identity.id())
+                    .map_err(storage_error)?;
+                let current = self
+                    .0
+                    .state_for(paths.workspace_id(), identity.id())
                     .map_err(storage_error)?
-                    .checkpoint()
+                    .load_current()
                     .await
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))?;
-                crate::studio::delegation::saved(&checkpoint.state)
+                crate::studio::delegation::saved(&current.state.to_paused_snapshot())
                     .map_err(storage_error)?
                     .ok_or_else(|| ThreadAssemblyError::Identity(identity.id().to_owned()))
             }
@@ -1436,15 +1560,18 @@ mod storage_fault_tests {
             ) -> Result<StudioThreadSpec, ThreadAssemblyError> {
                 let id = request.identity.id().to_owned();
                 let protocol = Fixture::protocol(&id, None);
-                let checkpoint = self
+                let paths = self
                     .0
-                    .history(&id)
-                    .await
+                    .registered_session_paths(&id)
+                    .map_err(storage_error)?;
+                let current = self
+                    .0
+                    .state_for(paths.workspace_id(), &id)
                     .map_err(storage_error)?
-                    .checkpoint()
+                    .load_current()
                     .await
                     .map_err(storage_error)?;
-                let sink = ThreadStorageSink::new(self.0.clone(), protocol, checkpoint.as_ref())
+                let sink = ThreadStorageSink::new(self.0.clone(), protocol, None)
                     .await
                     .map_err(storage_error)?;
                 let model_info = pl_model::model::ModelInfo::compatible("reactivated-model");
@@ -1478,7 +1605,7 @@ mod storage_fault_tests {
                     route,
                     model_available: true,
                     model,
-                    checkpoint,
+                    current,
                     initial_context: Vec::new(),
                     initial_runtime_facts: Vec::new(),
                     initial_extensions: BTreeMap::new(),
@@ -1502,8 +1629,26 @@ mod storage_fault_tests {
             let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
             let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
             let channel = store.thread_persistence().history_channel(&protocol.id);
-            let thread = ThreadHandle::resume_without_model(protocol.id.clone(), None)?;
+            let thread = ThreadHandle::restore_current(
+                pl_core::thread::current::ThreadCurrent::new(
+                    protocol.id.clone(),
+                    pl_core::thread::current::RuntimeEpoch::new(),
+                ),
+                None,
+            )?;
             thread.attach_storage(ColdStoreHandle::new(sink)).await?;
+            let epoch = thread.runtime_epoch();
+            let mut current_store = store.state_for(&protocol.workspace_id, &protocol.id)?;
+            current_store
+                .attach_current(
+                    store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        thread.clone(),
+                    ),
+                )
+                .await?;
             let assignment = pl_protocol::AgentWorkspaceAssignmentSnapshot {
                 mode: pl_protocol::AgentWorkspaceMode::Directory,
                 project_root: store.paths().home().to_string_lossy().into_owned(),
@@ -1527,7 +1672,7 @@ mod storage_fault_tests {
                     },
                 ])
                 .await?;
-            thread.close().await?;
+            current_store.close_current(epoch).await?;
             channel.stop_and_join().await?;
             projection.await?;
             Ok(())
@@ -1588,11 +1733,9 @@ mod storage_fault_tests {
                     error.downcast_ref::<ThreadAssemblyError>(),
                     Some(ThreadAssemblyError::Unpublished(_))
                 ));
+                let parent_history = store.history("parent").await?;
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity(&saved.message.id)
+                    history_message_identity(&parent_history, &saved.message.id)
                         .await?
                         .is_none()
                 );
@@ -1606,27 +1749,30 @@ mod storage_fault_tests {
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let receipt = store
-                    .history("parent")
+                let DurableMessageIdentity::Proven {
+                    sequence: receipt_sequence,
+                    digest: receipt_digest,
+                } = history_message_identity(&parent_history, &saved.message.id)
                     .await?
-                    .message_identity(&saved.message.id)
-                    .await?
-                    .context("original report durable receipt")?;
-                assert_eq!(
-                    receipt.digest.as_deref(),
-                    Some(saved.message.digest().as_str())
-                );
+                    .context("original report durable receipt")?
+                else {
+                    unreachable!("helper only returns proven identities")
+                };
+                assert_eq!(receipt_digest, saved.message.digest());
                 services
                     .redeliver_parent_report(&fixture.owner, "parent", saved.message.clone())
                     .await?;
-                let repeated = store
-                    .history("parent")
+                let DurableMessageIdentity::Proven {
+                    sequence: repeated_sequence,
+                    digest: repeated_digest,
+                } = history_message_identity(&parent_history, &saved.message.id)
                     .await?
-                    .message_identity(&saved.message.id)
-                    .await?
-                    .context("idempotent original report receipt")?;
-                assert_eq!(repeated.sequence, receipt.sequence);
-                assert_eq!(repeated.digest, receipt.digest);
+                    .context("idempotent original report receipt")?
+                else {
+                    unreachable!("helper only returns proven identities")
+                };
+                assert_eq!(repeated_sequence, receipt_sequence);
+                assert_eq!(repeated_digest, receipt_digest);
                 {
                     let state = fixture.owner.0.state();
                     let entry = &state.entries["parent"];
@@ -1675,13 +1821,7 @@ mod storage_fault_tests {
                 // Never add a parent Entry to the coordinator recovering the saved close.
                 save_cold_thread(&store, &parent).await?;
                 save_cold_thread(&store, &child).await?;
-                let checkpoint = store
-                    .history("child")
-                    .await?
-                    .checkpoint()
-                    .await?
-                    .context("saved cold child")?;
-                let sequence = checkpoint.history_fence + 1;
+                let sequence = 1;
                 let content = frozen_report_body(
                     &child,
                     sequence,
@@ -1698,24 +1838,22 @@ mod storage_fault_tests {
                 };
                 save_terminal_report(&store, &child, message.clone()).await?;
                 let resources = close_factory(&store)?;
-                let checkpoint = store
-                    .history("child")
+                let current = store
+                    .state_for("project-test", "child")?
+                    .load_current()
                     .await?
-                    .checkpoint()
-                    .await?
-                    .context("terminal child checkpoint")?;
+                    .context("terminal child current")?;
+                let current_snapshot = current.state.to_paused_snapshot();
                 resources
                     .factory
-                    .begin_child_close(&child, Some(&checkpoint.state), false)
+                    .begin_child_close(&child, Some(&current_snapshot), false)
                     .await?;
                 let fixture = Fixture::new(store.clone())?;
                 resources.install(&fixture.owner)?;
                 assert!(fixture.owner.0.state().entries.is_empty());
+                let parent_history = store.history("parent").await?;
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity(&message.id)
+                    history_message_identity(&parent_history, &message.id)
                         .await?
                         .is_none()
                 );
@@ -1726,16 +1864,16 @@ mod storage_fault_tests {
                     fixture.owner.resume_agent_closes(),
                 )
                 .await?;
-                let first_receipt = store
-                    .history("parent")
+                let DurableMessageIdentity::Proven {
+                    sequence: first_sequence,
+                    digest: first_digest,
+                } = history_message_identity(&parent_history, &message.id)
                     .await?
-                    .message_identity(&message.id)
-                    .await?
-                    .context("original report was durably received even when cleanup failed")?;
-                assert_eq!(
-                    first_receipt.digest.as_deref(),
-                    Some(message.digest().as_str())
-                );
+                    .context("original report was durably received even when cleanup failed")?
+                else {
+                    unreachable!("helper only returns proven identities")
+                };
+                assert_eq!(first_digest, message.digest());
                 if inject_failure {
                     let failure = first.expect_err("both delivery ACK and receiver drain fail");
                     let diagnostic = format!("{failure:#}");
@@ -1806,19 +1944,19 @@ mod storage_fault_tests {
                         .await?,
                     ParentReportAcknowledgement::Proven
                 );
-                let receipt = store
-                    .history("parent")
+                let DurableMessageIdentity::Proven {
+                    sequence: receipt_sequence,
+                    digest: receipt_digest,
+                } = history_message_identity(&parent_history, &message.id)
                     .await?
-                    .message_identity(&message.id)
-                    .await?
-                    .context("same durable parent ACK")?;
-                assert_eq!(receipt.sequence, first_receipt.sequence);
-                assert_eq!(receipt.digest, first_receipt.digest);
+                    .context("same durable parent ACK")?
+                else {
+                    unreachable!("helper only returns proven identities")
+                };
+                assert_eq!(receipt_sequence, first_sequence);
+                assert_eq!(receipt_digest, first_digest);
                 assert_eq!(
-                    store
-                        .history("child")
-                        .await?
-                        .parent_report(sequence)
+                    history_parent_report(&store.history("child").await?, "child", sequence)
                         .await?
                         .context("unchanged original report")?
                         .digest(),
@@ -1842,10 +1980,7 @@ mod storage_fault_tests {
                 active.send_message(followup).await?;
                 fixture.owner.synchronize_observation("parent").await?;
                 assert!(
-                    store
-                        .history("parent")
-                        .await?
-                        .message_identity("after-recovery")
+                    history_message_identity(&parent_history, "after-recovery")
                         .await?
                         .is_some()
                 );
@@ -1867,13 +2002,7 @@ mod storage_fault_tests {
             let child = Fixture::protocol("child", Some("parent"));
             save_cold_thread(store, &parent).await?;
             save_cold_thread(store, &child).await?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
-                .await?
-                .context("cold child checkpoint")?;
-            let sequence = checkpoint.history_fence + 1;
+            let sequence = 1;
             let content = frozen_report_body(
                 &child,
                 sequence,
@@ -1905,26 +2034,23 @@ mod storage_fault_tests {
                     .await?,
                 ParentReportAcknowledgement::Proven
             );
+            let child_history = store.history("child").await?;
             assert_eq!(
-                store
-                    .history("child")
-                    .await?
-                    .parent_report(saved.sequence)
+                history_parent_report(&child_history, "child", saved.sequence)
                     .await?
                     .context("unchanged original body")?
                     .digest(),
                 saved.message.digest()
             );
-            assert_eq!(
-                store
-                    .history("parent")
-                    .await?
-                    .message_identity(&saved.message.id)
+            let parent_history = store.history("parent").await?;
+            let DurableMessageIdentity::Proven { digest, .. } =
+                history_message_identity(&parent_history, &saved.message.id)
                     .await?
                     .context("durable original ID")?
-                    .digest,
-                Some(saved.message.digest())
-            );
+            else {
+                unreachable!("helper only returns proven identities")
+            };
+            assert_eq!(digest, saved.message.digest());
             assert!(
                 store
                     .agent_close("child")
@@ -1953,16 +2079,14 @@ mod storage_fault_tests {
             followup.id = "after-retained-storage-recovery".into();
             active.send_message(followup.clone()).await?;
             fixture.owner.synchronize_observation("parent").await?;
-            assert_eq!(
-                store
-                    .history("parent")
-                    .await?
-                    .message_identity(&followup.id)
+            let DurableMessageIdentity::Proven { digest, .. } =
+                history_message_identity(&parent_history, &followup.id)
                     .await?
                     .context("real followup history write")?
-                    .digest,
-                Some(followup.digest())
-            );
+            else {
+                unreachable!("helper only returns proven identities")
+            };
+            assert_eq!(digest, followup.digest());
             assert!(fixture.owner.close_session().await.is_empty());
             fixture.stop_writers().await
         }
@@ -1973,15 +2097,15 @@ mod storage_fault_tests {
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             let saved = save_pending_close(&store).await?;
             let resources = close_factory(&store)?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
+            let current = store
+                .state_for("project-test", "child")?
+                .load_current()
                 .await?
                 .context("saved terminal child")?;
+            let current_snapshot = current.state.to_paused_snapshot();
             resources
                 .factory
-                .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+                .begin_child_close(&saved.child, Some(&current_snapshot), false)
                 .await?;
             let fixture = Fixture::new(store.clone())?;
             resources.install(&fixture.owner)?;
@@ -2019,12 +2143,16 @@ mod storage_fault_tests {
                         .native()
                         .is_ok_and(|native| native.purpose == EntryPurpose::ReportReceiver))
             );
-            let first_receipt = store
-                .history("parent")
+            let parent_history = store.history("parent").await?;
+            let DurableMessageIdentity::Proven {
+                sequence: first_sequence,
+                digest: first_digest,
+            } = history_message_identity(&parent_history, &saved.message.id)
                 .await?
-                .message_identity(&saved.message.id)
-                .await?
-                .context("original durable receipt before cleanup retry")?;
+                .context("original durable receipt before cleanup retry")?
+            else {
+                unreachable!("helper only returns proven identities")
+            };
             fixture
                 .fail_drain_after_writer
                 .store(false, Ordering::SeqCst);
@@ -2033,14 +2161,17 @@ mod storage_fault_tests {
                 fixture.owner.resume_agent_closes(),
             )
             .await??;
-            let receipt = store
-                .history("parent")
+            let DurableMessageIdentity::Proven {
+                sequence: receipt_sequence,
+                digest: receipt_digest,
+            } = history_message_identity(&parent_history, &saved.message.id)
                 .await?
-                .message_identity(&saved.message.id)
-                .await?
-                .context("same receipt after exact-binding cleanup")?;
-            assert_eq!(receipt.sequence, first_receipt.sequence);
-            assert_eq!(receipt.digest, first_receipt.digest);
+                .context("same receipt after exact-binding cleanup")?
+            else {
+                unreachable!("helper only returns proven identities")
+            };
+            assert_eq!(receipt_sequence, first_sequence);
+            assert_eq!(receipt_digest, first_digest);
             assert!(
                 store
                     .thread_persistence()
@@ -2057,15 +2188,15 @@ mod storage_fault_tests {
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             let saved = save_pending_close(&store).await?;
             let resources = close_factory(&store)?;
-            let checkpoint = store
-                .history("child")
-                .await?
-                .checkpoint()
+            let current = store
+                .state_for("project-test", "child")?
+                .load_current()
                 .await?
                 .context("saved terminal child")?;
+            let current_snapshot = current.state.to_paused_snapshot();
             resources
                 .factory
-                .begin_child_close(&saved.child, Some(&checkpoint.state), false)
+                .begin_child_close(&saved.child, Some(&current_snapshot), false)
                 .await?;
             let fixture = Fixture::new(store.clone())?;
             resources.install(&fixture.owner)?;
@@ -2081,16 +2212,15 @@ mod storage_fault_tests {
                     .agent_services
                     .clone()
                     .context("close services")?;
-                let checkpoint = store
-                    .history("parent")
-                    .await?
-                    .checkpoint()
+                let current = store
+                    .state_for("project-test", "parent")?
+                    .load_current()
                     .await?
                     .context("cold original parent")?;
                 services.install_storage_owner(
                     &fixture.owner,
                     &Fixture::protocol("parent", None),
-                    checkpoint,
+                    current,
                     EntryPurpose::ReportReceiver,
                 )?;
             }

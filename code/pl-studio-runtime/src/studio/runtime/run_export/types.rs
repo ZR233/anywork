@@ -4,25 +4,27 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, ensure};
-use pl_core::chat::ChatItemHeader;
 use pl_core::thread::UsageSummary;
-use pl_protocol::{ChatAtom, ChatContentRole, ContentRef, InferenceBillingRecord, TurnFailure};
+use pl_protocol::{ChatContentRole, InferenceBillingRecord, TurnFailure};
 use pl_tool::skill::{SkillDiscoverySourceSummary, SkillWinnerSummary};
 use serde::{Deserialize, Serialize};
 
 use crate::StudioShutdownReport;
+use crate::history::{
+    HistoryBodyRole, HistoryCut, HistoryEntityHead, HistoryEventBodyRef, HistoryEventHeader,
+};
 
 /// Schema version for `run.json`.
-pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 2;
+pub const RUN_MANIFEST_SCHEMA_VERSION: u32 = 3;
 /// Schema version for `events.jsonl`.
-pub const EVENTS_SCHEMA_VERSION: u32 = 2;
+pub const EVENTS_SCHEMA_VERSION: u32 = 3;
 /// Schema version for `result.json`.
-pub const RESULT_SCHEMA_VERSION: u32 = 2;
+pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 /// Bound constants for the exporter bounded admission queue and content streaming.
 pub const MAX_QUEUED_BATCHES: usize = 256;
 pub const MAX_QUEUED_METADATA_BYTES: usize = 16 * 1024 * 1024;
-pub const CONTENT_EXPORT_CHUNK_BYTES: u32 = 256 * 1024;
+pub const CONTENT_EXPORT_CHUNK_BYTES: u32 = 64 * 1024;
 
 /// Host configuration enabling atomic run artifact export.
 #[derive(Debug, Clone)]
@@ -42,15 +44,15 @@ pub struct RunExportOptions {
 }
 
 /// Exporter build metadata recorded in `run.json`, `runStarted`, and `result.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BuildInfoV2 {
+pub struct BuildInfoV3 {
     pub version: String,
     pub git_commit: Option<String>,
     pub target: String,
 }
 
-impl BuildInfoV2 {
+impl BuildInfoV3 {
     /// Captures the compile-time build identity without running `git` at runtime.
     pub fn current() -> Self {
         let version = pl_studio_update::STUDIO_VERSION.trim().to_string();
@@ -122,7 +124,7 @@ pub fn validate_export_relative_path(path: &str) -> Result<()> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportSchemaV2 {
+pub struct ExportSchemaV3 {
     pub manifest: u32,
     pub events: u32,
     pub result: u32,
@@ -131,7 +133,7 @@ pub struct ExportSchemaV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunInvocationV2 {
+pub struct RunInvocationV3 {
     pub cwd: String,
     pub studio_home: String,
     pub account_id: Option<String>,
@@ -144,7 +146,7 @@ pub struct RunInvocationV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SkillSearchManifestV2 {
+pub struct SkillSearchManifestV3 {
     pub include_default_user_dir: bool,
     pub additional_dirs: Vec<String>,
     pub external_dirs: Vec<String>,
@@ -154,7 +156,7 @@ pub struct SkillSearchManifestV2 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ConfigInputEntryV2 {
+pub struct ConfigInputEntryV3 {
     pub logical_name: String,
     pub present: bool,
     pub sha256: Option<String>,
@@ -164,15 +166,15 @@ pub struct ConfigInputEntryV2 {
 /// Immutable startup manifest written atomically to `<output-dir>/run.json` before runtime init.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RunManifestV2 {
+pub struct RunManifestV3 {
     pub schema_version: u32,
     pub run_id: String,
     pub started_at: String,
-    pub build: BuildInfoV2,
-    pub invocation: RunInvocationV2,
-    pub skill_search: SkillSearchManifestV2,
-    pub config_inputs: Vec<ConfigInputEntryV2>,
-    pub export_schema: ExportSchemaV2,
+    pub build: BuildInfoV3,
+    pub invocation: RunInvocationV3,
+    pub skill_search: SkillSearchManifestV3,
+    pub config_inputs: Vec<ConfigInputEntryV3>,
+    pub export_schema: ExportSchemaV3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,7 +213,7 @@ pub enum ExecutionErrorStage {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExecutionErrorV2 {
+pub struct ExecutionErrorV3 {
     pub stage: ExecutionErrorStage,
     pub code: String,
     pub message: String,
@@ -220,7 +222,7 @@ pub struct ExecutionErrorV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TimingReportV2 {
+pub struct TimingReportV3 {
     pub total_wall_ms: u64,
     pub initialize_wall_ms: Option<u64>,
     pub agent_wall_ms: Option<u64>,
@@ -230,7 +232,7 @@ pub struct TimingReportV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct TraceSummaryV2 {
+pub struct TraceSummaryV3 {
     pub events_path: String,
     pub events_sha256: Option<String>,
     pub event_count: u64,
@@ -261,7 +263,7 @@ pub enum UsageMetricKey {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageTotalsV2 {
+pub struct UsageTotalsV3 {
     pub inference_count: Option<u64>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -274,7 +276,7 @@ pub struct UsageTotalsV2 {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageKnownTotalsV2 {
+pub struct UsageKnownTotalsV3 {
     pub inference_count: u64,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -287,19 +289,19 @@ pub struct UsageKnownTotalsV2 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ModelUsageExportV2 {
+pub struct ModelUsageExportV3 {
     pub account_id: Option<String>,
     pub model_id: Option<String>,
     pub coverage: UsageCoverage,
     pub has_unknown_values: bool,
-    pub totals: UsageTotalsV2,
-    pub known_totals: UsageKnownTotalsV2,
+    pub totals: UsageTotalsV3,
+    pub known_totals: UsageKnownTotalsV3,
     pub unknown_fields: Vec<UsageMetricKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ThreadUsageExportV2 {
+pub struct ThreadUsageExportV3 {
     pub thread_id: String,
     pub through_effect_seq: u64,
     pub summary: UsageSummary,
@@ -307,19 +309,19 @@ pub struct ThreadUsageExportV2 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct UsageExportV2 {
+pub struct UsageExportV3 {
     pub coverage: UsageCoverage,
     pub has_unknown_values: bool,
-    pub totals: UsageTotalsV2,
-    pub known_totals: UsageKnownTotalsV2,
-    pub by_model: Vec<ModelUsageExportV2>,
-    pub by_thread: Vec<ThreadUsageExportV2>,
+    pub totals: UsageTotalsV3,
+    pub known_totals: UsageKnownTotalsV3,
+    pub by_model: Vec<ModelUsageExportV3>,
+    pub by_thread: Vec<ThreadUsageExportV3>,
 }
 
 /// Terminal result file written atomically to `<output-dir>/result.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResultV2 {
+pub struct ResultV3 {
     pub schema_version: u32,
     pub run_id: String,
     pub root_thread_id: Option<String>,
@@ -328,63 +330,56 @@ pub struct ResultV2 {
     pub exit_code: i32,
     pub started_at: String,
     pub finished_at: String,
-    pub build: BuildInfoV2,
-    pub timing: TimingReportV2,
+    pub build: BuildInfoV3,
+    pub timing: TimingReportV3,
     pub final_text: Option<String>,
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV2,
-    pub usage: Option<UsageExportV2>,
+    pub trace: TraceSummaryV3,
+    pub usage: Option<UsageExportV3>,
     pub shutdown: StudioShutdownReport,
-    pub error: Option<ExecutionErrorV2>,
-    pub execution_error: Option<ExecutionErrorV2>,
+    pub error: Option<ExecutionErrorV3>,
+    pub execution_error: Option<ExecutionErrorV3>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct EventSourceV2 {
-    pub epoch: Option<String>,
+pub struct EventSourceV3 {
+    pub history_event_id: Option<String>,
+    pub history_event_seq: Option<u64>,
     pub effect_seq: Option<u64>,
     pub turn_id: Option<String>,
     pub attempt_id: Option<String>,
     pub tool_call_id: Option<String>,
-    pub completion_item_id: Option<String>,
-    pub completion_seq: Option<u64>,
+    pub current_owner_id: Option<String>,
+    pub current_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CompletionCursorV2 {
-    pub epoch: Option<String>,
-    pub completion_seq: u64,
+pub struct CompletionCursorV3 {
+    pub cut: HistoryCut,
+    pub history_seq: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ChatItemHeaderExportV2 {
-    pub append_seq: u64,
-    pub item_id: String,
-    pub query_class: String,
-    pub parent_id: Option<String>,
-    pub byte_length: u64,
+pub struct ChatItemHeaderExportV3 {
+    pub event: HistoryEventHeader,
 }
 
-impl ChatItemHeaderExportV2 {
-    pub fn from_core(header: &ChatItemHeader) -> Self {
+impl ChatItemHeaderExportV3 {
+    pub fn from_history(header: &HistoryEventHeader) -> Self {
         Self {
-            append_seq: header.append_seq,
-            item_id: header.item_id.clone(),
-            query_class: header.query_class.clone(),
-            parent_id: header.parent_id.as_ref().map(|k| k.as_str().to_string()),
-            byte_length: header.byte_length,
+            event: header.clone(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportedBlobV2 {
+pub struct ExportedBlobV3 {
     pub path: String,
     pub byte_length: u64,
     pub sha256: String,
@@ -394,9 +389,10 @@ pub struct ExportedBlobV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExportedContentV2 {
-    pub native_ref: ContentRef,
+pub struct ExportedContentV3 {
+    pub native_ref: HistoryEventBodyRef,
     pub role: Option<ChatContentRole>,
+    pub history_role: HistoryBodyRole,
     pub path: String,
     pub byte_length: u64,
     pub sha256: String,
@@ -406,78 +402,52 @@ pub struct ExportedContentV2 {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct SealedMemberCutV2 {
+pub struct SealedMemberCutV3 {
     pub thread_id: String,
     pub agent_id: String,
     pub parent_agent_id: Option<String>,
     pub role: Option<String>,
     pub through_effect_seq: u64,
-    pub completion_cut: CompletionCursorV2,
+    pub history_cut: CompletionCursorV3,
     pub aborted: bool,
     pub sealed: bool,
 }
 
-/// 执行来源的最小可靠事实；不包含正文、展示组或活动进度。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// One canonical History change projected into bounded export metadata.
+///
+/// The full `HistoryEvent` and its bodies stay in the writer transaction. The export queue retains
+/// only this accepted identity, time, kind, and typed head.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExecutionLifecycleExportV2 {
-    pub identity: String,
-    pub kind: pl_protocol::ChatAtomKind,
-    pub source: pl_protocol::ChatSourceId,
-    pub turn_id: Option<String>,
-    pub attempt_id: Option<String>,
-    pub tool: Option<pl_protocol::ChatToolIdentity>,
-    pub text_channel: Option<pl_protocol::ThreadTextChannel>,
-    pub delivery: pl_protocol::ChatDeliveryKind,
-    pub source_order: Option<u64>,
-    pub execution_order: Option<u64>,
-    pub started: Option<pl_protocol::ChatFactPosition>,
-    pub started_at: Option<i64>,
-    pub ended: Option<pl_protocol::ChatFactPosition>,
-    pub finished_at: Option<i64>,
-    pub outcome: Option<pl_protocol::ChatTerminalOutcome>,
-    pub completion_item_id: Option<String>,
-    pub last_write_seq: u64,
+pub struct ExecutionLifecycleExportV3 {
+    pub event_id: String,
+    pub event_kind: crate::history::HistoryEventKind,
+    pub occurred_at: Option<i64>,
+    pub recorded_at: i64,
+    pub head: HistoryEntityHead,
 }
-impl From<&crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle>
-    for ExecutionLifecycleExportV2
-{
-    fn from(
-        value: &crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle,
-    ) -> Self {
+impl From<&crate::history::HistoryEntityChange> for ExecutionLifecycleExportV3 {
+    fn from(value: &crate::history::HistoryEntityChange) -> Self {
         Self {
-            identity: value.identity.clone(),
-            kind: value.kind,
-            source: value.source.clone(),
-            turn_id: value.turn_id.clone(),
-            attempt_id: value.attempt_id.clone(),
-            tool: value.tool.clone(),
-            text_channel: value.text_channel,
-            delivery: value.delivery,
-            source_order: value.source_order,
-            execution_order: value.execution_order,
-            started: value.started,
-            started_at: value.started_at,
-            ended: value.ended,
-            finished_at: value.finished_at,
-            outcome: value.outcome,
-            completion_item_id: value.completion_item_id.clone(),
-            last_write_seq: value.last_write_seq,
+            event_id: value.event.header.event_id.clone(),
+            event_kind: value.event.header.kind.clone(),
+            occurred_at: value.event.header.occurred_at,
+            recorded_at: value.event.header.recorded_at,
+            head: value.entity.clone(),
         }
     }
 }
 pub(super) fn handoff_fingerprint(
     accounting: &crate::studio::thread_projection::PreparedAccounting,
-    lifecycle: &[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle],
+    lifecycle: &[ExecutionLifecycleExportV3],
 ) -> String {
-    let facts = lifecycle
-        .iter()
-        .map(ExecutionLifecycleExportV2::from)
-        .collect::<Vec<_>>();
-    crate::hash::canonical_json_hash(&serde_json::json!([accounting.export_fingerprint(), facts]))
+    crate::hash::canonical_json_hash(&serde_json::json!([
+        accounting.export_fingerprint(),
+        lifecycle
+    ]))
 }
 
-/// Typed `EventV2` payload variants (`type` + `data`).
+/// Typed `EventV3` payload variants (`type` + `data`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -485,10 +455,10 @@ pub(super) fn handoff_fingerprint(
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum EventBodyV2 {
+pub enum EventBodyV3 {
     RunStarted {
         run_id: String,
-        build: BuildInfoV2,
+        build: BuildInfoV3,
         manifest_sha256: String,
     },
     AgentRegistered {
@@ -500,7 +470,7 @@ pub enum EventBodyV2 {
         workspace_id: String,
         spawn_tool_call_id: Option<String>,
         initial_effect_seq: u64,
-        initial_completion_cursor: CompletionCursorV2,
+        initial_history_cursor: CompletionCursorV3,
     },
     SkillsDiscovered {
         thread_id: String,
@@ -516,25 +486,25 @@ pub enum EventBodyV2 {
         billing: InferenceBillingRecord,
     },
     ExecutionLifecycle {
-        facts: Vec<ExecutionLifecycleExportV2>,
+        facts: Vec<ExecutionLifecycleExportV3>,
     },
     Completion {
-        header: ChatItemHeaderExportV2,
-        atom: ChatAtom,
-        payload: ExportedBlobV2,
-        contents: Vec<ExportedContentV2>,
+        header: ChatItemHeaderExportV3,
+        atom: HistoryEntityHead,
+        payload: ExportedBlobV3,
+        contents_manifest: ExportedBlobV3,
     },
     ThreadSealed {
         thread_id: String,
         through_effect_seq: u64,
-        completion_cut: CompletionCursorV2,
+        history_cut: CompletionCursorV3,
         summary: UsageSummary,
         status: Option<String>,
         aborted: bool,
         error: Option<String>,
     },
     RunSealed {
-        members: Vec<SealedMemberCutV2>,
+        members: Vec<SealedMemberCutV3>,
         reconciled: bool,
         reconcile_error: Option<String>,
         trace_complete: bool,
@@ -546,15 +516,15 @@ pub enum EventBodyV2 {
 /// One JSONL record written to `<output-dir>/events.jsonl`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EventV2 {
+pub struct EventV3 {
     pub schema_version: u32,
     pub run_id: String,
     pub event_seq: u64,
     #[serde(flatten)]
-    pub body: EventBodyV2,
+    pub body: EventBodyV3,
     pub emitted_at: String,
     pub thread_id: Option<String>,
-    pub source: EventSourceV2,
+    pub source: EventSourceV3,
 }
 
 /// Final exporter report isolated from native `StudioShutdownReport`.
@@ -567,8 +537,8 @@ pub struct RunExportReport {
     pub trace_complete: bool,
     pub usage_complete: bool,
     pub cost_complete: bool,
-    pub trace: TraceSummaryV2,
-    pub usage: Option<UsageExportV2>,
+    pub trace: TraceSummaryV3,
+    pub usage: Option<UsageExportV3>,
     pub export_finalize_ms: Option<u64>,
-    pub failure: Option<ExecutionErrorV2>,
+    pub failure: Option<ExecutionErrorV3>,
 }

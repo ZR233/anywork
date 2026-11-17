@@ -17,6 +17,7 @@ pub(crate) use agents::archive_tests::spawn_failed_archive_fixture;
 pub(crate) use agents::archive_tests::spec as archive_test_spec;
 pub(crate) mod delegation_models;
 pub(crate) mod observation;
+mod pending_delivery;
 pub(crate) mod review_delivery;
 pub(crate) mod review_dispatch;
 pub use activation::{StudioActivationFactory, ThreadActivation, ThreadPreparation};
@@ -69,8 +70,9 @@ use pl_core::{
     context::ResourceAccess,
     model::ModelFactory,
     thread::{
-        ContextCapacity, ThreadCheckpoint, ThreadError, ThreadHandle, ThreadLifecycle,
+        ContextCapacity, ThreadError, ThreadHandle, ThreadLifecycle,
         cold::ColdStoreHandle,
+        current::{CurrentError, RuntimeEpoch, ThreadCurrent},
     },
     tool::opaque::Registration,
 };
@@ -102,7 +104,11 @@ pub struct StudioThreadSpec {
     /// False publishes the owner without a physical model until a later deferred update succeeds.
     pub model_available: bool,
     pub model: ThreadModel,
-    pub checkpoint: Option<ThreadCheckpoint>,
+    /// Complete current facts restored from `current.json`. New Threads start with no value.
+    ///
+    /// The assembler hands this exact object to Core, preserving saved model-call, tool-preview and
+    /// context facts; it never converts through a legacy checkpoint.
+    pub current: Option<ThreadCurrent>,
     /// Initial instructions and records for a new Thread only; never used to re-render recovery.
     pub initial_context: Vec<pl_core::context::ContextRecord>,
     /// Latest host facts queued after assembly. Recovery may supply them; they never re-render
@@ -112,13 +118,13 @@ pub struct StudioThreadSpec {
     pub tools: Vec<Registration>,
     pub resources: ResourceAccess,
     pub capacity: ContextCapacity,
-    pub cold_store: Option<ColdStoreHandle>,
+    pub(crate) history_sink: Option<crate::studio::storage::thread_writer::ThreadStorageSink>,
 }
 
 impl StudioThreadSpec {
     fn frozen_delegation(&self) -> Result<pl_protocol::DelegationSettings, ThreadAssemblyError> {
-        let selection = match &self.checkpoint {
-            Some(checkpoint) => crate::studio::delegation::saved(&checkpoint.state),
+        let selection = match &self.current {
+            Some(current) => crate::studio::delegation::saved(&current.state.to_paused_snapshot()),
             None => self
                 .initial_extensions
                 .get(crate::studio::delegation::EXTENSION)
@@ -160,11 +166,11 @@ impl std::fmt::Debug for StudioThreadSpec {
             .field("id", &self.id)
             .field("parent_id", &self.parent_id)
             .field(
-                "checkpoint_revision",
+                "current_revision",
                 &self
-                    .checkpoint
+                    .current
                     .as_ref()
-                    .map(|checkpoint| checkpoint.state_revision),
+                    .map(|current| current.snapshot_revision),
             )
             .field("tools", &self.tools.len())
             .finish_non_exhaustive()
@@ -253,6 +259,8 @@ pub enum ThreadAssemblyError {
     Model(#[from] pl_core::model::ModelError),
     #[error("Thread setup or close failed")]
     Thread(#[from] ThreadError),
+    #[error("Thread current setup failed")]
+    Current(#[from] CurrentError),
     #[error("Thread {id} setup failed ({setup}); cleanup also failed ({cleanup})")]
     Cleanup {
         id: String,
@@ -795,7 +803,7 @@ impl SessionRuntime {
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
-        if spec.checkpoint.is_some() && !spec.initial_context.is_empty() {
+        if spec.current.is_some() && !spec.initial_context.is_empty() {
             return Err(ThreadAssemblyError::InitialContextOnRecovery);
         }
         pl_core::context::ContextSnapshot {
@@ -805,9 +813,9 @@ impl SessionRuntime {
         .validate_complete()
         .map_err(ThreadError::from)?;
         if spec
-            .checkpoint
+            .current
             .as_ref()
-            .is_some_and(|checkpoint| checkpoint.thread_id != spec.id)
+            .is_some_and(|current| current.thread_id != spec.id)
         {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
@@ -843,23 +851,37 @@ impl SessionRuntime {
         spec.tools.append(&mut spec.agent_controls);
         // Model opening is still owned by the managed preparation, including the unpublished
         // use. If it fails, install a cleanup-only Thread so every allocated tool is closed/joined.
-        // Successful restoration keeps core's normal model-at-resume contract for pending inputs.
+        // Core consumes the complete current directly. The fresh path starts a new runtime epoch;
+        // the restored path activates only the frozen logical data under a new paused owner.
         let (thread, opening_failure) = if spec.model_available {
             match ModelFactory::new(spec.model).open_session().await {
-                Ok(model) => (
-                    ThreadHandle::resume(spec.id.clone(), model, spec.checkpoint)?,
-                    None,
-                ),
-                Err(error) => (
-                    ThreadHandle::resume_without_model(spec.id.clone(), spec.checkpoint)?,
-                    Some(ThreadAssemblyError::from(error)),
-                ),
+                Ok(model) => {
+                    let thread = match spec.current {
+                        Some(current) => ThreadHandle::restore_current(current, Some(model))?,
+                        None => ThreadHandle::start_current(spec.id.clone(), model)?,
+                    };
+                    (thread, None)
+                }
+                Err(error) => {
+                    let thread = match spec.current {
+                        Some(current) => ThreadHandle::restore_current(current, None)?,
+                        None => ThreadHandle::restore_current(
+                            ThreadCurrent::new(spec.id.clone(), RuntimeEpoch::new()),
+                            None,
+                        )?,
+                    };
+                    (thread, Some(ThreadAssemblyError::from(error)))
+                }
             }
         } else {
-            (
-                ThreadHandle::resume_without_model(spec.id.clone(), spec.checkpoint)?,
-                None,
-            )
+            let thread = match spec.current {
+                Some(current) => ThreadHandle::restore_current(current, None)?,
+                None => ThreadHandle::restore_current(
+                    ThreadCurrent::new(spec.id.clone(), RuntimeEpoch::new()),
+                    None,
+                )?,
+            };
+            (thread, None)
         };
         let resources = self
             .0
@@ -918,7 +940,7 @@ impl SessionRuntime {
             if let Some(error) = opening_failure {
                 return Err(error);
             }
-            if let Some(store) = spec.cold_store {
+            if let Some(store) = spec.history_sink {
                 self.attach_execution_storage(&spec.id, store).await?;
             }
             if !spec.initial_extensions.is_empty() {
@@ -1047,7 +1069,7 @@ impl SessionRuntime {
             .get(&caller.caller)
             .cloned()
             .ok_or(ThreadAssemblyError::Closed)?;
-        if spec.parent_id.as_deref() != Some(caller_thread.as_str()) || spec.checkpoint.is_some() {
+        if spec.parent_id.as_deref() != Some(caller_thread.as_str()) || spec.current.is_some() {
             return Err(ThreadAssemblyError::Identity(spec.id));
         }
         self.assemble(spec).await

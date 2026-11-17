@@ -4,7 +4,7 @@ mod agent_host;
 #[doc(hidden)]
 pub mod benchmark;
 pub(crate) mod catalog;
-mod conversation_identity;
+pub(crate) mod conversation_identity;
 pub(crate) mod conversation_store;
 pub(crate) mod delegation;
 pub(crate) mod entity;
@@ -61,3 +61,7 @@ pub(crate) mod storage_fault_test_support {
     };
     pub(crate) use super::storage::thread_writer::{HistoryChannel, ThreadStorageSink};
 }
+
+pub(crate) mod history_delivery;
+
+pub(crate) mod history_resources;

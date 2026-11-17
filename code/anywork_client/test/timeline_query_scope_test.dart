@@ -13,7 +13,7 @@ const _reference = ContentRef(
 );
 const _range = ContentRange(offset: 13, maxBytes: 37);
 const _collection = CurrentCollectionRef(
-  databaseId: 'original-database',
+  ownerId: 'owner',
   collection: 'tools',
   revision: 42,
 );
@@ -31,6 +31,13 @@ void main() {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
     final scope = fixture.session().content.openScope(generation: 9);
+    final current = fixture.currentReader();
+    final currentScope = CurrentReadScope(
+      threadId: 'thread',
+      generation: 9,
+      reader: current,
+      isEligible: () => !current.requested,
+    );
     expect(scope.generation, 9);
     expect(scope.threadId, 'thread');
     final manifest = ContentManifestPage(
@@ -57,7 +64,7 @@ void main() {
       calls.add('content');
       return window;
     };
-    feed.reader.onCurrent = (reference, continuation, demand) async {
+    current.onPage = (reference, continuation, demand) async {
       expect(reference, same(_collection));
       expect(continuation, 'current-before');
       expect(demand, same(_demand));
@@ -77,7 +84,7 @@ void main() {
       same(window),
     );
     expect(
-      await scope.pageCurrent(
+      await currentScope.pageCollection(
         reference: _collection,
         continuation: 'current-before',
         demand: _demand,
@@ -88,6 +95,7 @@ void main() {
     expect(feed.acknowledgements, [1]);
     expect(fixture.transport.opens, hasLength(1));
     expect((await scope.close()).complete, isTrue);
+    expect((await currentScope.close()).complete, isTrue);
     expect(
       feed.requestCloseCalls,
       0,
@@ -158,7 +166,15 @@ void main() {
       final fixture = ConversationFixture();
       final feed = await fixture.open(demand: _demand);
       final scope = fixture.session().content.openScope(generation: 1);
+      final current = fixture.currentReader();
+      final currentScope = CurrentReadScope(
+        threadId: 'thread',
+        generation: 1,
+        reader: current,
+        isEligible: () => !current.requested,
+      );
       scope.retire();
+      currentScope.retire();
       await expectLater(
         scope.loadOlder(before: 'before', demand: _demand),
         throwsA(isA<StaleConversationScope>()),
@@ -172,7 +188,7 @@ void main() {
         throwsA(isA<StaleConversationScope>()),
       );
       await expectLater(
-        scope.pageCurrent(reference: _collection, demand: _demand),
+        currentScope.pageCollection(reference: _collection, demand: _demand),
         throwsA(isA<StaleConversationScope>()),
       );
       await expectLater(
@@ -263,10 +279,17 @@ void main() {
       final fixture = ConversationFixture();
       final feed = await fixture.open(demand: _demand);
       final scope = fixture.session().content.openScope(generation: 1);
+      final current = fixture.currentReader();
+      final currentScope = CurrentReadScope(
+        threadId: 'thread',
+        generation: 1,
+        reader: current,
+        isEligible: () => !current.requested,
+      );
       final failure = StateError('stale revision in native reader');
       feed.reader.onManifest = (_, __, ___) => Future.error(failure);
       feed.reader.onContent = (_, __) => Future.error(failure);
-      feed.reader.onCurrent = (_, __, ___) => Future.error(failure);
+      current.onPage = (_, __, ___) => Future.error(failure);
       await expectLater(
         scope.listContents(itemId: 'item', demand: _demand),
         throwsA(same(failure)),
@@ -276,9 +299,10 @@ void main() {
         throwsA(same(failure)),
       );
       await expectLater(
-        scope.pageCurrent(reference: _collection, demand: _demand),
+        currentScope.pageCollection(reference: _collection, demand: _demand),
         throwsA(same(failure)),
       );
+      await currentScope.close();
       expect(feed.acknowledgements, [1]);
       expect((await fixture.close()).complete, isTrue);
     },
@@ -416,7 +440,9 @@ void main() {
       expect(timed.complete, isFalse);
       expect(timed.unresolved.single.resourceId, identity);
       expect(
-        timed.unresolved.single.stages.where((stage) => stage.pending),
+        timed.unresolved.single.stages.where(
+          (ClientResourceStage stage) => stage.pending,
+        ),
         hasLength(2),
       );
       handle.joinGate!.complete();
@@ -425,13 +451,19 @@ void main() {
       expect(consumerPending.resourceId, identity);
       expect(
         consumerPending.stages
-            .singleWhere((stage) => stage.phase == ClientClosePhase.close)
+            .singleWhere(
+              (ClientResourceStage stage) =>
+                  stage.phase == ClientClosePhase.close,
+            )
             .complete,
         isTrue,
       );
       expect(
         consumerPending.stages
-            .singleWhere((stage) => stage.phase == ClientClosePhase.consumer)
+            .singleWhere(
+              (ClientResourceStage stage) =>
+                  stage.phase == ClientClosePhase.consumer,
+            )
             .pending,
         isTrue,
       );
@@ -478,7 +510,7 @@ void main() {
           final failed = await scope.close();
           expect(failed.complete, isFalse);
           expect(
-            failed.unresolved.map((entry) => entry.reason),
+            failed.unresolved.map((UnresolvedResource entry) => entry.reason),
             contains(same(failure)),
           );
           expect(handle.joinCalls, 1);
@@ -488,7 +520,8 @@ void main() {
           expect(snapshot.resourceId, original.resourceId);
           expect(snapshot.reason, same(failure));
           final stage = snapshot.stages.singleWhere(
-            (stage) => stage.phase == ClientClosePhase.close,
+            (ClientResourceStage stage) =>
+                stage.phase == ClientClosePhase.close,
           );
           expect(stage.error, same(failure));
           expect(stage.stackTrace, same(failureStack));
@@ -577,7 +610,7 @@ void main() {
           final failed = await scope.close();
           expect(failed.complete, isFalse);
           expect(
-            failed.unresolved.map((entry) => entry.reason),
+            failed.unresolved.map((UnresolvedResource entry) => entry.reason),
             contains(same(joinFailure)),
           );
           handle.joinFailure = null;
@@ -615,7 +648,7 @@ void main() {
       expect(handle.successfulJoins, 1);
       expect(handle.cancelCalls, 1);
       expect(
-        failed.unresolved.map((entry) => entry.reason),
+        failed.unresolved.map((UnresolvedResource entry) => entry.reason),
         contains(same(failure)),
       );
       final retried = await fixture.client.retryCleanup(
@@ -623,7 +656,7 @@ void main() {
       );
       expect(retried.complete, isFalse);
       expect(
-        retried.unresolved.map((entry) => entry.reason),
+        retried.unresolved.map((UnresolvedResource entry) => entry.reason),
         contains(same(failure)),
       );
       expect(

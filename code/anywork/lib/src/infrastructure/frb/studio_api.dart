@@ -13,8 +13,7 @@ import '../../domain/models/studio_models.dart';
 import 'package:anywork_client/studio_ports.dart';
 import 'package:anywork_client/lifecycle.dart';
 import 'package:anywork_client/conversation_ports.dart';
-import 'package:anywork_client/conversation.dart'
-    show DisplayMembers, ProtocolVersionMismatch;
+import 'package:anywork_client/conversation.dart' show ProtocolVersionMismatch;
 
 import 'package:anywork_client/accounts.dart';
 import 'package:anywork_client/accounts_ports.dart';
@@ -52,7 +51,6 @@ import '../../rust/api/studio/types/attachment.dart' as frb_attachment_types;
 import '../../rust/api/studio/types/ssh.dart' as frb_ssh_types;
 import '../../rust/api/studio/types/shutdown.dart' as frb_shutdown;
 import '../../rust/api/studio/types/thread_stream/item.dart' as frb_item;
-import '../../rust/api/studio/types/thread_activity.dart' as frb_activity;
 import '../../rust/api/studio/types/mode_editor.dart' as frb_mode_types;
 import '../../rust/api/studio/handlers/bots.dart' as frb_bots;
 import '../../rust/api/studio/accounts/types.dart' as frb_accounts;

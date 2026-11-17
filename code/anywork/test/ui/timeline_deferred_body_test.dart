@@ -208,7 +208,7 @@ final class _Controls implements TimelineUiControllers {
                       id: displayId ?? atom.id,
                       blockOrder: 1,
                       body: SingleDisplayBlock(
-                        visibility: SingleVisibility.content,
+                        visibility: HistorySingleVisibility.content,
                         record: DisplayRecord(
                           atom: atom,
                           contentSource: CompletedOriginal(
@@ -911,7 +911,7 @@ void main() {
                 readAttachment: null,
                 record: DisplayRecord(
                   atom: _atom(text, deferred: deferred),
-                  contentSource: const CurrentAtom(),
+                  contentSource: const CurrentAtomSource(),
                 ),
                 displayId: "fixture-current",
               ),

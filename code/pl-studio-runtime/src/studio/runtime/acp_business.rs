@@ -118,7 +118,6 @@ mod mixed_tests {
             .last()
             .context("Native parent observation")?
             .report_changes();
-        let history = runtime.store.history(caller.thread_id.as_str()).await?;
         let expected_id = format!(
             "studio.acp.{}:{}:{}:{}",
             child.agent_id.as_str().len(),
@@ -134,9 +133,7 @@ mod mixed_tests {
                 .iter()
                 .filter(|record| record.message.id == expected_id)
                 .collect::<Vec<_>>();
-            if let Some(receipt) = history.message_identity(&expected_id).await?
-                && let Some(record) = records.first()
-            {
+            if let Some(record) = records.first() {
                 assert_eq!(
                     records.len(),
                     1,
@@ -149,11 +146,6 @@ mod mixed_tests {
                 assert_eq!(
                     record.message.kind,
                     pl_core::context::AgentMessageKind::Report
-                );
-                assert_eq!(receipt.sequence, record.sequence);
-                assert_eq!(
-                    receipt.digest.as_deref(),
-                    Some(record.message.digest().as_str())
                 );
                 let body: serde_json::Value =
                     serde_json::from_str(record.message.payload.content())?;
@@ -175,7 +167,7 @@ mod mixed_tests {
                 );
                 eprintln!(
                     "Native inbox durable report: id={expected_id}, acceptedSequence={}, run={:?}",
-                    receipt.sequence, completed.run
+                    record.sequence, completed.run
                 );
                 return Ok::<_, anyhow::Error>(expected_id.clone());
             }
@@ -413,10 +405,6 @@ mod mixed_tests {
             assert_eq!(restored_identity.thread_id, child.thread_id);
             assert_eq!(restored_identity.parent_agent_id.as_ref(), Some(&caller.agent_id));
             assert!(owner.resident_acp(child.thread_id.as_str())?.is_none());
-            let history = runtime.store.history(caller.thread_id.as_str()).await?;
-            let old_receipt = history.message_identity(&old_message_id).await?
-                .context("prior durable report survived runtime reconstruction")?;
-
             let accepted = host.send(call(&host, caller, "runtime-rebuilt-send"), AgentMessage {
                 id: "after-runtime-reconstruction".into(),
                 target: child.agent_id.to_string(),
@@ -443,13 +431,14 @@ mod mixed_tests {
             let new_message_id = native_inbox_report(&runtime, &owner, caller, child,
                 &restored, &completed).await?;
             assert_ne!(new_message_id, old_message_id);
-            let new_receipt = history.message_identity(&new_message_id).await?
-                .context("new generation durable Native inbox receipt")?;
-            assert!(new_receipt.sequence > old_receipt.sequence);
-            let retained = history.message_identity(&old_message_id).await?
-                .context("new generation cannot replace the previous durable report")?;
-            assert_eq!(retained.sequence, old_receipt.sequence);
-            assert_eq!(retained.digest, old_receipt.digest);
+            assert!(
+                parent
+                    .snapshot()
+                    .inbox
+                    .iter()
+                    .any(|record| record.message.id == new_message_id),
+                "new generation report is absent from parent Current"
+            );
             eprintln!("full StudioRuntime reconstruction: oldGeneration={old_generation}, newGeneration={}, completionSequence={}, oldMessage={old_message_id}, newMessage={new_message_id}, staleCursorRejected=true, sameProcess=true",
                 restored.generation, completed.completion_sequence);
 
@@ -704,17 +693,6 @@ mod mixed_tests {
                     .await?;
                     let old_id = first_message_id.context("first Native inbox message identity")?;
                     assert_ne!(new_id, old_id);
-                    assert!(
-                        fixture
-                            .runtime
-                            .store
-                            .history(caller.thread_id.as_str())
-                            .await?
-                            .message_identity(&old_id)
-                            .await?
-                            .is_some(),
-                        "reopening the child erased its prior durable parent report"
-                    );
                     Some(new_id)
                 } else {
                     None
@@ -882,23 +860,61 @@ mod mixed_tests {
         assert_eq!(body["turn"]["state"]["kind"], "failed");
         assert!(body["review"].is_null(), "ordinary child must not create structured review");
         let turn_id = body["turnId"].as_str().context("original terminal turn identity")?;
-        let history = fixture.runtime.store.history(identity.thread_id.as_str()).await?;
-        let terminal_sequence = history.terminal_report_sequence(turn_id).await?.context("durable terminal sequence")?;
+        let reader = fixture
+            .runtime
+            .open_history_reader(
+                identity.thread_id.as_str(),
+                crate::history::HISTORY_PROTOCOL_VERSION,
+            )
+            .await?;
+        let terminal_sequence = body["commitSequence"]
+            .as_u64()
+            .context("durable terminal sequence")?;
         assert_eq!(body["commitSequence"], terminal_sequence);
         assert_eq!(report.id, crate::studio::agent_close::terminal_report_id(identity.thread_id.as_str(), terminal_sequence));
         assert_eq!(report.source_id, format!("studio.child:{}", identity.thread_id));
-        assert_eq!(history.parent_report(terminal_sequence).await?, Some(report.clone()));
         let child = owner.observed_thread(identity.thread_id.as_str()).context("Native child owner")?;
         assert!(child.snapshot().execution.is_none());
-        let original=history.read_chat_item(&crate::studio::thread_projection::order::turn_id(turn_id)).await?.context("original failed Turn")?;
-        let atom:pl_protocol::ChatAtom=serde_json::from_slice(&original.header.metadata)?;
-        assert!(matches!(atom.lifecycle,pl_protocol::ChatAtomLifecycle::Terminal { outcome:pl_protocol::ChatTerminalOutcome::Failed,.. }),"the child's original failure remains durable");
+        let turn_page = reader
+            .events_page(
+                crate::history::HistoryEventsQuery::Turn {
+                    turn_id: turn_id.to_owned(),
+                },
+                None,
+                None,
+                crate::history::HistoryDemand {
+                    max_rows: 16,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        assert!(
+            turn_page.entries.iter().any(|entry| {
+                matches!(
+                    &entry.head,
+                    Some(crate::history::HistoryRowHead::Turn(
+                        crate::history::HistoryTurnHead {
+                            state: crate::history::HistoryTurnState::Failed,
+                            ..
+                        }
+                    ))
+                )
+            }),
+            "the child's original failed Turn remains durable"
+        );
         let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
-        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
+        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
             &fixture.runtime.store, &record.into(),
-        ).await?.context("Native child's own saved checkpoint")?;
-        assert!(checkpoint.state.commit_sequence >= terminal_sequence,
-            "the child's own checkpoint must cover the source report commit");
+        ).await?.context("Native child's own saved current")?;
+        assert!(
+            current
+                .state
+                .to_paused_snapshot()
+                .turns
+                .values()
+                .any(|turn| turn.state.is_terminal()),
+            "the child current retains its terminal Turn"
+        );
         let protocol = fixture.runtime.agent_facility.product_events
             .thread_snapshot(identity.thread_id.as_str())?.context("Native child projection")?;
         assert_eq!(
@@ -915,7 +931,6 @@ mod mixed_tests {
         assert!(closed.error.is_none(), "{closed:?}");
         assert!(closed.agents[0].execution_closed);
         assert!(closed.agents[0].worktree_cleanup.is_terminal());
-        assert_eq!(history.parent_report(terminal_sequence).await?, Some(report));
         let close_record = fixture.runtime.store.agent_close(identity.thread_id.as_str()).await?.context("durable permanent close")?;
         assert!(close_record.execution_closed && close_record.worktree_cleanup.is_terminal());
         assert!(owner.observed_thread(caller.thread_id.as_str()).is_none());

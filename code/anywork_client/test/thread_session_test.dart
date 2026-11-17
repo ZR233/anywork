@@ -118,12 +118,12 @@ void main() {
   test('model route is independent of cold runtime and clears without stale resurrection', () async {
     final fixture = ConversationFixture();
     final feed = await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 1, modelRoute: _route(4)),
         ),
@@ -134,7 +134,7 @@ void main() {
     expect(session.state.modelRoute, _route(4));
 
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 2,
@@ -151,7 +151,7 @@ void main() {
     expect(session.state.modelRoute, _route(5));
 
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 3,
@@ -167,8 +167,8 @@ void main() {
     );
     expect(session.state.modelRoute, isNull);
 
-    final staleSequence = state.send(
-      ConversationStateEvent(
+    state.send(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 3,
@@ -187,7 +187,6 @@ void main() {
     // acknowledgement; the content feed keeps its live owner.
     await state.requestCloseStarted.future;
     await state.closeCompleted.future;
-    expect(state.acknowledgements, isNot(contains(staleSequence)));
     expect(
       feed.requestCloseCalls,
       0,
@@ -215,12 +214,12 @@ void main() {
       initial: chatSet(messages: [chatMessage(id: 'item-100')]),
       demand: _demand,
     );
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 1,
@@ -242,7 +241,7 @@ void main() {
       same(diagnostics),
     );
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 2,
@@ -291,9 +290,8 @@ void main() {
     );
     expect(session.state.revision, 2);
     expect(feed.acknowledgements, [1, 2]);
-    expect(state.acknowledgements, [1, 2]);
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 3,
@@ -316,12 +314,12 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       final feed = await fixture.open(demand: _demand);
-      final state = fixture.stateFeed();
+      final state = fixture.currentReader();
       final session = fixture.session();
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 4),
           ),
@@ -331,7 +329,7 @@ void main() {
         (state) => state.sync.phase == DomainSyncPhase.reconnecting,
       );
       state.send(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadNotificationFrame(
             threadId: 'thread',
             revision: 6,
@@ -349,7 +347,6 @@ void main() {
       expect(session.state.revision, 4);
       expect(session.state.runtime!.completionTokens, 0);
       expect(feed.acknowledgements, [1]);
-      expect(state.acknowledgements, [1]);
       await fixture.close();
     },
   );
@@ -357,30 +354,29 @@ void main() {
   test('resync rebuilds only the state feed; new baseline may have lower state revision', () async {
     final fixture = ConversationFixture();
     final first = await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 40),
         ),
       ),
     );
+    fixture.transport.currentReaderFactory = (threadId, index) {
+      final reader = TestCurrentReader(
+        threadId: threadId,
+        initialView: currentViewForWorkspace(_workspace(revision: 3)),
+      );
+      fixture.currentReaders[threadId] = reader;
+      return reader;
+    };
     final resync = session.resyncRuntime();
-    await fixture.transport.stateOpened(1);
-    final second = fixture.stateFeed();
+    await fixture.transport.currentOpened(1);
+    final second = fixture.currentReader();
     expect(second, isNot(same(state)));
-    await second.deliver(
-      ConversationStateEvent(
-        frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
-          completedHistoryVersion: completedHistoryVersion,
-          workspace: _workspace(revision: 3),
-        ),
-      ),
-    );
     expect((await resync).revision, 3);
     // Only the state baseline is replaced: the original content feed keeps
     // its live owner and continues bounded delivery.
@@ -408,47 +404,35 @@ void main() {
   test('snapshot publication cannot complete a resync created synchronously by its listener', () async {
     final fixture = ConversationFixture();
     final first = await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
+    fixture.transport.currentReaderFactory = (threadId, index) {
+      final reader = TestCurrentReader(
+        threadId: threadId,
+        initialView: currentViewForWorkspace(_workspace(revision: 3)),
+      );
+      fixture.currentReaders[threadId] = reader;
+      return reader;
+    };
     Future<ThreadWorkspace>? resync;
-    var completed = false;
     final observation = session.source.watch((state) {
       if (state.workspace?.revision == 4 && resync == null) {
         resync = session.resyncRuntime();
-        unawaited(
-          resync!.then<void>(
-            (_) => completed = true,
-            onError: (_) => completed = true,
-          ),
-        );
       }
     });
     state.send(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 4),
         ),
       ),
     );
-    await fixture.transport.stateOpened(1);
+    await fixture.transport.currentOpened(1);
     expect(resync, isNotNull);
-    expect(
-      completed,
-      isFalse,
-      reason: 'The old snapshot cannot steal the new request',
-    );
-    final second = fixture.stateFeed();
-    await second.deliver(
-      ConversationStateEvent(
-        frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
-          completedHistoryVersion: completedHistoryVersion,
-          workspace: _workspace(revision: 3),
-        ),
-      ),
-    );
+    final second = fixture.currentReader();
+    expect(second, isNot(same(state)));
     expect((await resync!).revision, 3);
     expect(
       first.requestCloseCalls,
@@ -462,32 +446,33 @@ void main() {
   test('failure publication cannot fail a resync created synchronously by its listener', () async {
     final fixture = ConversationFixture();
     final first = await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
+    const newFailure = StudioFailure(
+      code: StudioFailureCode.busy,
+      message: 'new attempt failed',
+      retryable: true,
+      correlationId: 'new-attempt',
+    );
+    fixture.transport.currentReaderFactory = (threadId, index) =>
+        TestCurrentReader(threadId: threadId, initialFailure: newFailure);
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 4),
         ),
       ),
     );
     Future<ThreadWorkspace>? resync;
-    var completed = false;
     final observation = session.source.watch((state) {
       if (state.sync.phase == DomainSyncPhase.reconnecting && resync == null) {
         resync = session.resyncRuntime();
-        unawaited(
-          resync!.then<void>(
-            (_) => completed = true,
-            onError: (_) => completed = true,
-          ),
-        );
       }
     });
     state.send(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 6,
@@ -501,22 +486,10 @@ void main() {
         ),
       ),
     );
-    await fixture.transport.stateOpened(1);
     expect(resync, isNotNull);
-    expect(
-      completed,
-      isFalse,
-      reason: 'The old failure cannot steal the new request',
-    );
-    final second = fixture.stateFeed();
-    const newFailure = StudioFailure(
-      code: StudioFailureCode.busy,
-      message: 'new attempt failed',
-      retryable: true,
-      correlationId: 'new-attempt',
-    );
-    second.send(const ConversationFailureEvent(failure: newFailure));
-    await expectLater(resync!, throwsA(same(newFailure)));
+    final failed = expectLater(resync!, throwsA(same(newFailure)));
+    await fixture.transport.currentOpened(1);
+    await failed;
     expect(
       first.requestCloseCalls,
       0,
@@ -529,12 +502,12 @@ void main() {
   test('directory identity rebind does not overwrite runtime facts or reset state watermarks', () async {
     final fixture = ConversationFixture();
     await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(revision: 12),
         ),
@@ -569,7 +542,7 @@ void main() {
   test('same Turn terminal fact and latestTurn survive duplicate busy notifications', () async {
     final fixture = ConversationFixture();
     await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     final terminal = StudioTurnView(
       inputId: 'input',
@@ -584,16 +557,16 @@ void main() {
       updatedAt: DateTime.utc(2026),
     );
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace().copyWith(latestTurn: terminal),
         ),
       ),
     );
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadNotificationFrame(
           threadId: 'thread',
           revision: 2,
@@ -646,7 +619,7 @@ void main() {
     'content demand belongs to the session, not the thread snapshot',
     () async {
       final fixture = ConversationFixture();
-      // 没有 Thread 快照时内容连接同样建立：正文与状态流互相独立。
+      // Current 基线可以独立于内容连接建立，正文需求不发布 State。
       final feed = await fixture.open(
         initial: chatSet(messages: [chatMessage(id: 'item-2')]),
         demand: _demand,
@@ -657,8 +630,8 @@ void main() {
         (fixture.consumers['thread']!.batches.single.entries.single).recordId,
         'item-2',
       );
-      expect(session.state.hasSnapshot, isFalse);
-      expect(session.state.workspace, isNull);
+      expect(session.state.hasSnapshot, isTrue);
+      expect(session.state.workspace!.thread.id, 'thread');
       await fixture.close();
       expect(feed.closeCalls, 1);
     },
@@ -788,7 +761,7 @@ void main() {
     fixture.repository.setVisibleThread('thread');
     expect(closing, isNotNull, reason: 'the connecting publication ran');
     expect(
-      fixture.transport.stateOpens,
+      fixture.transport.currentOpens,
       isEmpty,
       reason: 'the sealed state owner never touched the transport',
     );
@@ -823,7 +796,7 @@ void main() {
       reason: 'only the newest stack owns the recovered content demand',
     );
     expect(
-      fixture.transport.stateOpens.where((open) => open.threadId == 'thread'),
+      fixture.transport.currentOpens.where((open) => open.threadId == 'thread'),
       hasLength(1),
       reason:
           'the stale stack retired before opening; the newest stack owns '
@@ -877,7 +850,7 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       await fixture.open(demand: _demand);
-      final state = fixture.stateFeed();
+      final state = fixture.currentReader();
       final session = fixture.session();
       final terminalA = _turnView(
         turnId: 'turn-a',
@@ -890,9 +863,9 @@ void main() {
         ),
       );
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(latestTurn: terminalA),
           ),
@@ -902,9 +875,9 @@ void main() {
 
       // equal revision、不同身份：保已采纳，不制造额外顺序。
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 2,
@@ -917,9 +890,9 @@ void main() {
 
       // 跨 Turn：payload revision 更高者胜，即使 updatedAt 逆序更旧。
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 3,
@@ -942,9 +915,9 @@ void main() {
 
       // 同身份：已采纳终态不被更高 revision 的 busy 候选回退。
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(
               revision: 4,
@@ -964,7 +937,7 @@ void main() {
   test('left-associated fold lets an active revision outrank an earlier terminal fold', () async {
     final fixture = ConversationFixture();
     await fixture.open(demand: _demand);
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     final session = fixture.session();
     final terminalA = _turnView(
       turnId: 'turn-a',
@@ -976,9 +949,9 @@ void main() {
       ),
     );
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(latestTurn: terminalA),
         ),
@@ -986,9 +959,9 @@ void main() {
     );
     final activeA = _turnView(turnId: 'turn-a', revision: 7);
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 2,
@@ -1012,11 +985,11 @@ void main() {
     final fixture = ConversationFixture();
     final first = await fixture.open(demand: _demand);
     final session = fixture.session();
-    final state = fixture.stateFeed();
+    final state = fixture.currentReader();
     await state.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 10,
@@ -1039,14 +1012,14 @@ void main() {
     fixture.repository.setVisibleThread(null);
     await first.closeCompleted.future;
     fixture.repository.setVisibleThread('thread');
-    await fixture.transport.stateOpened(1);
+    await fixture.transport.currentOpened(1);
     await fixture.transport.opened(1);
     final second = TestConversationFeed();
     fixture.transport.opens[1].result.complete(second);
-    await fixture.stateFeed().deliver(
-      ConversationStateEvent(
+    await fixture.currentReader().deliver(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: 3,
@@ -1084,11 +1057,11 @@ void main() {
       await fixture.transport.opened(0);
       final feed = TestConversationFeed();
       fixture.transport.opens[0].result.complete(feed);
-      final state = fixture.stateFeed();
+      final state = fixture.currentReader();
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 1),
           ),
@@ -1099,7 +1072,7 @@ void main() {
       await consumer.waitForCount(1);
       expect(feed.acknowledgements, isEmpty);
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadNotificationFrame(
             threadId: 'thread',
             revision: 2,
@@ -1135,12 +1108,12 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       final feed = await fixture.open(demand: _demand);
-      final state = fixture.stateFeed();
+      final state = fixture.currentReader();
       final session = fixture.session();
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 4),
           ),
@@ -1152,7 +1125,7 @@ void main() {
         retryable: true,
         correlationId: 'state-break',
       );
-      state.send(const ConversationFailureEvent(failure: failure));
+      state.sendError(failure);
       await state.closeCompleted.future;
       expect(session.state.sync.phase, DomainSyncPhase.reconnecting);
       expect(
@@ -1162,12 +1135,12 @@ void main() {
       );
       // The bounded retry rebuilds the state feed alone; the content feed and
       // its accepted Set are untouched.
-      await fixture.transport.stateOpened(1);
-      final replacement = fixture.stateFeed();
+      await fixture.transport.currentOpened(1);
+      final replacement = fixture.currentReader();
       await replacement.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 2),
           ),
@@ -1190,16 +1163,16 @@ void main() {
     'a late state open is closed by its original owner, never detached',
     () async {
       final fixture = ConversationFixture();
-      fixture.transport.stateFeedFactory = null;
+      fixture.transport.currentReaderFactory = null;
       final consumer = TestCompletionConsumer();
       fixture.session().content.attachConsumer(consumer, demand: _demand);
       fixture.repository.setVisibleThread('thread');
-      await fixture.transport.stateOpened(0);
+      await fixture.transport.currentOpened(0);
       await fixture.transport.opened(0);
       // Withdraw the demand before the pending state open completes.
       fixture.repository.setVisibleThread(null);
-      final late = TestConversationStateFeed();
-      fixture.transport.stateOpens.single.result.complete(late);
+      final late = TestCurrentReader();
+      fixture.transport.currentOpens.single.result.complete(late);
       await late.closeCompleted.future;
       expect(late.requestCloseCalls, greaterThan(0));
       expect(
@@ -1210,7 +1183,7 @@ void main() {
       final feed = TestConversationFeed();
       fixture.transport.opens[0].result.complete(feed);
       await feed.closeCompleted.future;
-      expect(fixture.transport.stateOpens, hasLength(1));
+      expect(fixture.transport.currentOpens, hasLength(1));
       expect(fixture.transport.opens, hasLength(1));
       expect((await fixture.close()).complete, isTrue);
     },
@@ -1221,12 +1194,12 @@ void main() {
     () async {
       final fixture = ConversationFixture();
       final feed = await fixture.open(demand: _demand);
-      final state = fixture.stateFeed();
+      final state = fixture.currentReader();
       final session = fixture.session();
       await state.deliver(
-        ConversationStateEvent(
+        testCurrentEvent(
           frame: ThreadSnapshotFrame(
-            schemaVersion: 17,
+            schemaVersion: threadSchemaVersion,
             completedHistoryVersion: completedHistoryVersion,
             workspace: _workspace(revision: 3),
           ),

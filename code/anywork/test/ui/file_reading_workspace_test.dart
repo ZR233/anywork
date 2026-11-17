@@ -148,7 +148,7 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final feed = transport.timelineReaders.last;
+        final feed = transport.currentReaders.last;
         final filePosition =
             graph.timeline.lease('thread-main')!.live.value!.readyFrontier + 1;
         feed.emitTimeline(

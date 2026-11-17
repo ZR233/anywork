@@ -633,36 +633,59 @@ async fn wait_execution_of_turn(
     turn_id: &str,
 ) -> Result<String> {
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    loop {
-        let snapshot = session.http()?.read_thread(thread_id).await?;
-        if let Some(execution) = snapshot
-            .runtime
-            .as_ref()
-            .and_then(|runtime| runtime.execution.as_ref())
-            && execution.turn_id() == Some(turn_id)
-        {
-            return Ok(execution.id().to_owned());
+    let current = crate::support::open_current(session.http()?, thread_id).await?;
+    let observed = async {
+        loop {
+            let view = current.snapshot(crate::support::current_demand()).await?;
+            if let Some(execution) = view
+                .state
+                .runtime
+                .as_ref()
+                .and_then(|runtime| runtime.execution.as_ref())
+                && execution.turn_id() == Some(turn_id)
+            {
+                return Ok(execution.id().to_owned());
+            }
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("the Thread never published an execution for Turn {turn_id}");
+            }
+            tokio::time::sleep(http::POLL).await;
         }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!("the Thread never published an execution for Turn {turn_id}");
+    }
+    .await;
+    match (observed, current.close().await) {
+        (Ok(id), Ok(())) => Ok(id),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close_error)) => {
+            Err(error.context(format!("Current close also failed: {close_error:#}")))
         }
-        tokio::time::sleep(http::POLL).await;
     }
 }
 
 async fn wait_active_turn(session: &Session, thread_id: &str) -> Result<String> {
     let deadline = std::time::Instant::now() + http::PREDICATE_TIMEOUT;
-    loop {
-        let snapshot = session.http()?.read_thread(thread_id).await?;
-        if let Some(turn) = snapshot.active_turn.as_ref()
-            && !turn.id.is_empty()
-        {
-            return Ok(turn.id.clone());
+    let current = crate::support::open_current(session.http()?, thread_id).await?;
+    let observed = async {
+        loop {
+            let view = current.snapshot(crate::support::current_demand()).await?;
+            if let Some(turn) = view.state.active_turn.as_ref()
+                && !turn.id.is_empty()
+            {
+                return Ok(turn.id.clone());
+            }
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("the Thread never reported an active Turn");
+            }
+            tokio::time::sleep(http::POLL).await;
         }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!("the Thread never reported an active Turn");
+    }
+    .await;
+    match (observed, current.close().await) {
+        (Ok(id), Ok(())) => Ok(id),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close_error)) => {
+            Err(error.context(format!("Current close also failed: {close_error:#}")))
         }
-        tokio::time::sleep(http::POLL).await;
     }
 }
 

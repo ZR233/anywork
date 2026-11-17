@@ -7,8 +7,7 @@ use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::Stream;
-use pl_protocol::{ThreadNotification, ThreadSubscriptionUpdate};
-use pl_studio_runtime::{ConversationEvent, ConversationStateFeed, StudioProductFrame};
+use pl_studio_runtime::{ConversationEvent, StudioProductFrame};
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -404,105 +403,6 @@ impl Drop for ConversationCompletion {
     }
 }
 
-/// State delivery never waits for the content SSE consumer or its read lease.
-#[utoipa::path(
-    get,
-    path = "/api/v1/threads/{thread_id}/state/events",
-    operation_id = "thread.subscribeState",
-    params(("thread_id" = String, Path, description = "Thread ID")),
-    responses(StudioApiErrors, (status = 200, description = "Canonical Thread state stream", body = String, content_type = "text/event-stream"))
-)]
-pub(crate) async fn thread_state_events(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-) -> Result<impl IntoResponse, ApiError> {
-    let permit = state
-        .streams
-        .clone()
-        .try_acquire_owned()
-        .map_err(|_| ApiError::overloaded())?;
-    let events = state
-        .runtime
-        .open_conversation_state_feed(&thread_id)
-        .await
-        .map_err(ApiError::from)?;
-    let (sender, receiver) = mpsc::channel(1);
-    let mut pending = Some((events, permit));
-    {
-        let mut owners = state
-            .conversations
-            .0
-            .lock()
-            .expect("conversation owners poisoned");
-        if !owners.closed && !state.shutdown.is_cancelled() {
-            while let Some(result) = owners.tasks.try_join_next() {
-                if let Err(error) = result {
-                    tracing::warn!(%error, "conversation HTTP owner task failed");
-                }
-            }
-            let (events, permit) = pending.take().expect("unstarted state observation");
-            let state = state.clone();
-            owners.tasks.spawn(async move {
-                let _permit = permit;
-                run_conversation_state(&state, events, sender).await;
-            });
-        }
-    }
-    if let Some((mut events, _permit)) = pending {
-        events.request_close();
-        events.close().await.map_err(ApiError::from)?;
-        return Err(crate::conversation::stale_scope());
-    }
-    Ok(Sse::new(ReceiverStream::new(receiver))
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("")))
-}
-
-async fn run_conversation_state(
-    state: &AppState,
-    mut events: ConversationStateFeed,
-    sender: mpsc::Sender<Result<Event, Infallible>>,
-) {
-    let mut failure = None;
-    loop {
-        // Reserve before recv, just as for content: no extra encoded payload
-        // may accumulate while this lane's HTTP consumer is backpressured.
-        let capacity = tokio::select! {
-            biased;
-            () = state.shutdown.cancelled() => break,
-            capacity = sender.reserve() => match capacity {
-                Ok(capacity) => capacity,
-                Err(_) => break,
-            },
-        };
-        let received = tokio::select! {
-            biased;
-            () = state.shutdown.cancelled() => break,
-            () = sender.closed() => break,
-            received = events.recv() => received,
-        };
-        match received {
-            Ok(Some(update)) => match encode_state_event(&update) {
-                Ok(event) => capacity.send(Ok(event)),
-                Err(_) => break,
-            },
-            Ok(None) => break,
-            Err(error) => {
-                failure = Some(pl_studio_runtime::studio_error_from_anyhow(error));
-                break;
-            }
-        }
-    }
-    events.request_close();
-    if let Err(error) = events.close().await {
-        tracing::warn!(%error, "conversation state SSE close failed");
-        failure.get_or_insert_with(|| pl_studio_runtime::studio_error_from_anyhow(error));
-    }
-    if let Some(error) = failure {
-        let _ = send_json(&sender, &state.shutdown, "error", None, &error).await;
-    }
-    let _ = sender.try_send(Ok(Event::default().event("closed").data("{}")));
-}
-
 async fn run_conversation(
     state: &AppState,
     id: &str,
@@ -574,11 +474,8 @@ pub(crate) async fn close_conversation(
 ) -> Result<(), pl_protocol::studio::StudioError> {
     owner.request_close();
     let _close = owner.close_gate.lock().await;
-    // These are independent owners: one failure must never skip the other join.
+    // Feed and query reader are independent owners: one failure must not skip the other join.
     let feed_close = async {
-        if let Some(reader) = &owner.timeline {
-            reader.close().await?;
-        }
         let mut native = owner.native.lock().await;
         if let Some(feed) = native.as_mut() {
             feed.request_close();
@@ -601,40 +498,6 @@ pub(crate) async fn close_conversation(
         }
     }
     owner.drain().await;
-    let members = owner
-        .members
-        .lock()
-        .expect("conversation members poisoned")
-        .clone();
-    for member in members {
-        let mut native = member.lock().await;
-        if let Some(source) = native.as_mut() {
-            source.request_close();
-            match source.close().await {
-                Ok(()) => {
-                    native.take();
-                }
-                Err(error) => {
-                    failure
-                        .get_or_insert_with(|| pl_studio_runtime::studio_error_from_anyhow(error));
-                }
-            }
-        }
-        if native.is_none() {
-            owner
-                .members
-                .lock()
-                .expect("conversation members poisoned")
-                .retain(|entry| !Arc::ptr_eq(entry, &member));
-        }
-    }
-    if failure.is_none() {
-        owner
-            .timeline_permit
-            .lock()
-            .expect("timeline permit poisoned")
-            .take();
-    }
     failure.map_or(Ok(()), Err)
 }
 
@@ -649,23 +512,6 @@ fn encode_conversation_event(event: &ConversationEvent) -> Result<Event, axum::E
         ConversationEvent::Chat { batch } => encode_event("chat", None, batch),
         ConversationEvent::Activity { snapshot } => encode_event("activity", None, snapshot),
     }
-}
-
-fn encode_state_event(update: &ThreadSubscriptionUpdate) -> Result<Event, axum::Error> {
-    let (name, id) = match update {
-        ThreadSubscriptionUpdate::Snapshot { snapshot, .. } => {
-            ("snapshot", format!("thread:{}", snapshot.revision))
-        }
-        ThreadSubscriptionUpdate::Notification { notification } => (
-            if matches!(notification.notification, ThreadNotification::Lagged { .. }) {
-                "lagged"
-            } else {
-                "notification"
-            },
-            format!("thread:{}:{}", notification.epoch, notification.revision),
-        ),
-    };
-    encode_event(name, Some(&id), update)
 }
 
 #[utoipa::path(post, path = "/api/v1/threads/{thread_id}/contents/watch",
@@ -1036,305 +882,42 @@ mod tests {
     }
 
     #[test]
-    fn openapi_has_only_demand_conversation_and_independent_canonical_queries() -> Result<()> {
+    fn openapi_has_independent_history_and_current_ports() -> Result<()> {
         let document = serde_json::to_value(crate::openapi_document())?;
         let paths = document["paths"].as_object().context("missing paths")?;
-        let timeline_routes = [
-            ("open", "post", Some("OpenRequest")),
-            ("next", "post", Some("NextRequest")),
-            ("older", "post", Some("OlderRequest")),
-            ("live-older", "post", Some("OlderRequest")),
-            ("close", "post", None),
-            ("members", "post", Some("MembersRequest")),
-        ];
-        let expected_paths = timeline_routes
-            .iter()
-            .map(|(suffix, _, _)| format!("/api/v1/threads/{{thread_id}}/timeline/{suffix}"))
-            .collect::<std::collections::BTreeSet<_>>();
-        let actual_paths = paths
-            .keys()
-            .filter(|path| path.contains("/timeline"))
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(actual_paths, expected_paths);
-        for (suffix, method, request_schema) in timeline_routes {
-            let path = format!("/api/v1/threads/{{thread_id}}/timeline/{suffix}");
-            let item = paths
-                .get(&path)
-                .with_context(|| format!("missing {path}"))?;
-            let operation = &item[method];
-            assert!(operation.is_object(), "{method} {path}");
-            for other_method in [
-                "get", "post", "put", "patch", "delete", "head", "options", "trace",
-            ] {
-                if other_method != method {
-                    assert!(item.get(other_method).is_none(), "{other_method} {path}");
-                }
-            }
-            let parameters = operation["parameters"]
-                .as_array()
-                .with_context(|| format!("missing parameters for {path}"))?;
-            let qualification = parameters
-                .iter()
-                .find(|parameter| parameter["name"] == "X-Anywork-Conversation");
-            if suffix == "open" {
-                assert!(
-                    qualification.is_none(),
-                    "open creates, rather than borrows, the read scope"
-                );
-            } else {
-                let header =
-                    qualification.with_context(|| format!("missing read scope for {path}"))?;
-                assert_eq!(header["in"], "header", "{path}");
-                assert_eq!(header["required"], true, "{path}");
-            }
-            if let Some(schema) = request_schema {
-                assert_eq!(operation["requestBody"]["required"], true, "{path}");
-                assert_eq!(
-                    operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
-                    format!("#/components/schemas/{schema}"),
-                    "{path}"
-                );
-            } else {
-                assert!(operation.get("requestBody").is_none(), "{path}");
-            }
-            match suffix {
-                "members" => {
-                    assert!(
-                        operation["responses"]["200"]["content"]["text/event-stream"].is_object(),
-                        "{path}"
-                    );
-                }
-                "close" => assert!(operation["responses"]["204"].is_object(), "{path}"),
-                _ => {
-                    let schema = match suffix {
-                        "open" => "OpenTimeline",
-                        "next" => "ViewUpdate",
-                        "older" => "TimelinePage",
-                        "live-older" => "TailSnapshot",
-                        _ => unreachable!("all timeline routes are covered"),
-                    };
-                    assert_eq!(
-                        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-                        format!("#/components/schemas/{schema}"),
-                        "{path}"
-                    );
-                }
-            }
-        }
-        let events = &paths["/api/v1/threads/{thread_id}/events"]["get"];
-        let params = events["parameters"].as_array().context("missing params")?;
-        for name in ["maxItems", "maxBytes"] {
-            assert!(
-                params
-                    .iter()
-                    .any(|param| param["name"] == name && param["required"] == true)
-            );
+        for path in [
+            "/api/v1/threads/{thread_id}/history/open",
+            "/api/v1/threads/{thread_id}/history/timeline",
+            "/api/v1/threads/{thread_id}/history/turns",
+            "/api/v1/threads/{thread_id}/history/event",
+            "/api/v1/threads/{thread_id}/history/body",
+            "/api/v1/threads/{thread_id}/history/changed",
+            "/api/v1/threads/{thread_id}/history/close",
+            "/api/v1/threads/{thread_id}/current/open",
+            "/api/v1/threads/{thread_id}/current/snapshot",
+            "/api/v1/threads/{thread_id}/current/watch",
+            "/api/v1/threads/{thread_id}/current/page",
+            "/api/v1/threads/{thread_id}/current/body/read",
+            "/api/v1/threads/{thread_id}/current/body/watch",
+            "/api/v1/threads/{thread_id}/current/close",
+        ] {
+            assert!(paths[path]["post"].is_object(), "{path}");
         }
         assert!(
-            !params
-                .iter()
-                .any(|param| param["name"] == "timelineEpoch" || param["name"] == "appendSeq")
+            paths.keys().all(|path| !path.contains("/timeline/")),
+            "legacy timeline pipeline remains in OpenAPI"
         );
-        assert!(events["responses"]["200"]["headers"]["X-Anywork-Conversation"].is_object());
         assert!(
-            params
-                .iter()
-                .any(|param| param["name"] == "queryClass" && param["required"] == true)
+            paths.keys().all(|path| !path.ends_with("/state/events")),
+            "legacy State feed remains in OpenAPI"
         );
-        assert!(!params.iter().any(|param| {
-            param["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with("run"))
-        }));
         let schemas = &document["components"]["schemas"];
-        assert!(schemas["CompletedEntry"].is_object());
-        assert!(schemas.get("CompletionRunRef").is_none());
-        assert!(schemas["ActivitySnapshot"].is_object());
-        assert!(schemas.get("MainPresentation").is_none());
-        assert!(schemas["ChatBatch"]["properties"]["fromSeq"].is_object());
-        assert!(schemas["ChatBatch"]["properties"]["throughSeq"].is_object());
-        assert!(schemas["ChatBatch"]["properties"].get("current").is_none());
-        assert!(schemas.get("TimelineItem").is_none());
-        assert!(schemas.get("TimelineMembersRef").is_none());
-        assert!(schemas.get("ChatEntry").is_none());
-        for (schema, fields) in [
-            (
-                "OpenRequest",
-                &["presentationVersion", "readerProtocolVersion", "demand"][..],
-            ),
-            ("NextRequest", &["after"][..]),
-            (
-                "OpenTimeline",
-                &[
-                    "readerId",
-                    "presentationVersion",
-                    "readerProtocolVersion",
-                    "initialCursor",
-                ][..],
-            ),
-            ("OlderRequest", &["before", "demand"][..]),
-            ("MembersRequest", &["reference", "window", "demand"][..]),
-            ("HistoryDelta", &["placement", "blocks", "throughOrder"][..]),
-            (
-                "TimelinePage",
-                &["presentationVersion", "databaseId", "ceiling", "blocks"][..],
-            ),
-            (
-                "ViewUpdate",
-                &[
-                    "presentationVersion",
-                    "readerProtocolVersion",
-                    "after",
-                    "next",
-                    "history",
-                    "tail",
-                ][..],
-            ),
-            ("DisplayBlock", &["id", "blockOrder", "body"][..]),
-            (
-                "TailSnapshot",
-                &[
-                    "revision",
-                    "layoutRevision",
-                    "readyFrontier",
-                    "executionPresent",
-                    "blocks",
-                ][..],
-            ),
-            (
-                "LiveDisplayBlock",
-                &["id", "blockOrder", "body", "state", "hasUnfinishedMembers"][..],
-            ),
-            ("DisplayBlockRef", &["databaseId", "blockId"][..]),
-            ("DisplayRecord", &["atom", "contentSource"][..]),
-        ] {
-            let required = schemas[schema]["required"]
-                .as_array()
-                .with_context(|| format!("missing required fields for {schema}"))?;
-            for field in fields {
-                assert!(
-                    required.iter().any(|name| name == field),
-                    "{schema}.{field}"
-                );
-            }
-        }
-        // Imported Work blocks may have no reliable group-level clock evidence.
-        let timing = &schemas["WorkTiming"];
-        for field in ["startedAt", "finishedAt"] {
+        for removed in ["ViewUpdate", "TailUpdate", "TailSnapshot", "HistoryDelta"] {
             assert!(
-                !timing["required"]
-                    .as_array()
-                    .is_some_and(|required| required.iter().any(|name| name == field)),
-                "WorkTiming.{field} must remain optional"
-            );
-            let property = &timing["properties"][field];
-            assert_eq!(
-                property["type"],
-                serde_json::json!(["integer", "null"]),
-                "WorkTiming.{field} must accept Unix seconds or null"
-            );
-            assert_eq!(property["format"], "int64", "WorkTiming.{field}");
-        }
-        for (schema, property, target) in [
-            ("OpenRequest", "demand", "ReadDemand"),
-            ("OlderRequest", "demand", "ReadDemand"),
-            ("MembersRequest", "demand", "ReadDemand"),
-            ("MembersRequest", "reference", "DisplayBlockRef"),
-            ("MembersRequest", "window", "DisplayMemberWindow"),
-            ("DisplayBlock", "body", "DisplayBlockBody"),
-            ("LiveDisplayBlock", "body", "DisplayBlockBody"),
-            ("LiveDisplayBlock", "state", "DisplayBlockState"),
-            ("DisplayRecord", "atom", "ChatAtom"),
-            ("DisplayRecord", "contentSource", "DisplayContentSource"),
-        ] {
-            assert_eq!(
-                schemas[schema]["properties"][property]["$ref"],
-                format!("#/components/schemas/{target}"),
-                "{schema}.{property}"
+                schemas.get(removed).is_none(),
+                "{removed} remains in OpenAPI"
             );
         }
-        assert!(
-            schemas["LiveDisplayBlock"]["properties"]
-                .get("closing")
-                .is_none()
-        );
-        assert_eq!(
-            schemas["DisplayBlockState"]["enum"],
-            serde_json::json!(["open", "sealed"])
-        );
-        let single = schemas["DisplayBlockBody"]["oneOf"]
-            .as_array()
-            .context("missing display block variants")?
-            .iter()
-            .find(|variant| variant["properties"]["kind"]["enum"] == serde_json::json!(["single"]))
-            .context("missing single display block")?;
-        assert_eq!(
-            single["properties"]["record"]["$ref"],
-            "#/components/schemas/DisplayRecord"
-        );
-        assert!(single["properties"].get("atom").is_none());
-        for field in ["startFact", "endFact"] {
-            assert!(schemas["DisplayRecord"]["properties"][field].is_object());
-            assert!(
-                !schemas["DisplayRecord"]["required"]
-                    .as_array()
-                    .context("missing display record required fields")?
-                    .iter()
-                    .any(|name| name == field),
-                "DisplayRecord.{field} must remain optional"
-            );
-        }
-        assert_eq!(
-            schemas["HistoryDelta"]["properties"]["blocks"]["items"]["$ref"],
-            "#/components/schemas/DisplayBlock"
-        );
-        assert_eq!(
-            schemas["TailSnapshot"]["properties"]["blocks"]["items"]["$ref"],
-            "#/components/schemas/LiveDisplayBlock"
-        );
-        assert!(schemas.get("TimelineBatch").is_none());
-        assert!(schemas.get("LiveDisplayWindow").is_none());
-        assert_eq!(
-            schemas["ViewUpdate"]["properties"]["history"]["$ref"],
-            "#/components/schemas/HistoryDelta"
-        );
-        assert_eq!(
-            schemas["ViewUpdate"]["properties"]["tail"]["$ref"],
-            "#/components/schemas/TailUpdate"
-        );
-        assert!(schemas["HistoryDelta"]["properties"]["fromOrder"].is_object());
-        assert!(
-            schemas["HistoryDelta"]["properties"]
-                .get("fromSeq")
-                .is_none()
-        );
-        for suffix in [
-            "chat/older",
-            "chat/completed",
-            "contents/manifest",
-            "contents/read",
-            "contents/watch",
-            "current/page",
-        ] {
-            let path = format!("/api/v1/threads/{{thread_id}}/{suffix}");
-            let post = &paths[&path]["post"];
-            assert!(post.is_object(), "{path}");
-            assert!(post["requestBody"]["required"] == true, "{path}");
-            assert!(
-                post["parameters"]
-                    .as_array()
-                    .context("missing capability parameter")?
-                    .iter()
-                    .any(|parameter| parameter["name"] == "X-Anywork-Conversation"
-                        && parameter["in"] == "header"
-                        && parameter["required"] == true),
-                "{path}"
-            );
-        }
-        // Unrelated execution/receipt APIs remain available.
-        assert!(paths.contains_key("/api/v1/threads/{thread_id}/turns"));
-        assert!(paths.contains_key("/api/v1/threads/{thread_id}/prompts"));
         Ok(())
     }
 

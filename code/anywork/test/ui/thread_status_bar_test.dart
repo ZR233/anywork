@@ -215,7 +215,7 @@ void main() {
       expect(transport.compactCalls, 1);
       await pumpClientFuture(
         tester,
-        transport.stateFeeds.last.emitStateAndWait(
+        transport.currentReaders.last.emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -287,7 +287,7 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        transport.stateFeeds.last.emitStateAndWait(
+        transport.currentReaders.last.emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -528,9 +528,9 @@ void main() {
     contextNotifications = 0;
     chromeNotifications = 0;
     startedItemsNotifications = 0;
-    final timelineConnections = transport.timelineReaders.length;
+    final timelineConnections = transport.currentReaders.length;
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await transport.currentReaders.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -561,7 +561,7 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await transport.currentReaders.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -594,7 +594,7 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await transport.currentReaders.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -612,7 +612,7 @@ void main() {
         ),
       ),
     );
-    await transport.stateFeeds.last.emitStateAndWait(
+    await transport.currentReaders.last.emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -628,7 +628,7 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    await transport.stateFeeds.last.emitStateAndWait(
+    await transport.currentReaders.last.emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -647,7 +647,7 @@ void main() {
     expect(throughputNotifications, 1);
     expect(contextNotifications, 0);
 
-    expect(transport.timelineReaders, hasLength(timelineConnections));
+    expect(transport.currentReaders, hasLength(timelineConnections));
     expect(
       graph.client.conversations.existingSession('thread-main'),
       same(session),
@@ -682,16 +682,26 @@ void main() {
 }
 
 final class _StatusTransport extends RecordingDemoTransport {
-  _StatusTransport() {
-    timelineReaderFactory = (_, inner) async =>
-        _SetAcknowledgedFeed(inner: inner, acknowledged: firstSetAcknowledged);
-  }
-
   final firstSetAcknowledged = Completer<void>();
   final compactStarted = Completer<void>();
   Completer<void>? compactGate;
   int compactCalls = 0;
   StreamController<ProductTopicFrame>? _lspFrames;
+
+  @override
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) async {
+    final reader = await super.openCurrentReader(
+      threadId,
+      currentProtocolVersion: currentProtocolVersion,
+      demand: demand,
+    );
+    if (!firstSetAcknowledged.isCompleted) firstSetAcknowledged.complete();
+    return reader;
+  }
 
   @override
   TestTopicFrames testProductTopicFrames(
@@ -737,26 +747,6 @@ final class _StatusTransport extends RecordingDemoTransport {
     if (!compactStarted.isCompleted) compactStarted.complete();
     await compactGate?.future;
     return super.compactThread(threadId);
-  }
-}
-
-/// Wait for the actual Set ACK before injecting State frames into the same feed.
-/// This observes transport ownership; it never publishes or reduces a projection.
-final class _SetAcknowledgedFeed extends RecordingTimelineReader {
-  _SetAcknowledgedFeed({required super.inner, required this.acknowledged});
-
-  final Completer<void> acknowledged;
-  ViewCursor? _firstSet;
-  @override
-  Future<ViewUpdate> next({required ViewCursor after}) async {
-    if (_firstSet == after && !acknowledged.isCompleted) {
-      acknowledged.complete();
-    }
-    final response = await super.next(after: after);
-    if (response.history.placement == HistoryPlacement.set) {
-      _firstSet ??= response.next;
-    }
-    return response;
   }
 }
 

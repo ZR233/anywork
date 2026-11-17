@@ -1,6 +1,6 @@
 //! Current Work snapshots and the one-time legacy display upgrade.
+use super::v24_presentation_types::DisplayBlockBody;
 use super::*;
-use pl_protocol::DisplayBlockBody;
 mod legacy;
 use pl_protocol::{ChatFactPosition, ChatSourceId};
 use serde::{Deserialize, Serialize};
@@ -262,13 +262,47 @@ pub(in crate::studio::storage::history) mod tests {
         Ok((dir, db))
     }
 
+    async fn display_watermarks(db: &impl ConnectionTrait) -> Result<(u64, u64)> {
+        let row = db
+            .query_one_raw(statement(
+                "SELECT display_published_through,display_applied_effect
+                 FROM history_meta WHERE id=1",
+                vec![],
+            ))
+            .await?
+            .context("display watermarks")?;
+        Ok((
+            u64::try_from(row.try_get::<i64>("", "display_published_through")?)?,
+            u64::try_from(row.try_get::<i64>("", "display_applied_effect")?)?,
+        ))
+    }
+
+    async fn display_headers(
+        db: &impl ConnectionTrait,
+        limit: usize,
+    ) -> Result<Vec<DisplayHeader>> {
+        db.query_all_raw(statement(
+            "SELECT header FROM conversation_display_blocks
+             ORDER BY block_order LIMIT ?",
+            vec![integer(limit)?.into()],
+        ))
+        .await?
+        .into_iter()
+        .map(|row| {
+            Ok(serde_json::from_slice(
+                &row.try_get::<Vec<u8>>("", "header")?,
+            )?)
+        })
+        .collect()
+    }
+
     #[tokio::test]
     async fn fresh_store_initializes_current_snapshots_without_legacy_conversion() -> Result<()> {
         let (_dir, db) = fixture().await?;
         initialize_current(&db).await?;
         assert_eq!(version(&db).await?, HISTORY_SCHEMA_VERSION);
         super::super::execution_facts::validate(&db).await?;
-        assert_eq!(conversation::display::watermarks(&db).await?, (0, 0));
+        assert_eq!(display_watermarks(&db).await?, (0, 0));
         Ok(())
     }
 
@@ -297,7 +331,7 @@ pub(in crate::studio::storage::history) mod tests {
         }
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        let heads = conversation::display::history_heads(&db, 1, None, 10).await?;
+        let heads = display_headers(&db, 10).await?;
         assert_eq!(heads.len(), 1);
         assert!(
             matches!(&heads[0].body, DisplayBlockBody::Work { timing, .. } if timing.started_at.is_none() && timing.finished_at.is_none())
@@ -405,7 +439,7 @@ pub(in crate::studio::storage::history) mod tests {
         .await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
         super::super::prepare(&db, THREAD, Preparation::Schema, None).await?;
-        let heads = conversation::display::history_heads(&db, 1, None, 1).await?;
+        let heads = display_headers(&db, 1).await?;
         assert_eq!(heads[0].id, "old-work");
         let DisplayBlockBody::Work { timing, .. } = &heads[0].body else {
             panic!("Work")

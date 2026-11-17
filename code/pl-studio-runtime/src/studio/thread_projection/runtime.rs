@@ -170,6 +170,7 @@ fn project_with_mode(
         .collect();
     Ok(ThreadRuntimeSnapshot {
         thread_id: thread_id.into(),
+        deferred: Vec::new(),
         // The execution identity is a fact of this Thread's own state, so the same per-Thread
         // projection that publishes usage also publishes what a precise stop would target.
         execution: state.execution.as_ref().map(|execution| {

@@ -16,7 +16,6 @@ import '../view_models/timeline_view_model.dart';
 import '../views/timeline_view.dart';
 import '../widgets/timeline_markdown.dart';
 import '../widgets/plan_summary_card.dart';
-import 'timeline_content_connector.dart';
 import 'timeline_media_connector.dart';
 import 'completion_run_connector.dart';
 import 'timeline_canonical_payload_connector.dart';
@@ -296,15 +295,10 @@ class _TimelineConnectorBodyState
           if (workSlice == null || !workSlice.hasVisibleContent) {
             return const SizedBox.shrink();
           }
-          final notifier = ref.read(
-            liveStatusViewModelProvider(threadId).notifier,
-          );
           return ConversationCurrentConnector(
             key: ValueKey(('work', lease.generation)),
             section: ConversationLiveSection.work,
             workSlice: workSlice,
-            onLoadOlder: notifier.loadOlderTimelineWork,
-            onReturnToLatest: notifier.returnToLatestTimelineWork,
             threadId: threadId,
             content: lease,
             liveUnit: lease.liveUnit,
@@ -319,7 +313,8 @@ class _TimelineConnectorBodyState
           TimelineCanonicalPayloadConnector(
             key: ValueKey((lease.generation, item.id)),
             item: item,
-            content: lease,
+            threadId: threadId,
+            openHistory: () => lease.openHistoryScope(),
             retirement: lease.retirement,
             isActive: active,
             render: render,
@@ -356,36 +351,12 @@ class _TimelineConnectorBodyState
       onRetryConnection: () {
         if (active()) retry();
       },
-      contentRangeBuilder: (itemId, contentKey, label, reference, witness) =>
-          TimelineContentRangeConnector(
-            key: ValueKey((lease.generation, itemId, contentKey)),
-            itemId: itemId,
-            contentKey: contentKey,
-            label: label,
-            reference: reference,
-            witness: witness,
-            isDisplayActive: active,
-            readContent: (reference, range) {
-              final scope = lease.queries;
-              if (!active() || scope == null) {
-                return Future.error(const StaleConversationScope());
-              }
-              return scope.readContent(reference: reference, range: range);
-            },
-          ),
       attachmentBuilder: (item) => TimelineAttachmentsConnector(
         key: ValueKey((lease.generation, item.id)),
         item: item,
         resources: lease.imageResources,
         readAttachment: readAttachment,
         isActive: active,
-        readContent: (reference, range) {
-          final scope = lease.queries;
-          if (!active() || scope == null) {
-            return Future.error(const StaleConversationScope());
-          }
-          return scope.readContent(reference: reference, range: range);
-        },
       ),
       onLink: link,
       isSafeLink: (url) => safeExternalWebUrl(url) != null,

@@ -108,22 +108,22 @@ final class _DraftTransport extends AccountsTestTransport
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(String threadId) =>
-      Future.value(
-        ScriptedConversationStateFeed(
-          threadId: threadId,
-          states: frames.stream,
-        ),
-      );
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) => Future.value(
+    ScriptedCurrentReader(threadId: threadId, states: frames.stream),
+  );
 
   /// State turns enter through the independent state channel with a real ACK
   /// wait; the content connection only ever carries Chat frames.
   Future<void> emitTurn(StudioTurnView turn) async {
-    final feed = await scriptedStateFeed(turn.threadId);
+    final feed = await scriptedCurrentReader(turn.threadId);
     await feed.deliver(
-      ConversationStateEvent(
+      testCurrentEvent(
         frame: ThreadSnapshotFrame(
-          schemaVersion: 17,
+          schemaVersion: threadSchemaVersion,
           completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: turn.revision,
@@ -591,7 +591,7 @@ Future<AnyworkClient> _client(
         demand: _demand,
       );
   client.conversations.setVisibleThread('thread');
-  await scriptedStateFeed('thread');
+  await scriptedCurrentReader('thread');
   await transport.window.acknowledged(1);
   return client;
 }
@@ -746,7 +746,7 @@ void main() {
         ),
       ),
     );
-    await scriptedStateFeed('new-thread');
+    await scriptedCurrentReader('new-thread');
     await transport.window.acknowledged(1);
     final newSession = client.conversations.session('new-thread');
     await newSession.deliverWorkspace(

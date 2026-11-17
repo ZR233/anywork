@@ -1,13 +1,14 @@
 import 'package:anywork_client/models.dart';
 
 import '../../interactions/state/interaction_payload.dart';
+import '../state/timeline_display_unit.dart';
 import 'live_status_state.dart';
 
 /// 规范尾部和独立业务状态的纯展示投影；不保存事件账本、不执行 I/O。
 abstract final class LiveStatusProjection {
   /// 当前轮次正文或压缩记录已承担展示时，接管并抑制对应的普通同类状态提示。
   static bool hasCurrentOutputRenderer({
-    required TailSnapshot? live,
+    required CurrentRunSnapshot? live,
     required String? activeTurnId,
     required LiveStatusNotice notice,
   }) {
@@ -25,22 +26,17 @@ abstract final class LiveStatusProjection {
       ConversationActivityKind.compacting => ChatAtomKind.compaction,
       _ => null,
     };
-    return live!.blocks.any((block) {
-      if (block.state != DisplayBlockState.open) return false;
-      if (block.body case SingleDisplayBlock(
-        record: DisplayRecord(contentSource: CurrentAtom(), atom: final atom),
-      )) {
-        return atom.kind == expectedAtomKind &&
-            atom.lifecycle is ActiveChatAtom &&
-            atom.source is ForegroundTurnChatSource &&
-            (atom.source as ForegroundTurnChatSource).turnId == activeTurnId;
-      }
-      return false;
-    });
+    return live!.currentAtoms.any(
+      (atom) =>
+          atom.kind == expectedAtomKind &&
+          atom.lifecycle is ActiveChatAtom &&
+          atom.source is ForegroundTurnChatSource &&
+          (atom.source as ForegroundTurnChatSource).turnId == activeTurnId,
+    );
   }
 
   /// 规范最新窗口是当前尾组身份的唯一来源；旧页和来源仅描述内容。
-  static LiveDisplayBlock? currentWork(TailSnapshot? live) {
+  static LiveDisplayBlock? currentWork(CurrentRunSnapshot? live) {
     final id = live?.currentWorkId;
     if (id == null) return null;
     for (final block in live!.blocks) {
@@ -67,7 +63,7 @@ abstract final class LiveStatusProjection {
   /// 普通活动沿原 State 合并到明确的当前尾组；不把来源或成员状态当活动。
   /// 审批、存储故障等关键提示仍保持独立呈现。
   static ({String blockId, ExecutionLiveNotice notice})? mergeableWorkNotice({
-    required TailSnapshot? live,
+    required CurrentRunSnapshot? live,
     required List<LiveStatusNotice> notices,
   }) {
     if (live == null || !live.executionPresent) {
@@ -116,6 +112,7 @@ abstract final class LiveStatusProjection {
     activeTools: activity.tools.active,
     activeToolCount: activity.tools.count,
     backgroundToolCount: activity.tools.background,
+    deferred: activity.deferred,
   );
 
   /// 在有效窗口上计算上方时间线实时工作块与底部状态栏主表面（纯函数，无副作用）。
@@ -124,9 +121,9 @@ abstract final class LiveStatusProjection {
     List<LiveDisplayBlock> timelineWorkBlocks,
   })
   projectSurfaceAndTimelineWork({
-    required TailSnapshot? effectiveOutputWindow,
-    required TailSnapshot? effectiveTimelineWindow,
-    required TailSnapshot? latestWindow,
+    required CurrentRunSnapshot? effectiveOutputWindow,
+    required CurrentRunSnapshot? effectiveTimelineWindow,
+    required CurrentRunSnapshot? latestWindow,
     required String? activeTurnId,
     required LiveWindowPagingState outputPaging,
     required List<LiveStatusNotice> rawNotices,
@@ -200,6 +197,9 @@ abstract final class LiveStatusProjection {
     required LiveStatusInputs observation,
     required LiveWindowPagingState outputPaging,
     required LiveWindowPagingState timelineWorkPaging,
+    bool hasMoreCurrentAtoms = false,
+    bool loadingCurrentAtoms = false,
+    Object? currentAtomsError,
   }) {
     final interaction = activePendingInteraction(observation.interactions);
     final confirmingPlan = interaction?.planConfirmation != null;
@@ -290,6 +290,9 @@ abstract final class LiveStatusProjection {
         outputPaging: outputPaging,
         timelineWorkPaging: timelineWorkPaging,
         primaryActivity: null,
+        hasMoreCurrentAtoms: hasMoreCurrentAtoms,
+        loadingCurrentAtoms: loadingCurrentAtoms,
+        currentAtomsError: currentAtomsError,
       );
     }
 
@@ -313,6 +316,9 @@ abstract final class LiveStatusProjection {
         outputPaging: outputPaging,
         timelineWorkPaging: timelineWorkPaging,
         primaryActivity: primaryActivity,
+        hasMoreCurrentAtoms: hasMoreCurrentAtoms,
+        loadingCurrentAtoms: loadingCurrentAtoms,
+        currentAtomsError: currentAtomsError,
       );
     }
 
@@ -332,6 +338,9 @@ abstract final class LiveStatusProjection {
         outputPaging: outputPaging,
         timelineWorkPaging: timelineWorkPaging,
         primaryActivity: primaryActivity,
+        hasMoreCurrentAtoms: hasMoreCurrentAtoms,
+        loadingCurrentAtoms: loadingCurrentAtoms,
+        currentAtomsError: currentAtomsError,
       );
     }
 
@@ -348,6 +357,9 @@ abstract final class LiveStatusProjection {
       outputPaging: outputPaging,
       timelineWorkPaging: timelineWorkPaging,
       primaryActivity: primaryActivity,
+      hasMoreCurrentAtoms: hasMoreCurrentAtoms,
+      loadingCurrentAtoms: loadingCurrentAtoms,
+      currentAtomsError: currentAtomsError,
     );
   }
 
@@ -359,11 +371,17 @@ abstract final class LiveStatusProjection {
     required LiveWindowPagingState outputPaging,
     required LiveWindowPagingState timelineWorkPaging,
     required ConversationActivityView? primaryActivity,
+    required bool hasMoreCurrentAtoms,
+    required bool loadingCurrentAtoms,
+    required Object? currentAtomsError,
   }) => LiveStatusView(
     threadId: threadId,
     cut: cut,
     barState: barState,
     timelineWork: timelineWork,
     primaryActivity: primaryActivity,
+    hasMoreCurrentAtoms: hasMoreCurrentAtoms,
+    loadingCurrentAtoms: loadingCurrentAtoms,
+    currentAtomsError: currentAtomsError,
   );
 }

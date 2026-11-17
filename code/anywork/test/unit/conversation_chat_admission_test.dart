@@ -9,6 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import '../support/chat_fixtures.dart' show chatMessage;
 import '../support/mapped_conversation_feed.dart';
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    show TestCurrentReader, TestHistoryReader;
 
 const _demand = ReadDemand(maxItems: 9, maxBytes: 256 * 1024);
 
@@ -609,13 +611,18 @@ final class _Transport implements ConversationTransport {
   final feeds = <_Feed>[];
   final scopes = <ChatScope>[];
 
-  /// The state channel has its own subscription and is never observed here, so
-  /// this content fixture exposes a real scripted state feed instead of
-  /// borrowing content delivery.
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async => ScriptedConversationStateFeed(threadId: threadId);
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) async => TestCurrentReader(threadId: threadId);
+
+  @override
+  Future<HistoryReader> openHistoryReader(
+    String threadId, {
+    required int historyProtocolVersion,
+  }) async => TestHistoryReader(threadId: threadId);
 
   @override
   Future<ConversationFeed> openConversationFeed(

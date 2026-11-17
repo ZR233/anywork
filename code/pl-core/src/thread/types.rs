@@ -20,10 +20,20 @@ const TERMINAL_TASK_LEDGER_CAPACITY: usize = 64;
 #[derive(Default)]
 struct EffectWindowState {
     batches: std::collections::VecDeque<Arc<ThreadEffectBatch>>,
+    current_exports: std::collections::BTreeMap<u64, Arc<HistoryExport>>,
     /// Highest `sequence` already handed off to durable history. Every commit at or below it has
     /// been released, so a consumer behind it resynchronizes from the durable store instead of
     /// reading the exact live batch.
     durable_through: u64,
+}
+
+/// One immutable export from a Current owner to its independent history consumer.
+/// The state is the original observation cut needed by the product projector. It is never a
+/// recovery document, a history fence, or a candidate for saving Current.
+#[derive(Debug, Clone)]
+pub struct HistoryExport {
+    pub effect: Arc<ThreadEffectBatch>,
+    pub state: ThreadSnapshot,
 }
 
 /// Shared transient live effect window: one [`ThreadEffectBatch`] per commit that is not durable
@@ -93,6 +103,34 @@ impl EffectWindow {
         self.write().batches.push_back(batch);
     }
 
+    pub(super) fn push_current(&self, export: HistoryExport) {
+        let mut state = self.write();
+        state.batches.push_back(export.effect.clone());
+        state
+            .current_exports
+            .insert(export.effect.sequence, Arc::new(export));
+    }
+
+    pub(super) fn current_page(
+        &self,
+        after: u64,
+        limit: usize,
+    ) -> Result<Vec<Arc<HistoryExport>>, ThreadError> {
+        let state = self.read();
+        if state
+            .frontier()
+            .is_some_and(|frontier| after.saturating_add(1) < frontier)
+        {
+            return Err(ThreadError::InvalidContext);
+        }
+        Ok(state
+            .current_exports
+            .range((std::ops::Bound::Excluded(after), std::ops::Bound::Unbounded))
+            .take(limit)
+            .map(|(_, export)| export.clone())
+            .collect())
+    }
+
     /// Releases every batch covered by a confirmed durable watermark.
     ///
     /// The handoff is the moment the facts become answerable from the durable store, so the live
@@ -111,6 +149,9 @@ impl EffectWindow {
         {
             state.batches.pop_front();
         }
+        state
+            .current_exports
+            .retain(|sequence, _| *sequence > durable_sequence);
     }
 
     /// First commit sequence the window can still serve, or `None` while it can serve everything.

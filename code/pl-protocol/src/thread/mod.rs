@@ -9,7 +9,7 @@ use crate::{
     InteractionRequest, McpHealthSnapshot, RuntimeCostAmount, ThreadModeId, TodoListSnapshot, Turn,
 };
 
-pub const THREAD_SCHEMA_VERSION: u32 = 17;
+pub const THREAD_SCHEMA_VERSION: u32 = 18;
 
 /// 会话级工作区模式：Project 根目录，或从 Project Git 仓库 `HEAD` 派生的独立 checkout。
 ///
@@ -196,6 +196,9 @@ impl ThreadSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRuntimeSnapshot {
     pub thread_id: String,
+    /// Explicitly deferred fields, owned and versioned by the original State publisher.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred: Vec<crate::CurrentStateField>,
     pub usage: ThreadRuntimeUsage,
     /// Best-effort usage for the currently running attempt. Durable totals remain in `usage`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -448,8 +451,6 @@ impl ThreadNotificationEnvelope {
 )]
 pub enum ThreadSubscriptionUpdate {
     Snapshot {
-        /// Required Native content protocol handshake; no old decoder fallback.
-        completed_history_version: u32,
         snapshot: Box<ThreadSnapshot>,
     },
     Notification {
@@ -469,7 +470,7 @@ pub struct ThreadTurnPage {
 #[serde(rename_all = "camelCase")]
 pub struct ThreadTurnHistory {
     pub turn: Turn,
-    pub items: Vec<crate::CompletedEntry>,
+    pub items: Vec<crate::HistoryEventDetail>,
     #[serde(default)]
     pub context_disposition: ThreadContextDisposition,
 }

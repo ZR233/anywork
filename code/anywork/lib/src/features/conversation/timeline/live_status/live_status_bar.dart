@@ -46,9 +46,6 @@ class LiveStatusBar extends ConsumerWidget {
       final timeline = ref.read(timelineSessionOwnerProvider);
       final lease = timeline.lease(threadId);
       if (lease != null) {
-        final notifier = ref.read(
-          liveStatusViewModelProvider(threadId).notifier,
-        );
         children.add(
           Offstage(
             offstage: masked,
@@ -56,10 +53,12 @@ class LiveStatusBar extends ConsumerWidget {
               enabled: !masked,
               child: ConversationCurrentConnector(
                 section: ConversationLiveSection.output,
-                key: ValueKey((threadId, lease.reader, lease.generation)),
+                key: ValueKey((
+                  threadId,
+                  lease.current.metadata.readerId,
+                  lease.generation,
+                )),
                 presenting: presenting,
-                onLoadOlder: notifier.loadOlderOutput,
-                onReturnToLatest: notifier.returnToLatestOutput,
                 threadId: threadId,
                 turnId: sessionState.activeTurn?.turnId,
                 activityId: sessionState.activity?.identity,
@@ -90,6 +89,27 @@ class LiveStatusBar extends ConsumerWidget {
       }
     }
 
+    if (aggregate.loadingCurrentAtoms ||
+        aggregate.hasMoreCurrentAtoms ||
+        aggregate.currentAtomsError != null) {
+      final notifier = ref.read(liveStatusViewModelProvider(threadId).notifier);
+      children.add(
+        ConversationActivityBar(
+          children: [
+            if (aggregate.loadingCurrentAtoms)
+              const LinearProgressIndicator()
+            else if (aggregate.currentAtomsError case final error?)
+              Text(error.toString())
+            else
+              TextButton(
+                onPressed: notifier.loadNextCurrentAtoms,
+                child: Text(context.l10n.interactionDetailsNextPage),
+              ),
+          ],
+        ),
+      );
+    }
+
     final reference = sessionState.businessRefs?.interactions;
     final detailLease = ref.read(timelineSessionOwnerProvider).lease(threadId);
     if (barState.showInteractionDetails &&
@@ -102,7 +122,8 @@ class LiveStatusBar extends ConsumerWidget {
             detailLease,
             detailLease.generation,
           )),
-          content: detailLease,
+          openCurrent: () =>
+              detailLease.openCurrentScope(generation: detailLease.generation),
           reference: reference,
           isCurrent: () =>
               identical(conversations.existingSession(threadId), session) &&

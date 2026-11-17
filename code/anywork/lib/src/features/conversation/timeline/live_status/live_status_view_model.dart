@@ -17,8 +17,8 @@ part 'live_status_view_model.g.dart';
 class LiveStatusViewModel extends _$LiveStatusViewModel {
   LiveWindowPagingState _output = const LatestLiveWindow();
   LiveWindowPagingState _work = const LatestLiveWindow();
-  Object? _outputRequest;
-  Object? _workRequest;
+  bool _loadingCurrentAtoms = false;
+  Object? _currentAtomsError;
 
   @override
   LiveStatusView? build(String threadId) {
@@ -37,9 +37,11 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
 
       lease.live.addListener(changed);
       lease.retirement.addListener(changed);
+      lease.currentCollectionError.addListener(changed);
       ref.onDispose(() {
         lease.live.removeListener(changed);
         lease.retirement.removeListener(changed);
+        lease.currentCollectionError.removeListener(changed);
       });
     }
     return _project();
@@ -60,7 +62,7 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
             revision: live.layoutRevision,
             readyFrontier: live.readyFrontier,
             executionPresent: live.executionPresent,
-            attemptId: lease.reader.metadata.readerId,
+            attemptId: lease.current.metadata.readerId,
             isDisplayActive: true,
           )
         : const LiveWindowCut.inactive();
@@ -80,88 +82,54 @@ class LiveStatusViewModel extends _$LiveStatusViewModel {
       ),
       outputPaging: _output,
       timelineWorkPaging: _work,
+      hasMoreCurrentAtoms: lease?.hasMoreCurrentAtoms ?? false,
+      loadingCurrentAtoms: _loadingCurrentAtoms,
+      currentAtomsError:
+          _currentAtomsError ?? lease?.currentCollectionError.value,
     );
     // Diagnostics borrow the very object rendered by this component, not a second projection.
     if (active) lease.liveStatus = view;
     return view;
   }
 
-  void loadOlderOutput(String before) =>
-      unawaited(_load(LiveStatusSectionTarget.outputBar, before));
-  void loadOlderTimelineWork(String before) =>
-      unawaited(_load(LiveStatusSectionTarget.timelineWork, before));
   void returnToLatestOutput() {
-    _outputRequest = null;
     _output = const LatestLiveWindow();
     state = _project();
   }
 
   void returnToLatestTimelineWork() {
-    _workRequest = null;
     _work = const LatestLiveWindow();
     state = _project();
   }
 
-  Future<void> _load(LiveStatusSectionTarget target, String before) async {
-    final current = state;
+  void loadNextCurrentAtoms() {
     final lease = ref.read(timelineSessionOwnerProvider).lease(threadId);
-    if (current == null ||
-        !current.cut.hasWindow ||
-        lease == null ||
-        lease.retirement.value) {
+    if (lease == null || _loadingCurrentAtoms || !lease.hasMoreCurrentAtoms) {
       return;
     }
-    final output = target == LiveStatusSectionTarget.outputBar;
-    final previous = output ? _output : _work;
-    if (previous.isLoading) return;
-    final request = Object();
-    final cut = current.cut;
-    void install(LiveWindowPagingState value) {
-      if (output) {
-        _output = value;
-      } else {
-        _work = value;
-      }
-    }
-
-    if (output) {
-      _outputRequest = request;
-    } else {
-      _workRequest = request;
-    }
-    install(
-      LoadingOlderLiveWindow(
-        before: before,
-        cut: cut,
-        previousOlder: previous.olderWindow,
-      ),
-    );
+    _loadingCurrentAtoms = true;
+    _currentAtomsError = null;
     state = _project();
-    bool eligible() =>
-        ref.mounted &&
-        !lease.retirement.value &&
-        identical(
-          ref.read(timelineSessionOwnerProvider).lease(threadId),
-          lease,
-        ) &&
-        identical(output ? _outputRequest : _workRequest, request) &&
-        state?.cut == cut;
-    try {
-      final page = await lease.loadLiveOlder(before: before);
-      if (!eligible()) return;
-      if (!cut.matchesWindow(page)) throw const StaleConversationScope();
-      install(ViewingOlderLiveWindow(before: before, window: page, cut: cut));
-    } catch (error) {
-      if (!eligible()) return;
-      install(
-        OlderLiveWindowFailed(
-          before: before,
-          error: error,
-          cut: cut,
-          previousOlder: previous.olderWindow,
-        ),
-      );
-    }
-    if (eligible()) state = _project();
+    unawaited(() async {
+      bool eligible() =>
+          ref.mounted &&
+          !lease.isRetired &&
+          identical(
+            ref.read(timelineSessionOwnerProvider).lease(threadId),
+            lease,
+          );
+      try {
+        await lease.loadNextCurrentAtoms();
+        if (!eligible()) return;
+      } catch (error) {
+        if (!eligible()) return;
+        _currentAtomsError = error;
+      } finally {
+        _loadingCurrentAtoms = false;
+        if (eligible()) {
+          state = _project();
+        }
+      }
+    }());
   }
 }

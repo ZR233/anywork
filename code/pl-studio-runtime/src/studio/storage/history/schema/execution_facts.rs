@@ -4,6 +4,7 @@ use crate::studio::storage::history::{execution_lifecycle, turns};
 use crate::{ExecutionItem, ExecutionShape};
 use pl_protocol::{ChatAtom, ChatSourceId};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 pub(super) struct ExecutionFacts;
 impl MigrationName for ExecutionFacts {
@@ -900,7 +901,9 @@ mod tests {
             assert_eq!(&bytes, expected);
         }
         assert!(
-            store.recovery_atom_starts(None, 128).await?.is_empty(),
+            execution_lifecycle::active(&store.reader().await?.unwrap().db, None, 128)
+                .await?
+                .is_empty(),
             "unknown raw start must not become a fabricated active/completed item"
         );
         let original = store

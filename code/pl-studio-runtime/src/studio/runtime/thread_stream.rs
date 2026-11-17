@@ -25,13 +25,16 @@ impl StudioRuntime {
                 let references = self.thread_business_refs_at(thread_id, &state)?;
                 (state, references)
             }
-            None => self
-                .store
-                .history(thread_id)
-                .await?
-                .read_state_with_business_refs()
-                .await?
-                .context("Thread has no saved checkpoint")?,
+            None => {
+                let saved = self
+                    .store
+                    .state_for(&thread.workspace_id, thread_id)?
+                    .load_current()
+                    .await?
+                    .context("Thread has no saved current")?;
+                let current = crate::studio::thread_projection::CurrentState::from_saved(&saved)?;
+                (saved.state.to_paused_snapshot(), current.business_refs())
+            }
         };
         self.store
             .thread_persistence()
@@ -49,7 +52,7 @@ impl StudioRuntime {
             business_refs,
         )?;
         if let Some(status) = cold_status {
-            // A cold checkpoint's Closed owner is not a permanent product close.
+            // A cold current's Closed owner is not a permanent product close.
             snapshot.thread.status = status;
         }
         if let Some(close) = self.store.agent_close(thread_id).await? {
@@ -119,7 +122,7 @@ impl StudioRuntime {
     /// Cumulative usage summary the projection must consume for one Thread.
     ///
     /// The writer is the single folder of committed effects, so its reported summary is the value a
-    /// hot increment, a reconnect and a cold restore must agree on. A checkpoint that was loaded
+    /// hot increment, a reconnect and a cold restore must agree on. Current that was loaded
     /// before the writer reported seeds the same value, never a re-aggregation of resident attempts.
     pub(in crate::studio) fn usage_summary(
         &self,
@@ -182,19 +185,17 @@ impl StudioRuntime {
             return Ok(snapshot);
         }
         let thread = self.read_protocol_thread(thread_id).await?;
-        // A read-only projection never prepares storage: it reports only already-durable facts, so a
-        // legacy checkpoint that still needs import stays invisible until an explicit activation
-        // migrates it (design/17).
-        let checkpoint = crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-            &self.store,
-            &thread,
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("Thread has no saved checkpoint"))?;
+        // A read-only projection never prepares storage: it reports only an already-complete
+        // current document, so a legacy checkpoint stays invisible until explicit activation.
+        let current =
+            crate::studio::thread_factory::recovery::load_current_read_only(&self.store, &thread)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("Thread has no saved current"))?;
+        let state = current.state.to_paused_snapshot();
         self.store
             .thread_persistence()
-            .seed_usage(thread_id, checkpoint.state.usage_summary.clone());
-        Ok(checkpoint.state)
+            .seed_usage(thread_id, state.usage_summary.clone());
+        Ok(state)
     }
 
     fn annotate_model_route(&self, snapshot: &mut pl_protocol::ThreadSnapshot) -> Result<u64> {

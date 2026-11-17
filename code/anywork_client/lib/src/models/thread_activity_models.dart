@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'current_state_field.dart';
 import 'failure_models.dart';
 import 'thread_wait_models.dart';
 import 'collection_equality.dart';
@@ -160,6 +161,7 @@ final class ThreadActivityView {
     this.thinkingSummary,
     this.thinkingSeconds,
     this.tools = ThreadActivityTools.empty,
+    this.deferred = const [],
     this.inputId,
     this.attemptId,
     this.executionId,
@@ -187,6 +189,9 @@ final class ThreadActivityView {
   /// 当前或最近一次思考阶段的耗时秒数。
   final int? thinkingSeconds;
   final ThreadActivityTools tools;
+  final List<CurrentStateField> deferred;
+  CurrentStateField? deferredField(String field) =>
+      deferred.where((value) => value.field == field).firstOrNull;
 
   @override
   bool operator ==(Object other) {
@@ -204,7 +209,8 @@ final class ThreadActivityView {
             summaryTruncated == other.summaryTruncated &&
             thinkingSummary == other.thinkingSummary &&
             thinkingSeconds == other.thinkingSeconds &&
-            tools == other.tools;
+            tools == other.tools &&
+            listEquals(deferred, other.deferred);
   }
 
   @override
@@ -222,6 +228,7 @@ final class ThreadActivityView {
     thinkingSummary,
     thinkingSeconds,
     tools,
+    Object.hashAll(deferred),
   );
 }
 

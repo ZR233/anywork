@@ -579,7 +579,7 @@ final class TimelineObservation {
       for (final head in heads) {
         final record = head.record;
         switch (record.contentSource) {
-          case CurrentAtom() || FrozenObservation():
+          case CurrentAtomSource() || FrozenObservation():
             atoms.add(record.atom);
           case CompletedOriginal(:final completionId):
             final original = await scope.readCompleted(
@@ -1160,7 +1160,7 @@ final class TimelineObservation {
         final head = record.atom;
         final completionId = switch (record.contentSource) {
           CompletedOriginal(:final completionId) => completionId,
-          CurrentAtom() || FrozenObservation() => null,
+          CurrentAtomSource() || FrozenObservation() => null,
         };
         if (atom == null ||
             atom.id != head.id ||

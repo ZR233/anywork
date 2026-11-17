@@ -1,22 +1,175 @@
-//! Direct SQL history queries; execution owners are never activated for historical pages.
-//!
-//! 无句柄的独立轮次入口先显式准备已有 SQLite 内容，再通过只读查询核对 checkpoint 栅栏。
-//! 不推进模型或执行身份准备，不装配 owner；缺失库不创建，损坏或身份不符直接失败。
+//! Independent append-only history access for Native production consumers.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use pl_protocol::studio::{StudioError, StudioErrorCode, StudioErrorReason};
 
 use crate::studio::StudioRuntime;
 
 impl StudioRuntime {
+    /// Opens a bounded history reader after protocol, Thread and permission checks.
+    ///
+    /// This path never loads `current.json`, activates an execution owner, flushes a writer, or
+    /// waits for current persistence. A missing database is a visible NotFound error, never an
+    /// empty-history substitute.
+    pub async fn open_history_reader(
+        &self,
+        thread_id: &str,
+        history_protocol_version: u32,
+    ) -> Result<crate::history::HistoryReader> {
+        if history_protocol_version != crate::history::HISTORY_PROTOCOL_VERSION {
+            return Err(anyhow::Error::new(
+                StudioError::new(
+                    StudioErrorCode::Protocol,
+                    "unsupported Native history protocol version",
+                    false,
+                )
+                .with_reason(
+                    StudioErrorReason::ProtocolVersionMismatch,
+                    serde_json::json!({
+                        "expected": crate::history::HISTORY_PROTOCOL_VERSION,
+                        "received": history_protocol_version,
+                    }),
+                ),
+            ));
+        }
+        let thread = self.read_protocol_thread(thread_id).await?;
+        self.check_thread_read_access(&thread)?;
+        let paths = self
+            .store
+            .registered_session_paths(thread_id)
+            .with_context(|| format!("resolve history storage for Thread {thread_id}"))?;
+        let path = paths.history_database();
+        if !tokio::fs::try_exists(&path).await? {
+            return Err(anyhow::Error::new(StudioError::new(
+                StudioErrorCode::NotFound,
+                "Thread history database does not exist",
+                false,
+            )));
+        }
+        self.store.open_history_reader(thread_id).await
+    }
+
     pub async fn list_thread_turns(
         &self,
         thread_id: &str,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<pl_protocol::ThreadTurnPage> {
-        self.prepare_timeline_history(thread_id)
-            .await?
-            .turn_page(cursor, limit)
+        let reader = self
+            .open_history_reader(thread_id, crate::history::HISTORY_PROTOCOL_VERSION)
+            .await?;
+        let limit = limit.clamp(1, 512);
+        let page = reader
+            .turns_page(
+                None,
+                cursor.map(str::to_owned),
+                crate::history::HistoryDemand {
+                    max_rows: limit as u32,
+                    max_bytes: 1024 * 1024,
+                },
+            )
             .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+        let mut turns = Vec::new();
+        for entry in page.entries {
+            let crate::history::HistoryRowHead::Turn(head) = entry.head else {
+                continue;
+            };
+            let items = history_turn_items(&reader, &head.turn_id, 512).await?;
+            turns.push(pl_protocol::ThreadTurnHistory {
+                context_disposition: head.context_disposition,
+                turn: history_turn(&reader, head).await?,
+                items,
+            });
+        }
+        Ok(pl_protocol::ThreadTurnPage {
+            turns,
+            next_cursor: page.next,
+        })
     }
+}
+
+async fn history_turn(
+    reader: &crate::history::HistoryReader,
+    head: crate::history::HistoryTurnHead,
+) -> Result<pl_protocol::Turn> {
+    let detail_event_id = head.detail_event_id.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "history Turn {} has no immutable original detail",
+            head.turn_id
+        )
+    })?;
+    let detail = reader
+        .read_event(
+            detail_event_id,
+            crate::history::HistoryDemand {
+                max_rows: 1,
+                max_bytes: 1024 * 1024,
+            },
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+    let mut cursor = None;
+    loop {
+        let bodies = reader
+            .list_bodies(
+                detail.header.event_id.clone(),
+                cursor,
+                crate::history::HistoryDemand {
+                    max_rows: 128,
+                    max_bytes: 64 * 1024,
+                },
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        for body in bodies.entries {
+            if body.body_key != "turn_detail" {
+                continue;
+            }
+            let mut bytes = Vec::new();
+            let mut offset = 0;
+            while offset < body.reference.byte_length {
+                let window = reader
+                    .read_body(body.reference.clone(), offset, 64 * 1024)
+                    .await
+                    .map_err(anyhow::Error::from)?;
+                anyhow::ensure!(!window.bytes.is_empty(), "turn detail body did not advance");
+                offset = offset
+                    .checked_add(window.bytes.len() as u64)
+                    .context("turn detail length overflow")?;
+                bytes.extend(window.bytes);
+            }
+            return serde_json::from_slice(&bytes).context("decode immutable Turn detail");
+        }
+        let Some(next) = bodies.next else {
+            break;
+        };
+        cursor = Some(next);
+    }
+    anyhow::bail!("history Turn {} detail body is missing", head.turn_id)
+}
+
+async fn history_turn_items(
+    reader: &crate::history::HistoryReader,
+    turn: &str,
+    limit: usize,
+) -> Result<Vec<pl_protocol::HistoryEventDetail>> {
+    let (_, items, _) = reader
+        .events_window(
+            crate::history::HistoryEventsQuery::Turn {
+                turn_id: turn.into(),
+            },
+            None,
+            None,
+            false,
+            crate::history::HistoryDemand {
+                max_rows: limit.min(512) as u32,
+                max_bytes: 64 * 1024,
+            },
+        )
+        .await?;
+    Ok(items
+        .into_iter()
+        .filter(|event| event.header.original.is_some())
+        .collect())
 }

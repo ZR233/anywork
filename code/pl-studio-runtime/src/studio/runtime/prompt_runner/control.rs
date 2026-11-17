@@ -473,31 +473,6 @@ impl StudioRuntime {
         thread_id: &str,
         request: &ContinuationIdentity<'_>,
     ) -> Result<Option<ContinuationOperationView>> {
-        // A storage fault or an unreached durable fence is propagated: only a reliable "no durable
-        // record" answer may fall through to the resident facts or become NotFound.
-        let history = self.read_timeline_history(thread_id).await?;
-        if let Some(previous) = history.input_identity(request.operation_id).await? {
-            // A normal message identity under the same id is not a continuation operation, and it is
-            // never answered as one.
-            if previous.entry.purpose != pl_core::thread::input::InputPurpose::Continuation {
-                return Ok(None);
-            }
-            let stored_digest = previous.request_digest.clone();
-            return Ok(Some(self.continuation_view(
-                thread_id,
-                ContinuationFacts {
-                    input_id: previous.entry.id.clone(),
-                    continuation: previous.entry.continuation.as_ref(),
-                    accepted_sequence: previous.entry.accepted_sequence,
-                    state: &previous.entry.state,
-                    expected_model_route_revision: previous.entry.expected_model_route_revision,
-                    admission_revision: previous.entry.continuation_admission_revision,
-                    stored_digest: stored_digest.as_deref(),
-                    durable: true,
-                },
-                request,
-            )?));
-        }
         let Some(thread) = self
             .session_of(thread_id)
             .and_then(|session| session.thread(thread_id))
@@ -517,13 +492,20 @@ impl StudioRuntime {
         if record.input.purpose != pl_core::thread::input::InputPurpose::Continuation {
             return Ok(None);
         }
-        // The resident queue can only prove that the admission happened, not the frozen identity it
-        // was accepted with: that lives in the durable row written by the admission commit. An
-        // identity whose row is still missing is therefore a retryable condition — never a
-        // conflicting request, and never a receipt no canonical fact could reproduce. It is reported
-        // as an internal marker so the post-admission wait keeps polling for the row instead of
-        // aborting on a condition that usually clears within milliseconds.
-        Err(anyhow::Error::new(AcceptedIdentityPending))
+        Ok(Some(self.continuation_view(
+            thread_id,
+            ContinuationFacts {
+                input_id: record.input.id.clone(),
+                continuation: record.continuation.as_ref(),
+                accepted_sequence: record.accepted_sequence,
+                state: &record.state,
+                expected_model_route_revision: None,
+                admission_revision: Some(record.revision),
+                stored_digest: None,
+                durable: false,
+            },
+            request,
+        )?))
     }
 
     fn continuation_view(

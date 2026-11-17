@@ -23,21 +23,6 @@ final class FrbConversationFeed extends _FrbPortProxy<_FrbRawConversationFeed>
   Set<_FrbContentWatch> get _contentWatches => _raw.contentWatches;
 }
 
-final class FrbConversationStateFeed
-    extends _FrbPortProxy<_FrbRawConversationState>
-    implements ConversationStateFeed {
-  FrbConversationStateFeed._(super.entry, super.raw);
-  @override
-  String get threadId => _raw.threadId;
-  @override
-  String get subscriptionId => _raw.subscriptionId;
-  @override
-  Stream<ConversationFrame> get events => _raw.events;
-  @override
-  Future<void> acknowledge(int deliverySequence) =>
-      _raw.acknowledge(deliverySequence);
-}
-
 final class _FrbRawConversationFeed extends _FrbRawConversationDelivery {
   _FrbRawConversationFeed(
     super.resourceId,
@@ -83,36 +68,6 @@ final class _FrbRawConversationFeed extends _FrbRawConversationDelivery {
   Future<void> closeChildren() => Future.wait<void>([
     for (final watch in List.of(contentWatches)) Future<void>.sync(watch.close),
   ]);
-}
-
-final class _FrbRawConversationState extends _FrbRawConversationDelivery {
-  _FrbRawConversationState(
-    super.resourceId,
-    frb_chat.BridgeConversationStateFeed handle,
-  ) : _handle = handle;
-  frb_chat.BridgeConversationStateFeed? _handle;
-  frb_chat.BridgeConversationStateFeed get native => _handle!;
-  @override
-  late final String threadId = native.threadId();
-  @override
-  late final String subscriptionId = native.subscriptionId();
-  @override
-  Stream<frb_chat_types.BridgeConversationFrame> _nativeEvents() =>
-      native.events();
-  @override
-  void _nativeAcknowledge(int sequence) => native.acknowledge(
-    subscriptionId: subscriptionId,
-    deliverySequence: BigInt.from(sequence),
-  );
-  @override
-  void requestNativeClose() => native.requestClose();
-  @override
-  Future<void> cancelNative() => FrbStudioTransport._bridgeCall(native.close);
-  @override
-  void disposeNative() {
-    native.dispose();
-    _handle = null;
-  }
 }
 
 /// Only FRB conversion and the single-consumer rule live here. ClientScope owns
@@ -163,18 +118,8 @@ abstract class _FrbRawConversationDelivery extends _FrbRawResource {
                   'delivery sequence',
                 ),
                 event: switch (value.event) {
-                  frb_chat_types.BridgeConversationEvent_State(:final update) =>
-                    ConversationStateEvent(
-                      frame: _threadStreamFrameFromFrb(update),
-                    ),
                   frb_chat_types.BridgeConversationEvent_Chat(:final batch) =>
                     ConversationChatEvent(batch: _chatBatchFromFrb(batch)),
-                  frb_chat_types.BridgeConversationEvent_Activity(
-                    :final snapshot,
-                  ) =>
-                    ConversationActivityEvent(
-                      snapshot: _activitySnapshotFromFrb(snapshot),
-                    ),
                   frb_chat_types.BridgeConversationEvent_Failure(
                     :final error,
                   ) =>

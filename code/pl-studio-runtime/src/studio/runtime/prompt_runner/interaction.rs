@@ -248,44 +248,15 @@ impl StudioRuntime {
         local_id: &str,
         revision: u64,
     ) -> Result<bool> {
-        let history = self.read_timeline_history(thread_id).await?;
-        if let Some(receipt) = history
-            .latest_fact_receipt(&crate::studio::thread_projection::order::receipt_id(
-                "interaction",
-                local_id,
-            ))
-            .await?
-        {
-            let record: pl_core::thread::interactions::InteractionRecord =
-                serde_json::from_str(&receipt.payload)?;
-            if !matches!(
-                record.state,
-                pl_core::thread::interactions::InteractionState::Pending
-            ) && record.revision >= revision
-            {
-                return Ok(true);
-            }
-        }
-        let Some(receipt) = history
-            .latest_fact_receipt(&crate::studio::thread_projection::order::receipt_id(
-                "permission",
-                local_id,
-            ))
-            .await?
-        else {
+        let Some(record) = self.decision_record(thread_id, local_id).await? else {
             return Ok(false);
         };
-        let record: pl_core::thread::permissions::PermissionRecord =
-            serde_json::from_str(&receipt.payload)?;
-        Ok(!matches!(
-            record.state,
-            pl_core::thread::permissions::PermissionState::Pending
-        ) && record.revision >= revision)
+        Ok(!record.pending() && record.revision() >= revision)
     }
 
     /// Every decision fact this Thread can still prove, settled ones included.
     ///
-    /// The canonical snapshot keeps only pending decisions and a saved checkpoint may already have
+    /// The canonical snapshot keeps only pending decisions and a saved current may already have
     /// dropped a settled one, while the durable receipt of that same identity still proves it. One
     /// union of both — newest revision per identity, receipt winning a tie — is the single read-only
     /// source every identity question reads, so operation reuse, terminal replay, the child Plan
@@ -299,7 +270,7 @@ impl StudioRuntime {
     ///   and every caller can report it (the reconciliation) or refuse to act on an unprovable fact
     ///   (the identity checks) instead of mistaking it for old history. Its revision is unknown, so a
     ///   newer snapshot record never displaces it: an unknown revision cannot prove it was replaced;
-    /// - a **storage read failure** — the checkpoint, the durable fence or the receipt query itself —
+    /// - a **storage read failure** — the current or the receipt query itself —
     ///   is propagated as the typed storage fault it is, so a command fails retryably rather than
     ///   deciding on an empty set of facts. This is the same boundary every other read path in this
     ///   runtime already uses, and it is why an unreadable store blocks a submission instead of
@@ -317,50 +288,13 @@ impl StudioRuntime {
             // stop recognising a child Plan record.
             let thread = self.read_owned_thread(thread_id).await?;
             let thread: pl_protocol::Thread = thread.into();
-            if let Some(checkpoint) =
-                crate::studio::thread_factory::recovery::load_checkpoint_read_only(
-                    &self.store,
-                    &thread,
-                )
-                .await?
+            if let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
+                &self.store,
+                &thread,
+            )
+            .await?
             {
-                collect_decision_records(&checkpoint.state, &mut facts);
-            }
-        }
-        // A storage fault or an unreached durable fence is propagated: only a reliable answer may
-        // become "this identity does not exist".
-        let history = self.read_timeline_history(thread_id).await?;
-        for receipt in history.decision_receipts().await? {
-            // A saved row that cannot be decoded is a corrupted decision, not a missing one: its
-            // identity is still known from the receipt key, so callers can fail closed on it and the
-            // reconciliation can report it, instead of mistaking it for old history.
-            let record = match decode_decision_receipt(&receipt) {
-                Ok(record) => record,
-                Err(error) => {
-                    let local_id = decision_receipt_local_id(&receipt.item_id);
-                    tracing::warn!(
-                                thread_id,
-                                receipt = receipt.item_id,
-                                %error,
-                                "a saved decision cannot be decoded"
-                    );
-                    DecisionRecord::Unreadable { local_id }
-                }
-            };
-            // A damaged row cannot prove it was replaced: its revision is unknown, so a newer snapshot
-            // record must not silently drop it. It replaces what the snapshot said for that identity,
-            // and the reconciliation reports it instead of losing it.
-            let superseded = match facts.get(record.local_id()) {
-                Some(existing)
-                    if !matches!(existing, DecisionRecord::Unreadable { .. })
-                        && !matches!(record, DecisionRecord::Unreadable { .. }) =>
-                {
-                    existing.revision() > record.revision()
-                }
-                _ => false,
-            };
-            if !superseded {
-                facts.insert(record.local_id().to_owned(), record);
+                collect_decision_records(&current.state.to_paused_snapshot(), &mut facts);
             }
         }
         Ok(facts.into_values().collect())
@@ -372,11 +306,24 @@ impl StudioRuntime {
         thread_id: &str,
         local_id: &str,
     ) -> Result<Option<DecisionRecord>> {
-        Ok(self
-            .decision_records(thread_id)
+        let mut resident = std::collections::BTreeMap::new();
+        if let Some(thread) = self
+            .session_of(thread_id)
+            .and_then(|session| session.thread(thread_id))
+        {
+            collect_decision_records(&thread.snapshot(), &mut resident);
+        } else {
+            let protocol: pl_protocol::Thread = self.read_owned_thread(thread_id).await?.into();
+            if let Some(current) = crate::studio::thread_factory::recovery::load_current_read_only(
+                &self.store,
+                &protocol,
+            )
             .await?
-            .into_iter()
-            .find(|record| record.local_id() == local_id))
+            {
+                collect_decision_records(&current.state.to_paused_snapshot(), &mut resident);
+            }
+        }
+        Ok(resident.remove(local_id))
     }
 
     /// Whether this record is a child Plan interaction, which is a main-session capability.
@@ -628,48 +575,8 @@ impl StudioRuntime {
     ///
     /// The same product projection supplies the original questions/request to callers and the
     /// terminal resolution to the canonical decision boundary, without activating an owner.
-    async fn read_durable_interaction_for_resolve(
-        &self,
-        thread_id: &str,
-        local_id: &str,
-    ) -> Result<Option<InteractionForResolve>> {
-        let history = self.store.history(thread_id).await?;
-        for kind in ["interaction", "permission"] {
-            let Some(receipt) = history
-                .latest_fact_receipt(&crate::studio::thread_projection::order::receipt_id(
-                    kind, local_id,
-                ))
-                .await?
-            else {
-                continue;
-            };
-            let mut state = pl_core::thread::ThreadSnapshot::default();
-            match receipt.kind.as_str() {
-                "interaction" => {
-                    state
-                        .interactions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                "permission" => {
-                    state
-                        .permissions
-                        .insert(local_id.to_owned(), serde_json::from_str(&receipt.payload)?);
-                }
-                _ => continue,
-            }
-            let projected =
-                crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
-                    .context("durable interaction receipt cannot be projected")?;
-            return Ok(Some(InteractionForResolve {
-                interaction: projected,
-                durable: true,
-            }));
-        }
-        Ok(None)
-    }
-
     /// 内存优先读取交互：pending 交互必须来自驻留 actor 的权威快照；
-    /// 冷 checkpoint 也已不再保留时，读取 durable 原始交互与决定供终态重放核对。
+    /// 冷 current 也已不再保留时，读取 durable 原始交互与决定供终态重放核对。
     pub(in crate::studio::runtime) async fn read_interaction_for_resolve(
         &self,
         interaction_id: &str,
@@ -687,24 +594,22 @@ impl StudioRuntime {
             crate::thread_assembler::decode_interaction_key(interaction_id)?;
         let thread = self.read_protocol_thread(thread_id).await?;
         // Reading a pending interaction is a projection: it never imports or deletes storage. A
-        // legacy checkpoint that still needs migration appears only after its owner's own writer
+        // legacy current that still needs migration appears only after its owner's own writer
         // prepared it (design/17).
-        if let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint_read_only(&self.store, &thread)
+        if let Some(current) =
+            crate::studio::thread_factory::recovery::load_current_read_only(&self.store, &thread)
                 .await?
-            && let Some(interaction) = crate::thread_assembler::project_thread_interaction(
-                thread_id,
-                local_id,
-                &checkpoint.state,
-            )?
+            && let Some(interaction) = {
+                let state = current.state.to_paused_snapshot();
+                crate::thread_assembler::project_thread_interaction(thread_id, local_id, &state)?
+            }
         {
             return Ok(Some(InteractionForResolve {
                 interaction,
                 durable: false,
             }));
         }
-        self.read_durable_interaction_for_resolve(thread_id, local_id)
-            .await
+        Ok(None)
     }
 }
 
@@ -834,42 +739,6 @@ impl DecisionRecord {
             Self::Unreadable { .. } => {}
         }
         snapshot
-    }
-}
-
-/// Decodes one durable decision receipt and proves its key matches the payload's own identity.
-fn decode_decision_receipt(
-    receipt: &crate::studio::storage::history::DecisionReceipt,
-) -> anyhow::Result<DecisionRecord> {
-    let record = match receipt.kind.as_str() {
-        "interaction" => DecisionRecord::Question(serde_json::from_str(&receipt.payload)?),
-        "permission" => DecisionRecord::Approval(serde_json::from_str(&receipt.payload)?),
-        other => anyhow::bail!("unsupported durable decision receipt kind {other}"),
-    };
-    // The receipt key is a function of the kind and the local identity: one whose payload names a
-    // different record would let an identity answer for another one.
-    anyhow::ensure!(
-        receipt.item_id
-            == crate::studio::thread_projection::order::receipt_id(
-                receipt.kind.as_str(),
-                record.local_id()
-            ),
-        "durable decision receipt identity conflicts with its payload"
-    );
-    Ok(record)
-}
-
-/// The local identity a receipt key encodes: `receipt_id(kind, local_id)` is `"<kind>:<len>:<id>"`.
-fn decision_receipt_local_id(item_id: &str) -> String {
-    let Some((_, rest)) = item_id.split_once(':') else {
-        return item_id.to_owned();
-    };
-    let Some((length, local)) = rest.split_once(':') else {
-        return item_id.to_owned();
-    };
-    match length.parse::<usize>() {
-        Ok(length) if length == local.len() => local.to_owned(),
-        _ => item_id.to_owned(),
     }
 }
 

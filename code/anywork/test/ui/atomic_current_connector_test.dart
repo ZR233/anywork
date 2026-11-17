@@ -243,11 +243,11 @@ final class _Harness {
   TimelineCurrentDisplay? display;
   int revision = 0;
   bool active = true;
-  final live = ValueNotifier<TailSnapshot?>(null);
+  final live = ValueNotifier<CurrentRunSnapshot?>(null);
   ValueChanged<String>? onLoadOlder;
   LiveStatusView? presentation;
   LiveWindowPagingState outputPaging = const LatestLiveWindow();
-  void accept(List<ActivityEntry> entries) => live.value = TailSnapshot(
+  void accept(List<ActivityEntry> entries) => live.value = CurrentRunSnapshot(
     currentWorkId: null,
     revision: ++revision,
     layoutRevision: revision,
@@ -260,10 +260,10 @@ final class _Harness {
           blockOrder: index + 1,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: entry.atom,
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
           ),
         ),
@@ -271,7 +271,7 @@ final class _Harness {
   );
   Widget host({bool disableAnimations = false, bool tickersEnabled = true}) =>
       _host(
-        ValueListenableBuilder<TailSnapshot?>(
+        ValueListenableBuilder<CurrentRunSnapshot?>(
           valueListenable: live,
           builder: (_, window, _) {
             if (presentation != null &&
@@ -346,7 +346,7 @@ DisplayMemberHead _workRow(int order, {String? text}) {
     memberKey: 'member-$order',
     memberOrder: order,
     record: DisplayRecord(
-      contentSource: const CurrentAtom(),
+      contentSource: const CurrentAtomSource(),
       atom: ChatAtom(
         id: 'member-$order',
         source: _source,
@@ -665,7 +665,7 @@ void main() {
             memberOrder: 2,
             record: DisplayRecord(
               atom: _textItem(),
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
           ),
         ],
@@ -850,7 +850,7 @@ void main() {
             timing: WorkTiming(startedAt: 1000, finishedAt: null),
           ),
         );
-        final latest = TailSnapshot(
+        final latest = CurrentRunSnapshot(
           currentWorkId: 'tail',
           revision: 1,
           layoutRevision: 1,
@@ -858,7 +858,7 @@ void main() {
           executionPresent: true,
           blocks: const [work],
         );
-        final older = TailSnapshot(
+        final older = CurrentRunSnapshot(
           currentWorkId: null,
           revision: 1,
           layoutRevision: 1,
@@ -867,7 +867,7 @@ void main() {
           blocks: const [],
           older: 'next-older',
         );
-        final live = ValueNotifier<TailSnapshot?>(latest);
+        final live = ValueNotifier<CurrentRunSnapshot?>(latest);
         addTearDown(live.dispose);
         TimelineCurrentDisplay? display;
         final pagingRequests = <String>[];
@@ -977,7 +977,7 @@ void main() {
                 memberOrder: 1,
                 record: DisplayRecord(
                   atom: _textItem(),
-                  contentSource: const CurrentAtom(),
+                  contentSource: const CurrentAtomSource(),
                 ),
               ),
             ],
@@ -1104,7 +1104,7 @@ void main() {
       await _flush(tester);
       final scope = h.content.scopes.single;
       final previous = h.live.value!;
-      h.live.value = TailSnapshot(
+      h.live.value = CurrentRunSnapshot(
         currentWorkId: null,
         revision: previous.revision + 1,
         layoutRevision: previous.revision + 1,
@@ -1116,7 +1116,7 @@ void main() {
             blockOrder: 1,
             state: DisplayBlockState.sealed,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.finalEmptyAfterContent,
+              visibility: HistorySingleVisibility.finalEmptyAfterContent,
               record: DisplayRecord(
                 atom: _textItem(),
                 contentSource: const CompletedOriginal(completionId: 'empty'),
@@ -1149,7 +1149,7 @@ void main() {
             readAttachment: null,
             record: DisplayRecord(
               atom: _textItem(),
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
             displayId: 'bounded-response',
           ),
@@ -1246,7 +1246,7 @@ void main() {
                   startFact: const ChatFactPosition(effectSeq: 1, suborder: 0),
                   contentSource: frozen
                       ? FrozenObservation(capturedAt: 50, available: available)
-                      : const CurrentAtom(),
+                      : const CurrentAtomSource(),
                   atom: ChatAtom(
                     id: 'same-reasoning',
                     source: _source,
@@ -1630,15 +1630,15 @@ void main() {
           blockOrder: 2,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: _textItem(revision: 2),
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
           ),
         );
-        TailSnapshot latest({int revision = 7, int through = 0}) =>
-            TailSnapshot(
+        CurrentRunSnapshot latest({int revision = 7, int through = 0}) =>
+            CurrentRunSnapshot(
               currentWorkId: null,
               revision: revision,
               layoutRevision: revision,
@@ -1647,7 +1647,7 @@ void main() {
               blocks: [latestBlock],
               older: 'older-cursor',
             );
-        final page = TailSnapshot(
+        final page = CurrentRunSnapshot(
           currentWorkId: null,
           revision: 7,
           layoutRevision: 7,
@@ -1659,10 +1659,10 @@ void main() {
               blockOrder: 1,
               state: DisplayBlockState.open,
               body: SingleDisplayBlock(
-                visibility: SingleVisibility.content,
+                visibility: HistorySingleVisibility.content,
                 record: DisplayRecord(
                   atom: _textItem(),
-                  contentSource: const CurrentAtom(),
+                  contentSource: const CurrentAtomSource(),
                 ),
               ),
             ),
@@ -2118,7 +2118,7 @@ void main() {
                             ),
                         ],
                       ),
-                      contentSource: const CurrentAtom(),
+                      contentSource: const CurrentAtomSource(),
                     ),
                     displayId: "fixture-current",
                   ),
@@ -2285,7 +2285,7 @@ void main() {
                   ),
                 ),
               ),
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
             displayId: "fixture-current",
           ),
@@ -2369,7 +2369,7 @@ void main() {
                 ),
                 contents: const [],
               ),
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
             displayId: "fixture-current",
           ),
@@ -2441,7 +2441,7 @@ void main() {
           readAttachment: null,
           record: DisplayRecord(
             atom: member(wait),
-            contentSource: const CurrentAtom(),
+            contentSource: const CurrentAtomSource(),
           ),
           displayId: "fixture-current",
         ),

@@ -977,9 +977,13 @@ impl Owner {
         if self.current_task_start_ordinal.is_some() {
             // The explicit current owner exports facts independently. It never creates a
             // transfer checkpoint, queues a second current body, or waits for its history receipt.
+            let export = HistoryExport {
+                effect,
+                state: self.state.clone(),
+            };
             self.state.retain_live_facts()?;
             self.published = self.state.clone();
-            self.effect_window.push(effect);
+            self.effect_window.push_current(export);
             self.publish_snapshot();
             return Ok(());
         }

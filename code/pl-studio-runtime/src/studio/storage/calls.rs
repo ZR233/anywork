@@ -1819,7 +1819,7 @@ fn integer(value: u64) -> Result<i64> {
 }
 
 /// 只有数据库忙/锁/IO 类错误允许自动重试；结构或约束错误必须显式回给调用方。
-fn is_retryable_write(message: &str) -> bool {
+pub(crate) fn is_retryable_write(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("database is locked")
         || message.contains("database table is locked")

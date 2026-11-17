@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Result;
-use pl_core::chat::Session;
 use pl_core::thread::UsageSummary;
 use pl_tool::skill::FrozenSkillCatalog;
 use tokio::task::JoinHandle;
@@ -27,13 +26,13 @@ pub use manifest::{
     write_run_manifest,
 };
 pub use types::{
-    BuildInfoV2, ChatItemHeaderExportV2, CompletionCursorV2, ConfigInputEntryV2,
-    EVENTS_SCHEMA_VERSION, EventBodyV2, EventSourceV2, EventV2, ExecutionErrorStage,
-    ExecutionErrorV2, ExecutionLifecycleExportV2, ExecutionOutcome, ExportSchemaV2, ExportedBlobV2,
-    ExportedContentV2, ModelUsageExportV2, RESULT_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION,
-    ResultOutcome, ResultV2, RunExportOptions, RunExportReport, RunInvocationV2, RunManifestV2,
-    SealedMemberCutV2, SkillSearchManifestV2, ThreadUsageExportV2, TimingReportV2, TraceSummaryV2,
-    UsageCoverage, UsageExportV2, UsageKnownTotalsV2, UsageMetricKey, UsageTotalsV2,
+    BuildInfoV3, ChatItemHeaderExportV3, CompletionCursorV3, ConfigInputEntryV3,
+    EVENTS_SCHEMA_VERSION, EventBodyV3, EventSourceV3, EventV3, ExecutionErrorStage,
+    ExecutionErrorV3, ExecutionLifecycleExportV3, ExecutionOutcome, ExportSchemaV3, ExportedBlobV3,
+    ExportedContentV3, ModelUsageExportV3, RESULT_SCHEMA_VERSION, RUN_MANIFEST_SCHEMA_VERSION,
+    ResultOutcome, ResultV3, RunExportOptions, RunExportReport, RunInvocationV3, RunManifestV3,
+    SealedMemberCutV3, SkillSearchManifestV3, ThreadUsageExportV3, TimingReportV3, TraceSummaryV3,
+    UsageCoverage, UsageExportV3, UsageKnownTotalsV3, UsageMetricKey, UsageTotalsV3,
     format_utc_rfc3339,
 };
 use writer::{
@@ -43,6 +42,8 @@ use writer::{
 };
 
 use crate::StudioStore;
+use crate::history::{HistoryCut, HistoryEntityChange, HistoryReader};
+use crate::studio::thread_projection::CurrentState;
 use crate::studio::thread_projection::PreparedAccounting;
 
 /// Host handle enabling atomic run export across `StudioRuntime` lifecycle stages.
@@ -72,14 +73,16 @@ pub struct NewMemberRegistration {
     pub workspace_id: String,
     pub spawn_tool_call_id: Option<String>,
     pub initial_effect_seq: u64,
-    pub session: Session,
+    pub history: HistoryReader,
 }
 
 /// Immutable terminal state captured from a retiring `ProjectionWorker`.
 pub struct RetiredThreadCut {
     pub thread_id: String,
     pub through_effect_seq: u64,
-    pub session: Session,
+    pub history: HistoryReader,
+    pub history_cut: HistoryCut,
+    pub history_seq: u64,
     pub summary: UsageSummary,
     pub status: Option<String>,
     pub aborted: bool,
@@ -90,7 +93,7 @@ pub(in crate::studio) struct RunExportCoordinator {
     run_id: String,
     started_at: String,
     output_dir: PathBuf,
-    manifest: RunManifestV2,
+    manifest: RunManifestV3,
     manifest_sha256: String,
     queue: Arc<BoundedExportQueue>,
     shared_members: Arc<Mutex<SharedMemberState>>,
@@ -168,7 +171,7 @@ impl RunExporter {
     }
 
     /// Returns the written startup manifest (`run.json`).
-    pub fn manifest(&self) -> &RunManifestV2 {
+    pub fn manifest(&self) -> &RunManifestV3 {
         &self.inner.manifest
     }
 
@@ -199,7 +202,7 @@ impl RunExporter {
     }
 
     /// Atomically writes `result.json` into `<output-dir>/result.json`.
-    pub fn write_result(&self, result: &ResultV2) -> Result<()> {
+    pub fn write_result(&self, result: &ResultV3) -> Result<()> {
         write_result_atomic(&self.inner.output_dir, result)
     }
 }
@@ -262,8 +265,22 @@ impl RunExportCoordinator {
         if !self.is_enrolled_root(&reg.root_thread_id) {
             return;
         }
-        let initial_epoch = Some(reg.session.epoch().as_str().to_string());
-        let initial_head_seq = reg.session.head_seq();
+        let (initial_history_cut, initial_history_seq) = match reg.history.capture_position().await
+        {
+            Ok(position) => position,
+            Err(error) => {
+                self.queue.fail_permanently(ExecutionErrorV3 {
+                    stage: ExecutionErrorStage::Export,
+                    code: "historyCaptureFailed".to_string(),
+                    message: format!(
+                        "failed to capture initial History position for thread {}: {error}",
+                        reg.thread_id
+                    ),
+                    turn_failure: None,
+                });
+                return;
+            }
+        };
 
         {
             let mut guard = self
@@ -278,10 +295,9 @@ impl RunExportCoordinator {
                     && existing.initial_effect_seq == reg.initial_effect_seq
                     && existing.parent_thread_id == reg.parent_thread_id
                     && existing.spawn_tool_call_id == reg.spawn_tool_call_id
-                    && existing.session.epoch() == reg.session.epoch()
-                    && existing.initial_completion_seq == initial_head_seq;
+                    && existing.initial_history_seq <= initial_history_seq;
                 if !matches {
-                    self.queue.fail_permanently(ExecutionErrorV2 {
+                    self.queue.fail_permanently(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "memberIdentityConflict".to_string(),
                         message: format!(
@@ -303,15 +319,15 @@ impl RunExportCoordinator {
                     role: reg.role.clone(),
                     workspace_id: reg.workspace_id.clone(),
                     initial_effect_seq: reg.initial_effect_seq,
-                    session: reg.session.clone(),
-                    initial_completion_seq: initial_head_seq,
+                    history: reg.history.clone(),
+                    initial_history_seq,
                     latest_usage: UsageSummary {
                         applied_sequence: reg.initial_effect_seq,
                         ..UsageSummary::default()
                     },
                     latest_effect_seq: reg.initial_effect_seq,
-                    latest_completion_epoch: initial_epoch.clone(),
-                    latest_completion_head_seq: initial_head_seq,
+                    latest_history_cut: initial_history_cut.clone(),
+                    latest_history_seq: initial_history_seq,
                     final_cut: None,
                     spawn_aborted: None,
                 },
@@ -327,8 +343,9 @@ impl RunExportCoordinator {
             workspace_id: reg.workspace_id,
             spawn_tool_call_id: reg.spawn_tool_call_id,
             initial_effect_seq: reg.initial_effect_seq,
-            initial_completion_epoch: initial_epoch,
-            initial_completion_seq: initial_head_seq,
+            initial_history_cut: initial_history_cut.clone(),
+            initial_history_seq,
+            history: reg.history,
         };
         let metadata_bytes = match &cmd {
             ExportCommand::AgentRegistered {
@@ -339,7 +356,7 @@ impl RunExportCoordinator {
                 role,
                 workspace_id,
                 spawn_tool_call_id,
-                initial_completion_epoch,
+                initial_history_cut,
                 ..
             } => [
                 Some(agent_id),
@@ -349,7 +366,7 @@ impl RunExportCoordinator {
                 role.as_ref(),
                 Some(workspace_id),
                 spawn_tool_call_id.as_ref(),
-                initial_completion_epoch.as_ref(),
+                Some(&initial_history_cut.token),
             ]
             .into_iter()
             .flatten()
@@ -374,7 +391,7 @@ impl RunExportCoordinator {
         let report = match catalog.discovery_report() {
             Ok(report) => report,
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV2 {
+                self.queue.fail_permanently(ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Export,
                     code: "skillsDiscoveryReportFailed".to_string(),
                     message: format!(
@@ -392,7 +409,7 @@ impl RunExportCoordinator {
                 .saturating_add(thread_id.len())
                 .saturating_add(std::mem::size_of::<ExportCommand>()),
             Err(error) => {
-                self.queue.fail_permanently(ExecutionErrorV2 {
+                self.queue.fail_permanently(ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Export,
                     code: "skillsDiscoveryReportFailed".to_string(),
                     message: error.to_string(),
@@ -433,10 +450,10 @@ impl RunExportCoordinator {
         &self,
         thread_id: &str,
         accounting: &PreparedAccounting,
-        lifecycle: &Arc<[crate::studio::storage::history::execution_lifecycle::ExecutionLifecycle]>,
+        changes: &Arc<[HistoryEntityChange]>,
         latest_usage: &UsageSummary,
-        session: &Session,
-        database_id: Option<&str>,
+        current: &CurrentState,
+        history: &HistoryReader,
     ) {
         let effect_seq = accounting.sequence;
         {
@@ -451,7 +468,22 @@ impl RunExportCoordinator {
                 return;
             }
         }
-        let effect_fp = types::handoff_fingerprint(accounting, lifecycle);
+        let lifecycle: Arc<[ExecutionLifecycleExportV3]> = changes.iter().map(Into::into).collect();
+        let lifecycle_bytes = match serde_json::to_vec(&lifecycle) {
+            Ok(bytes) => bytes.len(),
+            Err(error) => {
+                self.queue.fail_permanently(ExecutionErrorV3 {
+                    stage: ExecutionErrorStage::Export,
+                    code: "lifecycleExportFailed".to_string(),
+                    message: format!(
+                        "failed to encode History lifecycle export for thread {thread_id}: {error}"
+                    ),
+                    turn_failure: None,
+                });
+                return;
+            }
+        };
+        let effect_fp = types::handoff_fingerprint(accounting, &lifecycle);
         {
             let mut guard = self
                 .state
@@ -466,7 +498,7 @@ impl RunExportCoordinator {
                     return;
                 }
                 drop(guard);
-                self.queue.fail_permanently(ExecutionErrorV2 {
+                self.queue.fail_permanently(ExecutionErrorV3 {
                     stage: ExecutionErrorStage::Export,
                     code: "effectRedeliveryConflict".to_string(),
                     message: format!(
@@ -478,8 +510,22 @@ impl RunExportCoordinator {
             }
         }
 
-        let head_seq_hint = session.head_seq();
-        let epoch_str = Some(session.epoch().as_str().to_string());
+        let (history_cut, history_seq) = match history.capture_position().await {
+            Ok(position) => position,
+            Err(error) => {
+                self.queue.fail_permanently(ExecutionErrorV3 {
+                    stage: ExecutionErrorStage::Export,
+                    code: "historyCaptureFailed".to_string(),
+                    message: format!(
+                        "failed to capture live History position for thread {thread_id}: {error}"
+                    ),
+                    turn_failure: None,
+                });
+                return;
+            }
+        };
+        let current_owner_id = current.owner_id().to_owned();
+        let current_revision = current.revision();
         {
             let mut guard = self
                 .shared_members
@@ -490,27 +536,23 @@ impl RunExportCoordinator {
                     member.latest_effect_seq = effect_seq;
                     member.latest_usage = latest_usage.clone();
                 }
-                member.latest_completion_epoch = epoch_str;
-                member.latest_completion_head_seq =
-                    member.latest_completion_head_seq.max(head_seq_hint);
             }
         }
 
         let metadata_bytes = estimate_handoff_metadata_bytes(accounting)
-            .saturating_add(database_id.map_or(0, str::len))
-            .saturating_add(
-                lifecycle
-                    .iter()
-                    .map(|fact| usize::try_from(fact.retained_bytes()).unwrap_or(usize::MAX))
-                    .fold(0usize, usize::saturating_add),
-            );
+            .saturating_add(history_cut.token.len())
+            .saturating_add(current_owner_id.len())
+            .saturating_add(lifecycle_bytes);
         let cmd = ExportCommand::LiveHandoff {
             thread_id: thread_id.to_string(),
             effect_seq,
             accounting: accounting.clone(),
-            lifecycle: lifecycle.clone(),
-            session: session.clone(),
-            database_id: database_id.map(str::to_owned),
+            lifecycle,
+            history: history.clone(),
+            history_cut: history_cut.clone(),
+            history_seq,
+            current_owner_id,
+            current_revision,
         };
         if self.queue.admit(cmd, metadata_bytes).await.is_ok() {
             // Admission may wait and be cancelled. Only accepted batches suppress a later
@@ -522,6 +564,16 @@ impl RunExportCoordinator {
                 .entry(thread_id.to_string())
                 .or_default()
                 .insert(effect_seq, effect_fp);
+            if let Some(member) = self
+                .shared_members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .members
+                .get_mut(thread_id)
+            {
+                member.latest_history_cut = history_cut;
+                member.latest_history_seq = member.latest_history_seq.max(history_seq);
+            }
         }
     }
 
@@ -535,32 +587,22 @@ impl RunExportCoordinator {
         let Some(member) = guard.members.get_mut(&cut.thread_id) else {
             return;
         };
-        if member.session.epoch() != cut.session.epoch() {
-            self.queue.fail_permanently(ExecutionErrorV2 {
-                stage: ExecutionErrorStage::Export,
-                code: "completionEpochConflict".into(),
-                message: format!(
-                    "final completion source changed for thread {}",
-                    cut.thread_id
-                ),
-                turn_failure: None,
-            });
-            return;
-        }
         if member.final_cut.is_some() {
             return;
         }
-        let completion_epoch = Some(cut.session.epoch().as_str().to_string());
-        let completion_head_seq = cut.session.head_seq();
-        member.final_cut = Some(MemberFinalCut {
+        let final_cut = MemberFinalCut {
             through_effect_seq: cut.through_effect_seq,
-            completion_epoch,
-            completion_head_seq,
+            history_cut: cut.history_cut,
+            history_seq: cut.history_seq,
             summary: cut.summary,
             status: cut.status,
             aborted: cut.aborted,
             error: cut.error,
-        });
+        };
+        member.history = cut.history;
+        member.latest_history_cut = final_cut.history_cut.clone();
+        member.latest_history_seq = final_cut.history_seq;
+        member.final_cut = Some(final_cut);
     }
 
     /// Arms a shared shutdown deadline watcher so a stalled exporter queue unblocks any parked
@@ -584,7 +626,7 @@ impl RunExportCoordinator {
             tokio::select! {
                 () = cancel.cancelled() => {}
                 () = tokio::time::sleep_until(deadline) => {
-                    queue.close_admission(ExecutionErrorV2 {
+                    queue.close_admission(ExecutionErrorV3 {
                         stage: ExecutionErrorStage::Export,
                         code: "exportShutdownDeadline".to_string(),
                         message: "shared shutdown deadline expired while exporter queue had pending backpressure".to_string(),
@@ -610,7 +652,7 @@ impl RunExportCoordinator {
 
     /// Closes admission if producer drain itself failed/timed out so no dangling awaits remain.
     pub fn close_admission_on_producer_timeout(&self) {
-        self.queue.close_admission(ExecutionErrorV2 {
+        self.queue.close_admission(ExecutionErrorV3 {
             stage: ExecutionErrorStage::Export,
             code: "producerDrainIncomplete".to_string(),
             message: "producer drain did not acknowledge before export finalization".to_string(),
@@ -651,7 +693,7 @@ impl RunExportCoordinator {
                     trace_complete: false,
                     usage_complete: false,
                     cost_complete: false,
-                    trace: TraceSummaryV2 {
+                    trace: TraceSummaryV3 {
                         events_path: "events.jsonl".to_string(),
                         events_sha256: None,
                         event_count: 0,

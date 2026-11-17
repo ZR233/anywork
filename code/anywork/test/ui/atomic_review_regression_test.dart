@@ -111,7 +111,7 @@ DisplayMemberPage _page(
         record: DisplayRecord(
           atom: atoms[i],
           contentSource: switch (atoms[i].completionItemId) {
-            null => const CurrentAtom(),
+            null => const CurrentAtomSource(),
             final id => CompletedOriginal(completionId: id),
           },
         ),

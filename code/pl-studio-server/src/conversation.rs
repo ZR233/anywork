@@ -8,10 +8,10 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use pl_protocol::{
     ChatBatch, CompletedEntry, ContentManifestPage, ContentRange, ContentRef, ContentWindow,
-    CurrentCollectionPage, CurrentCollectionRef, LegacyExecutionEvidencePage, ReadDemand,
+    LegacyExecutionEvidencePage, ReadDemand,
     studio::{StudioError, StudioErrorCode, StudioErrorReason},
 };
-use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader, TimelineReader};
+use pl_studio_runtime::{ConversationEvent, ConversationFeed, ConversationReader};
 use serde::Deserialize;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tokio::task::JoinSet;
@@ -40,22 +40,15 @@ pub(crate) struct Owners {
 pub(crate) struct ReadOwner {
     thread_id: String,
     pub(crate) reader: ConversationReader,
-    pub(crate) timeline: Option<Arc<TimelineReader>>,
-    pub(crate) timeline_permit: Mutex<Option<OwnedSemaphorePermit>>,
     activity: Mutex<tokio::time::Instant>,
     activity_changed: tokio::sync::Notify,
-    main_reads: std::sync::atomic::AtomicUsize,
     pub(crate) cancel: CancellationToken,
     reads: Arc<Semaphore>,
     pub(crate) native: tokio::sync::Mutex<Option<NativeFeed>>,
     pub(crate) events: Mutex<Option<oneshot::Sender<EventSender>>>,
     pub(crate) completed: watch::Sender<Option<Result<(), StudioError>>>,
     pub(crate) close_gate: tokio::sync::Mutex<()>,
-    /// Failed member closes remain on the original read owner for explicit retry.
-    pub(crate) members: Mutex<Vec<MemberRead>>,
 }
-
-pub(crate) type MemberRead = Arc<tokio::sync::Mutex<Option<pl_studio_runtime::DisplayMembers>>>;
 
 pub(crate) type EventSender =
     mpsc::Sender<Result<axum::response::sse::Event, std::convert::Infallible>>;
@@ -108,18 +101,14 @@ impl ReadOwner {
         Self {
             thread_id,
             reader,
-            timeline: None,
-            timeline_permit: Mutex::new(None),
             activity: Mutex::new(tokio::time::Instant::now()),
             activity_changed: tokio::sync::Notify::new(),
-            main_reads: std::sync::atomic::AtomicUsize::new(0),
             cancel: CancellationToken::new(),
             reads: Arc::new(Semaphore::new(MAX_READS as usize)),
             native: tokio::sync::Mutex::new(None),
             events: Mutex::new(None),
             completed: watch::channel(None).0,
             close_gate: tokio::sync::Mutex::new(()),
-            members: Mutex::new(Vec::new()),
         }
     }
 
@@ -130,9 +119,6 @@ impl ReadOwner {
     }
 
     pub(crate) fn request_close(&self) {
-        if let Some(reader) = &self.timeline {
-            reader.request_close();
-        }
         self.cancel.cancel();
         self.reader.request_close();
         self.events
@@ -154,16 +140,6 @@ pub(crate) struct ReadLease {
 }
 
 impl ReadOwner {
-    pub(crate) fn with_timeline(
-        thread_id: String,
-        timeline: TimelineReader,
-        permit: OwnedSemaphorePermit,
-    ) -> Self {
-        let mut owner = Self::new(thread_id, timeline.reader().clone());
-        owner.timeline = Some(Arc::new(timeline));
-        *owner.timeline_permit.lock().expect("unpublished timeline") = Some(permit);
-        owner
-    }
     fn touch(&self) {
         *self.activity.lock().expect("reader activity poisoned") = tokio::time::Instant::now();
         self.activity_changed.notify_one();
@@ -178,12 +154,6 @@ impl ReadOwner {
                 let deadline = *activity + timeout;
                 if deadline <= tokio::time::Instant::now()
                     && self.reads.available_permits() == MAX_READS as usize
-                    && self.main_reads.load(std::sync::atomic::Ordering::Acquire) == 0
-                    && self
-                        .members
-                        .lock()
-                        .expect("reader members poisoned")
-                        .is_empty()
                 {
                     self.request_close();
                     return;
@@ -200,39 +170,11 @@ impl ReadOwner {
 }
 impl Drop for ReadLease {
     fn drop(&mut self) {
-        if self._permit.is_none() {
-            self.owner
-                .main_reads
-                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-        }
         self.owner.touch();
     }
 }
 
 impl Conversations {
-    pub(crate) fn borrow_next(
-        &self,
-        thread_id: &str,
-        headers: &HeaderMap,
-        shutdown: &CancellationToken,
-    ) -> Result<ReadLease, ApiError> {
-        let (_, owner) = self.closing_owner(thread_id, headers)?;
-        {
-            let mut activity = owner.activity.lock().expect("reader activity poisoned");
-            if shutdown.is_cancelled() || owner.cancel.is_cancelled() || owner.timeline.is_none() {
-                return Err(stale_scope());
-            }
-            owner
-                .main_reads
-                .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-            *activity = tokio::time::Instant::now();
-            owner.activity_changed.notify_one();
-        }
-        Ok(ReadLease {
-            owner,
-            _permit: None,
-        })
-    }
     pub(crate) fn borrow(
         &self,
         thread_id: &str,
@@ -371,14 +313,6 @@ pub(crate) struct ManifestRequest {
 pub(crate) struct ContentRequest {
     pub reference: ContentRef,
     pub range: ContentRange,
-}
-
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct CurrentRequest {
-    pub reference: CurrentCollectionRef,
-    pub continuation: Option<String>,
-    pub demand: ReadDemand,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -534,33 +468,6 @@ pub(crate) async fn read(
             .owner
             .reader
             .read_content(&request.reference, request.range)
-            .await?,
-    ))
-}
-
-#[utoipa::path(post, path = "/api/v1/threads/{thread_id}/current/page",
-    operation_id = "thread.pageCurrent",
-    params(("thread_id" = String, Path), ("X-Anywork-Conversation" = String, Header)),
-    request_body = CurrentRequest,
-    responses(StudioApiErrors, (status = 200, body = CurrentCollectionPage)))]
-pub(crate) async fn current(
-    State(state): State<AppState>,
-    Path(thread_id): Path<String>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<CurrentRequest>,
-) -> Result<Json<CurrentCollectionPage>, ApiError> {
-    let lease = state
-        .conversations
-        .borrow(&thread_id, &headers, &state.shutdown)?;
-    Ok(Json(
-        lease
-            .owner
-            .reader
-            .page_current(
-                &request.reference,
-                request.continuation.as_deref(),
-                request.demand,
-            )
             .await?,
     ))
 }
@@ -843,7 +750,7 @@ mod tests {
         use pl_protocol::{
             ChatAtomKind, ChatBatch, ChatPlacement, ChatScope, CompletedEntry, ContentManifestPage,
             ContentOwner, ContentTarget, ContentWindow, PayloadData, ReadDemand,
-            ThreadNotification, ThreadSubscriptionUpdate, ThreadWorkspaceMode, Turn, TurnState,
+            ThreadNotification, ThreadWorkspaceMode, Turn, TurnState,
             studio::{
                 CreateThreadRequest, NewThreadModelRoute, StudioError, StudioPromptInput,
                 SubmitPromptRequest,
@@ -1249,11 +1156,19 @@ mod tests {
         ) -> Result<Turn> {
             // Subscribe before releasing the provider barrier: a fast completion must
             // not be recovered by guessing from Main items or a later snapshot.
-            let mut events = runtime.open_conversation_state_feed(thread).await?;
+            let demand = ReadDemand {
+                max_items: 16,
+                max_bytes: 64 * 1024,
+            };
+            let reader = runtime
+                .open_current_reader(thread, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)
+                .await?;
+            let initial = reader.snapshot(demand).await?;
+            let mut watch = reader.watch(Some(initial.revision), demand).await?;
             stage.release();
-            tokio::time::timeout(DEADLINE, async {
-                while let Some(update) = events.recv().await? {
-                    if let ThreadSubscriptionUpdate::Notification { notification } = update
+            let observed = tokio::time::timeout(DEADLINE, async {
+                while let Some(frame) = watch.next().await? {
+                    if let pl_protocol::CurrentFrame::Notification { notification, .. } = frame
                         && let ThreadNotification::TurnCompleted { turn } =
                             notification.notification
                         && turn.input_id.as_deref() == Some(&format!("input-{prompt}"))
@@ -1271,14 +1186,17 @@ mod tests {
                             "fixture input did not complete successfully: {:?}",
                             turn.state
                         );
-                        events.request_close();
-                        events.close().await?;
                         return Ok(turn);
                     }
                 }
                 bail!("Thread ended before completed fixture input")
             })
-            .await?
+            .await?;
+            watch.request_close();
+            watch.close().await?;
+            reader.request_close();
+            reader.close().await?;
+            observed
         }
 
         async fn payload(
@@ -1604,30 +1522,29 @@ mod tests {
         let thread = env.create().await?;
         tokio::time::timeout(DEADLINE, first_stage.wait_reached()).await?;
         // Leave the content handler body completely unpolled: its first bounded
-        // send window will fill. State must still reach its authoritative final
+        // send window will fill. Current must still reach its authoritative final
         // sample without draining that window or opening a second content feed.
-        let paused_content = super::open(&env.state, &thread).await?;
-        let state_response = crate::sse::thread_state_events(
-            axum::extract::State(env.state.clone()),
-            axum::extract::Path(thread.clone()),
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("{}", error.0))?
-        .into_response();
-        ensure!(!state_response.headers().contains_key(CONVERSATION_HEADER));
-        let mut independent_state = SseBody::handler(state_response.into_body());
-        let (kind, value) = independent_state.event().await?.context("State baseline")?;
-        ensure!(kind == "snapshot");
-        let baseline: ThreadSubscriptionUpdate = serde_json::from_value(value)?;
-        ensure!(matches!(baseline, ThreadSubscriptionUpdate::Snapshot { .. }));
+        let _paused_content = super::open(&env.state, &thread).await?;
+        let demand = ReadDemand {
+            max_items: 16,
+            max_bytes: 64 * 1024,
+        };
+        let current = env
+            .runtime
+            .open_current_reader(&thread, pl_protocol::CURRENT_PROTOCOL_VERSION, demand)
+            .await?;
+        let baseline = current.snapshot(demand).await?;
+        ensure!(!baseline.revision.owner_id.is_empty());
+        let mut current_watch = current.watch(Some(baseline.revision), demand).await?;
         let first_turn = complete(&env.runtime, &thread, &first_stage, FIRST).await?;
         let mut saw_terminal = false;
         let mut saw_final_usage = false;
         while !saw_terminal || !saw_final_usage {
-            let (kind, value) = independent_state.event().await?.context("State update")?;
-            ensure!(kind == "notification", "unexpected State event {kind}: {value}");
-            let update: ThreadSubscriptionUpdate = serde_json::from_value(value)?;
-            if let ThreadSubscriptionUpdate::Notification { notification } = update {
+            let frame = current_watch
+                .next()
+                .await?
+                .context("Current watch ended before terminal usage")?;
+            if let pl_protocol::CurrentFrame::Notification { notification, .. } = frame {
                 match notification.notification {
                     ThreadNotification::TurnCompleted { turn } => {
                         saw_terminal |= turn.id == first_turn.id;
@@ -1640,8 +1557,11 @@ mod tests {
                 }
             }
         }
-        drop(independent_state);
-        drop(paused_content);
+        current_watch.request_close();
+        current_watch.close().await?;
+        current.request_close();
+        current.close().await?;
+        drop(_paused_content);
         let turn_id = first_turn.id.clone();
         let parent = turn_parent_key(&turn_id);
         let (capability, mut main) = env.open(&thread, None, 1).await?;
@@ -2221,419 +2141,6 @@ mod tests {
             sealing.release();
             stopping.release();
             env.finish(result).await
-        }
-    }
-
-    mod timeline {
-        use super::*;
-
-        fn api<T>(result: Result<T, ApiError>) -> Result<T> {
-            result.map_err(|error| anyhow::anyhow!("{}", error.0))
-        }
-
-        struct TimelineEnvironment {
-            _temp: tempfile::TempDir,
-            provider: FixtureServer,
-            runtime: StudioRuntime,
-            state: AppState,
-            thread: String,
-        }
-        impl TimelineEnvironment {
-            async fn new() -> Result<Self> {
-                let temp = tempfile::tempdir()?;
-                let project_path = temp.path().join("project");
-                std::fs::create_dir(&project_path)?;
-                let home = temp.path().join("home");
-                let provider = FixtureServer::start(vec![]).await?;
-                configure(&home, provider.base_url())?;
-                let mut options = StudioRuntimeOptions::http_server(Some(home));
-                options.host = StudioHostKind::Test;
-                let runtime = Box::pin(StudioRuntime::initialize(options)).await?;
-                let project = runtime.open_project(&project_path).await?;
-                let thread = runtime
-                    .create_thread(&project.id, "HTTP cursor lifecycle")
-                    .await?
-                    .id;
-                let state = AppState::new(runtime.clone(), CancellationToken::new());
-                Ok(Self {
-                    _temp: temp,
-                    provider,
-                    runtime,
-                    state,
-                    thread,
-                })
-            }
-            async fn open(&self) -> Result<(pl_protocol::OpenTimeline, HeaderMap)> {
-                let request = serde_json::from_value(serde_json::json!({
-                    "presentationVersion": 6, "readerProtocolVersion": 1,
-                    "demand": { "maxItems": 1, "maxBytes": 16384 }
-                }))?;
-                let response = api(crate::timeline::open(
-                    State(self.state.clone()),
-                    Path(self.thread.clone()),
-                    ApiJson(request),
-                )
-                .await)?
-                .into_response();
-                let mut headers = HeaderMap::new();
-                headers.insert(
-                    CONVERSATION_HEADER,
-                    response.headers()[CONVERSATION_HEADER].clone(),
-                );
-                let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                Ok((serde_json::from_slice(&bytes)?, headers))
-            }
-            async fn first(
-                &self,
-                metadata: &pl_protocol::OpenTimeline,
-                headers: &HeaderMap,
-            ) -> Result<pl_protocol::ViewUpdate> {
-                let request =
-                    serde_json::from_value(serde_json::json!({"after": metadata.initial_cursor}))?;
-                let response = api(crate::timeline::next(
-                    State(self.state.clone()),
-                    Path(self.thread.clone()),
-                    headers.clone(),
-                    ApiJson(request),
-                )
-                .await)?;
-                let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                Ok(serde_json::from_slice(&bytes)?)
-            }
-            async fn finish(self, result: Result<()>) -> Result<()> {
-                self.state.shutdown.cancel();
-                self.state.conversations.shutdown().await;
-                let runtime = self.runtime.shutdown_runtime().await;
-                let provider = self.provider.finish().await;
-                result.with_context(|| {
-                    format!("cleanup: runtime={runtime:?}; provider={provider:?}")
-                })?;
-                runtime?;
-                provider?;
-                ensure!(self.state.streams.available_permits() == crate::MAX_STREAMS);
-                Ok(())
-            }
-        }
-
-        #[tokio::test]
-        async fn timeline_idle_expiry_waits_for_active_reads_and_releases_its_capability()
-        -> Result<()> {
-            let env = TimelineEnvironment::new().await?;
-            // Drive the real ReadOwner expiry directly so the controlled clock has one waiter.
-            // The HTTP task uses the same operation with the production 120-second threshold.
-            let reader = env
-                .runtime
-                .open_timeline_reader(
-                    &env.thread,
-                    6,
-                    1,
-                    ReadDemand {
-                        max_items: 1,
-                        max_bytes: 16384,
-                    },
-                )
-                .await?;
-            let metadata = reader.metadata();
-            let permit = env.state.streams.clone().try_acquire_owned()?;
-            let owner = Arc::new(ReadOwner::with_timeline(env.thread.clone(), reader, permit));
-            env.state
-                .conversations
-                .0
-                .lock()
-                .unwrap()
-                .readers
-                .insert(metadata.reader_id.clone(), owner.clone());
-            let mut headers = HeaderMap::new();
-            headers.insert(CONVERSATION_HEADER, metadata.reader_id.parse()?);
-            env.first(&metadata, &headers).await?;
-            let read =
-                api(env
-                    .state
-                    .conversations
-                    .borrow(&env.thread, &headers, &env.state.shutdown))?;
-            tokio::time::pause();
-            let result = async {
-                let idle = owner.wait_idle(Duration::from_millis(2));
-                tokio::pin!(idle);
-                assert!(matches!(
-                    futures::poll!(&mut idle),
-                    std::task::Poll::Pending
-                ));
-                tokio::time::advance(Duration::from_millis(3)).await;
-                assert!(matches!(
-                    futures::poll!(&mut idle),
-                    std::task::Poll::Pending
-                ));
-                ensure!(!owner.cancel.is_cancelled(), "an active query was expired");
-                drop(read);
-                tokio::time::advance(Duration::from_millis(1)).await;
-                assert!(matches!(
-                    futures::poll!(&mut idle),
-                    std::task::Poll::Pending
-                ));
-                ensure!(
-                    !owner.cancel.is_cancelled(),
-                    "idle time starts after the actual last request"
-                );
-                tokio::time::advance(Duration::from_millis(1)).await;
-                tokio::time::timeout(Duration::from_secs(1), &mut idle).await?;
-                ensure!(owner.cancel.is_cancelled());
-                Ok(())
-            }
-            .await;
-            tokio::time::resume();
-            let result = async {
-                result?;
-                crate::sse::close_conversation(&owner).await?;
-                env.state.conversations.forget(&metadata.reader_id);
-                assert_stale(env.state.conversations.borrow(
-                    &env.thread,
-                    &headers,
-                    &env.state.shutdown,
-                ));
-                ensure!(env.state.streams.available_permits() == crate::MAX_STREAMS);
-                Ok(())
-            }
-            .await;
-            env.finish(result).await
-        }
-
-        #[tokio::test]
-        async fn timeline_next_timeout_and_close_bypass_the_saturated_normal_pool() -> Result<()> {
-            use axum::http::{Request, StatusCode};
-            use tower::ServiceExt;
-            let env = TimelineEnvironment::new().await?;
-            let (metadata, headers) = env.open().await?;
-            let first = env.first(&metadata, &headers).await?;
-            let app = crate::router(env.state.clone());
-            let normal = env
-                .state
-                .normal_requests
-                .acquire_many(crate::MAX_REQUESTS as u32)
-                .await?;
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/docs")
-                        .header("host", "localhost")
-                        .body(axum::body::Body::empty())?,
-                )
-                .await?;
-            ensure!(
-                response.status() == StatusCode::TOO_MANY_REQUESTS,
-                "positive control did not exhaust normal pool"
-            );
-            let request = Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/threads/{}/timeline/next", env.thread))
-                .header("host", "localhost")
-                .header("content-type", "application/json")
-                .header(CONVERSATION_HEADER, &headers[CONVERSATION_HEADER])
-                .body(axum::body::Body::from(serde_json::to_vec(
-                    &serde_json::json!({"after": first.next}),
-                )?))?;
-            let next = app.clone().oneshot(request);
-            tokio::pin!(next);
-            assert!(matches!(
-                futures::poll!(&mut next),
-                std::task::Poll::Pending
-            ));
-            let response = tokio::time::timeout(Duration::from_secs(30), &mut next).await?;
-            let result = async {
-                let response = response?;
-                ensure!(response.status() == StatusCode::NO_CONTENT);
-                ensure!(
-                    axum::body::to_bytes(response.into_body(), 16384)
-                        .await?
-                        .is_empty(),
-                    "timeout allocated a response cursor"
-                );
-                let response = app
-                    .clone()
-                    .oneshot(
-                        Request::builder()
-                            .method("POST")
-                            .uri(format!("/api/v1/threads/{}/timeline/close", env.thread))
-                            .header("host", "localhost")
-                            .header(CONVERSATION_HEADER, &headers[CONVERSATION_HEADER])
-                            .body(axum::body::Body::empty())?,
-                    )
-                    .await?;
-                ensure!(response.status() == StatusCode::NO_CONTENT);
-                let old = app
-                    .oneshot(
-                        Request::builder()
-                            .uri(format!("/api/v1/threads/{}/timeline/events", env.thread))
-                            .header("host", "localhost")
-                            .body(axum::body::Body::empty())?,
-                    )
-                    .await?;
-                ensure!(old.status() == StatusCode::NOT_FOUND);
-                ensure!(env.state.streams.available_permits() == crate::MAX_STREAMS);
-                Ok(())
-            }
-            .await;
-            drop(normal);
-            env.finish(result).await
-        }
-
-        #[tokio::test]
-        async fn timeline_cursor_replay_queries_and_close_share_original_capability() -> Result<()>
-        {
-            let temp = tempfile::tempdir()?;
-            let project_path = temp.path().join("project");
-            std::fs::create_dir(&project_path)?;
-            let home = temp.path().join("home");
-            let provider = FixtureServer::start(vec![]).await?;
-            configure(&home, provider.base_url())?;
-            let mut options = StudioRuntimeOptions::http_server(Some(home));
-            options.host = StudioHostKind::Test;
-            let runtime = Box::pin(StudioRuntime::initialize(options)).await?;
-            let state = AppState::new(runtime.clone(), CancellationToken::new());
-            let result: Result<()> = async {
-                let project = runtime.open_project(&project_path).await?;
-                let thread = runtime
-                    .create_thread(&project.id, "HTTP timeline scope")
-                    .await?;
-                for presentation_version in [5, 6] {
-                    let request = serde_json::from_value(serde_json::json!({
-                        "presentationVersion": presentation_version, "readerProtocolVersion": 1,
-                        "demand": { "maxItems": 1, "maxBytes": 16384 }
-                    }))?;
-                    let opened = crate::timeline::open(
-                        State(state.clone()),
-                        Path(thread.id.clone()),
-                        ApiJson(request),
-                    )
-                    .await;
-                    if presentation_version == 5 {
-                        let error = opened.err().context("old protocol was accepted")?;
-                        ensure!(error.0.reason() == Some("protocolVersionMismatch"));
-                        continue;
-                    }
-                    let response = api(opened)?.into_response();
-                    let id = response.headers()[CONVERSATION_HEADER].to_str()?.to_owned();
-                    let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                    let metadata: pl_protocol::OpenTimeline = serde_json::from_slice(&bytes)?;
-                    ensure!(metadata.reader_id == id);
-                    let mut headers = HeaderMap::new();
-                    headers.insert(CONVERSATION_HEADER, HeaderValue::from_str(&id)?);
-                    let lease =
-                        api(state
-                            .conversations
-                            .borrow(&thread.id, &headers, &state.shutdown))?;
-                    let owner = Arc::clone(&lease.owner);
-                    drop(lease);
-                    assert_stale(state.conversations.borrow(
-                        "foreign-thread",
-                        &headers,
-                        &state.shutdown,
-                    ));
-                    let request = || {
-                        serde_json::from_value(
-                            serde_json::json!({ "after": metadata.initial_cursor }),
-                        )
-                    };
-                    ensure!(
-                        crate::timeline::next(
-                            State(state.clone()),
-                            Path(thread.id.clone()),
-                            HeaderMap::new(),
-                            ApiJson(request()?)
-                        )
-                        .await
-                        .is_err()
-                    );
-                    let mut first = None;
-                    for _ in 0..2 {
-                        let response = api(crate::timeline::next(
-                            State(state.clone()),
-                            Path(thread.id.clone()),
-                            headers.clone(),
-                            ApiJson(request()?),
-                        )
-                        .await)?;
-                        let bytes = axum::body::to_bytes(response.into_body(), 16384).await?;
-                        let update: pl_protocol::ViewUpdate = serde_json::from_slice(&bytes)?;
-                        ensure!(update.history.placement == pl_protocol::HistoryPlacement::Set);
-                        ensure!(matches!(
-                            update.tail,
-                            pl_protocol::TailUpdate::Replace { .. }
-                        ));
-                        if let Some(previous) = &first {
-                            ensure!(&update == previous, "retry changed response");
-                        }
-                        first = Some(update);
-                    }
-                    let after = first.context("first update")?.next;
-                    let waiting = crate::timeline::next(
-                        State(state.clone()),
-                        Path(thread.id.clone()),
-                        headers.clone(),
-                        ApiJson(serde_json::from_value(serde_json::json!({"after": after}))?),
-                    );
-                    tokio::pin!(waiting);
-                    assert!(matches!(
-                        futures::poll!(&mut waiting),
-                        std::task::Poll::Pending
-                    ));
-                    let duplicate = crate::timeline::next(
-                        State(state.clone()),
-                        Path(thread.id.clone()),
-                        headers.clone(),
-                        ApiJson(request()?),
-                    )
-                    .await
-                    .err()
-                    .context("concurrent next accepted")?;
-                    ensure!(duplicate.0.reason() == Some("concurrentNext"));
-                    let query = crate::timeline::older(
-                        State(state.clone()),
-                        Path(thread.id.clone()),
-                        headers.clone(),
-                        ApiJson(OlderRequest {
-                            before: "invalid-cursor".into(),
-                            demand: ReadDemand {
-                                max_items: 1,
-                                max_bytes: 16384,
-                            },
-                        }),
-                    );
-                    let error = tokio::time::timeout(DEADLINE, query)
-                        .await?
-                        .err()
-                        .context("invalid cursor admitted")?;
-                    ensure!(error.0.code == StudioErrorCode::InvalidArgument);
-                    let closing = crate::timeline::close(
-                        State(state.clone()),
-                        Path(thread.id.clone()),
-                        headers.clone(),
-                    );
-                    let (closed, ended) = tokio::time::timeout(DEADLINE, async {
-                        tokio::join!(closing, &mut waiting)
-                    })
-                    .await?;
-                    api(closed)?;
-                    ensure!(ended.is_err(), "close did not revoke parked next");
-                    assert_stale(
-                        state
-                            .conversations
-                            .borrow(&thread.id, &headers, &state.shutdown),
-                    );
-                    ensure!(owner.native.lock().await.is_none());
-                }
-                ensure!(state.streams.available_permits() == crate::MAX_STREAMS);
-                Ok(())
-            }
-            .await;
-            state.shutdown.cancel();
-            state.conversations.shutdown().await;
-            let shutdown = runtime.shutdown_runtime().await;
-            let fixture = provider.finish().await;
-            result.context(format!(
-                "cleanup: runtime={shutdown:?}; provider={fixture:?}"
-            ))
         }
     }
 }

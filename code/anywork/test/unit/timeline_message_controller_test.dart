@@ -92,4 +92,137 @@ void main() {
     expect(stock.messages.last.id, 'owner');
     stock.dispose();
   });
+
+  test(
+    'real Flyer serializes apply and row-key replacement in call order',
+    () async {
+      final stock = InMemoryChatController();
+      final adapter = TimelineMessageController(stock, generation: 11);
+      final first = displaySingle(
+        completionEntry('row', 1, isText: true, text: 'first'),
+      );
+      final terminal = displaySingle(
+        completionEntry('row', 1, isText: true, text: 'terminal'),
+      );
+
+      final set = adapter.applyBlocks([first], ChatPlacement.set);
+      final replace = adapter.replaceBlocks([terminal]);
+      await Future.wait([set, replace]);
+
+      final card = chatItemPresentationOf(stock.messages.single)!;
+      expect(stock.messages.single.id, 'row');
+      expect(card.inlineText('body'), 'terminal');
+      adapter.dispose();
+      stock.dispose();
+    },
+  );
+
+  test(
+    'uncertain Flyer mutation is replaced by a fresh generation Set',
+    () async {
+      final stock = _CommitThenFailController();
+      final oldGeneration = TimelineMessageController(stock, generation: 12);
+      final active = displaySingle(
+        completionEntry('row', 1, isText: true, text: 'active'),
+      );
+      final terminal = displaySingle(
+        completionEntry('row', 1, isText: true, text: 'terminal'),
+      );
+      await oldGeneration.applyBlocks([active], ChatPlacement.set);
+      stock.failAfterUpdate = true;
+      await expectLater(
+        oldGeneration.replaceBlocks([terminal]),
+        throwsStateError,
+      );
+
+      oldGeneration.retireDisplays();
+      final nextGeneration = TimelineMessageController(stock, generation: 13);
+      await nextGeneration.applyBlocks([terminal], ChatPlacement.set);
+      final card = chatItemPresentationOf(stock.messages.single)!;
+      expect(card.inlineText('body'), 'terminal');
+
+      nextGeneration.dispose();
+      stock.dispose();
+    },
+  );
+
+  test(
+    'older prepend and terminal replace stay in serial Flyer order',
+    () async {
+      final stock = InMemoryChatController();
+      final adapter = TimelineMessageController(stock, generation: 14);
+      await adapter.applyBlocks([
+        displaySingle(completionEntry('a', 2, isText: true, text: 'a')),
+        displaySingle(completionEntry('c', 3, isText: true, text: 'active c')),
+      ], ChatPlacement.set);
+
+      final older = adapter.applyBlocks([
+        displaySingle(completionEntry('b', 1, isText: true, text: 'older b')),
+      ], ChatPlacement.prepend);
+      final terminal = adapter.replaceBlocks([
+        displaySingle(
+          completionEntry('c', 3, isText: true, text: 'terminal c'),
+        ),
+      ]);
+      await Future.wait([older, terminal]);
+
+      expect(stock.messages.map((message) => message.id), ['b', 'a', 'c']);
+      final c = chatItemPresentationOf(stock.messages.last)!;
+      expect(c.inlineText('body'), 'terminal c');
+      adapter.dispose();
+      stock.dispose();
+    },
+  );
+
+  test(
+    'a frozen historical boundary cannot be replaced by a later original',
+    () async {
+      final stock = InMemoryChatController();
+      final adapter = TimelineMessageController(stock, generation: 15);
+      final atom = completionEntry(
+        'row',
+        1,
+        isText: true,
+        text: 'boundary',
+      ).atom;
+      final boundary = DisplayBlock(
+        id: 'row',
+        blockOrder: 1,
+        body: SingleDisplayBlock(
+          record: DisplayRecord(
+            atom: atom,
+            contentSource: const FrozenObservation(
+              capturedAt: 10,
+              available: true,
+            ),
+          ),
+          visibility: HistorySingleVisibility.content,
+        ),
+      );
+      final later = displaySingle(
+        completionEntry('row', 1, isText: true, text: 'later original'),
+      );
+
+      await adapter.applyBlocks([boundary], ChatPlacement.set);
+      await adapter.replaceBlocks([later]);
+
+      final card = chatItemPresentationOf(stock.messages.single)!;
+      expect(card.displayRecord?.contentSource, isA<FrozenObservation>());
+      adapter.dispose();
+      stock.dispose();
+    },
+  );
+}
+
+final class _CommitThenFailController extends InMemoryChatController {
+  bool failAfterUpdate = false;
+
+  @override
+  Future<void> updateMessage(Message oldMessage, Message newMessage) async {
+    await super.updateMessage(oldMessage, newMessage);
+    if (failAfterUpdate) {
+      failAfterUpdate = false;
+      throw StateError('mutation outcome unknown');
+    }
+  }
 }

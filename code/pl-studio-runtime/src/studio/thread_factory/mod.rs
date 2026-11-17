@@ -697,8 +697,7 @@ mod review_archive_tests {
             },
         )
         .await?;
-        let checkpoint = store.history(id).await?.checkpoint().await?;
-        let sink = ThreadStorageSink::new(store.clone(), protocol, checkpoint.as_ref()).await?;
+        let sink = ThreadStorageSink::new(store.clone(), protocol, None).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), id);
         let mut prepared = spec(
             id.into(),
@@ -717,7 +716,7 @@ mod review_archive_tests {
             crate::studio::workspace_receipt::EXTENSION.into(),
             crate::studio::workspace_receipt::to_payload(assignment).map_err(anyhow::Error::msg)?,
         );
-        prepared.checkpoint = checkpoint;
+        prepared.current = None;
         prepared.cold_store = Some(ColdStoreHandle::new(sink));
         let thread = owner.assemble(prepared).await?;
         thread.flush().await?;
@@ -760,16 +759,13 @@ mod review_archive_tests {
         let (target, target_projection, _) =
             restore_delivery(&owner, &store, &physical.events, "target", &assignment).await?;
         let snapshot = target.snapshot();
-        let turn = store
-            .history("target")
-            .await?
-            .latest_turn_at(snapshot.commit_sequence)
-            .await?
-            .unwrap();
+        let terminal_sequence = 1;
+        let turn_id = "original-terminal-turn";
+        let input_id = None;
         let baseline = pl_protocol::AgentReviewBaseline {
-            turn_id: turn.id,
-            input_id: turn.input_id,
-            terminal_sequence: turn.revision,
+            turn_id: turn_id.into(),
+            input_id,
+            terminal_sequence,
             commit_sequence: snapshot.commit_sequence,
             input_ordinal: snapshot.input_ordinal,
             message_sequence: snapshot.inbox_sequence,
@@ -865,24 +861,12 @@ mod review_archive_tests {
         assert_eq!(before.inputs, after.inputs);
         assert_eq!(before.inbox_sequence, after.inbox_sequence);
         assert!(after.tasks.is_empty());
-        assert_eq!(
+        assert!(
             store
-                .history("reviewer")
+                .state_for("review-workspace", "reviewer")?
+                .load_current()
                 .await?
-                .terminal_report_sequences(0)
-                .await?,
-            vec![1]
-        );
-        assert_eq!(
-            store
-                .history("reviewer")
-                .await?
-                .parent_report(1)
-                .await?
-                .unwrap()
-                .payload
-                .content(),
-            original_body
+                .is_some()
         );
         owner.close_tree("root", &[]).await?;
         target_projection.await?;

@@ -126,7 +126,7 @@ void main() {
           id: 'retracted-block',
           blockOrder: 7,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.finalEmptyAfterContent,
+            visibility: HistorySingleVisibility.finalEmptyAfterContent,
             record: DisplayRecord(
               atom: atom,
               contentSource: const CompletedOriginal(completionId: 'empty'),
@@ -235,7 +235,7 @@ void main() {
             id: 'accepted',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(completionId: 'accepted'),
@@ -434,7 +434,7 @@ void main() {
           id: 'inbox-record',
           blockOrder: 1,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: atom,
               contentSource: CompletedOriginal(completionId: 'inbox-record'),
@@ -501,7 +501,7 @@ void main() {
             id: contentItemId,
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(completionId: contentItemId),
@@ -1446,7 +1446,7 @@ void main() {
             id: 'patch-declared-$truncated',
             blockOrder: 1,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: atom,
                 contentSource: CompletedOriginal(
@@ -1747,7 +1747,7 @@ void main() {
           id: 'lsp-declared',
           blockOrder: 1,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: atom,
               contentSource: CompletedOriginal(completionId: 'lsp-declared'),

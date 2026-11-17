@@ -4,6 +4,7 @@ use pl_protocol::{
     ThreadStorageExecution, ThreadStorageState,
 };
 
+use super::super::presentation::current_state_field;
 use crate::api::studio::types::{
     BridgeHistoryFault, BridgeThreadActivity, BridgeThreadActivityArguments,
     BridgeThreadActivityKind, BridgeThreadActivityToolEntry, BridgeThreadActivityToolState,
@@ -13,6 +14,11 @@ use crate::api::studio::types::{
 pub(crate) fn activity(value: ThreadActivity) -> BridgeThreadActivity {
     BridgeThreadActivity {
         thread_id: value.thread_id,
+        deferred: value
+            .deferred
+            .into_iter()
+            .map(current_state_field)
+            .collect(),
         identity: value.identity,
         revision: value.revision,
         turn_id: value.turn_id,

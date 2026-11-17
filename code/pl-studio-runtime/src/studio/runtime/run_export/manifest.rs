@@ -9,9 +9,9 @@ use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
 
 use super::types::{
-    BuildInfoV2, ConfigInputEntryV2, EVENTS_SCHEMA_VERSION, ExportSchemaV2, RESULT_SCHEMA_VERSION,
-    RUN_MANIFEST_SCHEMA_VERSION, RunExportOptions, RunInvocationV2, RunManifestV2,
-    SkillSearchManifestV2, format_utc_rfc3339,
+    BuildInfoV3, ConfigInputEntryV3, EVENTS_SCHEMA_VERSION, ExportSchemaV3, RESULT_SCHEMA_VERSION,
+    RUN_MANIFEST_SCHEMA_VERSION, RunExportOptions, RunInvocationV3, RunManifestV3,
+    SkillSearchManifestV3, format_utc_rfc3339,
 };
 use crate::studio::paths::StudioPaths;
 
@@ -140,7 +140,7 @@ pub fn prepare_output_dir(output_dir: &Path) -> Result<()> {
 }
 
 /// Builds and atomically writes `run.json`, returning the manifest, its UTC timestamp, and SHA-256.
-pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV2, String)> {
+pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV3, String)> {
     let started_at = format_utc_rfc3339(SystemTime::now());
     let paths = StudioPaths::resolve(Some(options.studio_home.clone()))?;
     let config_paths = paths.config_paths();
@@ -153,12 +153,12 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV2, 
         ),
         None => read_skills_manifest_readonly(config_paths.config_file()),
     };
-    let manifest = RunManifestV2 {
+    let manifest = RunManifestV3 {
         schema_version: RUN_MANIFEST_SCHEMA_VERSION,
         run_id: options.run_id.clone(),
         started_at,
-        build: BuildInfoV2::current(),
-        invocation: RunInvocationV2 {
+        build: BuildInfoV3::current(),
+        invocation: RunInvocationV3 {
             cwd: options.cwd.to_string_lossy().into_owned(),
             studio_home: options.studio_home.to_string_lossy().into_owned(),
             account_id: options.account_id.clone(),
@@ -168,7 +168,7 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV2, 
             max_model_steps: options.max_model_steps,
             prompt_sha256: options.prompt_sha256.clone(),
         },
-        skill_search: SkillSearchManifestV2 {
+        skill_search: SkillSearchManifestV3 {
             include_default_user_dir: options.skill_search.include_default_user_dir,
             additional_dirs: options
                 .skill_search
@@ -181,7 +181,7 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV2, 
             skills_enabled,
         },
         config_inputs,
-        export_schema: ExportSchemaV2 {
+        export_schema: ExportSchemaV3 {
             manifest: RUN_MANIFEST_SCHEMA_VERSION,
             events: EVENTS_SCHEMA_VERSION,
             result: RESULT_SCHEMA_VERSION,
@@ -202,7 +202,7 @@ pub fn write_run_manifest(options: &RunExportOptions) -> Result<(RunManifestV2, 
 }
 
 /// Atomically writes `result.json` via temporary file, sync, and rename.
-pub fn write_result_atomic(output_dir: &Path, result: &super::types::ResultV2) -> Result<()> {
+pub fn write_result_atomic(output_dir: &Path, result: &super::types::ResultV3) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(result).context("serialize result.json")?;
     let mut with_newline = Vec::with_capacity(bytes.len() + 1);
     with_newline.extend_from_slice(&bytes);
@@ -251,7 +251,7 @@ fn temp_path(dir: &Path, prefix: &str) -> PathBuf {
 fn collect_config_inputs(
     paths: &StudioPaths,
     config_paths: &crate::config::ConfigPaths,
-) -> Vec<ConfigInputEntryV2> {
+) -> Vec<ConfigInputEntryV3> {
     let mut entries = Vec::new();
     entries.push(inspect_config_toml(config_paths.config_file()));
     collect_dir_inputs(
@@ -271,9 +271,9 @@ fn collect_config_inputs(
     entries
 }
 
-fn inspect_config_toml(path: &Path) -> ConfigInputEntryV2 {
+fn inspect_config_toml(path: &Path) -> ConfigInputEntryV3 {
     let raw = fs::read(path).ok();
-    ConfigInputEntryV2 {
+    ConfigInputEntryV3 {
         logical_name: crate::config::STUDIO_CONFIG_FILE_NAME.to_string(),
         present: raw.is_some(),
         sha256: raw.as_deref().map(sha256_hex),
@@ -317,7 +317,7 @@ fn read_skills_manifest_readonly(path: &Path) -> (Vec<String>, bool, bool) {
 }
 
 fn collect_dir_inputs(
-    out: &mut Vec<ConfigInputEntryV2>,
+    out: &mut Vec<ConfigInputEntryV3>,
     dir: &Path,
     logical_prefix: &str,
     expected_ext: Option<&str>,
@@ -344,7 +344,7 @@ fn collect_dir_inputs(
     for (logical_name, path) in files {
         let raw = fs::read(&path).ok();
         let sha256 = raw.as_deref().map(sha256_hex);
-        out.push(ConfigInputEntryV2 {
+        out.push(ConfigInputEntryV3 {
             logical_name,
             present: true,
             sha256,

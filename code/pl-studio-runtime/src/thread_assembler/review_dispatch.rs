@@ -1,9 +1,11 @@
 //! Managed terminal-to-feedback handoff. The projection registers, but never waits on this job.
+use super::observation::DurableMessageIdentity;
 use super::{
     SessionRuntime,
     agent_review::{
         ReviewDeliverySource, ReviewFeedbackDelivery, ReviewForward, ReviewForwardReason,
     },
+    pending_delivery::PendingNativeDelivery,
     review_delivery::ReviewDeliveryException,
 };
 use crate::studio::HistoryChannel;
@@ -362,7 +364,12 @@ impl SessionRuntime {
             }
         }
         let history = services.store.history(&terminal.thread.id).await?;
-        let bytes = history.parent_report_bytes(terminal.sequence).await?;
+        let bytes = crate::studio::history_delivery::parent_report_bytes(
+            &history.reader(),
+            &terminal.thread.id,
+            terminal.sequence,
+        )
+        .await?;
         let extra = terminal.authority.retained_bytes();
         let _parent_copy = services.store.thread_persistence().retain_review_delivery(
             &terminal.thread.id,
@@ -371,13 +378,15 @@ impl SessionRuntime {
                 .saturating_add(extra.saturating_mul(4))
                 .saturating_add(8192),
         )?;
-        let original =
-            history
-                .parent_report(terminal.sequence)
-                .await?
-                .ok_or(TerminalIntegrityError(
-                    "original terminal message is missing",
-                ))?;
+        let original = crate::studio::history_delivery::parent_report(
+            &history.reader(),
+            &terminal.thread.id,
+            terminal.sequence,
+        )
+        .await?
+        .ok_or(TerminalIntegrityError(
+            "original terminal message is missing",
+        ))?;
         if let Some(expected) = &terminal.original {
             ensure!(
                 expected.digest() == original.digest(),
@@ -395,22 +404,36 @@ impl SessionRuntime {
         else {
             return Ok(());
         };
-        let finish_bytes = history.review_finish_bytes(&report.turn_id).await?;
+        let reader = history.reader();
+        let finish_event = reader
+            .review_finish_call(
+                report.turn_id.clone(),
+                None,
+                crate::history::HistoryDemand {
+                    max_rows: 1,
+                    max_bytes: 1024 * 1024,
+                },
+            )
+            .await?;
+        let finish_bytes = finish_event.as_ref().map_or(0, |event| {
+            event
+                .payload_ref
+                .as_ref()
+                .map_or(0, |body| body.byte_length)
+                .saturating_add(serde_json::to_vec(event).map_or(0, |bytes| bytes.len() as u64))
+        });
         let _review_copy = services.store.thread_persistence().retain_review_delivery(
             &terminal.thread.id,
             finish_bytes.saturating_mul(4).saturating_add(128 * 1024),
         )?;
-        let finish = if let Some(call) = history.review_finish_call(&report.turn_id).await? {
-            history
-                .tool_task(&call)
-                .await?
-                .filter(|saved| saved.task.turn_id == report.turn_id)
-                .and_then(|saved| {
-                    saved
-                        .delivery
-                        .as_ref()
-                        .and_then(crate::studio::thread_projection::committed_finish)
-                })
+        let finish = if let Some(event) = finish_event {
+            let item = crate::studio::runtime::chat_item::read_execution_item(
+                &reader,
+                event,
+                &terminal.thread.id,
+            )
+            .await?;
+            crate::studio::thread_projection::committed_finish_execution(&item)?
         } else {
             None
         };
@@ -431,69 +454,25 @@ impl SessionRuntime {
         })
         .await
     }
-    /// Bounded history pages keep all old terminal obligations visible during close/restart.
+    /// Recovery starts only from explicit Current markers on the source and its Native parent.
     pub(crate) async fn recover_saved_review_deliveries(
         &self,
         reviewer: &pl_protocol::Thread,
     ) -> Result<()> {
-        if reviewer
-            .parent_thread_id
-            .as_deref()
-            .is_none_or(|parent| self.parent_is_acp(parent))
-        {
-            return Ok(());
-        }
         let services = self
             .0
             .state()
             .agent_services
             .clone()
             .context("review services unavailable")?;
-        let Some(checkpoint) =
-            crate::studio::thread_factory::recovery::load_checkpoint_for_recovery(
-                &services.store,
-                reviewer,
-            )
-            .await?
-        else {
-            return Ok(());
-        };
-        let history = services.store.history(&reviewer.id).await?;
-        // The cold enumeration uses the same minimal authority carrier as live transfer. Drop the
-        // source checkpoint before registering jobs, not at the end of the enumeration future.
-        let authority = Arc::new(TerminalAuthority::capture(&checkpoint.state)?);
-        drop(checkpoint);
-        let bytes = authority.retained_bytes().saturating_add(4096);
-        let material_channel = services
-            .store
-            .thread_persistence()
-            .history_channel(&reviewer.id);
-        let material = services
-            .store
-            .thread_persistence()
-            .retain_terminal_material(&reviewer.id, &material_channel, bytes, None)?;
-        let mut after = 0;
-        loop {
-            let sequences = history.terminal_report_sequences(after).await?;
-            if sequences.is_empty() {
-                return Ok(());
-            }
-            for sequence in sequences {
-                self.start_terminal_delivery(Arc::new(TerminalDelivery {
-                    thread: reviewer.clone(),
-                    sequence,
-                    authority: authority.clone(),
-                    original: None,
-                    source: ReviewDeliverySource::Reconciliation,
-                    revocation: Arc::new(AtomicU64::new(u64::MAX)),
-                    channel: None,
-                    wake: false,
-                    _material: Some(material.clone()),
-                }))
-                .await?;
-                after = sequence;
-            }
+        self.recover_pending_native_deliveries(reviewer).await?;
+        if let Some(parent) = reviewer.parent_thread_id.as_deref()
+            && !self.parent_is_acp(parent)
+        {
+            let parent = services.record(parent).await?;
+            self.recover_pending_native_deliveries(&parent).await?;
         }
+        Ok(())
     }
 
     pub(super) async fn acknowledge_review_exception(
@@ -502,33 +481,17 @@ impl SessionRuntime {
         message: pl_core::thread::inbox::ThreadMessage,
         wake: bool,
     ) -> Result<()> {
-        use super::observation::DurableMessageIdentity;
         self.finish_report_receiver(parent).await?;
-        if self
-            .durable_message_identity(parent, &message.id)
-            .await?
-            .is_none()
-        {
-            if self.observed_thread(parent).is_some() {
-                let _delivery = self.notify_parent(parent, message.clone(), wake).await?;
-                self.synchronize_observation(parent).await?;
-            }
-            if self
-                .durable_message_identity(parent, &message.id)
-                .await?
-                .is_none()
-            {
-                let services = self
-                    .0
-                    .state()
-                    .agent_services
-                    .clone()
-                    .context("review services unavailable")?;
-                services
-                    .redeliver_parent_report(self, parent, message.clone())
-                    .await?;
-            }
-        }
+        let services = self
+            .0
+            .state()
+            .agent_services
+            .clone()
+            .context("review services unavailable")?;
+        let pending = PendingNativeDelivery::from_terminal_message(message.clone(), wake)?;
+        services
+            .deliver_pending_native(self, parent, pending)
+            .await?;
         match self.durable_message_identity(parent, &message.id).await? {
             Some(DurableMessageIdentity::Proven { digest, .. }) => ensure!(
                 digest == message.digest(),
@@ -637,7 +600,7 @@ impl SessionRuntime {
                 }
                 let history = services.store.history(&reviewer.id).await?;
                 ensure!(
-                    history.parent_report(sequence).await?.is_some(),
+                    crate::studio::history_delivery::parent_report(&history.reader(),&reviewer.id,sequence).await?.is_some(),
                     "review terminal has no durable original report"
                 );
                 let recovery = ReviewForward::Unconfirmed {
@@ -659,9 +622,7 @@ impl SessionRuntime {
                 )
                 .context("recovery exception identity missing")?
                 .into_fact()?;
-                let saved = history
-                    .review_delivery_exception(&recovery_fact.message.id)
-                    .await?;
+                let saved = crate::studio::history_delivery::review_exception(&history.reader(),&recovery_fact.message.id).await?;
                 let fact = if let Some(saved) = saved {
                     Some(saved)
                 } else {

@@ -1,7 +1,10 @@
 //! 执行事实在可靠完成或观察封存边界编码为规范 JSON 与显式内容所有权。
 
 use crate::{ExecutionItem, ExecutionShape};
+mod history;
 use anyhow::{Result, ensure};
+pub(in crate::studio) use history::{freeze_history_observation, freeze_history_original};
+pub(crate) use history::{frozen_execution_item, read_execution_item};
 use pl_core::{
     chat::{
         ChatContent, ChatContentKey, ChatContents, ChatDraft, ChatKey, ContentData,

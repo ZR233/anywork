@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 import 'chat_models.dart';
+import 'collection_equality.dart';
+import 'current_state_field.dart';
 import 'interaction_models.dart';
 import 'studio_enums.dart';
 import 'thread_activity_models.dart';
@@ -99,6 +101,7 @@ class ConversationActivityView {
     this.expandable = false,
     this.storage,
     this.wait,
+    this.deferred = const [],
   });
 
   /// 稳定活动身份：展开态以它为准，身份变化即重置。
@@ -152,6 +155,9 @@ class ConversationActivityView {
 
   /// Typed wait/sleep presentation of the current wait/sleep tool, when one is running.
   final ThreadWaitPresentationView? wait;
+  final List<CurrentStateField> deferred;
+  CurrentStateField? deferredField(String field) =>
+      deferred.where((value) => value.field == field).firstOrNull;
 
   bool get hasDetails => expandable || details.isNotEmpty;
 
@@ -196,7 +202,8 @@ class ConversationActivityView {
             _sameDetails(details, other.details) &&
             expandable == other.expandable &&
             storage == other.storage &&
-            wait == other.wait;
+            wait == other.wait &&
+            listEquals(deferred, other.deferred);
   }
 
   @override
@@ -219,6 +226,7 @@ class ConversationActivityView {
     expandable,
     storage,
     wait,
+    Object.hashAll(deferred),
   );
 }
 

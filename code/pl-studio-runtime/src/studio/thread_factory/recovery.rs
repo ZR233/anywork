@@ -1,61 +1,55 @@
-//! Current-layout checkpoint loading for cold Threads.
+//! Current-layout loading for cold Threads.
 //!
-//! Pre-v2 shared journals remain isolated; current checkpoints are validated on explicit activation.
+//! Pre-v2 shared journals remain isolated; complete current documents are validated on activation.
 //!
 //! Which entries may touch storage:
 //!
-//! - **May migrate** (import a legacy checkpoint, delete the files it replaced, upgrade saved
-//!   representations): [`load_checkpoint_for_recovery`] and the explicit activation/recovery entries
-//!   that call it, including cold archive preparation. Per design/17 a child that is not loaded
-//!   is migrated by its own single history writer before anyone reads it.
-//! - **Must never migrate**: [`load_checkpoint_read_only`] and every projection — directory listing,
-//!   thread snapshot and interaction reads. Explicit content handles and Turn pages first prepare
-//!   existing SQLite content at their own entry, then use these read-only projections. Unsupported
-//!   or still-legacy SQLite structures fail explicitly, never masquerading as absent facts.
+//! - **May prepare storage** (one-shot schema upgrade or legacy current materialization):
+//!   [`load_current_for_recovery`] and explicit activation/recovery entries that call it.
+//! - **Must never prepare storage**: [`load_current_read_only`] and every projection — directory
+//!   listing, Thread snapshot and interaction reads. They report only an already-complete
+//!   `current.json`; missing and invalid current stay distinct at their normal error boundaries.
 
 use anyhow::Result;
-use pl_core::thread::ThreadCheckpoint;
+use pl_core::thread::current::ThreadCurrent;
 
 use crate::studio::StudioStore;
 
-/// Strictly read-only checkpoint read for projections that must not prepare or migrate storage.
+/// Strictly read-only current read for projections that must not prepare or migrate storage.
 ///
-/// A read-only projection reports only already-durable facts; a legacy checkpoint that still needs
-/// import stays invisible until an explicit recovery/activation entry migrates it.
-pub(crate) async fn load_checkpoint_read_only(
+/// A read-only projection reports only an already-complete current document. A legacy checkpoint
+/// that still needs materialization stays invisible until an explicit recovery/activation entry
+/// prepares it.
+pub(crate) async fn load_current_read_only(
     store: &StudioStore,
     thread: &pl_protocol::Thread,
-) -> Result<Option<ThreadCheckpoint>> {
-    let history = store.history_for(&thread.workspace_id, &thread.id).await?;
+) -> Result<Option<ThreadCurrent>> {
     store
         .state_for(&thread.workspace_id, &thread.id)?
-        .load_read_only(&history)
+        .load_current()
         .await
 }
 
-/// Explicit activation, parent continuation or archive prepares history before decoding restart state.
-/// This prepares storage only; it never installs an owner or executes the recovered Thread.
-///
-/// Model-access extensions saved by a retired format are committed as the current representation
-/// here, in the single history writer transaction, before any owner or model sees the checkpoint.
-/// Root and child recovery share this boundary, so a saved v1 route or Agent Profile never stays in
-/// the old shape just because the Thread was not opened again by its previous owner.
-pub(crate) fn load_checkpoint_for_recovery<'a>(
+/// Explicit activation, parent continuation or archive prepares one-shot storage before decoding
+/// restart state. Production still receives the complete `ThreadCurrent`; this function never
+/// reconstructs a Core checkpoint, history fence or snapshot bridge.
+pub(crate) fn load_current_for_recovery<'a>(
     store: &'a StudioStore,
     thread: &'a pl_protocol::Thread,
-) -> impl std::future::Future<Output = Result<Option<ThreadCheckpoint>>> + Send + 'a {
-    // Cold root/child recovery owns the import/model-preparation state on the heap. Every
-    // activation, parent continuation and archive shares this boundary; polling and cancellation stay
-    // with the caller, rather than creating an independently running recovery task.
+) -> impl std::future::Future<Output = Result<Option<ThreadCurrent>>> + Send + 'a {
     Box::pin(async move {
-        let history = store.history_for(&thread.workspace_id, &thread.id).await?;
-        let Some(_) = store
-            .state_for(&thread.workspace_id, &thread.id)?
-            .prepare_recovery(&history)
-            .await?
-        else {
-            return Ok(None);
-        };
-        history.prepare_model_access().await
+        let state = store.state_for(&thread.workspace_id, &thread.id)?;
+        if let Some(current) = state.load_current().await? {
+            return Ok(Some(current));
+        }
+        // An old Thread may not have current.json until the parent-owned maintenance gate upgrades
+        // its schema-24 history. Ordinary current reads never take this branch.
+        let history_path = store
+            .registered_session_paths(&thread.id)?
+            .history_database();
+        if tokio::fs::try_exists(history_path).await? || state.legacy_checkpoint().await?.is_some() {
+            drop(store.history_for(&thread.workspace_id, &thread.id).await?);
+        }
+        state.load_current().await
     })
 }

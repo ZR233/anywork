@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "runId": "e68e6e16-cb13-49f4-8c7d-7cb297758002",
   "rootThreadId": "thread-root",
   "outcome": "completed",
@@ -25,9 +25,9 @@
   "costComplete": true,
   "trace": {
     "eventsPath": "events.jsonl",
-    "eventsSha256": "2c981107bc03ba86628c2d7b0258d55445a7bdb00d172d452886cd5855f71f36",
-    "eventCount": 11,
-    "lastEventSeq": 11,
+    "eventsSha256": "ca6acaeb5595bb442a475b57d59559af77b3168224e05970a9a402912fbb36af",
+    "eventCount": 2,
+    "lastEventSeq": 2,
     "sealed": true,
     "reason": null
   },

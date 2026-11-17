@@ -105,7 +105,7 @@ void main() {
       expect(costs.read().loaded, isFalse);
       // 未加载会话只观察 visibleThreadId；其他三个缺失 owner 各观察 selection 与 failure。
       expect(client.channels.activeTopicRefCountViews(), isEmpty);
-      expect(transport.timelineReaders, isEmpty);
+      expect(transport.currentReaders, isEmpty);
     } finally {
       session.close();
       composer.close();
@@ -136,8 +136,8 @@ void main() {
         (id) => id == 'thread-main',
       );
       await timelineReady(graph.timeline, 'thread-main');
-      final connection = transport.timelineReaders.single;
-      await connection.nextEntered.future;
+      final connection = transport.currentReaders.single;
+      await connection.watchEntered.future;
       final attemptId = graph.timeline
           .lease('thread-main')!
           .reader
@@ -231,8 +231,8 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(transport.timelineReaders, hasLength(1));
-      expect(connection.initialCalls, 1);
+      expect(transport.currentReaders, hasLength(1));
+      expect(connection.initialViewReads, 1);
 
       final report = await graph.close(budget: testBudgetUntil(_deadline()));
       expect(report.unresolved, isEmpty);
@@ -266,9 +266,9 @@ void main() {
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
     final afterVisibleSelection = first.timeline.monotonicMicros;
-    expect(firstTransport.timelineReaders, isEmpty);
+    expect(firstTransport.currentReaders, isEmpty);
     expect(
-      secondTransport.timelineReaders,
+      secondTransport.currentReaders,
       isEmpty,
       reason: 'canonical visible selection does not fabricate viewport demand',
     );
@@ -317,8 +317,8 @@ void main() {
       isNot(same(second.client.conversations.session('thread-main'))),
     );
     expect(
-      firstTransport.timelineReaders.single,
-      isNot(same(secondTransport.timelineReaders.single)),
+      firstTransport.currentReaders.single,
+      isNot(same(secondTransport.currentReaders.single)),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
@@ -340,8 +340,8 @@ void main() {
       (await first.close(budget: testBudgetUntil(_deadline()))).complete,
       isTrue,
     );
-    expect(firstTransport.timelineReaders.single.joined.isCompleted, isTrue);
-    expect(secondTransport.timelineReaders.single.requestCloseCalls, 0);
+    expect(firstTransport.currentReaders.single.joined.isCompleted, isTrue);
+    expect(secondTransport.currentReaders.single.requestCloseCalls, 0);
     expect(second.client.isClosed, isFalse);
     expect(second.timeline.lease('thread-main'), isNotNull);
     expect(
@@ -355,20 +355,17 @@ void main() {
   test(
     'late open after selecting B is reclaimed without clearing current B',
     () async {
-      final transport = TestDemoStudioTransport(lspActivityLoop: false);
-      final firstOpen = Completer<RecordingTimelineReader>();
+      final transport = RecordingDemoTransport();
+      final firstOpenEntered = Completer<void>();
       final releaseFirst = Completer<void>();
       var mainOpens = 0;
-      final connections = <RecordingTimelineReader>[];
-      transport.timelineReaderFactory = (threadId, inner) async {
-        final window = RecordingTimelineReader(inner: inner);
-        connections.add(window);
-        if (threadId == 'thread-main' && ++mainOpens == 1) {
-          firstOpen.complete(window);
-          await releaseFirst.future;
-        }
-        return window;
-      };
+      transport
+        ..nextCurrentOpenGate = releaseFirst
+        ..testCurrentOpenEntered = (threadId) {
+          if (threadId == 'thread-main' && ++mainOpens == 1) {
+            firstOpenEntered.complete();
+          }
+        };
       final graph = testAppGraph(
         statisticsFeed: const TestStatisticsFeedPort(),
         transport: transport,
@@ -379,13 +376,15 @@ void main() {
         await graph.close(budget: testBudgetUntil(_deadline()));
       });
       await graph.client.bootstrap();
-      await (graph
-            ..timeline.updateReadDemand(chatDemand)
-            ..setConversationPageVisible(true))
-          .client
-          .directoryCommands
-          .selectThread('thread-main');
-      final late = await firstOpen.future;
+      final lateSelection =
+          (graph
+                ..timeline.updateReadDemand(chatDemand)
+                ..setConversationPageVisible(true))
+              .client
+              .directoryCommands
+              .selectThread('thread-main');
+      await firstOpenEntered.future;
+      final late = transport.currentReaders.single;
       await (graph
             ..timeline.updateReadDemand(chatDemand)
             ..setConversationPageVisible(true))
@@ -398,16 +397,17 @@ void main() {
           .reader
           .metadata
           .readerId;
-      final current = connections.lastWhere(
+      final current = transport.currentReaders.lastWhere(
         (value) => value.threadId == 'thread-alt',
       );
       expect(current, isNot(same(late)));
 
       releaseFirst.complete();
+      await lateSelection;
       await late.joined.future;
 
       expect(
-        late.initialCalls,
+        late.initialViewReads,
         0,
         reason: 'retired open never becomes a baseline',
       );

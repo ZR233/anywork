@@ -2,15 +2,9 @@
 //! parent wait → child terminal report. The same sequence resumes original IDs
 //! after the production process and future Profile configuration have changed.
 use super::{Observation, config, http, saved, wire};
-use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, charge_chat_bytes,
-    completed_turn_from_children,
-};
+use crate::support::{HISTORY_OBSERVATION_BYTES, assert_completed_turn, open_current};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{
-    AgentProfileSnapshot, AgentWorkspaceMode, ChatAtomKind, ChatScope, ThreadStatus,
-    ThreadWaitState,
-};
+use pl_protocol::{AgentProfileSnapshot, AgentWorkspaceMode, ThreadStatus, ThreadWaitState};
 use pl_provider_fixture::agent_definitions::{AgentPhase, FUTURE_MODEL, ROOT_MODEL, USER_PROFILE};
 use std::time::Instant;
 
@@ -167,7 +161,16 @@ impl Observation<'_> {
         profile: &AgentProfileSnapshot,
         saved: &saved::SavedEvidence,
     ) -> Result<String> {
-        let snapshot = self.session.http()?.read_thread(child).await?;
+        let current = open_current(self.session.http()?, child).await?;
+        let observed = current.snapshot(crate::support::current_demand()).await;
+        let view = match (observed, current.close().await) {
+            (Ok(view), Ok(())) => view,
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => return Err(error),
+            (Err(error), Err(close_error)) => {
+                return Err(error.context(format!("Current close also failed: {close_error:#}")));
+            }
+        };
+        let snapshot = view.state;
         let turn_id = snapshot
             .active_turn
             .as_ref()
@@ -222,13 +225,17 @@ impl Observation<'_> {
     async fn assert_child_completed(&self, child: &str, turn_id: &str) -> Result<()> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
-            let mut remaining = CHAT_OBSERVATION_BYTES;
-            let (read, _) = self
-                .session
-                .http()?
-                .open_chat(child, ChatScope::conversation(None), CHAT_DEMAND)
-                .await?;
-            completed_turn_from_children(&read, turn_id, None, true, &mut remaining, deadline).await
+            let mut remaining = HISTORY_OBSERVATION_BYTES;
+            let read = self.session.http()?.open_history(child).await?;
+            let observed =
+                assert_completed_turn(&read, turn_id, None, true, &mut remaining, deadline).await;
+            match (observed, read.close().await) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(error), Err(close_error)) => {
+                    Err(error.context(format!("History close also failed: {close_error:#}")))
+                }
+            }
         })
         .await
         .context("child completion observation exceeded its deadline")?
@@ -238,63 +245,45 @@ impl Observation<'_> {
         let deadline = Instant::now() + http::PREDICATE_TIMEOUT;
         tokio::time::timeout_at(deadline.into(), async {
             let call_id = phase.wait_call();
-            let mut remaining = CHAT_OBSERVATION_BYTES;
-            loop {
-                let snapshot = self.session.http()?.read_thread(parent).await?;
-                ensure!(
-                    snapshot.thread.status != ThreadStatus::Faulted,
-                    "parent failed before its real child wait"
-                );
-                if snapshot.active_turn.as_ref().is_some_and(|turn| {
-                    snapshot.activity.as_ref().is_some_and(|activity| {
-                        activity.turn_id.as_deref() == Some(turn.id.as_str())
-                    })
-                }) && let Some(activity) = &snapshot.activity
-                    && activity.tools.active.iter().any(|tool| {
-                        tool.call_id == call_id
-                            && tool
-                                .wait
-                                .as_ref()
-                                .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
-                    })
-                {
-                    return Ok(());
-                }
-                let (mut read, batch) = self
-                    .session
-                    .http()?
-                    .open_chat(parent, ChatScope::conversation(None), CHAT_DEMAND)
-                    .await?;
-                charge_chat_batch(&batch, &mut remaining)?;
-                for _ in 0..32 {
-                    let activity = read.next_activity(deadline).await?;
-                    // The ActivitySnapshot is delivered on the read lease bound
-                    // to `parent`; the protocol deliberately carries no Thread ID.
-                    charge_chat_bytes(serde_json::to_vec(&activity)?.len(), &mut remaining)?;
-                    if snapshot.active_turn.as_ref().is_some_and(|turn| {
-                        activity.entries.iter().any(|entry| {
-                            entry.atom.turn_id.as_deref() == Some(turn.id.as_str())
-                                && entry.atom.kind == ChatAtomKind::ToolCall
-                                && entry
-                                    .atom
+            let current = open_current(self.session.http()?, parent).await?;
+            let observed = async {
+                loop {
+                    let view = current.snapshot(crate::support::current_demand()).await?;
+                    let snapshot = &view.state;
+                    ensure!(
+                        snapshot.thread.status != ThreadStatus::Faulted,
+                        "parent failed before its real child wait"
+                    );
+                    if let Some(turn) = snapshot.active_turn.as_ref()
+                        && view.projection.atoms.iter().any(|atom| {
+                            atom.turn_id.as_deref() == Some(turn.id.as_str())
+                                && atom.kind == pl_protocol::ChatAtomKind::ToolCall
+                                && atom
                                     .tool
                                     .as_ref()
                                     .is_some_and(|tool| tool.call_id == call_id)
-                                && entry
-                                    .atom
+                                && atom
                                     .wait
                                     .as_ref()
                                     .is_some_and(|wait| wait.state() == ThreadWaitState::Waiting)
                         })
-                    }) {
+                    {
                         return Ok(());
                     }
+                    ensure!(
+                        Instant::now() < deadline,
+                        "parent wait {call_id} never became canonical before child release"
+                    );
+                    tokio::time::sleep(http::POLL).await;
                 }
-                ensure!(
-                    Instant::now() < deadline,
-                    "parent wait {call_id} never became canonical before child release"
-                );
-                tokio::time::sleep(http::POLL).await;
+            }
+            .await;
+            match (observed, current.close().await) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(error), Err(close_error)) => {
+                    Err(error.context(format!("Current close also failed: {close_error:#}")))
+                }
             }
         })
         .await

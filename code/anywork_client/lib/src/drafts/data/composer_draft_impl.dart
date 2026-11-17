@@ -687,6 +687,19 @@ final class ComposerDraftImpl extends ReadModel<ComposerThreadState>
           ComposerSubmissionPhase.failed,
           error: known,
         );
+        if (error is SubmissionNotSent && !_closed) {
+          apply(
+            ComposerThreadState.failure(
+              error: known,
+              draft: frozen.input.text,
+              attachments: frozen.attachments,
+              submissionRevision: state.submissionRevision,
+              attachmentGeneration: state.attachmentGeneration,
+              inputId: frozen.input.inputId,
+              cleanupFailureDraftIds: state.cleanupFailureDraftIds,
+            ),
+          );
+        }
         return;
       }
       evidence?.cancel();

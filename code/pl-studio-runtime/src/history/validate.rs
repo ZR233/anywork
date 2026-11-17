@@ -30,7 +30,13 @@ pub(super) fn event(event: &HistoryEvent) -> Result<usize> {
             return Err(invalid("empty optional identity"));
         }
     }
-    if h.attempt_id.is_some() && h.run_id.is_none() && h.kind != HistoryEventKind::LegacyObserved {
+    if h.attempt_id.is_some()
+        && h.run_id.is_none()
+        && !matches!(
+            h.kind,
+            HistoryEventKind::LegacyObserved | HistoryEventKind::BoundaryObserved
+        )
+    {
         return Err(invalid("attempt requires its runtime epoch"));
     }
     if event.head.is_some() != h.row_key.is_some() || (event.is_anchor && event.head.is_none()) {

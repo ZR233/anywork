@@ -109,7 +109,7 @@ void main() {
           placement: ChatPlacement.append,
           from: 1,
           through: 1,
-          live: TailSnapshot(
+          live: CurrentRunSnapshot(
             currentWorkId: null,
             revision: 2,
             layoutRevision: 2,

@@ -232,9 +232,9 @@ void main() {
         'phase=${session.state.sync.phase}，'
         'revision=${session.state.watermark.revision}，'
         'epoch=${session.state.watermark.epoch}，'
-        'stateFeeds=${transport.stateFeeds.length}，'
-        'delivered=${transport.stateFeeds.last.deliveredFrames}，'
-        'acks=${transport.stateFeeds.last.acknowledgements}',
+        'currentReaders=${transport.currentReaders.length}，'
+        'delivered=${transport.currentReaders.last.deliveredFrames}，'
+        'acks=${transport.currentReaders.last.acknowledgements}',
       ),
     );
 
@@ -244,7 +244,7 @@ void main() {
       '初始 workspace revision=4 ACK',
       transport.publishWorkspace(workspace.copyWith(revision: 4)),
     );
-    final feed = transport.stateFeeds.last;
+    final feed = transport.currentReaders.last;
     await stage(
       'notification revision=5 ACK',
       feed.emitStateAndWait(_notification(revision: 5, epoch: 1)),
@@ -281,14 +281,14 @@ void main() {
         '$label workspace revision=5 ACK',
         transport.publishWorkspace(workspace.copyWith(revision: 5)),
       );
-      final current = transport.stateFeeds.last;
+      final current = transport.currentReaders.last;
       await stage(
         '$label notification revision=6 ACK',
         current.emitStateAndWait(_notification(revision: 6, epoch: 1)),
       );
       expect(session.state.watermark.revision, 6);
       expect(session.state.watermark.epoch, 1);
-      final count = transport.stateFeeds.length;
+      final count = transport.currentReaders.length;
       final rejected = stage(
         '$label reconnecting',
         session.source.waitFor(
@@ -304,7 +304,7 @@ void main() {
         ),
       );
       expect(
-        transport.stateFeeds.length,
+        transport.currentReaders.length,
         count + 1,
         reason: '缺口、错误 base 或跨 epoch 都重新建立状态 feed',
       );

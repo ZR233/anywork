@@ -10,6 +10,7 @@ import '../../lifecycle/close_report.dart';
 import '../../observation/latest_value.dart';
 import '../../studio/stores/thread_directory_store.dart';
 import '../../studio/stores/domain_sync.dart';
+import '../../studio/thread_frames.dart';
 import '../domain/conversation_repository.dart';
 import '../domain/conversation_state.dart';
 import 'conversation_content_impl.dart';
@@ -25,6 +26,8 @@ final class ConversationSessionImpl implements ConversationSession {
   ConversationSessionImpl(
     this.threadId, {
     required ConversationTransport transport,
+    required CurrentTransport currentTransport,
+    required ReadDemand stateDemand,
     required this.directory,
     required InputFactRegistry inputFacts,
     required ClientScope scope,
@@ -33,7 +36,8 @@ final class ConversationSessionImpl implements ConversationSession {
        _source = LatestValue(ThreadSessionState(threadId: threadId)) {
     _state = ConversationStateOwner(
       threadId: threadId,
-      transport: transport,
+      transport: currentTransport,
+      demand: stateDemand,
       onState: _onState,
       onFailure: _onFailure,
       onAttempt: _onAttempt,
@@ -151,11 +155,7 @@ final class ConversationSessionImpl implements ConversationSession {
           directoryRow: _identity,
         );
         final eligible = _eligibleResync(attemptId);
-        final previousRefs = state.businessRefs;
         _source.publish(candidate);
-        if (identical(state, candidate)) {
-          _content.businessRefsChanged(previousRefs, candidate.businessRefs!);
-        }
         if (identical(state, candidate)) _publishCurrentInputFacts(candidate);
         if (eligible != null &&
             identical(_resync, eligible) &&
@@ -186,14 +186,7 @@ final class ConversationSessionImpl implements ConversationSession {
             );
           case ThreadFrameDecision.apply:
             final candidate = applyThreadNotificationState(state, frame);
-            final previousRefs = state.businessRefs;
             _source.publish(candidate);
-            if (identical(state, candidate)) {
-              _content.businessRefsChanged(
-                previousRefs,
-                candidate.businessRefs!,
-              );
-            }
             if (identical(state, candidate))
               _publishCurrentInputFacts(candidate);
         }

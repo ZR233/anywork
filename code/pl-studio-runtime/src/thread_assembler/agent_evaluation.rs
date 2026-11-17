@@ -70,7 +70,13 @@ impl AgentServices {
             "unreconciled legacy close facts cannot authorize an evaluation"
         );
         self.recovery.ensure_thread_read_access(&record)?;
-        let history = self.store.history(&request.target).await?;
+        let paths = self.store.registered_session_paths(&request.target)?;
+        let history = crate::history::HistoryStore::open_reader(
+            paths.history_database(),
+            &request.target,
+            crate::history::HistoryLimits::default(),
+        )
+        .await?;
         let (snapshot, turn) = if let Some((thread, _)) = &resident {
             let before = thread.snapshot();
             validate_idle(&before)?;
@@ -80,21 +86,19 @@ impl AgentServices {
                 after.commit_sequence == before.commit_sequence,
                 "child changed during final evaluation validation; retry with latest state"
             );
-            let turn = history.latest_turn_at(after.commit_sequence).await?;
+            let turn = super::observation::latest_terminal_turn(&history).await?;
             (after, turn)
         } else {
-            // Evaluation is a strict canonical read, not a recovery entry: StateStore::prepare_recovery may
-            // import legacy TOML or finish its cleanup even when SQLite already has a checkpoint.
-            let (checkpoint, turn) = history
-                .read_only_checkpoint_with_latest_turn()
-                .await
-                .context("cold evaluation cannot read the canonical checkpoint; use the existing open or explicit continuation/recovery entry if migration is required")?
-                .context("cold child has no canonical checkpoint; migrate legacy history through the existing open or explicit continuation/recovery entry before evaluation")?;
-            ensure!(
-                checkpoint.history_fence == checkpoint.state.commit_sequence,
-                "cold child checkpoint is not covered by its durable history"
-            );
-            (checkpoint.state, turn)
+            let protocol: pl_protocol::Thread = record.clone().into();
+            let current = crate::studio::thread_factory::recovery::load_current_read_only(
+                &self.store,
+                &protocol,
+            )
+            .await
+            .context("cold evaluation cannot read complete current")?
+            .context("cold child has no complete current")?;
+            let turn = super::observation::latest_terminal_turn(&history).await?;
+            (current.state.to_paused_snapshot(), turn)
         };
         validate_idle(&snapshot)?;
         // Finished Turns are intentionally absent from Core's resident/checkpoint set. Resolve

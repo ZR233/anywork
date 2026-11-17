@@ -59,7 +59,7 @@ final class LiveWindowCut {
 
   bool get hasWindow => isDisplayActive && revision != null;
 
-  bool matchesWindow(TailSnapshot window) =>
+  bool matchesWindow(CurrentRunSnapshot window) =>
       revision == window.layoutRevision &&
       readyFrontier == window.readyFrontier &&
       executionPresent == window.executionPresent;
@@ -89,7 +89,7 @@ final class LiveWindowCut {
 sealed class LiveWindowPagingState {
   const LiveWindowPagingState();
 
-  TailSnapshot? get olderWindow => switch (this) {
+  CurrentRunSnapshot? get olderWindow => switch (this) {
     ViewingOlderLiveWindow(:final window) => window,
     LatestLiveWindow() ||
     LoadingOlderLiveWindow() ||
@@ -137,10 +137,10 @@ final class LoadingOlderLiveWindow extends LiveWindowPagingState {
 
   final String before;
   final LiveWindowCut cut;
-  final TailSnapshot? previousOlder;
+  final CurrentRunSnapshot? previousOlder;
 
   @override
-  TailSnapshot? get olderWindow => previousOlder;
+  CurrentRunSnapshot? get olderWindow => previousOlder;
 
   @override
   bool get isViewingOlder => previousOlder != null;
@@ -165,7 +165,7 @@ final class ViewingOlderLiveWindow extends LiveWindowPagingState {
   });
 
   final String before;
-  final TailSnapshot window;
+  final CurrentRunSnapshot window;
   final LiveWindowCut cut;
 
   @override
@@ -192,10 +192,10 @@ final class OlderLiveWindowFailed extends LiveWindowPagingState {
   @override
   final Object error;
   final LiveWindowCut cut;
-  final TailSnapshot? previousOlder;
+  final CurrentRunSnapshot? previousOlder;
 
   @override
-  TailSnapshot? get olderWindow => previousOlder;
+  CurrentRunSnapshot? get olderWindow => previousOlder;
 
   @override
   bool get isViewingOlder => previousOlder != null;
@@ -414,7 +414,7 @@ final class LiveStatusPresenting extends LiveStatusMachineState {
   });
 
   final LiveStatusPrimarySurface surface;
-  final TailSnapshot? effectiveWindow;
+  final CurrentRunSnapshot? effectiveWindow;
   final LiveWindowPagingState paging;
   @override
   final bool showInteractionDetails;
@@ -446,7 +446,7 @@ final class LiveStatusTimelineWorkSlice {
   static final empty = LiveStatusTimelineWorkSlice();
 
   final List<LiveDisplayBlock> workBlocks;
-  final TailSnapshot? effectiveWindow;
+  final CurrentRunSnapshot? effectiveWindow;
   final LiveWindowPagingState paging;
 
   bool get hasVisibleContent =>
@@ -498,7 +498,7 @@ final class LiveStatusInputs {
   final ThreadBusinessRefs? businessRefs;
   final String? activeTurnId;
   final ThreadActivityView? activity;
-  final TailSnapshot? latestLive;
+  final CurrentRunSnapshot? latestLive;
   final bool hasContentOwner;
 
   @override
@@ -536,12 +536,18 @@ final class LiveStatusView {
     required this.barState,
     required this.timelineWork,
     this.primaryActivity,
+    this.hasMoreCurrentAtoms = false,
+    this.loadingCurrentAtoms = false,
+    this.currentAtomsError,
   });
   final String threadId;
   final LiveWindowCut cut;
   final LiveStatusMachineState barState;
   final LiveStatusTimelineWorkSlice timelineWork;
   final ConversationActivityView? primaryActivity;
+  final bool hasMoreCurrentAtoms;
+  final bool loadingCurrentAtoms;
+  final Object? currentAtomsError;
   bool get hasAnyRealtimeRegion =>
       barState is! LiveStatusHidden || timelineWork.workBlocks.isNotEmpty;
 }

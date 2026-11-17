@@ -12,7 +12,7 @@ use pl_protocol::{
 use tokio::sync::{mpsc, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use super::{ConversationStateFeed, StudioRuntime};
+use super::{StudioRuntime, conversation_state_feed::ConversationStateFeed};
 use crate::studio::thread_projection::{CurrentState, current_page};
 
 #[derive(Clone)]
@@ -114,7 +114,18 @@ impl CurrentReader {
         &self,
         future: impl Future<Output = Result<T>> + Send + 'static,
     ) -> Result<T> {
-        self.spawn(future)?.await.context("join current read")?
+        let request_cancel = CancellationToken::new();
+        let _cancel = request_cancel.clone().drop_guard();
+        let owner_cancel = self.inner.cancel.clone();
+        self.spawn(async move {
+            tokio::select! { biased;
+                _ = owner_cancel.cancelled() => Err(closed()),
+                _ = request_cancel.cancelled() => Err(closed()),
+                result = future => result,
+            }
+        })?
+        .await
+        .context("join current read")?
     }
 
     fn check_open(&self) -> Result<()> {
@@ -221,7 +232,7 @@ impl CurrentReader {
             let opened = self
                 .inner
                 .runtime
-                .open_current_state_feed(self.thread_id(), cancellation.clone())
+                .open_current_state_feed(self.thread_id(), cancellation.child_token())
                 .await;
             let mut state = match opened {
                 Ok(state) => state,
@@ -309,17 +320,6 @@ impl CurrentReader {
         demand: ReadDemand,
     ) -> Result<CurrentCollectionPage> {
         demand.validate(1)?;
-        let current = self.current(&self.inner.cancel).await?;
-        ensure!(
-            reference.owner_id == current.owner_id()
-                && current
-                    .projection()
-                    .interactions
-                    .iter()
-                    .chain(current.projection().collections.iter())
-                    .any(|head| head == &reference),
-            stale()
-        );
         let after = continuation
             .map(|cursor| -> Result<String> {
                 ensure!(
@@ -333,11 +333,75 @@ impl CurrentReader {
                 Ok(after)
             })
             .transpose()?;
+        if reference.collection.starts_with("state:") {
+            let resources = self.state_resources(&reference.owner_id).await?;
+            let page = resources
+                .page(&reference, after.as_deref(), demand, |after| {
+                    Ok(serde_json::to_string(&(&reference, after))?)
+                })?
+                .ok_or_else(stale)?;
+            self.check_open()?;
+            return Ok(page);
+        }
+        let current = self.current(&self.inner.cancel).await?;
+        ensure!(reference.owner_id == current.owner_id(), stale());
         let result = current_page(&current, &reference, after.as_deref(), demand, |after| {
             Ok(serde_json::to_string(&(&reference, after))?)
         })?;
         self.check_open()?;
         Ok(result)
+    }
+
+    async fn state_resources(
+        &self,
+        owner_id: &str,
+    ) -> Result<super::thread_observation::state_resources::StateResources> {
+        let slot = self
+            .inner
+            .runtime
+            .thread_observations
+            .observation_slot(self.thread_id());
+        let (position, _) = slot.capture();
+        let resources = if let Some(feed) =
+            position.source.filter(|feed| !feed.is_delivery_closed())
+        {
+            ensure!(
+                feed.current_conversation()
+                    .is_some_and(|source| source.current.owner_id() == owner_id),
+                stale()
+            );
+            feed.state_resources()
+        } else {
+            let thread = self
+                .inner
+                .runtime
+                .read_protocol_thread(self.thread_id())
+                .await?;
+            let saved = self
+                .inner
+                .runtime
+                .store
+                .state_for(&thread.workspace_id, self.thread_id())?
+                .load_current()
+                .await?
+                .ok_or_else(stale)?;
+            ensure!(saved.saved_runtime_epoch.to_string() == owner_id, stale());
+            let snapshot = saved.state.to_paused_snapshot();
+            let mut resources = super::thread_observation::state_resources::StateResources::cold(
+                owner_id.into(),
+                saved.snapshot_revision,
+            );
+            resources.runtime(crate::studio::thread_projection::project_cold_runtime(
+                self.thread_id(),
+                &snapshot,
+                thread.updated_at,
+                &snapshot.usage_summary,
+            )?)?;
+            resources
+        };
+        ensure!(slot.is_current(position.epoch), stale());
+        self.check_open()?;
+        Ok(resources)
     }
 
     async fn body(
@@ -354,6 +418,25 @@ impl CurrentReader {
                 false
             )
         );
+        if reference.domain.starts_with("state:")
+            || reference.domain.starts_with("collection:state:")
+        {
+            let resources = self.state_resources(&reference.owner_id).await?;
+            let bytes = resources.body(reference).ok_or_else(stale)?;
+            self.check_open()?;
+            let start = usize::try_from(range.offset).map_err(|_| stale())?;
+            ensure!(start <= bytes.len(), stale());
+            let end = start
+                .saturating_add(range.max_bytes as usize)
+                .min(bytes.len());
+            return Ok(ContentWindow {
+                offset: range.offset,
+                bytes: bytes[start..end].to_vec(),
+                generation: reference.generation.clone(),
+                available_through: bytes.len() as u64,
+                sealed: true,
+            });
+        }
         let current = self.current(cancellation).await?;
         ensure!(reference.owner_id == current.owner_id(), stale());
         if let Some(collection) = reference.domain.strip_prefix("collection:") {
@@ -494,54 +577,70 @@ impl CurrentReader {
         sender: &mpsc::Sender<Result<CurrentFrame>>,
         cancel: &CancellationToken,
     ) -> Result<()> {
+        enum Wake {
+            Notification(Box<pl_protocol::ThreadNotificationEnvelope>),
+            Projection,
+            Reset,
+        }
         let result = async {
             let mut frame = CurrentFrame::Reset { view: Box::new(view.clone()) };
             let (mut owner_changed, mut progress) = self.changes();
             loop {
                 frame.validate_demand(demand)?;
-                tokio::select! { biased; _ = cancel.cancelled() => return Ok(()), result = sender.send(Ok(frame)) => { if result.is_err() { return Ok(()); } } }
+                tokio::select! { biased;
+                    _ = cancel.cancelled() => return Ok(()),
+                    result = sender.send(Ok(frame)) => if result.is_err() { return Ok(()); },
+                }
                 loop {
-                    enum Wake { State(Option<ThreadSubscriptionUpdate>), Projection, Reset }
                     let wake = tokio::select! { biased;
                         _ = cancel.cancelled() => return Ok(()),
                         _ = owner_changed.changed() => Wake::Reset,
-                        update = state.recv() => match update { Ok(update) => Wake::State(update), Err(_) => Wake::Reset },
-                        changed = async { match progress.as_mut() { Some(progress) => progress.changed().await, None => std::future::pending().await } } => {
-                            if changed.is_ok() { Wake::Projection } else { Wake::Reset }
+                        update = state.recv() => match update {
+                            Ok(Some(ThreadSubscriptionUpdate::Notification { notification }))
+                                if !matches!(notification.notification, ThreadNotification::Lagged { .. }) => Wake::Notification(notification),
+                            _ => Wake::Reset,
                         },
+                        changed = async {
+                            match progress.as_mut() {
+                                Some(progress) => progress.changed().await,
+                                None => std::future::pending().await,
+                            }
+                        } => if changed.is_ok() { Wake::Projection } else { Wake::Reset },
                     };
-                    match wake {
-                        Wake::State(Some(ThreadSubscriptionUpdate::Notification { mut notification }))
-                            if !matches!(notification.notification, ThreadNotification::Lagged { .. }) => {
-                            let current = self.current(cancel).await?;
-                            if current.owner_id() != view.revision.owner_id {
-                                state.close().await?;
-                                (view, state) = self.baseline(demand, cancel).await?;
-                                (owner_changed, progress) = self.changes();
-                                frame = CurrentFrame::Reset { view: Box::new(view.clone()) };
-                            } else {
+                    let current = if matches!(wake, Wake::Reset) { None } else {
+                        match self.current(cancel).await {
+                            Ok(current) => Some(current),
+                            Err(error) if error.downcast_ref::<StudioError>().is_some_and(|error|
+                                error.reason() == Some("staleCurrentReference")) => None,
+                            Err(error) => return Err(error),
+                        }
+                    };
+                    if let Some(current) = current.filter(|current| current.owner_id() == view.revision.owner_id) {
+                        match wake {
+                            Wake::Notification(mut notification) => {
                                 if matches!(notification.notification, ThreadNotification::InteractionChanged { .. }) {
                                     notification.notification = ThreadNotification::BusinessRefsChanged { references: current.business_refs() };
                                 }
                                 view.revision.revision = self.metadata_revision(&current)?;
                                 frame = CurrentFrame::Notification { revision: view.revision.clone(), notification };
                             }
-                            break;
-                        }
-                        Wake::Projection => {
-                            let current = self.current(cancel).await?;
-                            if current.owner_id() != view.revision.owner_id { state.close().await?; (view, state) = self.baseline(demand, cancel).await?; }
-                            else if current.projection() == &view.projection { continue; }
-                            else {
+                            Wake::Projection => {
+                                if current.projection() == &view.projection { continue; }
                                 view.projection = current.projection().clone();
                                 view.revision.revision = self.metadata_revision(&current)?;
-                                frame = CurrentFrame::Projection { revision: view.revision.clone(), projection: Box::new(view.projection.clone()) }; break;
+                                frame = CurrentFrame::Projection {
+                                    revision: view.revision.clone(), projection: Box::new(view.projection.clone()),
+                                };
                             }
+                            Wake::Reset => unreachable!("Reset does not read a current cut"),
                         }
-                        Wake::State(_) | Wake::Reset => { state.close().await?; (view, state) = self.baseline(demand, cancel).await?; }
+                    } else {
+                        state.close().await?;
+                        (view, state) = self.baseline(demand, cancel).await?;
+                        (owner_changed, progress) = self.changes();
+                        frame = CurrentFrame::Reset { view: Box::new(view.clone()) };
                     }
-                    (owner_changed, progress) = self.changes();
-                    frame = CurrentFrame::Reset { view: Box::new(view.clone()) }; break;
+                    break;
                 }
             }
         }.await;
@@ -783,7 +882,7 @@ mod tests {
             let paths = env.runtime.store.registered_session_paths(&thread.id)?;
             env.runtime.shutdown_runtime().await?;
             let mut current = ThreadCurrent::new(thread.id.clone(), RuntimeEpoch::new());
-            let document = "已批准的计划正文\n".repeat(300);
+            let document = "已批准的计划正文\n".repeat(5000);
             let plan = pl_protocol::AgentSessionPlanState {
                 revision: 3,
                 state: pl_protocol::AgentSessionPlanPhase::Approved,
@@ -817,6 +916,41 @@ mod tests {
                 .open_current_reader(&thread.id, CURRENT_PROTOCOL_VERSION, demand)
                 .await?;
             let view = reader.snapshot(demand).await?;
+            assert!(
+                serde_json::to_vec(&CurrentFrame::Reset {
+                    view: Box::new(view.clone())
+                })?
+                .len()
+                    <= demand.max_bytes as usize
+            );
+            let runtime = view.state.runtime.as_ref().context("saved runtime")?;
+            assert!(runtime.plan.is_none());
+            let deferred = runtime
+                .deferred
+                .iter()
+                .find(|head| matches!(head, pl_protocol::CurrentStateField::Body { field, .. } if field == "plan"))
+                .context("large State plan must explicitly defer its complete value")?;
+            let pl_protocol::CurrentStateField::Body { reference, byte_length, .. } = deferred else { panic!("plan is a body"); };
+            let mut bytes = Vec::new();
+            while (bytes.len() as u64) < *byte_length {
+                let window = reader
+                    .read_body(
+                        reference.clone(),
+                        ContentRange {
+                            offset: bytes.len() as u64,
+                            max_bytes: 64 * 1024,
+                        },
+                    )
+                    .await?;
+                assert!(window.sealed && !window.bytes.is_empty());
+                bytes.extend(window.bytes);
+            }
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&bytes)?,
+                serde_json::to_value(pl_protocol::AgentSessionPlanRuntimeSnapshot::from(&plan))?
+            );
+            // Closing a temporary State baseline must not close its parent Current reader.
+            assert_eq!(reader.snapshot(demand).await?.revision, view.revision);
             assert_eq!(
                 view.revision.owner_id,
                 current.saved_runtime_epoch.to_string()

@@ -8,33 +8,6 @@ CompletedEntry _completedEntryFromFrb(
   atom: _chatAtomFromFrb(value.atom),
 );
 
-ActivitySnapshot _activitySnapshotFromFrb(
-  frb_activity.BridgeActivitySnapshot value,
-) => ActivitySnapshot(
-  revision: _exactTimelineInt(value.revision, 'activity revision'),
-  completedThrough: _exactTimelineInt(
-    value.completedThrough,
-    'activity prefix',
-  ),
-  executionPresent: value.executionPresent,
-  entries: [
-    for (final entry in value.entries)
-      ActivityEntry(
-        identity: switch (entry.identity) {
-          frb_activity.BridgeActivityIdentity_ModelPart(:final atomId) =>
-            ModelPartActivityIdentity(atomId: atomId),
-          frb_activity.BridgeActivityIdentity_ForegroundTool(:final callId) =>
-            ForegroundToolActivityIdentity(callId: callId),
-          frb_activity.BridgeActivityIdentity_BackgroundTool(:final callId) =>
-            BackgroundToolActivityIdentity(callId: callId),
-          frb_activity.BridgeActivityIdentity_Other(:final domain, :final id) =>
-            OtherActivityIdentity(domain: domain, id: id),
-        },
-        atom: _chatAtomFromFrb(entry.atom),
-      ),
-  ],
-);
-
 frb_chat_types.BridgeReadDemand _readDemandToFrb(ReadDemand value) =>
     frb_chat_types.BridgeReadDemand(
       maxItems: value.maxItems,
@@ -234,17 +207,17 @@ frb_chat_types.BridgeContentRef _contentRefToFrb(ContentRef value) =>
     );
 
 CurrentCollectionRef _collectionFromFrb(
-  frb_chat_types.BridgeCurrentCollectionRef value,
+  frb_presentation.BridgeCurrentCollectionRef value,
 ) => CurrentCollectionRef(
-  databaseId: value.databaseId,
+  ownerId: value.ownerId,
   collection: value.collection,
   revision: _exactTimelineInt(value.revision, 'collection revision'),
 );
 
-frb_chat_types.BridgeCurrentCollectionRef _collectionToFrb(
+frb_presentation.BridgeCurrentCollectionRef _collectionToFrb(
   CurrentCollectionRef value,
-) => frb_chat_types.BridgeCurrentCollectionRef(
-  databaseId: value.databaseId,
+) => frb_presentation.BridgeCurrentCollectionRef(
+  ownerId: value.ownerId,
   collection: value.collection,
   revision: BigInt.from(value.revision),
 );
@@ -261,7 +234,7 @@ ThreadBusinessRefs _businessRefsFromFrb(frb.BridgeThreadBusinessRefs value) =>
               phase: PlanRuntimePhase.values.byName(value.plan!.phase.name),
               document: value.plan!.document == null
                   ? null
-                  : _contentRefFromFrb(value.plan!.document!),
+                  : _currentContentRefFromFrb(value.plan!.document!),
             ),
       interactions: value.interactions == null
           ? null
@@ -289,14 +262,6 @@ final class _FrbConversationReader implements ConversationReader {
   String get threadId => _feed.threadId;
   void _checkOpen() {
     if (_feed._admissionsClosed) throw _conversationClosedFailure;
-  }
-
-  @override
-  Future<ThreadBusinessRefs> readBusinessRefs() async {
-    _checkOpen();
-    return FrbStudioTransport._bridgeCall(
-      () async => _businessRefsFromFrb(await _feed._native.readBusinessRefs()),
-    );
   }
 
   @override
@@ -390,34 +355,6 @@ final class _FrbConversationReader implements ConversationReader {
   }
 
   @override
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
-  }) async {
-    _checkOpen();
-    return FrbStudioTransport._bridgeCall(() async {
-      final value = await _feed._native.pageCurrent(
-        reference: _collectionToFrb(reference),
-        continuation: continuation,
-        demand: _readDemandToFrb(demand),
-      );
-      return CurrentCollectionPage(
-        revision: _exactTimelineInt(value.revision, 'current revision'),
-        entries: value.entries
-            .map(
-              (entry) => CurrentCollectionEntry(
-                id: entry.id,
-                position: _exactSignedTimelineInt(entry.position),
-                payload: _payloadFromFrb(entry.payload),
-              ),
-            )
-            .toList(),
-        continuation: value.continuation,
-      );
-    });
-  }
-
   @override
   void requestClose() => _feed.requestClose();
   @override

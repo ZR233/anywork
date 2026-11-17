@@ -4,7 +4,7 @@ use super::owner::ReplyRun;
 use super::projection::ReplyProjection;
 use crate::bots::InboundWorkOutcome;
 use crate::channel_output::{ChannelDeliveryResult, ChannelTarget, FileDelivery};
-use crate::studio::{ConversationReader, StudioRuntime};
+use crate::studio::StudioRuntime;
 use pl_tool::file_display::FileDisplayResult;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -23,7 +23,6 @@ fn operation(
 
 pub(super) async fn deliver_file_displays(
     runtime: &StudioRuntime,
-    reader: &ConversationReader,
     run: &mut ReplyRun,
     turn_id: &str,
     projection: &ReplyProjection,
@@ -40,18 +39,6 @@ pub(super) async fn deliver_file_displays(
         if cancel.is_cancelled() {
             return Err(InboundWorkOutcome::Interrupted);
         }
-        // This is the same reliable save boundary as final-card delivery.
-        runtime
-            .synchronize_thread_observation(&run.thread_id)
-            .await
-            .map_err(|error| InboundWorkOutcome::Recoverable {
-                diagnostic: error.to_string(),
-            })?;
-        reader
-            .ensure()
-            .map_err(|error| InboundWorkOutcome::Recoverable {
-                diagnostic: format!("file display read lease is no longer valid: {error}"),
-            })?;
         if let Some(caption) = &receipt.caption
             && receipt
                 .files

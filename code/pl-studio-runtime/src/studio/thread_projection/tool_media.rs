@@ -44,6 +44,37 @@ impl ArchivedToolMedia {
     }
 }
 
+/// Exact retained resource references from the established producer decoder.
+pub(crate) fn resource_references(
+    delivery: &ToolDelivery,
+) -> Result<Vec<ResourceReference>, ProjectionError> {
+    Ok(archived_media(delivery)?
+        .into_iter()
+        .map(|media| media.reference)
+        .collect())
+}
+
+pub(crate) fn resource_references_for_deliveries(
+    deliveries: &[ToolDelivery],
+    id: &str,
+) -> Result<Option<ResourceReference>, ProjectionError> {
+    let mut reference = None;
+    for delivery in deliveries {
+        for value in resource_references(delivery)? {
+            if value.id() == id {
+                if let Some(old) = &reference {
+                    if old != &value {
+                        return Err(rejected("archived resource facts conflict"));
+                    }
+                } else {
+                    reference = Some(value);
+                }
+            }
+        }
+    }
+    Ok(reference)
+}
+
 /// Wraps a rejected persisted-media fact as a projection failure.
 fn rejected(message: &str) -> ProjectionError {
     ProjectionError::ToolMedia(ToolError::new(std::io::Error::other(message.to_owned())))

@@ -106,7 +106,7 @@ DisplayBlock _block(ChatAtom atom, {int order = 1}) => DisplayBlock(
   id: atom.id,
   blockOrder: order,
   body: SingleDisplayBlock(
-    visibility: SingleVisibility.content,
+    visibility: HistorySingleVisibility.content,
     record: DisplayRecord(
       atom: atom,
       contentSource: CompletedOriginal(completionId: atom.id),

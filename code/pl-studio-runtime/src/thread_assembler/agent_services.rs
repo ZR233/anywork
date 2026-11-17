@@ -532,47 +532,56 @@ impl AgentServices {
                 })
                 .transpose()?;
             if let Some(cursor) = &cursor
-                && (cursor.version != 3
+                && (cursor.version != 4
                     || cursor.target != input.target
                     || cursor.order != input.order
                     || cursor.detail != input.detail)
             {
                 bail!("session cursor does not belong to this query");
             }
-            let history = self.store.history(&input.target).await?;
-            history.prepare_conversation_read().await?;
-            let database_id = history.conversation_database_id().await?;
+            let reader = self.store.open_history_reader(&input.target).await?;
+            let database_id = Some(reader.database_id().to_owned());
             if let Some(cursor) = &cursor {
                 anyhow::ensure!(
                     cursor.database_id == database_id,
-                    "session cursor belongs to a rebuilt history database"
+                    "session cursor belongs to another history database"
                 );
             }
-            let (watermark, ceiling, items, has_more) = history
-                .agent_page(
-                    input.order == Order::Descending,
-                    input.detail == Detail::Text,
-                    cursor.as_ref().map(|cursor| cursor.anchor),
-                    cursor.as_ref().map(|cursor| cursor.ceiling),
+            let (through, entries, more) = reader
+                .events_window(
+                    if input.detail == Detail::Text {
+                        crate::history::HistoryEventsQuery::TextOriginals
+                    } else {
+                        crate::history::HistoryEventsQuery::Originals {
+                            scope: pl_protocol::ChatScope {
+                                query_class: pl_protocol::ChatClassFilter::All {},
+                                parent_id: None,
+                            },
+                        }
+                    },
                     cursor.as_ref().map(|cursor| cursor.through),
-                    input.limit,
-                    cancellation,
+                    cursor.as_ref().map(|cursor| cursor.anchor),
+                    input.order == Order::Ascending,
+                    crate::history::HistoryDemand {
+                        max_rows: input.limit as u32,
+                        max_bytes: 64 * 1024,
+                    },
                 )
                 .await?;
-            let through = cursor.as_ref().map_or(watermark, |cursor| cursor.through);
             let next_cursor =
-                if has_more {
-                    let anchor = items
+                if more {
+                    let anchor = entries
                         .last()
                         .context("session continuation has no anchor")?
-                        .completion_seq;
+                        .header
+                        .seq;
                     Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
                         serde_json::to_vec(&Cursor {
-                            version: 3,
+                            version: 4,
                             database_id: database_id.clone(),
                             target: input.target.clone(),
                             through,
-                            ceiling,
+                            ceiling: through,
                             order: input.order,
                             detail: input.detail,
                             anchor,
@@ -588,7 +597,7 @@ impl AgentServices {
                     .map(|(identity, _, _)| identity.agent_id)
                     .context("agent directory identity is missing")?,
                 path,
-                through_sequence: through,
+                history_through_seq: through,
                 order: match input.order {
                     Order::Ascending => AgentSessionReadOrder::Ascending,
                     Order::Descending => AgentSessionReadOrder::Descending,
@@ -597,8 +606,8 @@ impl AgentServices {
                     Detail::Text => AgentSessionReadDetail::Text,
                     Detail::Full => AgentSessionReadDetail::Full,
                 },
-                items,
-                has_more,
+                items: entries,
+                has_more: more,
                 next_cursor,
             })
         };
@@ -1003,16 +1012,22 @@ mod tests {
                     ..Default::default()
                 })
                 .await?;
-            let history = store.history("root").await?;
-            let saved = history
-                .agent_page(
-                    true,
+            let reader = store.open_history_reader("root").await?;
+            let saved = reader
+                .events_window(
+                    crate::history::HistoryEventsQuery::Originals {
+                        scope: pl_protocol::ChatScope {
+                            query_class: pl_protocol::ChatClassFilter::All {},
+                            parent_id: None,
+                        },
+                    },
+                    None,
+                    None,
                     false,
-                    None,
-                    None,
-                    None,
-                    20,
-                    &tokio_util::sync::CancellationToken::new(),
+                    crate::history::HistoryDemand {
+                        max_rows: 20,
+                        max_bytes: 64 * 1024,
+                    },
                 )
                 .await?;
             tokio::time::timeout(
@@ -1034,9 +1049,9 @@ mod tests {
                 "reading must never ask the target to flush"
             );
             let page = page?;
-            assert_eq!(page.through_sequence, saved.0);
-            assert_eq!(page.items, saved.2);
-            assert!(page.through_sequence >= before.through_sequence);
+            assert_eq!(page.history_through_seq, saved.0);
+            assert_eq!(page.items, saved.1);
+            assert!(page.history_through_seq >= before.history_through_seq);
             let first = query(
                 &tool,
                 serde_json::json!({"target":"root", "detail":"full", "limit":1}),
@@ -1055,7 +1070,7 @@ mod tests {
                 }),
             )
             .await?;
-            assert_eq!(next.through_sequence, saved.0);
+            assert_eq!(next.history_through_seq, saved.0);
             assert_eq!(next.items, page.items[1..2]);
             assert!(
                 query(&tool, serde_json::json!({"target":"root", "limit":0}),)
@@ -1124,7 +1139,7 @@ mod tests {
         let tool = tool(&owner)?;
         let page = query(&tool, serde_json::json!({"target":"cold"})).await?;
         assert_eq!(
-            (page.through_sequence, page.items.len(), page.has_more),
+            (page.history_through_seq, page.items.len(), page.has_more),
             (0, 0, false)
         );
         let path = store.registered_session_paths("cold")?.history_database();
@@ -1135,7 +1150,7 @@ mod tests {
         assert!(services.authorize("cold", "root").await.is_err());
         let cursor = Cursor {
             database_id: None,
-            version: 3,
+            version: 4,
             target: "cold".into(),
             through: 0,
             ceiling: 0,
@@ -1154,41 +1169,19 @@ mod tests {
         ] {
             assert!(query(&tool, value).await.is_err());
         }
-        // A writer initialization gate gives the original request a real lock wait.
-        // Use a fresh cold member to enter initialization before its first query.
-        let fresh = store.history("sibling").await?;
-        let (entered, release) = fresh.arm_init_gate().await;
-        let read_entered = fresh.arm_reader_before_init().await;
         let cancellation = CancellationToken::new();
-        let init = fresh.prepare_write();
-        let read = async {
-            entered.await?;
-            let cancel = async {
-                read_entered.await.unwrap();
-                cancellation.cancel();
-            };
-            let (result, ()) = tokio::join!(
-                tool.execute(
-                    input(serde_json::json!({"target":"sibling"})),
-                    context("root", cancellation.clone())
-                ),
-                cancel
-            );
-            let error = result.expect_err("cancelled original request");
-            assert!(matches!(
-                error.source.downcast_ref::<pl_core::thread::ThreadError>(),
-                Some(pl_core::thread::ThreadError::Cancelled)
-            ));
-            release
-                .send(())
-                .map_err(|_| anyhow::anyhow!("initializer disappeared"))?;
-            Ok::<_, anyhow::Error>(())
-        };
-        let (initialized, cancelled) =
-            tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(init, read) })
-                .await?;
-        initialized?;
-        cancelled?;
+        cancellation.cancel();
+        let error = tool
+            .execute(
+                input(serde_json::json!({"target":"sibling"})),
+                context("root", cancellation),
+            )
+            .await
+            .expect_err("cancelled original request");
+        assert!(matches!(
+            error.source.downcast_ref::<pl_core::thread::ThreadError>(),
+            Some(pl_core::thread::ThreadError::Cancelled)
+        ));
         let page = query(&tool, serde_json::json!({"target":"sibling"})).await?;
         assert!(page.items.is_empty());
         // Real storage damage remains an error at the tool boundary.

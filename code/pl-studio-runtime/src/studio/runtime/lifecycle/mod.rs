@@ -1143,38 +1143,19 @@ mod startup_fault_tests {
                 .and_then(|session| session.observed_thread("cold"))
                 .is_none()
         );
-        let demand = pl_protocol::ReadDemand {
-            max_items: 1,
-            max_bytes: 64 * 1024,
-        };
-        let mut feed = runtime
-            .open_conversation_feed("cold", pl_protocol::ChatScope::conversation(None), demand)
-            .await?;
-        let reader = feed.reader().clone();
-        let manifest = reader.list_contents(&item.id, None, demand).await?;
-        let reference = &manifest
-            .entries
-            .first()
-            .context("preserved manifest")?
-            .reference;
-        let detail = reader
-            .read_content(
-                reference,
-                pl_protocol::ContentRange {
-                    offset: 0,
-                    max_bytes: 128,
-                },
-            )
-            .await?;
+        let reader = runtime.open_history_reader("cold", pl_protocol::HISTORY_PROTOCOL_VERSION).await?;
+        let manifest = reader.list_bodies(item.id.clone(), None, crate::history::HistoryDemand::default()).await?;
+        let reference = manifest.entries.iter().find(|entry| entry.reference.body_key == "text")
+            .or_else(|| manifest.entries.first()).context("preserved manifest")?.reference.clone();
+        let detail = reader.read_body(reference, 0, 128).await?;
         assert_eq!(detail.bytes, "preserved detail 中文\n".as_bytes());
-        assert!(detail.sealed);
+        assert!(detail.eof);
         assert!(
             runtime
                 .session_of("cold")
                 .and_then(|session| session.observed_thread("cold"))
                 .is_none()
         );
-        feed.close().await?;
         reader.close().await?;
         runtime.shutdown_runtime().await?;
         Ok(())

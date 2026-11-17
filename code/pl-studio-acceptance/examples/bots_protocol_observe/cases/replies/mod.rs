@@ -13,11 +13,8 @@ mod runtime_stop;
 mod send_outcomes;
 
 use super::Session;
-use crate::support::{
-    CHAT_DEMAND, CHAT_OBSERVATION_BYTES, charge_chat_batch, completed_entry_payload,
-};
+use crate::support::{HISTORY_OBSERVATION_BYTES, open_current, turn_detail, turn_head};
 use anyhow::{Context, Result, ensure};
-use pl_protocol::{ChatAtomKind, ChatScope, ChatSourceId};
 use pl_provider_fixture::{Protocol, Reply, Step, responses_text};
 use std::path::Path;
 
@@ -115,10 +112,8 @@ pub(super) async fn delivered_counts(
 
 /// Waits for one named Turn to be canonically cancelled.
 ///
-/// The Chat payload carries its own `turnId`, so the match is by identity: an
-/// older or newer cancelled Turn must never satisfy this wait. A truncated page
-/// that does not contain the Turn is an explicit error instead of a silent
-/// fallback to another Turn.
+/// The immutable History Turn and its original detail carry the identity, so an older or newer
+/// cancelled Turn can never satisfy this wait.
 pub(super) async fn wait_cancelled_turn(
     session: &Session,
     thread_id: &str,
@@ -126,90 +121,40 @@ pub(super) async fn wait_cancelled_turn(
 ) -> Result<pl_protocol::CancelledTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
     tokio::time::timeout_at(deadline.into(), async {
-        let mut remaining = CHAT_OBSERVATION_BYTES;
-        loop {
-            let (read, page) = session
-                .http()?
-                .open_chat(thread_id, ChatScope::conversation(None), CHAT_DEMAND)
-                .await?;
-            charge_chat_batch(&page, &mut remaining)?;
-            for item in page.entries.iter().rev() {
-                if !matches!(
-                    item.atom.kind,
-                    ChatAtomKind::TurnReceipt | ChatAtomKind::Unknown
-                ) {
-                    continue;
-                }
-                let Some(payload) =
-                    completed_entry_payload(&read, item, &mut remaining, deadline).await?
-                else {
-                    continue;
-                };
-                if let ChatSourceId::ForegroundTurn { turn_id } = &item.atom.source {
-                    ensure!(
-                        item.atom.turn_id.as_deref() == Some(turn_id.as_str()),
-                        "completion source and Turn identity conflict"
-                    );
-                }
-                ensure!(
-                    item.atom.kind != ChatAtomKind::TurnReceipt || payload["type"] == "turn",
-                    "completion atom and original payload domain conflict"
-                );
-                if payload["type"] != "turn" || payload["turnId"].as_str() != Some(turn_id) {
-                    continue;
-                }
-                match chat_turn_outcome(&payload)? {
+        let mut remaining = HISTORY_OBSERVATION_BYTES;
+        let read = session.http()?.open_history(thread_id).await?;
+        let observed = async {
+            loop {
+                let head = turn_head(&read, turn_id, &mut remaining, deadline).await?;
+                match turn_detail(&read, &head, &mut remaining, deadline)
+                    .await?
+                    .state
+                {
                     pl_protocol::TurnState::Cancelled(state) => return Ok(state),
-                    outcome => {
+                    outcome if outcome.is_terminal() => {
                         anyhow::bail!("Turn {turn_id} ended without cancellation: {outcome:?}")
+                    }
+                    _ => {
+                        ensure!(
+                            std::time::Instant::now() < deadline,
+                            "Turn {turn_id} never reached a canonical cancelled state"
+                        );
+                        tokio::time::sleep(crate::http::POLL).await;
                     }
                 }
             }
-            if page.before.is_some() {
-                anyhow::bail!(
-                    "the Main Chat cut is truncated and does not contain terminal Turn {turn_id}"
-                );
+        }
+        .await;
+        match (observed, read.close().await) {
+            (Ok(state), Ok(())) => Ok(state),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close_error)) => {
+                Err(error.context(format!("History close also failed: {close_error:#}")))
             }
-            if std::time::Instant::now() >= deadline {
-                anyhow::bail!("Turn {turn_id} never reached a canonical cancelled state");
-            }
-            tokio::time::sleep(crate::http::POLL).await;
         }
     })
     .await
     .context("cancelled Turn observation exceeded its deadline")?
-}
-
-pub(super) fn chat_turn_outcome(payload: &serde_json::Value) -> Result<pl_protocol::TurnState> {
-    ensure!(payload["type"] == "turn", "expected a Turn payload");
-    ensure!(
-        payload["turnId"].as_str().is_some_and(|id| !id.is_empty()),
-        "terminal Chat Turn omitted its identity"
-    );
-    let input = payload["data"]
-        .get("inputId")
-        .context("Chat Turn omitted inputId")?;
-    ensure!(
-        input.is_null() || input.is_string(),
-        "Chat Turn has invalid inputId"
-    );
-    let state = serde_json::from_value(
-        payload["data"]
-            .get("outcome")
-            .context("Chat Turn omitted outcome")?
-            .clone(),
-    )?;
-    ensure!(
-        matches!(
-            state,
-            pl_protocol::TurnState::Completed(_)
-                | pl_protocol::TurnState::Failed(_)
-                | pl_protocol::TurnState::Cancelled(_)
-                | pl_protocol::TurnState::BudgetLimited(_)
-        ),
-        "completed Chat contains a nonterminal Turn"
-    );
-    Ok(state)
 }
 
 /// Waits until one named Turn is canonically running.
@@ -223,27 +168,44 @@ pub(super) async fn wait_running_turn(
     turn_id: &str,
 ) -> Result<pl_protocol::RunningTurnState> {
     let deadline = std::time::Instant::now() + crate::http::PREDICATE_TIMEOUT;
-    loop {
-        let snapshot = session.http()?.read_thread(thread_id).await?;
-        if let Some(turn) = snapshot
-            .active_turn
-            .as_ref()
-            .filter(|turn| turn.id == turn_id)
-        {
-            match &turn.state {
-                pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
-                terminal if terminal.is_terminal() => anyhow::bail!(
-                    "Turn {turn_id} must still be running when the stop happens, but it is \
-                     already terminal: {terminal:?}"
-                ),
-                _ => {}
+    tokio::time::timeout_at(deadline.into(), async {
+        let current = open_current(session.http()?, thread_id).await?;
+        let observed = async {
+            loop {
+                let view = current.snapshot(crate::support::current_demand()).await?;
+                if let Some(turn) = view
+                    .state
+                    .active_turn
+                    .as_ref()
+                    .filter(|turn| turn.id == turn_id)
+                {
+                    match &turn.state {
+                        pl_protocol::TurnState::Running(state) => return Ok(state.clone()),
+                        terminal if terminal.is_terminal() => anyhow::bail!(
+                            "Turn {turn_id} must still be running when the stop happens, but it is \
+                             already terminal: {terminal:?}"
+                        ),
+                        _ => {}
+                    }
+                }
+                ensure!(
+                    std::time::Instant::now() < deadline,
+                    "Current never showed Turn {turn_id} running"
+                );
+                tokio::time::sleep(crate::http::POLL).await;
             }
         }
-        if std::time::Instant::now() >= deadline {
-            anyhow::bail!("Thread snapshot never showed Turn {turn_id} running");
+        .await;
+        match (observed, current.close().await) {
+            (Ok(state), Ok(())) => Ok(state),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close_error)) => {
+                Err(error.context(format!("Current close also failed: {close_error:#}")))
+            }
         }
-        tokio::time::sleep(crate::http::POLL).await;
-    }
+    })
+    .await
+    .context("running Turn observation exceeded its deadline")?
 }
 
 /// The documented local interaction hint, copied as an independent oracle text.

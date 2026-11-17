@@ -4,6 +4,9 @@ import 'package:flutter/widgets.dart';
 import 'timeline_display_diagnostics.dart';
 import '../view_models/display_member_controller.dart';
 
+import 'timeline_display_models.dart';
+export 'timeline_display_models.dart';
+
 /// Only local disclosure intent and its synchronously revocable capabilities.
 /// No membership, completion ranges or source-order facts are retained here.
 final class TimelineExpansionIntent extends ChangeNotifier {
@@ -25,6 +28,12 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   bool get isRetired => _retired;
   bool get bodyActive => !_retired && _bodyDisplays.isNotEmpty;
   Future<ContentWindow> Function(Object, ContentRef, ContentRange)? readBody;
+  Future<ContentWindow> Function(Object, HistoryEventBodyRef, ContentRange)?
+  readHistoryBody;
+  Future<ContentWindow> Function(Object, CurrentContentRef, ContentRange)?
+  readCurrentBody;
+  CurrentBodyWatch Function(Object, CurrentContentRef, ContentRange)?
+  watchCurrentBody;
   VoidCallback? retireBody;
 
   /// A new opaque member capability revokes the old scope without changing
@@ -120,6 +129,8 @@ final class TimelineDisplayUnit {
   final bool hasUnfinishedMembers;
   final String? thinkingSummary;
   final TimelineExpansionIntent expansion;
+  DisplayBlock get block =>
+      DisplayBlock(id: id, blockOrder: blockOrder ?? 0, body: body);
   DisplayBlockRef? get memberReference => switch (body) {
     WorkDisplayBlock(:final members) => members,
     SingleDisplayBlock() => null,

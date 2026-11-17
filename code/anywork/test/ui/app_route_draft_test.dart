@@ -119,12 +119,12 @@ void main() {
       );
       expect(_composerText(tester), 'start draft entered before Settings');
       expect(
-        transport.timelineReaders,
+        transport.currentReaders,
         isEmpty,
         reason: 'Settings navigation does not create a Thread',
       );
       expect(
-        transport.stateFeeds,
+        transport.currentReaders,
         isEmpty,
         reason: 'Navigating without a Thread opens no state subscription',
       );
@@ -152,10 +152,10 @@ void main() {
       )!;
       final attemptId = graph.timeline
           .lease('thread-main')!
-          .reader
+          .current
           .metadata
           .readerId;
-      final connection = transport.timelineReaders.single;
+      final connection = transport.currentReaders.single;
       final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -202,7 +202,7 @@ void main() {
             'route fixture must leave older content: loaded=${oldLease.loadedCount}, reads=${transport.pageCalls}, demand=${oldLease.demand.maxItems}',
       );
       final previousPageCalls = transport.pageCalls;
-      final oldPage = Completer<TimelinePage>();
+      final oldPage = Completer<HistoryTimelinePage>();
       addTearDown(() {
         if (!oldPage.isCompleted) {
           oldPage.complete(
@@ -249,8 +249,8 @@ void main() {
             reason: '隐藏路由不向实时状态栏交付冻结的正文读取来源',
           );
           expect(oldLease.isRetired, isTrue);
-          hiddenFrames = connection.deliveredFrames;
-          hiddenAcks = connection.acceptedCursors.length;
+          hiddenFrames = connection.watchCalls;
+          hiddenAcks = connection.watchCalls;
           expect(composer.state.draft, 'Thread draft entered before Settings');
           expect(composer.stamp, composerStamp);
           expect(
@@ -278,8 +278,8 @@ void main() {
           );
           expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
-          expect(connection.deliveredFrames, hiddenFrames);
-          expect(connection.acceptedCursors, hasLength(hiddenAcks));
+          expect(connection.watchCalls, hiddenFrames);
+          expect(connection.watchCalls, hiddenAcks);
           expect(find.byKey(StudioDriverKeys.settingsPage), findsOneWidget);
           expect(find.byKey(StudioDriverKeys.composerInput), findsNothing);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
@@ -287,22 +287,25 @@ void main() {
             graph.client.conversations.existingSession('thread-main'),
             same(session),
           );
-          expect(transport.timelineReaders, hasLength(1));
+          expect(transport.currentReaders, hasLength(1));
         },
       );
 
       await pumpClientUntil(
         tester,
         () =>
-            transport.timelineReaders.length == 2 &&
+            transport.currentReaders.length == 2 &&
             graph.timeline.lease('thread-main') != null &&
             session.state.activeTurn == null &&
             session.state.runtime?.execution == null,
         'fresh visible feed reads hidden completion',
       );
-      final newConnection = transport.timelineReaders.last;
+      final newConnection = transport.currentReaders.last;
       final newLease = graph.timeline.lease('thread-main')!;
-      expect(newConnection.subscriptionId, isNot(connection.subscriptionId));
+      expect(
+        newConnection.metadata.readerId,
+        isNot(connection.metadata.readerId),
+      );
       expect(newLease, isNot(same(oldLease)));
       final currentMessages = [...newLease.controller.messages];
       final currentBefore = newLease.olderCursor;
@@ -358,15 +361,15 @@ void main() {
         'start draft entered before Settings',
       );
       expect(
-        graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current.metadata.readerId,
         isNot(attemptId),
       );
       expect(graph.timeline.lease('thread-main') != null, isTrue);
-      expect(transport.timelineReaders, hasLength(2));
+      expect(transport.currentReaders, hasLength(2));
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
-      expect(connection.deliveredFrames, hiddenFrames);
-      expect(connection.acceptedCursors, hasLength(hiddenAcks));
+      expect(connection.watchCalls, hiddenFrames);
+      expect(connection.watchCalls, hiddenAcks);
       expect(transport.bootstrapCalls, 1);
       expect(transport.runtimeSubscriptions, 2);
       expect(transport.runtimeCancellations, 1);
@@ -466,7 +469,7 @@ void main() {
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
-          final botFeed = transport.timelineReaders.last;
+          final botFeed = transport.currentReaders.last;
           final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
           expect(router.routerDelegate.state.name, BotConversationRoute.name);
@@ -540,7 +543,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(_composerText(tester), 'Bot draft follows route target');
-          final returnedFeed = transport.timelineReaders.last;
+          final returnedFeed = transport.currentReaders.last;
           expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
@@ -553,7 +556,7 @@ void main() {
           expect(graph.timeline.lease('thread-alt'), isNull);
           expect(composer.stamp, composerStamp);
           expect(router.routerDelegate.state.name, BotDetailsRoute.name);
-          final feedCount = transport.timelineReaders.length;
+          final feedCount = transport.currentReaders.length;
           unawaited(
             BotConversationRoute(
               botId: botId,
@@ -572,7 +575,7 @@ void main() {
           );
           expect(graph.client.conversations.visibleThreadId.value, isNull);
           expect(find.byKey(StudioDriverKeys.timeline), findsNothing);
-          expect(transport.timelineReaders, hasLength(feedCount));
+          expect(transport.currentReaders, hasLength(feedCount));
           await tester.tap(
             find.byKey(const ValueKey('conversation-directory-retry')),
           );
@@ -581,7 +584,7 @@ void main() {
             find.byKey(const ValueKey('conversation-directory-retry')),
             findsOneWidget,
           );
-          expect(transport.timelineReaders, hasLength(feedCount));
+          expect(transport.currentReaders, hasLength(feedCount));
           expect(
             graph.client.drafts.existingComposer('missing-thread'),
             isNull,
@@ -629,7 +632,7 @@ void main() {
       expect(connection.joined.isCompleted, isTrue);
       expect(newConnection.joined.isCompleted, isTrue);
       expect(
-        transport.timelineReaders.every((feed) => feed.joined.isCompleted),
+        transport.currentReaders.every((feed) => feed.joined.isCompleted),
         isTrue,
       );
       expect(tester.takeException(), isNull);
@@ -690,16 +693,47 @@ DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
 
 /// 只选择权威发布时点；状态与正文均由 Demo 自身发布点生成，不向旧 feed 注入事实。
 final class _RouteTurnTransport extends RecordingDemoTransport {
-  _RouteTurnTransport() {
-    timelineReaderFactory = (_, inner) async =>
-        _RouteTimelineReader(inner, this);
-  }
   int _turnUpdates = 0;
   int runtimeSubscriptions = 0;
   int runtimeCancellations = 0;
   late String botProjectId;
-  Completer<TimelinePage>? scriptedPage;
+  Completer<HistoryTimelinePage>? scriptedPage;
   int pageCalls = 0;
+
+  @override
+  Future<HistoryReader> openHistoryReader(
+    String threadId, {
+    required int historyProtocolVersion,
+  }) async {
+    final reader = await super.openHistoryReader(
+      threadId,
+      historyProtocolVersion: historyProtocolVersion,
+    );
+    return _RouteHistoryReader(
+      inner: reader as RecordingHistoryReader,
+      transport: this,
+    );
+  }
+
+  @override
+  Future<CurrentReader> openCurrentReader(
+    String threadId, {
+    required int currentProtocolVersion,
+    required ReadDemand demand,
+  }) async {
+    final reader = await super.openCurrentReader(
+      threadId,
+      currentProtocolVersion: currentProtocolVersion,
+      demand: demand,
+    );
+    if (threadId == 'thread-main') {
+      runtimeSubscriptions++;
+      (reader as RecordingCurrentReader).onClosed = () {
+        runtimeCancellations++;
+      };
+    }
+    return reader;
+  }
 
   @override
   Future<BotConversationPage> listBotConversations(
@@ -723,28 +757,6 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       ),
     ],
   );
-
-  @override
-  Future<TimelineReader> openTimelineReader(
-    String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required ReadDemand demand,
-  }) async {
-    final feed = await super.openTimelineReader(
-      threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
-      demand: demand,
-    );
-    if (threadId != 'thread-main') return feed;
-    final owner = feed as RecordingTimelineReader;
-    runtimeSubscriptions++;
-    owner.onClosed = () {
-      runtimeCancellations++;
-    };
-    return owner;
-  }
 
   StudioTurnView emitTurn(StudioTurnState state) {
     final turn = StudioTurnView(
@@ -779,19 +791,19 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   }
 }
 
-final class _RouteTimelineReader extends RecordingTimelineReader {
-  _RouteTimelineReader(TimelineReader inner, this.transport)
-    : super(inner: inner);
+final class _RouteHistoryReader extends RecordingHistoryReader {
+  _RouteHistoryReader({required super.inner, required this.transport});
   final _RouteTurnTransport transport;
   @override
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
     required ReadDemand demand,
   }) {
     transport.pageCalls++;
     final gate = transport.scriptedPage;
     transport.scriptedPage = null;
     return gate?.future ??
-        super.loadTimelineOlder(before: before, demand: demand);
+        super.timelinePage(cut: cut, cursor: cursor, demand: demand);
   }
 }

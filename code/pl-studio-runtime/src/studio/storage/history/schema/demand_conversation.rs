@@ -1106,15 +1106,6 @@ mod tests {
                 .await?
                 .is_none()
         );
-        assert_eq!(
-            store
-                .cold_current_state()
-                .await?
-                .context("cold domain state")?
-                .projection()
-                .source_effect_seq,
-            0
-        );
         store
             .writer()
             .await?
@@ -1138,15 +1129,6 @@ mod tests {
                 .context
                 .records
                 .len(),
-            2
-        );
-        assert_eq!(
-            store
-                .cold_current_state()
-                .await?
-                .context("cold domain state")?
-                .projection()
-                .source_effect_seq,
             2
         );
         assert_eq!(store.commit_checkpoint_effects(&effects).await?.len(), 2);

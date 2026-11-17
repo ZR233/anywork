@@ -5,8 +5,6 @@ import '../support/chat_fixtures.dart';
 import 'dart:async';
 import 'dart:convert';
 
-import '../support/mapped_conversation_feed.dart';
-
 import 'package:anywork_client/conversation_ports.dart';
 
 import '../support/test_statistics_feed.dart';
@@ -2042,39 +2040,35 @@ class _WorkflowScenarioTransport extends TestDemoStudioTransport {
   }
 
   @override
-  Future<ConversationStateFeed> openConversationStateFeed(
-    String threadId,
-  ) async => MappedConversationStateFeed(
-    await super.openConversationStateFeed(threadId),
-    (frame) => switch (frame) {
-      ThreadSnapshotFrame(
-        :final workspace,
-        :final completedHistoryVersion,
-        :final schemaVersion,
-      ) =>
+  ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) =>
+      switch (frame) {
         ThreadSnapshotFrame(
-          workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-          completedHistoryVersion: completedHistoryVersion,
-          schemaVersion: schemaVersion,
-        ),
-      ThreadNotificationFrame() => switch (frame.update) {
-        ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
-          ThreadNotificationFrame(
-            threadId: frame.threadId,
-            revision: frame.revision,
-            epoch: frame.epoch,
-            baseRevision: frame.baseRevision,
-            update: ThreadRuntimeUpdate(
-              runtime: _runtime(runtime),
-              todo: todo,
-              modelRoute: modelRoute,
-            ),
+          :final workspace,
+          :final completedHistoryVersion,
+          :final schemaVersion,
+        ) =>
+          ThreadSnapshotFrame(
+            workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
+            completedHistoryVersion: completedHistoryVersion,
+            schemaVersion: schemaVersion,
           ),
+        ThreadNotificationFrame() => switch (frame.update) {
+          ThreadRuntimeUpdate(:final runtime, :final todo, :final modelRoute) =>
+            ThreadNotificationFrame(
+              threadId: frame.threadId,
+              revision: frame.revision,
+              epoch: frame.epoch,
+              baseRevision: frame.baseRevision,
+              update: ThreadRuntimeUpdate(
+                runtime: _runtime(runtime),
+                todo: todo,
+                modelRoute: modelRoute,
+              ),
+            ),
+          _ => frame,
+        },
         _ => frame,
-      },
-      _ => frame,
-    },
-  );
+      };
 
   ThreadDirectoryPage _page(ThreadDirectoryPage page) => ThreadDirectoryPage(
     rows: [for (final row in page.rows) _thread(row)],

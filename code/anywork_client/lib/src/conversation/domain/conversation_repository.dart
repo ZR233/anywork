@@ -1,5 +1,5 @@
 import '../../../lifecycle.dart' show ClientCloseBudget;
-import '../../../conversation_ports.dart' show TimelineReader;
+import '../../../conversation_ports.dart';
 import '../../../models.dart';
 import '../../contracts/stamps.dart';
 import '../../lifecycle/close_report.dart' show CloseReport;
@@ -9,7 +9,8 @@ import 'conversation_state.dart';
 
 abstract interface class ConversationRepository {
   ConversationSession session(String threadId);
-  Future<TimelineReader> openTimelineReader(
+  Future<HistoryReader> openHistoryReader(String threadId);
+  Future<CurrentReader> openCurrentReader(
     String threadId, {
     required ReadDemand demand,
   });
@@ -44,32 +45,63 @@ abstract interface class ConversationBatchConsumer {
   Future<void> applyActivity(ActivitySnapshot snapshot);
 }
 
-abstract interface class TimelineQueryScope implements ConversationQueryScope {
-  Future<TimelinePage> loadTimelineOlder({
-    required String before,
-    required ReadDemand demand,
+/// Pure immutable-history queries. Results are pages, never an implicit UI apply.
+abstract interface class HistoryQueryScope {
+  Future<HistoryCut> capture();
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
   });
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  });
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  });
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  });
+  void retire();
+  Future<CloseReport> close({ClientCloseBudget? budget});
 }
 
-/// One bounded display-member query observation, owned by its read scope.
-abstract interface class DisplayMembers {
-  Future<DisplayMemberPage?> next();
-  void requestClose();
-  Future<void> close();
-}
-
-abstract interface class ConversationQueries {
+/// One current-owner read scope. Metadata/body watches are independent resources.
+abstract interface class CurrentQueryScope {
   String get threadId;
-  ConversationQueryScope openScope({required int generation});
+  int get generation;
+  CurrentReader get reader;
+  Future<CurrentCollectionPage> pageCollection({
+    required CurrentCollectionRef reference,
+    String? continuation,
+    required ReadDemand demand,
+  });
+  Future<ContentWindow> readBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  });
+  CurrentBodyWatch watchBody({
+    required CurrentContentRef reference,
+    required ContentRange range,
+  });
+  void retire();
+  Future<CloseReport> close({ClientCloseBudget? budget});
 }
 
 abstract interface class ConversationContent implements ConversationQueries {
@@ -91,21 +123,20 @@ abstract interface class ConversationContent implements ConversationQueries {
   ConversationQueryScope openScope({required int generation});
 }
 
+abstract interface class ConversationQueries {
+  String get threadId;
+  ConversationQueryScope openScope({required int generation});
+}
+
 abstract interface class ConversationQueryScope {
   int get generation;
   String get threadId;
   int get pendingQueries;
   bool get isActive;
-  Future<ThreadBusinessRefs> readBusinessRefs();
-  Future<CompletedEntry> readCompleted({
-    required String recordId,
-    required ReadDemand demand,
-  });
   Future<ChatBatch> loadOlder({
     required String before,
     required ReadDemand demand,
   });
-
   Future<ContentManifestPage> listContents({
     required String itemId,
     String? continuation,
@@ -118,11 +149,6 @@ abstract interface class ConversationQueryScope {
   Stream<ContentWindow> watchContent({
     required ContentRef reference,
     required ContentRange range,
-  });
-  Future<CurrentCollectionPage> pageCurrent({
-    required CurrentCollectionRef reference,
-    String? continuation,
-    required ReadDemand demand,
   });
   void retire();
   Future<CloseReport> close({ClientCloseBudget? budget});

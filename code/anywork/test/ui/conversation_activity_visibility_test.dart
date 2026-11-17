@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/connectors/conversati
 import 'package:anywork/src/features/conversation/timeline/connectors/interaction_details_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_member_atom.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_bar.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_state.dart';
 import 'package:anywork/src/features/conversation/timeline/live_status/live_status_projection.dart';
@@ -37,7 +38,7 @@ const _status = ThreadActivityView(
   kind: ThreadActivityKind.thinking,
   summary: '思考中',
 );
-final _live = TailSnapshot(
+final _live = CurrentRunSnapshot(
   currentWorkId: null,
   revision: 1,
   layoutRevision: 1,
@@ -88,7 +89,7 @@ PendingInteraction _toolApproval({String threadId = 'thread'}) =>
 
 LiveStatusView _observe({
   ThreadActivityView? status = _status,
-  TailSnapshot? live,
+  CurrentRunSnapshot? live,
   ThreadStorageStateView? storage,
   PendingInteraction? interaction,
   String? activeTurnId = 'turn',
@@ -118,134 +119,11 @@ LiveStatusView _observe({
 LiveStatusView _project(PendingInteraction? interaction) =>
     _observe(live: _live, interaction: interaction);
 
-// The scripted boundary supplies only a typed member page. The real SDK,
-// Timeline lease, connectors and renderers own admission and display lifecycle.
-final class _PlanVisibilityTransport extends RecordingDemoTransport {
-  late ChatAtom waitAtom;
-  TailSnapshot? olderPage;
-  final olderReads = <({String before, ReadDemand demand})>[];
-  final members = <_PlanVisibilityMembers>[];
-
-  @override
-  Future<TimelineReader> openTimelineReader(
-    String threadId, {
-    required int presentationVersion,
-    required int readerProtocolVersion,
-    required ReadDemand demand,
-  }) async => _PlanVisibilityFeed(
-    inner: await super.openTimelineReader(
-      threadId,
-      presentationVersion: presentationVersion,
-      readerProtocolVersion: timelineReaderProtocolVersion,
-      demand: demand,
-    ),
-    transport: this,
-  );
-}
-
-final class _PlanVisibilityFeed extends RecordingTimelineReader {
-  _PlanVisibilityFeed({required super.inner, required this.transport});
-  final _PlanVisibilityTransport transport;
-
-  @override
-  Future<TailSnapshot> loadLiveOlder({
-    required String before,
-    required ReadDemand demand,
-  }) {
-    final page = transport.olderPage;
-    if (page == null) {
-      return super.loadLiveOlder(before: before, demand: demand);
-    }
-    transport.olderReads.add((before: before, demand: demand));
-    return Future.value(page);
-  }
-
-  @override
-  Future<DisplayMembers> openDisplayMembers({
-    required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
-    required ReadDemand demand,
-  }) {
-    if (reference.blockId != 'plan-work') {
-      return super.openDisplayMembers(
-        reference: reference,
-        window: window,
-        demand: demand,
-      );
-    }
-    final handle = _PlanVisibilityMembers(
-      DisplayMemberPage(
-        block: reference,
-        revision: 1,
-        sealed: false,
-        entries: [
-          DisplayMemberHead(
-            memberKey: 'wait-row',
-            memberOrder: 1,
-            record: DisplayRecord(
-              atom: transport.waitAtom,
-              contentSource: const CurrentAtom(),
-            ),
-          ),
-        ],
-      ),
-    );
-    transport.members.add(handle);
-    return Future.value(handle);
-  }
-}
-
-final class _PlanVisibilityMembers implements DisplayMembers {
-  _PlanVisibilityMembers(this.first);
-  DisplayMemberPage? first;
-  Completer<DisplayMemberPage?>? pending;
-  bool stopping = false;
-  bool closed = false;
-  bool sealed = false;
-
-  void send(DisplayMemberPage page) {
-    final waiting = pending;
-    pending = null;
-    if (waiting == null) {
-      first = page;
-    } else {
-      sealed = page.sealed;
-      waiting.complete(page);
-    }
-  }
-
-  @override
-  Future<DisplayMemberPage?> next() {
-    if (stopping) return Future.value(null);
-    final page = first;
-    first = null;
-    if (page != null) {
-      sealed = page.sealed;
-      return Future.value(page);
-    }
-    if (sealed) return Future.value(null);
-    return (pending = Completer<DisplayMemberPage?>()).future;
-  }
-
-  @override
-  void requestClose() {
-    stopping = true;
-    pending?.complete(null);
-    pending = null;
-  }
-
-  @override
-  Future<void> close() async {
-    requestClose();
-    closed = true;
-  }
-}
-
 void main() {
   test(
     '#364 background activity without activeTurnId owns the current Work',
     () {
-      final live = TailSnapshot(
+      final live = CurrentRunSnapshot(
         currentWorkId: 'background-tail',
         revision: 1,
         layoutRevision: 1,
@@ -294,7 +172,7 @@ void main() {
   test(
     '#364 older partial page cannot move or clear the canonical current Work',
     () {
-      final latest = TailSnapshot(
+      final latest = CurrentRunSnapshot(
         currentWorkId: 'tail',
         revision: 10,
         layoutRevision: 10,
@@ -311,7 +189,7 @@ void main() {
         ],
         older: 'older-page',
       );
-      final older = TailSnapshot(
+      final older = CurrentRunSnapshot(
         currentWorkId: null,
         revision: 10,
         layoutRevision: 10,
@@ -369,21 +247,25 @@ void main() {
       ),
       contents: const [],
     );
-    TailSnapshot window(List<LiveDisplayBlock> blocks) => TailSnapshot(
-      currentWorkId: null,
-      revision: 2,
-      layoutRevision: 2,
-      readyFrontier: 0,
-      executionPresent: true,
-      blocks: blocks,
-    );
+    CurrentRunSnapshot window(List<LiveDisplayBlock> blocks) =>
+        CurrentRunSnapshot(
+          currentWorkId: null,
+          revision: 2,
+          layoutRevision: 2,
+          readyFrontier: 0,
+          executionPresent: true,
+          blocks: blocks,
+        );
     final output = LiveDisplayBlock(
       id: 'text',
       blockOrder: 1,
       state: DisplayBlockState.open,
       body: SingleDisplayBlock(
-        visibility: SingleVisibility.content,
-        record: DisplayRecord(atom: atom, contentSource: const CurrentAtom()),
+        visibility: HistorySingleVisibility.content,
+        record: DisplayRecord(
+          atom: atom,
+          contentSource: const CurrentAtomSource(),
+        ),
       ),
     );
     const responding = ExecutionLiveNotice(
@@ -470,7 +352,7 @@ void main() {
     test(
       'current Work absorbs normal activity regardless of diagnostic source: $label',
       () {
-        final live = TailSnapshot(
+        final live = CurrentRunSnapshot(
           currentWorkId: 'opaque-block',
           revision: 3,
           layoutRevision: 3,
@@ -529,7 +411,7 @@ void main() {
           expect(aggregate.timelineWork.workBlocks, isEmpty);
           final work = live.blocks.single;
           for (final blocked in [
-            TailSnapshot(
+            CurrentRunSnapshot(
               currentWorkId: 'opaque-block',
               revision: 4,
               layoutRevision: 4,
@@ -537,7 +419,7 @@ void main() {
               executionPresent: false,
               blocks: live.blocks,
             ),
-            TailSnapshot(
+            CurrentRunSnapshot(
               currentWorkId: null,
               revision: 4,
               layoutRevision: 4,
@@ -553,7 +435,7 @@ void main() {
                 ),
               ],
             ),
-            TailSnapshot(
+            CurrentRunSnapshot(
               currentWorkId: null,
               revision: 4,
               layoutRevision: 4,
@@ -585,7 +467,7 @@ void main() {
     ('unfinished', true),
   ]) {
     test('normal notice requires complete continuing open Work: $label', () {
-      final live = TailSnapshot(
+      final live = CurrentRunSnapshot(
         currentWorkId: 'work',
         revision: 4,
         layoutRevision: 4,
@@ -664,7 +546,7 @@ void main() {
   });
 
   test('closing Work and successor text remain ordered and storage/stop notices coexist', () {
-    final live = TailSnapshot(
+    final live = CurrentRunSnapshot(
       currentWorkId: null,
       revision: 4,
       layoutRevision: 4,
@@ -682,10 +564,10 @@ void main() {
           blockOrder: 2,
           state: DisplayBlockState.open,
           body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
+            visibility: HistorySingleVisibility.content,
             record: DisplayRecord(
               atom: completionEntry('text', 5, text: '正文').atom,
-              contentSource: const CurrentAtom(),
+              contentSource: const CurrentAtomSource(),
             ),
           ),
         ),
@@ -726,7 +608,7 @@ void main() {
   test(
     'cold all-terminal tail rests; only unfinished cold content is Unrestored',
     () {
-      final coldWorkWindow = TailSnapshot(
+      final coldWorkWindow = CurrentRunSnapshot(
         currentWorkId: 'work',
         revision: 4,
         layoutRevision: 4,
@@ -754,7 +636,7 @@ void main() {
       expect(resting.mergedActivity, isNull);
       expect(resting.standaloneNotices, isEmpty);
 
-      final coldSingleWindow = TailSnapshot(
+      final coldSingleWindow = CurrentRunSnapshot(
         currentWorkId: null,
         revision: 5,
         layoutRevision: 5,
@@ -772,7 +654,7 @@ void main() {
             blockOrder: 2,
             state: DisplayBlockState.open,
             body: SingleDisplayBlock(
-              visibility: SingleVisibility.content,
+              visibility: HistorySingleVisibility.content,
               record: DisplayRecord(
                 atom: ChatAtom(
                   id: 'cold-text',
@@ -786,7 +668,7 @@ void main() {
                   ),
                   contents: const [],
                 ),
-                contentSource: const CurrentAtom(),
+                contentSource: const CurrentAtomSource(),
               ),
             ),
           ),
@@ -818,526 +700,6 @@ void main() {
       isA<LiveStatusHidden>(),
     );
   });
-  for (final olderSource in <DisplayContentSource?>[
-    null,
-    const CurrentAtom(),
-    const CompletedOriginal(completionId: 'older-output-completion'),
-  ]) {
-    testWidgets(
-      'selected plan masks the full output dock, preserves Timeline Work and restores output after resolution: ${olderSource?.runtimeType ?? 'latest'}',
-      (tester) async {
-        const threadId = 'thread-main';
-        final transport = _PlanVisibilityTransport();
-        final graph = testAppGraph(
-          transport: transport,
-          statisticsFeed: const TestStatisticsFeedPort(),
-          clientId: 'plan-activity-visibility',
-        );
-        await pumpClientFuture(tester, graph.client.bootstrap(), 'bootstrap');
-        await pumpClientFuture(
-          tester,
-          (graph
-                ..timeline.updateReadDemand(chatDemand)
-                ..setConversationPageVisible(true))
-              .client
-              .directoryCommands
-              .selectThread(threadId),
-          'select thread',
-        );
-        final session = graph.client.conversations.session(threadId);
-        await pumpClientUntil(
-          tester,
-          () =>
-              session.state.hasSnapshot &&
-              graph.timeline.lease(threadId)?.live.value != null,
-          'initial State and Timeline',
-        );
-        final lease = graph.timeline.lease(threadId)!;
-        final history = lease.controller.messages.toList();
-        final generation = lease.generation;
-        transport.waitAtom = ChatAtom(
-          id: 'wait-atom',
-          source: const ForegroundTurnChatSource(turnId: 'background-turn'),
-          sourceOrder: 1,
-          kind: ChatAtomKind.toolCall,
-          delivery: ChatDeliveryKind.foreground,
-          lifecycle: const ActiveChatAtom(
-            started: null,
-            status: ChatActiveStatus.running,
-          ),
-          tool: const ChatToolIdentity(callId: 'wait-call', name: 'wait'),
-          wait: ThreadWaitPresentationView(
-            intent: ThreadWaitEventsIntentView(
-              targets: const [
-                ThreadWaitTargetView(
-                  taskId: 'task:timer',
-                  toolName: 'sleep',
-                  status: ThreadWaitTargetStatusView.running,
-                ),
-              ],
-              timeoutMs: 120000,
-            ),
-            state: ThreadWaitStateView.waiting,
-          ),
-          contents: const [],
-        );
-        final work = LiveDisplayBlock(
-          id: 'plan-work',
-          blockOrder: lease.live.value!.readyFrontier + 2,
-          state: DisplayBlockState.open,
-          source: const ForegroundTurnChatSource(turnId: 'background-turn'),
-          body: WorkDisplayBlock(
-            timing: displayTiming(),
-            members: const DisplayBlockRef(
-              databaseId: 'plan-visibility',
-              blockId: 'plan-work',
-            ),
-          ),
-        );
-        Future<TailSnapshot> publishLive(
-          List<LiveDisplayBlock> blocks, {
-          bool executionPresent = true,
-          String? currentWorkId = 'plan-work',
-        }) async {
-          final previous = lease.live.value!;
-          final live = TailSnapshot(
-            currentWorkId: currentWorkId,
-            revision: previous.revision + 1,
-            layoutRevision: previous.revision + 1,
-            readyFrontier: previous.readyFrontier,
-            executionPresent: executionPresent,
-            blocks: blocks,
-            older: olderSource == null ? null : 'older-page',
-          );
-          transport.timelineReaders.single.emitTimeline(
-            displayBatch(
-              const [],
-              placement: ChatPlacement.append,
-              from: live.readyFrontier,
-              through: live.readyFrontier,
-              live: live,
-            ),
-          );
-          await pumpClientUntil(
-            tester,
-            () => lease.live.value?.revision == live.revision,
-            'real Timeline live admission',
-          );
-          return live;
-        }
-
-        final live = await publishLive([work]);
-        final plan = _userInput(
-          id: 'plan',
-          questionId: agentSessionPlanConfirmationQuestionId,
-          threadId: threadId,
-        );
-        final question = _userInput(
-          id: 'question',
-          questionId: 'ordinary-question',
-          threadId: threadId,
-        );
-        Future<void> publish(
-          List<PendingInteraction> interactions, {
-          ThreadActivityKind kind = ThreadActivityKind.awaitingInput,
-          ThreadStorageStateView? storage,
-        }) => pumpClientFuture(
-          tester,
-          transport.publishWorkspace(
-            session.state.workspace!.copyWith(
-              interactions: interactions,
-              activity: ThreadActivityView(
-                threadId: threadId,
-                identity: 'plan-state',
-                revision: 1,
-                turnId: 'turn',
-                kind: kind,
-                summary: kind.name,
-              ),
-              storage: storage,
-              businessRefs: const ThreadBusinessRefs(
-                plan: null,
-                interactions: CurrentCollectionRef(
-                  databaseId: 'visibility-test',
-                  collection: 'interactions',
-                  revision: 1,
-                ),
-              ),
-            ),
-          ),
-          'publish canonical pending interactions',
-        );
-        await publish(const [], kind: ThreadActivityKind.thinking);
-        await tester.pumpWidget(
-          ProviderScope(
-            overrides: [appGraphProvider.overrideWithValue(graph)],
-            child: MaterialApp(
-              theme: pureStudioTheme(),
-              locale: const Locale('zh'),
-              localizationsDelegates: [
-                AppLocalizations.delegate,
-                ...GlobalMaterialLocalizations.delegates,
-              ],
-              supportedLocales: AppLocalizations.supportedLocales,
-              home: const Scaffold(
-                body: Column(
-                  children: [
-                    Expanded(child: TimelineConnector(threadId: threadId)),
-                    LiveStatusBar(threadId: threadId),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-        await tester.pump();
-        await tester.tap(
-          find.byKey(const ValueKey('completion-run-header:plan-work')),
-        );
-        await tester.pump(const Duration(milliseconds: 300));
-        await pumpClientUntil(
-          tester,
-          () => find.byType(TimelineWaitPanel).evaluate().isNotEmpty,
-          'Timeline Work member',
-        );
-        final workView = find.byWidgetPredicate(
-          (widget) => widget is CompletionRunView && widget.id == 'plan-work',
-          skipOffstage: false,
-        );
-        final workElement = workView.evaluate().single;
-        await publish([question]);
-        await tester.pump();
-        expect(find.byType(TimelineWaitPanel), findsNothing);
-        expect(
-          find.byType(TimelineWaitPanel, skipOffstage: false),
-          findsOneWidget,
-        );
-        expect(workView.evaluate().single, same(workElement));
-        expect(find.byType(InteractionDetailsConnector), findsOneWidget);
-        final originalDetails = find
-            .byType(InteractionDetailsConnector)
-            .evaluate()
-            .single;
-        const olderText = '已打开的更早正文在同切面计划确认期间保留';
-        final outputView = find.descendant(
-          of: find.byType(LiveStatusBar),
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is ConversationCurrentConnector &&
-                widget.section == ConversationLiveSection.output,
-          ),
-          skipOffstage: false,
-        );
-        final olderMember = find.byWidgetPredicate(
-          (widget) =>
-              widget is TimelineMemberAtom &&
-              widget.displayId == 'older-output',
-          skipOffstage: false,
-        );
-        Element? outputElement;
-        Element? olderElement;
-        DisplayRecord? olderRecord;
-        if (olderSource != null) {
-          // The admitted latest window remains Work-only. Only the original
-          // output renderer owns the explicitly requested older Single.
-          await publish(const []);
-          await tester.pump();
-          final completed = olderSource is CompletedOriginal;
-          olderRecord = DisplayRecord(
-            contentSource: olderSource,
-            atom: ChatAtom(
-              id: 'older-output-atom',
-              completionItemId: completed ? 'older-output-completion' : null,
-              completionSeq: completed ? 1 : null,
-              source: const ForegroundTurnChatSource(turnId: 'older-turn'),
-              sourceOrder: 1,
-              turnId: 'older-turn',
-              kind: ChatAtomKind.text,
-              delivery: ChatDeliveryKind.foreground,
-              lifecycle: completed
-                  ? const TerminalChatAtom(
-                      started: ChatFactPosition(effectSeq: 1, suborder: 0),
-                      ended: ChatFactPosition(effectSeq: 2, suborder: 0),
-                      outcome: ChatTerminalOutcome.completed,
-                    )
-                  : const ActiveChatAtom(
-                      started: null,
-                      status: ChatActiveStatus.running,
-                    ),
-              contents: const [],
-              payload: chatEnvelope(
-                'older-output-envelope',
-                type: 'text',
-                data: const {'channel': 'commentary'},
-                bodies: [inlineBody('body', olderText)],
-              ).payload,
-            ),
-          );
-          transport.olderPage = TailSnapshot(
-            currentWorkId: null,
-            revision: live.revision,
-            layoutRevision: live.revision,
-            readyFrontier: live.readyFrontier,
-            executionPresent: live.executionPresent,
-            blocks: [
-              LiveDisplayBlock(
-                id: 'older-output',
-                blockOrder: work.blockOrder - 1,
-                state: completed
-                    ? DisplayBlockState.sealed
-                    : DisplayBlockState.open,
-                source: olderRecord.atom.source,
-                body: SingleDisplayBlock(
-                  visibility: SingleVisibility.content,
-                  record: olderRecord,
-                ),
-              ),
-              work,
-            ],
-          );
-          final olderButton = find.descendant(
-            of: find.byType(LiveStatusBar),
-            matching: find.widgetWithText(TextButton, '更早实时片段'),
-          );
-          expect(olderButton, findsOneWidget);
-          await tester.ensureVisible(olderButton);
-          await tester.tap(olderButton);
-          await pumpClientUntil(
-            tester,
-            () =>
-                find.text(olderText, findRichText: true).evaluate().isNotEmpty,
-            'original output renderer loads older Single',
-          );
-          expect(transport.olderReads, hasLength(1));
-          expect(transport.olderReads.single.before, 'older-page');
-          expect(lease.live.value, same(live));
-          expect(live.blocks.single.body, isA<WorkDisplayBlock>());
-          outputElement = outputView.evaluate().single;
-          olderElement = olderMember.evaluate().single;
-          expect(
-            tester.widget<TimelineMemberAtom>(olderMember).record,
-            same(olderRecord),
-          );
-        }
-        await publish([plan]);
-        await tester.pump();
-        expect(find.byType(InteractionDetailsConnector), findsNothing);
-        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
-        expect(find.byType(ConversationActivityBar), findsNothing);
-        expect(find.byType(ConversationActivityViewport), findsOneWidget);
-        expect(find.text(olderText, findRichText: true), findsNothing);
-        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
-        expect(originalDetails.mounted, isFalse);
-        expect(find.byType(TimelineWaitPanel), findsNothing);
-        expect(workView.evaluate().single, same(workElement));
-        expect(lease.live.value, same(live));
-        expect(graph.timeline.lease(threadId), same(lease));
-        expect(lease.generation, generation);
-        expect(transport.members.single.closed, isFalse);
-        expect(lease.controller.messages, orderedEquals(history));
-
-        // Approval and revision commands share this canonical removal boundary.
-        // Their command/draft semantics are covered by plan_feedback_lifecycle_test.
-        await publish(const []);
-        await tester.pump();
-        expect(find.byType(TimelineWaitPanel), findsOneWidget);
-        expect(workView.evaluate().single, same(workElement));
-        expect(
-          tester.getSize(find.byType(LiveStatusBar)).height,
-          greaterThan(0),
-        );
-        expect(lease.live.value, same(live));
-        if (olderSource != null) {
-          expect(find.text(olderText, findRichText: true), findsOneWidget);
-          expect(outputView.evaluate().single, same(outputElement));
-          expect(
-            tester.widget<TimelineMemberAtom>(olderMember).record,
-            same(olderRecord),
-          );
-          expect(transport.olderReads, hasLength(1));
-        }
-
-        await publish([plan]);
-        await tester.pump();
-        expect(find.byType(InteractionDetailsConnector), findsNothing);
-        await publish([plan, _toolApproval(threadId: threadId)]);
-        await tester.pump();
-        expect(find.byType(TimelineWaitPanel), findsOneWidget);
-        expect(find.byType(InteractionDetailsConnector), findsOneWidget);
-        expect(
-          find.byType(InteractionDetailsConnector).evaluate().single,
-          isNot(same(originalDetails)),
-        );
-        expect(lease.live.value, same(live));
-        expect(workView.evaluate().single, same(workElement));
-        expect(transport.members, hasLength(1));
-        expect(transport.members.single.closed, isFalse);
-        expect(lease.controller.messages, orderedEquals(history));
-        expect(graph.timeline.lease(threadId), same(lease));
-        expect(lease.generation, generation);
-        if (olderSource != null) {
-          expect(find.text(olderText, findRichText: true), findsOneWidget);
-          expect(outputView.evaluate().single, same(outputElement));
-          expect(
-            tester.widget<TimelineMemberAtom>(olderMember).record,
-            same(olderRecord),
-          );
-          expect(transport.olderReads, hasLength(1));
-        }
-
-        final output = LiveDisplayBlock(
-          id: 'plan-output',
-          blockOrder: work.blockOrder + 1,
-          state: DisplayBlockState.open,
-          source: const ForegroundTurnChatSource(turnId: 'turn'),
-          body: SingleDisplayBlock(
-            visibility: SingleVisibility.content,
-            record: DisplayRecord(
-              contentSource: const CurrentAtom(),
-              atom: ChatAtom(
-                id: 'output-atom',
-                source: const ForegroundTurnChatSource(turnId: 'turn'),
-                sourceOrder: 2,
-                turnId: 'turn',
-                kind: ChatAtomKind.text,
-                delivery: ChatDeliveryKind.foreground,
-                lifecycle: const ActiveChatAtom(
-                  started: null,
-                  status: ChatActiveStatus.running,
-                ),
-                contents: const [],
-                payload: chatEnvelope(
-                  'output-envelope',
-                  type: 'text',
-                  data: const {'channel': 'commentary'},
-                  bodies: [inlineBody('body', '计划待决期间仍然可见的实际正文')],
-                ).payload,
-              ),
-            ),
-          ),
-        );
-        await publish(
-          [plan],
-          kind: ThreadActivityKind.stopping,
-          storage: const ThreadStorageStateView(
-            fault: ThreadHistoryFault.writeFailed,
-            lastError: '磁盘写入失败',
-          ),
-        );
-        if (olderSource != null) {
-          expect(olderMember.hitTestable(), findsNothing);
-          expect(transport.olderReads, hasLength(1));
-        }
-        final frozenWork = LiveDisplayBlock(
-          id: work.id,
-          blockOrder: work.blockOrder,
-          state: DisplayBlockState.sealed,
-          source: work.source,
-          body: work.body,
-        );
-        transport.members.single.send(
-          DisplayMemberPage(
-            block: const DisplayBlockRef(
-              databaseId: 'plan-visibility',
-              blockId: 'plan-work',
-            ),
-            revision: 2,
-            sealed: true,
-            entries: [
-              DisplayMemberHead(
-                memberKey: 'wait-row',
-                memberOrder: 1,
-                record: DisplayRecord(
-                  atom: transport.waitAtom,
-                  contentSource: const FrozenObservation(
-                    capturedAt: 10,
-                    available: true,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-        await publishLive([frozenWork, output], currentWorkId: null);
-        await tester.pump();
-        if (olderSource != null) {
-          // A genuine cut change retires the old window. Retaining it across a
-          // same-cut State update must not turn into an unconditional keep-alive.
-          expect(find.text(olderText, findRichText: true), findsNothing);
-          expect(olderElement!.mounted, isFalse);
-          expect(transport.olderReads, hasLength(1));
-        }
-        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
-        expect(find.byType(ConversationActivityBar), findsNothing);
-        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
-        final liveStatus = ProviderScope.containerOf(
-          tester.element(find.byType(LiveStatusBar)),
-          listen: false,
-        ).read(liveStatusViewModelProvider(threadId));
-        expect(liveStatus, isNotNull);
-        expect(
-          liveStatus!.timelineWork.effectiveWindow,
-          same(lease.live.value),
-        );
-        expect(
-          liveStatus.primaryActivity?.kind,
-          ConversationActivityKind.stopping,
-        );
-        expect(liveStatus.timelineWork.workBlocks, contains(same(frozenWork)));
-        final obscured =
-            (liveStatus.barState as LiveStatusDockMasked).obscured!;
-        expect(
-          obscured.surface.standaloneNotices
-              .whereType<ExecutionLiveNotice>()
-              .any((notice) => notice.view.errorMessage == '磁盘写入失败'),
-          isTrue,
-        );
-        expect(find.byType(InteractionDetailsConnector), findsNothing);
-        expect(lease.expansionForBlock('plan-work').expanded, isTrue);
-        expect(lease.controller.messages, orderedEquals(history));
-
-        await publish([plan], kind: ThreadActivityKind.thinking);
-        await publishLive(
-          [frozenWork, output],
-          executionPresent: false,
-          currentWorkId: null,
-        );
-        await tester.pump();
-        expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
-        expect(
-          find.descendant(of: workView, matching: find.text('上次执行未收束，尚未恢复')),
-          findsNothing,
-        );
-        expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
-        expect(
-          ProviderScope.containerOf(
-                tester.element(find.byType(LiveStatusBar)),
-                listen: false,
-              )
-              .read(liveStatusViewModelProvider(threadId))!
-              .timelineWork
-              .effectiveWindow,
-          same(lease.live.value),
-        );
-        expect(find.byType(InteractionDetailsConnector), findsNothing);
-        expect(lease.expansionForBlock('plan-work').expanded, isTrue);
-        expect(graph.timeline.lease(threadId), same(lease));
-        expect(lease.generation, generation);
-        expect(tester.takeException(), isNull);
-        await tester.pumpWidget(const SizedBox.shrink());
-        await pumpClientFuture(
-          tester,
-          graph.close(budget: ClientCloseBudget(const Duration(seconds: 5))),
-          'activity visibility close',
-        );
-        expect(lease.isRetired, isTrue);
-        expect(lease.isReleased, isTrue);
-        expect(lease.queryCleanupError, isNull);
-        expect(transport.members.single.closed, isTrue);
-      },
-    );
-  }
-
   test('Plan confirmation masks live bar while preserving activity and work observation', () {
     final work = LiveDisplayBlock(
       id: 'background-work',
@@ -1352,7 +714,7 @@ void main() {
         ),
       ),
     );
-    final live = TailSnapshot(
+    final live = CurrentRunSnapshot(
       currentWorkId: 'background-work',
       revision: 1,
       layoutRevision: 1,

@@ -3,8 +3,10 @@ use super::{integer, statement};
 use anyhow::{Context, Result, ensure};
 use pl_protocol::{ThreadContextDisposition, Turn};
 use sea_orm::{ConnectionTrait, QueryResult};
+#[cfg(test)]
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PageCursor {
@@ -18,14 +20,30 @@ struct PageCursor {
     record_before: Option<u64>,
 }
 
+#[cfg(test)]
+#[derive(Serialize)]
+struct FrozenTurnHistory {
+    turn: Turn,
+    items: Vec<super::schema::v24_presentation_types::CompletedEntry>,
+    context_disposition: ThreadContextDisposition,
+}
+
+#[cfg(test)]
+#[derive(Serialize)]
+struct FrozenTurnPage {
+    turns: Vec<FrozenTurnHistory>,
+    next_cursor: Option<String>,
+}
+
+#[cfg(test)]
 pub(super) async fn page(
     db: &impl ConnectionTrait,
     thread: &str,
     database: &str,
     token: Option<&str>,
     limit: usize,
-) -> Result<pl_protocol::ThreadTurnPage> {
-    use crate::studio::runtime::conversation_reader::{JsonBudget, entries};
+) -> Result<FrozenTurnPage> {
+    use crate::studio::storage::history::legacy_read::{JsonBudget, entries};
     use pl_core::chat::{ChatBudget, ChatHistoryRequest, ChatKey, ChatQuery, ReadDemand};
     let through = u64::try_from(super::applied_write_seq(db).await?)?;
     let ceiling = super::conversation::latest_append_seq(db).await?;
@@ -42,7 +60,7 @@ pub(super) async fn page(
     }
     let fixed_through = cursor.as_ref().map_or(through, |cursor| cursor.through);
     let fixed_ceiling = cursor.as_ref().map_or(ceiling, |cursor| cursor.ceiling);
-    let mut result = pl_protocol::ThreadTurnPage {
+    let mut result = FrozenTurnPage {
         turns: vec![],
         next_cursor: None,
     };
@@ -67,7 +85,7 @@ pub(super) async fn page(
             "Turn changed after this fixed history cut; restart the page"
         );
         let before = cursor.as_ref().and_then(|cursor| cursor.record_before);
-        let mut history = pl_protocol::ThreadTurnHistory {
+        let mut history = FrozenTurnHistory {
             turn: turn.turn,
             items: vec![],
             context_disposition: turn.context_disposition,
@@ -183,15 +201,6 @@ pub(in crate::studio) struct TurnWrite {
     pub context_disposition: ThreadContextDisposition,
 }
 
-impl TurnWrite {
-    pub(in crate::studio) fn retained_bytes(&self) -> u64 {
-        // Turn 只含状态、输入身份和错误；不保留其全部完成成员。
-        serde_json::to_vec(&self.turn)
-            .map_or(u64::MAX, |bytes| bytes.len() as u64)
-            .saturating_add(std::mem::size_of::<Self>() as u64)
-    }
-}
-
 pub(super) fn decode(row: &QueryResult) -> Result<TurnWrite> {
     let optional = |field| -> Result<Option<u64>> {
         Ok(row
@@ -278,6 +287,7 @@ pub(super) async fn apply(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn latest_at(
     db: &impl ConnectionTrait,
     thread: &str,
@@ -302,11 +312,13 @@ pub(super) async fn latest_at(
     Ok(Some(value.turn))
 }
 
+#[cfg(test)]
 pub(super) async fn terminal(db: &impl ConnectionTrait) -> Result<Option<Turn>> {
     db.query_one_raw(statement("SELECT * FROM history_turns WHERE terminal_effect IS NOT NULL ORDER BY terminal_effect DESC,turn_order DESC,turn_id DESC LIMIT 1", vec![]))
         .await?.as_ref().map(|row| Ok(decode(row)?.turn)).transpose()
 }
 
+#[cfg(test)]
 pub(super) async fn rollback(
     db: &impl ConnectionTrait,
     ids: &std::collections::BTreeSet<String>,
@@ -337,6 +349,7 @@ pub(super) async fn rollback(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn verify(db: &impl ConnectionTrait, writes: &[TurnWrite]) -> Result<()> {
     for write in writes {
         let old = read(db, &write.turn.id)

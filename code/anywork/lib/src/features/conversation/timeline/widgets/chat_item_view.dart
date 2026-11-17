@@ -8,6 +8,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_code_block.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../connectors/timeline_owned_body_connector.dart';
 import '../state/chat_item_presentation.dart';
 import '../state/chat_payload_reading.dart';
 import '../state/content_reference_identity.dart';
@@ -21,15 +22,7 @@ import 'timeline_reasoning_view.dart';
 import 'timeline_tool_blocks.dart';
 import 'timeline_wait_blocks.dart';
 import 'timeline_display_unit_view.dart';
-import 'timeline_content_range_view.dart';
-
-typedef ChatContentRangeBuilder = Widget Function(
-  String itemId,
-  String contentKey,
-  String label,
-  ContentRef reference,
-  Widget Function(String text, Widget child) witness,
-);
+import '../connectors/timeline_owned_body_connector.dart';
 
 /// Renders one admitted item or display unit. Grouping belongs to the sole
 /// presentation owner; this view owns only disclosure and decoded presentation.
@@ -38,7 +31,6 @@ class ChatItemView extends StatefulWidget {
     super.key,
     required this.item,
     this.bodyBuilder,
-    this.contentRangeBuilder,
     this.attachmentBuilder,
     this.monotonicMicros,
     this.onContentLayout,
@@ -49,7 +41,6 @@ class ChatItemView extends StatefulWidget {
   });
   final ChatItemPresentation item;
   final Widget Function(String id, String text)? bodyBuilder;
-  final ChatContentRangeBuilder? contentRangeBuilder;
   final Widget Function(ChatItemPresentation item)? attachmentBuilder;
   final int Function()? monotonicMicros;
   final void Function(String itemId, int layoutCompletedMicros)?
@@ -112,23 +103,11 @@ class _ChatItemViewState extends State<ChatItemView> {
       // Model text can use part.outputText.N. Do not reinterpret its manifest.
       return item.bodies;
     }
-    final declared = atom.contents.where(
-      (content) => content.role == ChatContentRole.body,
-    );
-    return item.bodies.where(
-      (body) => declared.any((content) {
-        final reference = content.reference;
-        final target = reference.target;
-        if (target is! BodyContentTarget || target.key != body.key) {
-          return false;
-        }
-        // Inline bytes belong to this envelope's declared key. Deferred bytes
-        // additionally have to retain the exact database/owner/target identity.
-        return body.reference == null ||
-            contentReferenceIdentity(body.reference!) ==
-                contentReferenceIdentity(reference);
-      }),
-    );
+    final keys = {
+      for (final content in item.currentContents)
+        if (content.role == ChatContentRole.body) content.reference.contentKey,
+    };
+    return item.bodies.where((body) => keys.contains(body.key));
   }
 
   Widget _publicEnvelope() => _sensitiveQuestions.isEmpty
@@ -223,16 +202,6 @@ class _ChatItemViewState extends State<ChatItemView> {
       'conversation.row.build',
       arguments: {'itemId': item.id},
     );
-    if (item.reference case final reference?) {
-      return widget.contentRangeBuilder?.call(
-            item.id,
-            'payload',
-            '按需查看原文 · ${item.byteLength} 字节',
-            reference,
-            _contentWitness,
-          ) ??
-          const Text('内容读取尚未就绪');
-    }
     if (item.compatibility != ChatItemCompatibility.current) {
       return _unavailable(
         item.compatibility == ChatItemCompatibility.unknown
@@ -339,7 +308,7 @@ class _ChatItemViewState extends State<ChatItemView> {
               children: [
                 for (final body in summaries)
                   Flexible(
-                    child: body.reference != null || body.inline == null
+                    child: body.hasReference || body.inline == null
                         ? TimelineBodyReadIntent(
                             summary: true,
                             child: _body(body),
@@ -399,22 +368,20 @@ class _ChatItemViewState extends State<ChatItemView> {
       if (identity != null && identity.callId != tool.toolCallId) {
         return _unavailable('工具内容身份不一致', '声明的调用身份与完成载荷不同');
       }
-      final declaredContents = item.atom?.contents;
-      final hasDeclaredBodies =
-          declaredContents?.any(
-            (content) =>
-                content.role == ChatContentRole.toolArguments ||
-                content.role == ChatContentRole.toolOutput,
-          ) ??
-          false;
+      final declaredContents = item.currentContents;
+      final hasDeclaredBodies = declaredContents.any(
+        (content) =>
+            content.role == ChatContentRole.toolArguments ||
+            content.role == ChatContentRole.toolOutput,
+      );
       final spec = toolDisplayRegistry[tool.presentationContract]!;
       final outputReference = declaredContents
-          ?.where((content) => content.role == ChatContentRole.toolOutput)
+          .where((content) => content.role == ChatContentRole.toolOutput)
           .firstOrNull
           ?.reference;
       // 只有补丁／文件内容读取输入窗口，查询等纯语义输入已在内联参数中。
       final contents = declaredContents
-          ?.where(
+          .where(
             (content) => switch (content.role) {
               ChatContentRole.toolArguments =>
                 spec.inputBody != ToolInputBody.none,
@@ -440,14 +407,14 @@ class _ChatItemViewState extends State<ChatItemView> {
             ? (
                 outputReference == null
                     ? null
-                    : contentReferenceIdentity(outputReference),
+                    : currentContentIdentity(outputReference),
                 hasDeclaredBodies,
               )
             : null,
         declaredContentBuilder: !hasDeclaredBodies
             ? null
             : (onOutputRead, acceptance) => [
-                for (final content in contents!)
+                for (final content in contents)
                   TimelineBodyReadIntent(
                     scrollable: true,
                     onRead: content.role == ChatContentRole.toolOutput
@@ -460,17 +427,15 @@ class _ChatItemViewState extends State<ChatItemView> {
                       markdownBuilder: widget.bodyBuilder,
                       acceptance: acceptance,
                     ),
-                    child:
-                        widget.contentRangeBuilder?.call(
-                          item.id,
-                          content.role.name,
-                          content.role == ChatContentRole.toolArguments
-                              ? '工具内容'
-                              : '工具结果',
-                          content.reference,
-                          _contentWitness,
-                        ) ??
-                        const Text('内容读取尚未就绪'),
+                    child: TimelineOwnedBodyConnector(
+                      itemId: item.id,
+                      contentKey: content.reference.contentKey,
+                      label: content.role == ChatContentRole.toolArguments
+                          ? '工具内容'
+                          : '工具结果',
+                      currentReference: content.reference,
+                      witness: _contentWitness,
+                    ),
                   ),
               ],
       );
@@ -788,17 +753,18 @@ class _ChatItemViewState extends State<ChatItemView> {
     ),
   );
   Widget _declaredContent(ChatAtom atom, int index) {
-    final content = atom.contents[index];
     final id = '${item.id}:content-$index';
-    final range =
-        widget.contentRangeBuilder?.call(
-          item.id,
-          'content-$index',
-          '查看内容',
-          content.reference,
-          _contentWitness,
-        ) ??
-        const Text('内容读取尚未就绪');
+    final content = index < item.currentContents.length
+        ? item.currentContents[index]
+        : null;
+    if (content == null) return const Text('内容引用缺失');
+    final range = TimelineOwnedBodyConnector(
+      itemId: item.id,
+      contentKey: content.reference.contentKey,
+      label: '查看内容',
+      currentReference: content.reference,
+      witness: _contentWitness,
+    );
     return content.role == ChatContentRole.body &&
             (atom.kind == ChatAtomKind.text || atom.kind == ChatAtomKind.input)
         ? TimelineBodyReadIntent(
@@ -820,19 +786,16 @@ class _ChatItemViewState extends State<ChatItemView> {
         ? StudioCodeBlock(text: text, horizontalScroll: false)
         : widget.bodyBuilder?.call(id, text) ??
               TimelinePlainText(id: id, text: text);
-    if (body.reference case final reference?) {
-      final range =
-          widget.contentRangeBuilder?.call(
-            item.id,
-            body.key,
-            '${body.key} · ${body.byteLength} 字节',
-            reference,
-            _contentWitness,
-          ) ??
-          Text('${body.key} · 内容读取尚未就绪');
-      return disclosed
-          ? TimelineBodyReadIntent(bodyBuilder: render, child: range)
-          : range;
+    if (body.historyReference != null || body.currentReference != null) {
+      return TimelineOwnedBodyConnector(
+        itemId: item.id,
+        contentKey: body.key,
+        label: '${body.key} · ${body.byteLength} 字节',
+        historyReference: body.historyReference,
+        currentReference: body.currentReference,
+        disclosed: disclosed,
+        witness: (text, child) => _contentWitness(text, render(text)),
+      );
     }
     final bytes = body.inline;
     if (bytes == null) return Text('${body.key} · 未提供内容或引用');

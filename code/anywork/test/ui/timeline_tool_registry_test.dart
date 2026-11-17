@@ -143,7 +143,7 @@ TimelineDisplayUnit _declared(
       id: 'declared-tool',
       blockOrder: 1,
       body: SingleDisplayBlock(
-        visibility: SingleVisibility.content,
+        visibility: HistorySingleVisibility.content,
         record: DisplayRecord(
           atom: ChatAtom(
             id: 'declared-tool',
