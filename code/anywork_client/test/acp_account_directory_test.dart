@@ -121,6 +121,7 @@ void main() {
       _auth(
         accounts: const [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 3,
             state: AcpVerifiedState(
@@ -223,6 +224,7 @@ void main() {
       final auth = _auth(
         accounts: const [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 2,
             state: AcpVerifiedState(

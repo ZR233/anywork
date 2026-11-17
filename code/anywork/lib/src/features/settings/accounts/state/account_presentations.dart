@@ -110,6 +110,7 @@ enum AcpPresentationPhase {
   preparing,
   ready,
   checking,
+  reconnecting,
   needsLogin,
   authenticating,
   verifying,

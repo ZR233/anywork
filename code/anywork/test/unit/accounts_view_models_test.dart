@@ -917,6 +917,7 @@ void publishVmAcp(
   AcpAuthStateView auth, {
   AcpAccountSettingsView? account,
   AcpUsageObservationView? usage,
+  AcpConnectionStateView connection = const AcpConnectionReadyState(),
 }) {
   account ??= vmAcpAccount;
   h.accounts.state.publish(
@@ -941,6 +942,7 @@ void publishVmAcp(
         updatedAt: 1,
         accounts: [
           AcpAuthAccountView(
+            connection: connection,
             accountId: account.accountId,
             connectionRevision: account.connectionRevision,
             state: auth,
@@ -1887,6 +1889,29 @@ void main() {
   );
 
   test(
+    'ACP connection cleanup failure remains visible before auth completes',
+    () async {
+      final h = AccountsVmHarness();
+      addTearDown(h.dispose);
+      const failure = AcpAuthFailureView(
+        code: AcpAuthFailureCodeView.cleanup,
+        stage: AcpAuthStageView.cleanup,
+        message: 'Original account process cleanup remains pending',
+        retryable: true,
+      );
+      publishVmAcp(
+        h,
+        const AcpUncheckedState(),
+        connection: const AcpConnectionBlockedState(failure: failure),
+      );
+      final owner = await listenVmAcp(h, vmAcpKey);
+      expect(owner.state.requireValue.panel.phase, AcpPresentationPhase.failed);
+      expect(owner.state.requireValue.panel.error, failure.message);
+      expect(owner.state.requireValue.panel.subtitle, isNull);
+    },
+  );
+
+  test(
     'ACP quota query is explicit and only available for current Verified',
     () async {
       final h = AccountsVmHarness();
@@ -1984,6 +2009,7 @@ void main() {
             updatedAt: 2,
             accounts: [
               AcpAuthAccountView(
+                connection: const AcpConnectionReadyState(),
                 accountId: 'acp',
                 connectionRevision: 1,
                 state: const AcpVerifiedState(checkedAt: 1, server: null),
@@ -2045,6 +2071,7 @@ void main() {
       updatedAt: 100,
       accounts: [
         const AcpAuthAccountView(
+          connection: AcpConnectionStoppedState(),
           accountId: 'acp',
           connectionRevision: 4,
           state: AcpCheckingState(operationId: 'query-usage'),
@@ -2105,6 +2132,7 @@ void main() {
         updatedAt: 1,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp',
             connectionRevision: 1,
             state: const AcpVerifiedState(checkedAt: 1, server: null),

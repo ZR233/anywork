@@ -12,17 +12,17 @@ const MAX_TOTAL_LIMITS: usize = 256;
 const MAX_NAME_BYTES: usize = 256;
 const MAX_LINE_BYTES: usize = 1024;
 
-pub(super) fn map_report(report: pl_acp::auth::UsageReport) -> AcpUsageState {
+pub(super) fn map_report(report: pl_acp::auth::ProbeReport) -> AcpUsageState {
     match report {
-        pl_acp::auth::UsageReport::Text(text) => parse(&text).unwrap_or(AcpUsageState::Failed {
+        pl_acp::auth::ProbeReport::Text(text) => parse(&text).unwrap_or(AcpUsageState::Failed {
             code: AcpUsageFailureCode::InvalidResponse,
         }),
-        pl_acp::auth::UsageReport::Failed(failure) => AcpUsageState::Failed {
+        pl_acp::auth::ProbeReport::Failed(failure) => AcpUsageState::Failed {
             code: match failure {
-                pl_acp::auth::UsageFailure::Query => AcpUsageFailureCode::Query,
-                pl_acp::auth::UsageFailure::Timeout => AcpUsageFailureCode::Timeout,
-                pl_acp::auth::UsageFailure::Transport => AcpUsageFailureCode::Transport,
-                pl_acp::auth::UsageFailure::ResourceLimit => AcpUsageFailureCode::ResourceLimit,
+                pl_acp::auth::ProbeFailure::Query => AcpUsageFailureCode::Query,
+                pl_acp::auth::ProbeFailure::Timeout => AcpUsageFailureCode::Timeout,
+                pl_acp::auth::ProbeFailure::Transport => AcpUsageFailureCode::Transport,
+                pl_acp::auth::ProbeFailure::ResourceLimit => AcpUsageFailureCode::ResourceLimit,
             },
         },
     }

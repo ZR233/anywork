@@ -11,7 +11,7 @@ impl StudioRuntime {
             self.config_runtime
                 .with_consistent_snapshot(|settings, catalog_state| {
                     let acp_accounts = self
-                        .acp_auth
+                        .acp_accounts
                         .settings_view(settings.revision, &settings.acp)?;
                     Ok::<_, anyhow::Error>((
                         settings.clone(),

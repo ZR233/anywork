@@ -306,6 +306,25 @@ pub struct AcpAuthActiveOperation {
     pub action: AcpAuthAction,
 }
 
+/// 账户后台连接的当前事实，与登录状态及单次操作分开。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "camelCase", tag = "kind", deny_unknown_fields)]
+pub enum AcpConnectionState {
+    Stopped,
+    Starting,
+    Ready,
+    Retrying {
+        attempt: u32,
+        /// Unix 秒；实际调度使用宿主单调时钟。
+        next_retry_at: i64,
+        failure: AcpAuthFailure,
+    },
+    Blocked {
+        failure: AcpAuthFailure,
+    },
+    Stopping,
+}
+
 /// 一个接入的认证观察条目。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(
@@ -317,6 +336,7 @@ pub struct AcpAuthAccount {
     pub account_id: String,
     /// 本次观察对应的连接身份；不等于 Settings revision。
     pub connection_revision: u64,
+    pub connection: AcpConnectionState,
     pub state: AcpAuthState,
     /// 本连接代次最近一次显式额度查询；未查询时为空。
     #[serde(default)]
@@ -335,6 +355,7 @@ pub struct AcpAuthAccount {
 struct AcpAuthAccountWire {
     account_id: String,
     connection_revision: u64,
+    connection: AcpConnectionState,
     state: AcpAuthState,
     #[serde(default)]
     usage: Option<AcpUsageObservation>,
@@ -346,6 +367,7 @@ impl From<AcpAuthAccountWire> for AcpAuthAccount {
         Self {
             account_id: wire.account_id,
             connection_revision: wire.connection_revision,
+            connection: wire.connection,
             state: wire.state,
             usage: wire.usage,
             active_operation: wire.active_operation.0,
@@ -548,10 +570,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_active_operation_field_is_a_decode_error() {
+    fn connection_and_active_operation_are_required_observation_fields() {
         let busy = AcpAuthAccount {
             account_id: "account".to_string(),
             connection_revision: 7,
+            connection: AcpConnectionState::Starting,
             state: AcpAuthState::Checking {
                 operation_id: "op-1".to_string(),
             },
@@ -570,6 +593,12 @@ mod tests {
             .expect("json object")
             .remove("activeOperation");
         assert!(serde_json::from_value::<AcpAuthAccount>(missing).is_err());
+        let mut missing_connection = serde_json::to_value(&busy).expect("serialize account");
+        missing_connection
+            .as_object_mut()
+            .unwrap()
+            .remove("connection");
+        assert!(serde_json::from_value::<AcpAuthAccount>(missing_connection).is_err());
 
         // 同样拒绝信封内的未知字段：wire 形状不能被静默扩写。
         let mut unknown_field = serde_json::to_value(&busy).expect("serialize busy account");

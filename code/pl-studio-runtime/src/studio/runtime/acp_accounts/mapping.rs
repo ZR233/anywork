@@ -12,7 +12,7 @@ use crate::{
 use anyhow::Result;
 
 use super::super::acp_install::PrepareFailure;
-use super::registry::AcpAuthInner;
+use super::registry::AcpAccountInner;
 
 /// 类型化阶段失败（与 wire 形态一一对应）。
 #[derive(Clone)]
@@ -93,14 +93,6 @@ pub(super) fn prepare_failure(failure: PrepareFailure) -> AcpFailure {
             stage: AcpAuthStage::Prepare,
             retryable: true,
         },
-    }
-}
-
-/// 协议动作映射；wire 类型不进入 pl-acp，pl-acp 类型也不进入产品 wire。
-pub(super) fn protocol_action(action: &AcpAuthAction) -> pl_acp::auth::AuthAction {
-    match action {
-        AcpAuthAction::Check => pl_acp::auth::AuthAction::Check,
-        AcpAuthAction::QueryUsage => pl_acp::auth::AuthAction::QueryUsage,
     }
 }
 
@@ -251,7 +243,7 @@ pub(super) fn canonical_failure_message(code: AcpAuthFailureCode, stage: AcpAuth
 
 /// 准备接入专属空探测目录；不存在或旧内容一律重建，绝不使用用户项目目录。
 pub(super) async fn prepare_probe_dir(
-    inner: &AcpAuthInner,
+    inner: &AcpAccountInner,
     account_id: &str,
 ) -> Result<PathBuf, String> {
     let directory = inner

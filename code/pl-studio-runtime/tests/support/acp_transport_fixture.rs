@@ -23,6 +23,16 @@ pub struct AcpTransportFixture {
 }
 
 impl AcpTransportFixture {
+    pub fn business_sessions(&self) -> Result<Vec<serde_json::Value>> {
+        let sessions = std::fs::read_to_string(self.home.path().join("sessions"))?;
+        let mut sessions = sessions
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        sessions.retain(|session| session["mcp"] == true);
+        Ok(sessions)
+    }
+
     pub async fn new(mode: &str) -> Result<Self> {
         Self::with_mcp_source(mode, pl_studio_runtime::HostMcpSource::External).await
     }
@@ -30,6 +40,18 @@ impl AcpTransportFixture {
     pub async fn with_mcp_source(
         mode: &str,
         host_mcp_source: pl_studio_runtime::HostMcpSource,
+    ) -> Result<Self> {
+        Self::configured(mode, host_mcp_source, true).await
+    }
+
+    pub async fn disabled(mode: &str) -> Result<Self> {
+        Self::configured(mode, pl_studio_runtime::HostMcpSource::External, false).await
+    }
+
+    async fn configured(
+        mode: &str,
+        host_mcp_source: pl_studio_runtime::HostMcpSource,
+        enabled: bool,
     ) -> Result<Self> {
         let home = tempfile::tempdir()?;
         let program = home.path().join("peer.py");
@@ -54,7 +76,7 @@ impl AcpTransportFixture {
             account: AcpAccountUpdate {
                 account_id: "business-peer".into(),
                 name: "Fixture peer".into(),
-                enabled: true,
+                enabled,
                 command: Some("/usr/bin/python3".into()),
                 args: Some(vec![program.to_string_lossy().into_owned()]),
                 template: None,

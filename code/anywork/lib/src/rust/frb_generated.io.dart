@@ -1860,6 +1860,9 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
+  BridgeAcpConnectionState dco_decode_bridge_acp_connection_state(dynamic raw);
+
+  @protected
   BridgeAcpContentBlock dco_decode_bridge_acp_content_block(dynamic raw);
 
   @protected
@@ -7068,6 +7071,11 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAcpConfigureRequest sse_decode_bridge_acp_configure_request(
+    SseDeserializer deserializer,
+  );
+
+  @protected
+  BridgeAcpConnectionState sse_decode_bridge_acp_connection_state(
     SseDeserializer deserializer,
   );
 
@@ -13378,6 +13386,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_bridge_acp_configure_request(
     BridgeAcpConfigureRequest self,
+    SseSerializer serializer,
+  );
+
+  @protected
+  void sse_encode_bridge_acp_connection_state(
+    BridgeAcpConnectionState self,
     SseSerializer serializer,
   );
 

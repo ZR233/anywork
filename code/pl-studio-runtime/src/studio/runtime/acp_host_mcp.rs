@@ -1085,8 +1085,12 @@ mod tests {
             let wrong = peer.request("tools/call", json!({"name":"anywork_write_stdin","arguments":{"taskId":"task:foreign-instance","chars":"do-not-send"}})).await?;
             ensure!(wrong["result"]["isError"] == true);
 
-            let output = peer.tool("anywork_exec_command", json!({"command":"head -c 70000 /dev/zero | tr '\\0' x","maxOutputChars":64})).await?;
-            ensure!(output["stdout"]["wasTruncated"] == true && output["stdout"]["content"].as_str().context("preview")?.len() <= 64);
+            let mut output = peer.tool("anywork_exec_command", json!({"command":"head -c 70000 /dev/zero | tr '\\0' x","maxOutputChars":64})).await?;
+            if output["status"] == "running" {
+                let task = output["taskId"].as_str().context("output command receipt")?.to_owned();
+                output = peer.task_result(&task).await?;
+            }
+            ensure!(output["stdout"]["wasTruncated"] == true && output["stdout"]["content"].as_str().context("preview")?.len() <= 64, "unexpected output preview: {output}");
             let capture = output["stdoutFile"].as_str().context("capture path")?;
             ensure!(tokio::fs::metadata(root.join(capture)).await?.len() == 70000);
             let cancelled = peer.tool("anywork_exec_command", json!({"command":"cat","interactive":true})).await?;

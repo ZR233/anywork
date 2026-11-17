@@ -261,6 +261,7 @@ class AccountCardViewModel extends _$AccountCardViewModel {
     final applicableAction = _applicableAction(account, source);
     AcpUsagePresentation? acpUsage;
     AcpAuthStateView? acpAuth;
+    AcpConnectionStateView? acpConnection;
     final revision = account.acpConnectionRevision;
     if (_key.kind == AccountKind.acp && revision != null) {
       final resource = _acp.auth.value;
@@ -268,6 +269,9 @@ class AccountCardViewModel extends _$AccountCardViewModel {
           resource.stale ||
           resource.stamp?.ownerEpoch != source.stamp?.ownerEpoch;
       if (!stale) {
+        acpConnection = resource.value
+            ?.account(_key.id, connectionRevision: revision)
+            ?.connection;
         acpAuth = resource.value
             ?.account(_key.id, connectionRevision: revision)
             ?.state;
@@ -302,16 +306,20 @@ class AccountCardViewModel extends _$AccountCardViewModel {
             )
           : AccountRowContent.acp(
               status:
-                  _strings[switch (acpAuth) {
-                    AcpCheckingState() => 'acp.checking',
-                    AcpRequiredState() => 'acp.needsLogin',
-                    AcpAuthenticatingState() => 'acp.authenticating',
-                    AcpVerifyingState() => 'acp.verifying',
-                    AcpVerifiedState() => 'acp.connected',
-                    AcpCancellingState() => 'acp.cancelling',
-                    AcpClosingState() => 'acp.closing',
-                    AcpCancelledState() => 'acp.cancelled',
-                    AcpFailedState() => 'acp.failed',
+                  _strings[switch ((acpConnection, acpAuth)) {
+                    (AcpConnectionRetryingState(), _) => 'acp.reconnecting',
+                    (AcpConnectionStartingState(), _) => 'acp.checking',
+                    (AcpConnectionStoppingState(), _) => 'acp.closing',
+                    (AcpConnectionBlockedState(), _) => 'acp.failed',
+                    (_, AcpCheckingState()) => 'acp.checking',
+                    (_, AcpRequiredState()) => 'acp.needsLogin',
+                    (_, AcpAuthenticatingState()) => 'acp.authenticating',
+                    (_, AcpVerifyingState()) => 'acp.verifying',
+                    (_, AcpVerifiedState()) => 'acp.connected',
+                    (_, AcpCancellingState()) => 'acp.cancelling',
+                    (_, AcpClosingState()) => 'acp.closing',
+                    (_, AcpCancelledState()) => 'acp.cancelled',
+                    (_, AcpFailedState()) => 'acp.failed',
                     _ => 'acp',
                   }],
               usage: acpUsage,

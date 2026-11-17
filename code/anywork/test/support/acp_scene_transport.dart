@@ -130,6 +130,7 @@ class AcpSceneTransport extends TestDemoStudioTransport {
       updatedAt: snapshot.updatedAt + 1,
       accounts: [
         AcpAuthAccountView(
+          connection: const AcpConnectionStoppedState(),
           accountId: accountId,
           connectionRevision: revision,
           state: state,

@@ -207,41 +207,69 @@ void main() {
           'isolated ACP child Profile is canonical before root creation',
         );
       }
-      if (managed) {
-        final authDemand = graph.acp.observeAuth();
-        addTearDown(authDemand.release);
-        const identity = AcpAccountIdentity(serviceId);
-        final revision = graph.accounts.state.value
-            .account(identity)!
-            .acpConnectionRevision!;
-        await graph.acp.check(identity);
-        String? previousPhase;
-        await scene.until(
-          () {
-            final auth = graph.acp.auth.value.value?.stateOf(
-              serviceId,
-              connectionRevision: revision,
+      final authDemand = graph.acp.observeAuth();
+      addTearDown(authDemand.release);
+      const identity = AcpAccountIdentity(serviceId);
+      final revision = graph.accounts.state.value
+          .account(identity)!
+          .acpConnectionRevision!;
+      Future<void> backgroundReady() => scene.until(
+        () {
+          final account = graph.acp.auth.value.value?.account(
+            serviceId,
+            connectionRevision: revision,
+          );
+          final auth = account?.state;
+          if (auth is AcpRequiredState) {
+            throw StateError('Existing agy credentials require explicit login');
+          }
+          if (account?.connection case AcpConnectionBlockedState(
+            :final failure,
+          )) {
+            throw StateError(
+              'Background connection blocked: ${failure.code.name}',
             );
-            final phase = auth.runtimeType.toString();
-            if (phase != previousPhase) {
-              previousPhase = phase;
-              debugPrint('AGY_MANAGED_CHECK $phase');
-            }
-            if (auth is AcpFailedState) {
-              throw StateError(
-                'Managed check failed: ${auth.failure.stage.name}/${auth.failure.code.name}: ${auth.failure.message}',
-              );
-            }
-            if (auth is AcpRequiredState) {
-              throw StateError('Managed server requires an explicit login');
-            }
-            return auth is AcpVerifiedState;
-          },
-          'managed server connection and existing login are verified',
-          timeout: const Duration(seconds: 90),
+          }
+          return account?.connection is AcpConnectionReadyState &&
+              auth is AcpVerifiedState &&
+              account?.activeOperation == null;
+        },
+        'enabled ACP account prepares and verifies login without an explicit check',
+        timeout: const Duration(seconds: 90),
+      );
+      await backgroundReady();
+      evidence['backgroundPreparedWithoutExplicitCheck'] = true;
+      final accountProcesses = !managed && Platform.isLinux
+          ? AgyLocalProcesses()
+          : null;
+      LinuxProcessIdentity? sharedInstance;
+      if (accountProcesses != null) {
+        final original = await accountProcesses.accountInstance(command!);
+        evidence['initialAccountInstance'] = original.evidence;
+        final current = LinuxProcessIdentity.parse(
+          await File('/proc/${original.pid}/stat').readAsString(),
         );
-        await record('managed-connection-verified');
+        expect(original.sameProcess(current), isTrue);
+        // Fault injection targets only this isolated GUI's own current ACP child.
+        expect(Process.killPid(original.pid, ProcessSignal.sigkill), isTrue);
+        await scene.until(
+          () =>
+              graph.acp.auth.value.value
+                      ?.account(serviceId, connectionRevision: revision)
+                      ?.connection
+                  is AcpConnectionRetryingState,
+          'unexpected agy exit schedules automatic reconnect',
+          timeout: const Duration(seconds: 30),
+        );
+        await backgroundReady();
+        sharedInstance = await accountProcesses.accountInstance(command);
+        expect(sharedInstance.sameProcess(original), isFalse);
+        evidence['reconnectedAccountInstance'] = sharedInstance.evidence;
+        evidence['automaticReconnectWithoutLoginOrPromptReplay'] = true;
       }
+      await record(
+        managed ? 'managed-connection-verified' : 'account-background-ready',
+      );
       final project = await harness.openProject(
         scene,
         projectPath,
@@ -285,6 +313,12 @@ void main() {
       expect(owner.state.lastCompleted, isNull);
       evidence['initialConfig'] = _configuration(owner.state);
       await scene.capture('agy-draft-ready');
+      if (accountProcesses != null) {
+        final current = await accountProcesses.accountInstance(command!);
+        expect(current.sameProcess(sharedInstance!), isTrue);
+        evidence['draftReusesBackgroundInstance'] = current.evidence;
+      }
+
       var pendingObserved = false;
       final configWatch = owner.source.watch((state) {
         if (state.configPending) pendingObserved = true;
@@ -642,6 +676,11 @@ void main() {
         record: record,
         closeHarness: closeHarness,
       );
+      if (accountProcesses != null) {
+        await accountProcesses.verifyClosed();
+        evidence['accountProcessExitChecks'] = accountProcesses.exitEvidence;
+        await record('account-instances-reclaimed');
+      }
     },
     // A bounded startup prompt, then three 240-second phases, setup and closure.
     timeout: const Timeout(Duration(minutes: 16)),

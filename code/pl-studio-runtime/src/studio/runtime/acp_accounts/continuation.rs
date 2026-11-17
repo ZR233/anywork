@@ -3,15 +3,15 @@
 use crate::{AcpAuthMethodKind, AcpAuthState, ContinueAcpAuthRequest, StudioErrorCode};
 use anyhow::Result;
 
-use super::admission::{AcpAuthAcceptance, AcpAuthRuntime, MAX_ACCEPTED_STARTS};
+use super::admission::{AcpAccountAcceptance, AcpAccountRuntime, MAX_ACCEPTED_STARTS};
 use super::mapping::{acp_error, ensure_operation_id};
 use super::registry::{AcceptedAction, AcceptedIntent};
 
-impl AcpAuthRuntime {
+impl AcpAccountRuntime {
     pub(crate) fn continue_auth(
         &self,
         request: ContinueAcpAuthRequest,
-    ) -> Result<AcpAuthAcceptance> {
+    ) -> Result<AcpAccountAcceptance> {
         ensure_operation_id(&request.operation_id)?;
         ensure_operation_id(&request.target_operation_id)?;
         let inner = self.inner.clone();
@@ -70,7 +70,7 @@ impl AcpAuthRuntime {
                             false,
                         ));
                     }
-                    return Ok(AcpAuthAcceptance {
+                    return Ok(AcpAccountAcceptance {
                         snapshot: registry.snapshot(),
                         changed: false,
                     });
@@ -140,7 +140,7 @@ impl AcpAuthRuntime {
                 let snapshot = registry.snapshot();
                 drop(registry);
                 inner.emit(snapshot.clone());
-                Ok(AcpAuthAcceptance {
+                Ok(AcpAccountAcceptance {
                     snapshot,
                     changed: true,
                 })
@@ -222,7 +222,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         let saved = runtime.config_runtime.read()?;
         let revision = saved.acp.definitions["generic"].connection_revision;
         let error = runtime
-            .acp_auth
+            .acp_accounts
             .start(crate::StartAcpAuthRequest {
                 operation_id: "no-generic-usage".into(),
                 account_id: "generic".into(),
@@ -235,29 +235,31 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             crate::error_mapping::studio_error_from_anyhow(error).code,
             StudioErrorCode::InvalidArgument
         );
-        assert!(!requests.exists(), "rejected usage must not spawn");
-        runtime.acp_auth.start(crate::StartAcpAuthRequest {
-            operation_id: "generic-check".into(),
-            account_id: "generic".into(),
-            expected_connection_revision: revision,
-            action: crate::AcpAuthAction::Check,
-        })?;
-        let operation = runtime.acp_auth.inner.lock().slots["generic"]
-            .operation
-            .clone()
-            .expect("admitted operation");
+        // Saving an enabled generic account already admitted the original background check.
+        // Unsupported usage must not add a second check, login or prompt.
         let joined = tokio::time::timeout(std::time::Duration::from_secs(15), async {
-            let mut join = operation.join.lock().await;
-            join.as_mut().expect("supervisor").await
+            loop {
+                let state = runtime.acp_accounts.read_state();
+                if state.accounts.iter().any(|account| {
+                    account.active_operation.is_none()
+                        && matches!(
+                            account.state,
+                            crate::AcpAuthState::Verified { server: None, .. }
+                        )
+                }) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
         })
         .await;
-        let state = runtime.acp_auth.read_state();
+        let state = runtime.acp_accounts.read_state();
         let verified = matches!(
             state.accounts[0].state,
             crate::AcpAuthState::Verified { server: None, .. }
         );
         let shutdown = runtime.shutdown_runtime().await;
-        joined??;
+        joined?;
         shutdown?;
         assert!(
             verified,
@@ -304,7 +306,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         // serialization, deduplication, cancellation and publication are real.
         let (sender, mut commands) = tokio::sync::mpsc::channel(1);
         let operation = {
-            let mut registry = runtime.acp_auth.inner.lock();
+            let mut registry = runtime.acp_accounts.inner.lock();
             let slot = registry
                 .slots
                 .get_mut("account")
@@ -354,10 +356,10 @@ with open(sys.argv[1], 'a', buffering=1) as log:
                 ..request.clone()
             },
         ] {
-            assert!(runtime.acp_auth.continue_auth(invalid).is_err());
+            assert!(runtime.acp_accounts.continue_auth(invalid).is_err());
             assert!(commands.try_recv().is_err());
         }
-        let accepted = runtime.acp_auth.continue_auth(request.clone())?;
+        let accepted = runtime.acp_accounts.continue_auth(request.clone())?;
         assert!(accepted.changed);
         assert!(matches!(&accepted.snapshot.accounts[0].state,
             AcpAuthState::Authenticating { operation_id, .. } if operation_id == "flow"));
@@ -373,24 +375,24 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         assert!(
             matches!(commands.try_recv(), Ok(pl_acp::auth::AuthCommand::Authenticate { method_id }) if method_id == "browser")
         );
-        assert!(!runtime.acp_auth.continue_auth(request.clone())?.changed);
+        assert!(!runtime.acp_accounts.continue_auth(request.clone())?.changed);
         assert!(commands.try_recv().is_err());
         assert!(
             runtime
-                .acp_auth
+                .acp_accounts
                 .continue_auth(ContinueAcpAuthRequest {
                     operation_id: "other-click".into(),
                     ..request
                 })
                 .is_err()
         );
-        runtime.acp_auth.cancel(crate::CancelAcpAuthRequest {
+        runtime.acp_accounts.cancel(crate::CancelAcpAuthRequest {
             operation_id: "cancel".into(),
             account_id: "account".into(),
             target_operation_id: "flow".into(),
         })?;
         assert!(operation.cancel.is_cancelled());
-        runtime.acp_auth.inner.complete_operation(
+        runtime.acp_accounts.inner.complete_operation(
             "account",
             1,
             operation.connection_revision,
@@ -401,13 +403,13 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             None,
         );
         assert!(matches!(
-            runtime.acp_auth.inner.lock().slots["account"].state,
+            runtime.acp_accounts.inner.lock().slots["account"].state,
             AcpAuthState::Cancelled
         ));
         // 终态与释放槽位同事务提交：活动操作投影随之清空。
         assert_eq!(
             runtime
-                .acp_auth
+                .acp_accounts
                 .inner
                 .lock()
                 .snapshot()
@@ -444,7 +446,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         .await?;
         let (sender, _commands) = tokio::sync::mpsc::channel(1);
         let operation = {
-            let mut registry = runtime.acp_auth.inner.lock();
+            let mut registry = runtime.acp_accounts.inner.lock();
             let slot = registry
                 .slots
                 .get_mut("account")
@@ -471,7 +473,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             let _ = cancel_seen.send(());
             let _ = finishing.await;
         }));
-        let mut first_wait = Box::pin(runtime.acp_auth.cancel_and_join());
+        let mut first_wait = Box::pin(runtime.acp_accounts.cancel_and_join());
         tokio::select! {
             biased;
             result = &mut first_wait => panic!("unfinished task joined: {result:?}"),
@@ -482,9 +484,9 @@ with open(sys.argv[1], 'a', buffering=1) as log:
         drop(first_wait);
         assert!(operation.join.try_lock()?.is_some());
         finish.send(()).expect("owned task is still waiting");
-        runtime.acp_auth.cancel_and_join().await?;
+        runtime.acp_accounts.cancel_and_join().await?;
         assert!(operation.join.lock().await.is_none());
-        runtime.acp_auth.inner.complete_operation(
+        runtime.acp_accounts.inner.complete_operation(
             "account",
             1,
             operation.connection_revision,
@@ -495,7 +497,7 @@ with open(sys.argv[1], 'a', buffering=1) as log:
             None,
         );
         assert!(matches!(
-            runtime.acp_auth.read_state().accounts[0].state,
+            runtime.acp_accounts.read_state().accounts[0].state,
             AcpAuthState::Cancelled
         ));
         runtime.shutdown_runtime().await?;

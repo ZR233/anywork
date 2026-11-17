@@ -371,14 +371,20 @@ pub(super) enum PublishRejection {
 pub(super) struct AcpInstallInner {
     pub(super) store: crate::studio::StudioStore,
     events: ProductEventBus,
+    accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
     registry: Mutex<Registry>,
 }
 
 impl AcpInstallInner {
-    pub(super) fn new(store: crate::studio::StudioStore, events: ProductEventBus) -> Self {
+    pub(super) fn new(
+        store: crate::studio::StudioStore,
+        events: ProductEventBus,
+        accounts: crate::studio::runtime::acp_accounts::AcpAccountRuntime,
+    ) -> Self {
         Self {
             store,
             events,
+            accounts,
             registry: Mutex::new(Registry::default()),
         }
     }
@@ -579,7 +585,13 @@ impl AcpInstallInner {
             registry.bump();
             registry.snapshot()
         };
+        let ready = snapshot.installations.iter().any(|entry| {
+            entry.provider == provider && matches!(entry.state, AcpInstallState::Ready { .. })
+        });
         self.emit(snapshot);
+        if ready {
+            self.accounts.installation_ready(provider);
+        }
     }
 
     /// 监督任务异常终止（panic）时的收尾：清理句柄槽、释放 busy 并发布可观察失败。

@@ -13,7 +13,7 @@ pub type ThreadPreparationObserver =
 
 mod account_usage;
 pub mod accounts;
-mod acp_auth;
+mod acp_accounts;
 pub(crate) mod acp_business;
 mod acp_detection;
 pub(crate) mod acp_host_mcp;
@@ -240,7 +240,7 @@ pub struct StudioRuntime {
     thread_modes: crate::mode::ThreadModeManager,
     account_usage: AccountUsageRuntime,
     /// ACP 接入与认证 owner：连接身份、操作代次、探测资源与独立 `acpAuth` topic。
-    acp_auth: acp_auth::AcpAuthRuntime,
+    acp_accounts: acp_accounts::AcpAccountRuntime,
     chatgpt_auth: chatgpt_auth::ChatGptAuthRuntime,
     /// 官方 server 准备 owner：与认证、Settings 相互独立的共享资产 owner。
     acp_install: acp_install::AcpInstallRuntime,

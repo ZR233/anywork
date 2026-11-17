@@ -57,7 +57,7 @@ final class AcpAccountViewModelProvider
 }
 
 String _$acpAccountViewModelHash() =>
-    r'b761a32e1ae9dc9d597876c32a7c91a0cefebdf9';
+    r'c680142b6617cd2b9237820b58513d986c45a587';
 
 /// ACP display/intent ownership. It does not own configuration or synthesize
 /// authentication/install success. Start and cancel have independent lanes.

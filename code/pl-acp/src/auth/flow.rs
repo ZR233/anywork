@@ -2,8 +2,8 @@
 //!
 //! 每个步骤都在连接前台 future 中顺序执行：`initialize` 协商 v1 能力并核对宿主要求的
 //! 服务端版本，随后按命令探测 `session/new` 或在核验方法后登录再探测，最后按已协商能力
-//! 释放探测会话。普通检查与登录不发送 prompt；只有显式额度查询会在带 SDK session 路由的
-//! 探测会话中发送固定 `/usage`。这里不安装工具，也不声明文件系统或终端能力。
+//! 释放探测会话。普通检查与登录不发送 prompt；受限文本回合的内容和预算由宿主策略提供。
+//! 这里不安装工具，也不声明文件系统或终端能力，不解释任何供应商私有命令。
 
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::schema::{
@@ -12,11 +12,10 @@ use agent_client_protocol::v1::schema::{
 };
 use agent_client_protocol::{Agent, JsonRpcRequest};
 
-use super::limits;
 use super::{
     AuthAction, AuthCommand, AuthError, AuthFailureKind, AuthMethod, AuthMethodKind, AuthOutcome,
-    AuthProgress, AuthRequest, AuthStage, CancellationToken, CleanupBudget, ServerInfo,
-    UsageFailure, UsageReport, watch,
+    AuthProgress, AuthRequest, AuthStage, CancellationToken, CleanupBudget, ProbeFailure,
+    ProbeReport, ServerInfo, watch,
 };
 
 /// 执行一次认证命令，返回终态或类型化失败。
@@ -52,9 +51,9 @@ pub(super) async fn negotiate(
     };
 
     loop {
-        let outcome = match action {
-            AuthAction::Check => session.probe_session(false).await?,
-            AuthAction::QueryUsage => session.probe_session(true).await?,
+        let outcome = match &action {
+            AuthAction::Check => session.probe_session(None).await?,
+            AuthAction::Probe(request) => session.probe_session(Some(request)).await?,
         };
         if let Some(outcome) = outcome {
             return Ok(outcome);
@@ -186,7 +185,10 @@ impl Session<'_> {
 
     /// 独立、空 MCP 的探测 session。接收预算由原 session 观察窗口与报告预算共同约束，
     /// 不把业务历史字节计入认证额度，也不建立 SDK 的无界 ActiveSession 队列。
-    async fn probe_session(&self, usage: bool) -> Result<Option<AuthOutcome>, AuthError> {
+    async fn probe_session(
+        &self,
+        probe: Option<&super::ProbeRequest>,
+    ) -> Result<Option<AuthOutcome>, AuthError> {
         use crate::session::{self, Open, OpenRequest};
         publish(self.progress, AuthProgress::Verifying);
         let (session, mut observer, driver) = session::channel(OpenRequest {
@@ -206,14 +208,15 @@ impl Session<'_> {
                 Err(error) if error.is_auth_required() => Ok(None),
                 Err(error) => Err(error),
                 Ok(_) => {
-                    let report = if usage {
-                        Some(self.query_turn(&session, &mut observer).await?)
-                    } else {
-                        None
+                    let report = match probe {
+                        Some(request) => {
+                            Some(self.query_turn(&session, &mut observer, request).await?)
+                        }
+                        None => None,
                     };
                     Ok(Some(AuthOutcome::Verified {
                         server: self.server.clone(),
-                        usage: report,
+                        report,
                     }))
                 }
             };
@@ -251,11 +254,12 @@ impl Session<'_> {
         &self,
         session: &crate::session::Session,
         observer: &mut crate::session::Observer,
-    ) -> Result<UsageReport, AuthError> {
+        request: &super::ProbeRequest,
+    ) -> Result<ProbeReport, AuthError> {
         use crate::session::Event;
         session
             .submit(vec![ContentBlock::Text(
-                agent_client_protocol::v1::schema::TextContent::new("/usage"),
+                agent_client_protocol::v1::schema::TextContent::new(request.prompt.clone()),
             )])
             .await
             .map_err(|error| AuthError::from_session(error, AuthStage::Probe))?;
@@ -272,9 +276,7 @@ impl Session<'_> {
                             }),
                         ..
                     }) => {
-                        if output.len().saturating_add(text.text.len())
-                            > limits::USAGE_REPORT_BYTE_BUDGET
-                        {
+                        if output.len().saturating_add(text.text.len()) > request.max_bytes {
                             exceeded = true;
                         } else if !exceeded {
                             output.push_str(&text.text);
@@ -285,26 +287,26 @@ impl Session<'_> {
                             Ok(response)
                                 if response.stop_reason == StopReason::EndTurn && !exceeded =>
                             {
-                                UsageReport::Text(output)
+                                ProbeReport::Text(output)
                             }
-                            _ if exceeded => UsageReport::Failed(UsageFailure::ResourceLimit),
-                            _ => UsageReport::Failed(UsageFailure::Query),
+                            _ if exceeded => ProbeReport::Failed(ProbeFailure::ResourceLimit),
+                            _ => ProbeReport::Failed(ProbeFailure::Query),
                         };
                     }
                     Event::Permission { id, .. } => {
                         let _ = session.answer_permission(id, None).await;
                     }
-                    Event::Gap(_) => return UsageReport::Failed(UsageFailure::ResourceLimit),
-                    Event::Failed(_) => return UsageReport::Failed(UsageFailure::Transport),
+                    Event::Gap(_) => return ProbeReport::Failed(ProbeFailure::ResourceLimit),
+                    Event::Failed(_) => return ProbeReport::Failed(ProbeFailure::Transport),
                     _ => {}
                 }
             }
-            UsageReport::Failed(UsageFailure::Transport)
+            ProbeReport::Failed(ProbeFailure::Transport)
         };
         tokio::select! {
             biased;
             () = self.wire.cancellation.cancelled() => Err(AuthError::cancelled(AuthStage::Probe)),
-            result = tokio::time::timeout(limits::USAGE_QUERY_BUDGET, collect) => Ok(result.unwrap_or(UsageReport::Failed(UsageFailure::Timeout))),
+            result = tokio::time::timeout(request.budget, collect) => Ok(result.unwrap_or(ProbeReport::Failed(ProbeFailure::Timeout))),
         }
     }
 }

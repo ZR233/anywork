@@ -61,6 +61,7 @@ final class _AcpTransport extends AccountsTestTransport {
         updatedAt: revision,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-1',
             connectionRevision: connectionRevision,
             state: state,
@@ -193,6 +194,7 @@ const _authenticating = AcpAuthSnapshotView(
   updatedAt: 5,
   accounts: [
     AcpAuthAccountView(
+      connection: const AcpConnectionStoppedState(),
       accountId: 'acp-1',
       connectionRevision: 7,
       state: AcpAuthenticatingState(
@@ -229,6 +231,7 @@ void main() {
         updatedAt: 2,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionReadyState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: const AcpVerifiedState(checkedAt: 2, server: null),
@@ -367,6 +370,7 @@ void main() {
         updatedAt: 0,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpUncheckedState(),
@@ -398,6 +402,7 @@ void main() {
         updatedAt: 2,
         accounts: [
           AcpAuthAccountView(
+            connection: const AcpConnectionStoppedState(),
             accountId: 'acp-1',
             connectionRevision: 7,
             state: AcpCancelledState(),

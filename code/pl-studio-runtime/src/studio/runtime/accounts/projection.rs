@@ -85,7 +85,7 @@ pub(super) fn read(
                         });
                     }
                     for account in runtime
-                        .acp_auth
+                        .acp_accounts
                         .settings_view(config.revision, &config.acp)?
                     {
                         accounts.push(AccountSummary {
@@ -155,7 +155,7 @@ pub(super) fn read(
                             .transpose()?
                     }
                     AccountIdentity::Acp { account_id } => runtime
-                        .acp_auth
+                        .acp_accounts
                         .settings_view(config.revision, &config.acp)?
                         .into_iter()
                         .find(|account| &account.account_id == account_id)
@@ -207,7 +207,7 @@ pub(super) fn read(
             })
         }
         AccountObservationTarget::AcpAuth => {
-            let snapshot = runtime.acp_auth.read_state();
+            let snapshot = runtime.acp_accounts.read_state();
             Ok(AccountDomainFrame::AcpAuth {
                 stamp: runtime.resource_stamp("acp-auth", snapshot.revision),
                 snapshot,
