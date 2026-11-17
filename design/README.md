@@ -2,8 +2,6 @@
 
 本目录收录 Pure-Lang / anywork 的架构设计文档。文档聚焦设计目标、架构原理、接口契约、状态逻辑与工程约定；具体实现细节保留在源码、类型签名与必要的代码注释中。
 
-测试开发方法统一维护于内置 [test-quality](../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)；[测试与人工验收](./24-testing.md) 只维护项目基础设施及证据合同。
-
 ## 阅读顺序
 
 | 编号 | 文档 | 内容 |

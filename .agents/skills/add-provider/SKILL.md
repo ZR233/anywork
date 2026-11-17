@@ -53,7 +53,6 @@ Responses 兼容不自动意味着支持这些能力；自定义地址的服务�
 
 ## 验证与交付
 
-测试开发按内置 [test-quality](../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)，工程入口见 AGENTS.md。
 现有 pl-model 行为测试可提供 loopback 请求、协议解析、账号隔离和失败传播证据；以下补充模型协议与迁移的实际风险。
 
 迁移夹具先与基线实际写盘格式核对：SQL 旧列名、JSON casing、版本号、嵌套非空诊断及缺失值

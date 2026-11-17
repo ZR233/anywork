@@ -1,7 +1,6 @@
 # 24 - 测试与人工验收
 
 本文维护现有测试基础设施、模拟对端、原生 GUI 验收与证据合同。
-测试开发、双轨流程、层级选择和存量去重统一按内置 [test-quality](../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md) 执行；本文不另设通用测试规范。
 常用命令入口见 [AGENTS.md](../AGENTS.md)，CI 实际执行以工作流配置为准。
 
 ## PR 质量门禁与 CI 集成流程

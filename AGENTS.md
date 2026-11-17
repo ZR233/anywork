@@ -116,7 +116,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 ### 官方 Flutter / Dart 技能与快速迭代
 
 - 通用 Flutter / Dart 技能从用户级 `~/.agents/skills/` 发现，官方来源为 `flutter/agent-plugins` 和 `dart-lang/skills`；项目不复制或维护这些技能。缺少时读取对应官方文档，安装或更新按用户授权进行。本仓库技能只补充项目架构、构建和验收约定。
-- 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束，测试必要性由 `test-quality` 判断。
+- 组件预览、布局诊断、响应式布局和测试编写分别优先使用官方 `flutter-add-widget-preview`、`flutter-fix-layout-issues`、`flutter-build-responsive-layout`、`flutter-add-widget-test`、`flutter-add-integration-test`；Dart 通用任务按已发现的 `dart-*` 技能选择。跨层所有权仍由 `flutter-frb-rust-design` 约束。
 - 上游技能中的 CLI 示例映射到本项目入口：应用命令使用 `cargo flutter` / `cargo dart`，纯 Client 使用 `verify-client`，生成使用 `generate-gui`，原生启动使用 `run-gui`，桌面测试使用 `test-project`。保留 Riverpod、typed GoRouter、Client/FRB 和既有生成模型；通用示例不要求换状态库、手改锁文件或绑定、增加依赖、开启实验语法或全仓应用自动修复。
 - 人工实验统一按 `flutter-studio-build` 的[实验指南](.agents/skills/flutter-studio-build/references/experiments.md)操作。纯界面开发、局部交互和截图默认使用 `cargo xtask preview-gui --headless --no-devtools`，**不编译 Rust bridge**，不启动模型服务；可重复断言用相关 `test/ui`。只有持久化、模型调用或原生资源才选择隔离原生应用及官方 Dart MCP，不把全部层级排成必跑清单。
 - `preview-gui` 只准备预览包及 scaffold 的 Pub 依赖，再透传参数和终端输入输出给官方 `widget-preview start`；发现、浏览器及热更新均由 Flutter 管理。预览包使用自己的标准 Pub 配置，不能把整个应用作为预览扫描根；不复制 UI、不手改 SDK 或缓存 manifest。依赖已准备后也可在 `code/anywork_previews` 直接使用官方 Flutter 命令；具体适配与故障恢复见构建技能。
@@ -173,7 +173,6 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 预置系统技能
 
-- 通用测试开发技能 `test-quality` 随糊来帮内置分发，canonical 内容位于 [内置测试技能](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。本仓库开发也直接使用这一份；不在 `.agents/skills/` 保留同名副本或转发技能，以免项目优先级遮蔽内置版本。
 - `pl-studio-runtime` 的上游预置技能直接存放在 `code/pl-studio-runtime/assets/skills/<name>/`：`canvas-design`、`frontend-design` 来自 anthropics/skills；Office 领域仅使用 DeepSeek Harness 的七项独立 `office` / `office-*` 技能，不混入其他文档技能来源。
 - 更新时通过工具读取固定上游提交及许可证，手动拷贝所需文件，按 `SKILL.md` 和 `references/`、`templates/`、`scripts/`、`assets/` 标准布局整理；下载副本放本会话 scratch。不得新增自动同步命令、子模块、外部仓库 checkout 或构建期下载。
 - 各技能基础约定独立完整，减少互相引用；支持文件位于本技能目录内。正文不写死工具函数调用、宿主物理路径或特定运行时的动态注入协议，遵循当前会话实际提供的发现与执行规则。
@@ -184,9 +183,9 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
 
 ### 质量技能入口
 
-涉及功能开发中的测试取舍、缺陷回归、测试编写/修改/审查/清理，以及测试编译或运行成本优化时，必须先读取并使用内置 [test-quality](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。按照该技能选择开发轨道、行为边界、失败判定和清理方式；它是通用测试开发方法的唯一维护位置，不另建重复的通用 `TESTING.md`、测试规则副本或同职责项目技能。
+涉及功能开发中的测试取舍、缺陷回归、测试编写/修改/审查/清理，以及测试准备或执行成本优化时，必须先读取并使用内置 [test-quality](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)。该技能适用于任何编程语言，统一维护开发轨道、行为边界、失败判定和清理方法；本仓库直接使用这一份，项目技能不重复声明或引用，不保留同名副本或转发技能。
 
-Rust、Dart/Flutter 的具体做法按该技能的参考页读取。项目命令与运行前提仍由本文件、`flutter-studio-build` 和 [测试与人工验收](design/24-testing.md) 提供；领域技能只补充对应协议、安全、所有权与迁移风险，不复制通用测试政策。
+具体语言、框架、命令和运行前提由当前项目约定提供。本仓库的执行入口见本文件、`flutter-studio-build` 和 [测试与人工验收](design/24-testing.md)；领域技能只补充对应协议、安全、所有权与迁移风险，不复制通用测试政策。
 
 通用设计、实现与测试规则由以下技能维护，本文件只规定项目约束。按任务语义选择，不以文件名或改动规模代替判断；多个边界同时涉及时组合使用，不把普通改动扩展为无关专项审计。
 
@@ -198,9 +197,8 @@ Rust、Dart/Flutter 的具体做法按该技能的参考页读取。项目命令
 | 公共接口、类型、错误、模块、依赖与协议 | `rust-api-design` |
 | 同步、异步取消、回调与资源生命周期 | `rust-concurrency-safety` |
 | unsafe、FFI、外部句柄与安全证明 | `rust-unsafe-safety` |
-| 测试开发、回归、层级、必要性、去重与成本 | [内置 `test-quality`](code/pl-studio-runtime/assets/skills/test-quality/SKILL.md) |
 
-Rust 质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护；内置 `test-quality` 统一维护通用测试方法。运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
+Rust 质量技能以 TGOSKits `4713bfc98f` 为迁移基线，经泛化后在本仓库独立维护。运行任务时不依赖源仓库。命令、授权与项目架构以本文件为准；技能负责相应方法与证明，不复制另一套审批或门禁。
 
 ### Rust 异步接口约定
 
@@ -218,7 +216,7 @@ crate 职责、依赖方向与禁止依赖的唯一权威源是 [Crate 边界](d
 
 ## 检查与观察入口
 
-- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单。验证范围、测试写法、去重与结果报告遵循上文内置 `test-quality`；本节只提供项目执行入口，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
+- 下列命令是可选入口，不是每次修改、提交或交付的必跑清单；本节只提供项目执行入口，基础设施和证据含义见 [测试与人工验收](design/24-testing.md)。
 - `code/anywork/pubspec.lock` 是必须纳入 Git 的 canonical 应用依赖快照，不得加入 ignore；
   Flutter 直接依赖升级后必须同步提交重新解析的 lockfile。
 - 常用入口（`PUB_HOSTED_URL` 及镜像行为由 Flutter/Dart 自身处理，xtask 不改写已跟踪的 `pubspec.lock`）：

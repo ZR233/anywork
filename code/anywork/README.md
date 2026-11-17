@@ -7,9 +7,7 @@ flutter_rust_bridge；Rust bridge 位于 `rust/`，SDK-only Client 位于 `../an
 
 ## 按目标选择最轻入口
 
-测试开发、双轨流程、层级选择与去重统一按内置
-[test-quality](../pl-studio-runtime/assets/skills/test-quality/SKILL.md)。场景选择、控件发现、热更新、
-截图核图、错误检查及资源回收见 [无头实验指南](../../.agents/skills/flutter-studio-build/references/experiments.md)；
+场景选择、控件发现、热更新、截图核图、错误检查及资源回收见 [无头实验指南](../../.agents/skills/flutter-studio-build/references/experiments.md)；
 自动化命令与真实边界见 [测试基础设施](../../design/24-testing.md)。
 
 纯界面迭代从仓库根使用 `cargo xtask preview-gui --headless --no-devtools`，不编译 Rust bridge。

@@ -9,7 +9,6 @@
 | 异步 trait 写法、生成文件与工程命令入口 | [AGENTS.md](../AGENTS.md) |
 | Flutter／FRB／Rust 跨层开发方法 | `flutter-frb-rust-design` 技能 |
 | 客户端状态、页面路由与资源所有权 | [25](./25-frontend-state.md) |
-| 测试开发、层级选择与去重方法 | 内置 [test-quality](../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md) 技能 |
 | 权限模式与安全边界 | [04](./04-security.md) |
 | 持久化配置结构定义 | [20](./20-config.md) |
 

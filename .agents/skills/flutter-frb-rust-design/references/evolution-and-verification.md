@@ -105,7 +105,6 @@ GUI Main 与展示成员窗口用途不同：折叠工作头只读轻头/引用�
 
 ## 跨层风险与证据
 
-测试开发与层级选择按内置 [test-quality](../../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)，
 具体命令与取证使用 `flutter-studio-build`。下表只记录本项目所有权与数据交付的风险，不另设必跑清单：
 
 | 风险 | 有效反例或证据 |
@@ -148,13 +147,17 @@ Widget、预览与合成输入不证明 FRB、native 句柄、持久化或原生
 
 ### Widget 与 Client 的异步收束
 
-FakeAsync、真实事件循环、`runAsync` 与帧等待的通用做法见
-[内置 Flutter 测试参考](../../../../code/pl-studio-runtime/assets/skills/test-quality/references/flutter-dart.md#异步与生命周期)。
-本项目混合两队列的 Client 关闭链复用
-[pumpClientFuture](../../../../code/anywork/test/support/pump_client_future.dart)，观察原 Future 并传播原始错误；
-保留真实卸载、在途 join、资源释放和关闭报告。真实 Zone 内可独立完成的操作仍按实际归属等待，
-不机械替换所有 runAsync。超时后先定位首个未完成操作，后续 runAsync 重入、`!inTest`
-或测试通道关闭错误可能是同一清理失败的连锁，不能直接计为多个生产缺陷。
+本项目 Client 关闭链可能同时依赖 FakeAsync 微任务和真实事件循环。先核对 owner、Completer、
+订阅和回调所在的 Zone；直接用 `tester.runAsync` 等待仍需 FakeAsync 推进的 Future 会形成等待环，
+先卸载 widget 也不自动解环。混合两队列时复用
+[pumpClientFuture](../../../../code/anywork/test/support/pump_client_future.dart)，观察原 Future 并传播原始错误，
+保留真实卸载、在途 join、资源释放和关闭报告。`expect` 等受 guard 保护的断言在等待工具返回后执行，
+不放入正被另一 pump 驱动的 Future 回调。真实 Zone 内可独立完成的操作仍按实际归属等待，
+不机械替换所有 runAsync。
+
+`pumpAndSettle` 的帧调度静止不证明 Client 数据、原生解码或 I/O 已就绪；观察原操作完成后再判定。
+超时后先定位首个未完成操作，后续 runAsync 重入、`!inTest` 或测试通道关闭错误可能是同一清理失败的连锁，
+不能直接计为多个生产缺陷。
 
 ## 来源与职责
 

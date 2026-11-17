@@ -71,7 +71,7 @@ category: guides
 
 ## 验证证据
 
-可按问题参考 [test-quality](../../../code/pl-studio-runtime/assets/skills/test-quality/SKILL.md)、`rust-concurrency-safety` 与 `flutter-studio-build`。
+可按问题参考 `rust-concurrency-safety` 与 `flutter-studio-build`。
 以下说明不同证据能证明什么，不要求每次修改都运行全部场景。
 
 - 模拟供应商只提供外部响应与阻塞边界，不能重写被测资格、选模或评价规则。
