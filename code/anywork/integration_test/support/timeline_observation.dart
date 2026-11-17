@@ -239,25 +239,32 @@ Finder timelineGroupTitleFinder(
 
 RenderParagraph timelineGroupTitleParagraph(WidgetTester tester, Finder title) {
   expect(title, findsOneWidget);
-  final richTexts = find
-      .descendant(
-        of: title,
-        matching: find.byWidgetPredicate((widget) => widget is RichText),
-        matchRoot: true,
-      )
-      .evaluate()
-      .toList();
-  expect(richTexts, isNotEmpty);
-  final target = richTexts.lastWhere((element) {
-    final renderObject = element.renderObject;
-    return renderObject is RenderParagraph &&
-        renderObject.text
-            .toPlainText(includePlaceholders: false)
-            .trim()
-            .isNotEmpty;
-  }, orElse: () => richTexts.last);
-  return target.renderObject! as RenderParagraph;
+  final paragraph = timelineGroupTitleParagraphFinder(title);
+  expect(paragraph, findsOneWidget);
+  return tester.renderObject<RenderParagraph>(paragraph);
 }
+
+Finder timelineGroupTitleParagraphFinder(
+  Finder title, {
+  bool skipOffstage = true,
+}) => find
+    .descendant(
+      of: title,
+      // Finder predicates visit the whole tree before descendant intersection.
+      // Never run another title/tree query inside this per-candidate predicate.
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is RichText &&
+            widget.text
+                .toPlainText(includePlaceholders: false)
+                .trim()
+                .isNotEmpty,
+        skipOffstage: skipOffstage,
+      ),
+      matchRoot: true,
+      skipOffstage: skipOffstage,
+    )
+    .last;
 
 String timelineGroupTitleText(WidgetTester tester, Finder title) =>
     timelineGroupTitleParagraph(
@@ -491,6 +498,8 @@ final class TimelineObservation {
         expect(batch, isNotNull, reason: 'EOF before a complete member result');
         expect(batch!.block, reference);
         expect(batch.offset, entries.length);
+        // ReadDemand bounds one transport batch, never the complete Work below.
+        expect(batch.entries.length, lessThanOrEqualTo(demand.maxItems));
         revision ??= batch.revision;
         sealed ??= batch.sealed;
         expect(batch.revision, revision);
@@ -612,8 +621,20 @@ final class TimelineObservation {
   TimelineDisplayUnit unit(String id) {
     final historical = main.where((unit) => unit.id == id).singleOrNull;
     if (historical != null) return historical;
-    final block = liveBlocks.singleWhere((block) => block.id == id);
-    return lease.liveUnit(block, lease.live.value!.executionPresent);
+    final block = liveBlocks.where((block) => block.id == id).singleOrNull;
+    if (block != null) {
+      return lease.liveUnit(block, lease.live.value!.executionPresent);
+    }
+    // A rendered older Work-block window is a separate domain from members.
+    final slice = lease.liveStatus?.timelineWork;
+    final older = slice?.workBlocks
+        .where((block) => block.id == id)
+        .singleOrNull;
+    final window = slice?.effectiveWindow;
+    if (window == null || older == null) {
+      throw StateError('No admitted Main/latest/rendered Work unit $id');
+    }
+    return lease.liveUnit(older, window.executionPresent);
   }
 
   TimelineDisplayUnit unitForBlock(DisplayBlockRef reference) =>
@@ -649,19 +670,92 @@ final class TimelineObservation {
     final original = lease;
     final controller = original.controller;
     final generation = original.generation;
-    await tap(
-      groupHeader(id),
-      timeout: timeout,
-      isActive: () {
-        expect(lease, same(original));
-        expect(original.isRetired, isFalse);
-        expect(original.isReleased, isFalse);
-        expect(original.isMounted, isTrue);
-        expect(original.controller, same(controller));
-        expect(original.generation, generation);
+    final clock = Stopwatch()..start();
+    await revealWorkHeader(id, timeout: timeout);
+    final title = _groupTitle(id);
+    final before = _workTitleHitCut(title);
+    try {
+      await tap(
+        title,
+        timeout: timeout - clock.elapsed,
+        isActive: () {
+          expect(lease, same(original));
+          expect(original.isRetired, isFalse);
+          expect(original.isReleased, isFalse);
+          expect(original.isMounted, isTrue);
+          expect(original.controller, same(controller));
+          expect(original.generation, generation);
+          return true;
+        },
+      );
+    } finally {
+      final output = Platform.environment['ANYWORK_TIMELINE_CONCEPT_OUTPUT'];
+      if (output != null && before['hitTestable'] != true) {
+        File('$output/work-title-hit-tests.jsonl').writeAsStringSync(
+          '${jsonEncode({'workId': id, 'before': before, 'after': _workTitleHitCut(title)})}\n',
+          mode: FileMode.append,
+        );
+      }
+    }
+  }
+
+  Map<String, Object?> _workTitleHitCut(Finder title) {
+    try {
+      final matches = title.evaluate().toList();
+      if (matches.length != 1) return {'titleCount': matches.length};
+      final element = matches.single;
+      final box = element.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) {
+        return {'renderType': box.runtimeType.toString()};
+      }
+      final paragraph = timelineGroupTitleParagraph(tester, title);
+      final route = ModalRoute.of(element);
+      final gates = <Map<String, Object?>>[];
+      element.visitAncestorElements((ancestor) {
+        final widget = ancestor.widget;
+        if (widget is IgnorePointer) {
+          gates.add({'widget': 'IgnorePointer', 'ignoring': widget.ignoring});
+        } else if (widget is AbsorbPointer) {
+          gates.add({'widget': 'AbsorbPointer', 'absorbing': widget.absorbing});
+        } else if (widget is Offstage) {
+          gates.add({'widget': 'Offstage', 'offstage': widget.offstage});
+        } else if (widget is SliverIgnorePointer) {
+          gates.add({
+            'widget': 'SliverIgnorePointer',
+            'ignoring': widget.ignoring,
+          });
+        }
         return true;
-      },
-    );
+      });
+      return {
+        'hitTestable': title.hitTestable().evaluate().length == 1,
+        'title': _mainRevealElementInfo(element, Scrollable.maybeOf(element)),
+        'titleGlobalRect': _mainRevealRect(
+          MatrixUtils.transformRect(
+            box.getTransformTo(null),
+            Offset.zero & box.size,
+          ),
+        ),
+        'paragraphGlobalRect': _mainRevealRect(
+          MatrixUtils.transformRect(
+            paragraph.getTransformTo(null),
+            Offset.zero & paragraph.size,
+          ),
+        ),
+        'pointer': _mainRevealPointer(
+          tester.getCenter(title),
+          Offset.zero,
+          tester.viewOf(title).viewId,
+          pathLimit: 80,
+        ),
+        'pointerGates': gates,
+        'routeIsCurrent': route?.isCurrent,
+        'routeAnimation': route?.animation?.status.name,
+      };
+    } catch (error) {
+      // Diagnostic failure must not replace the real navigation/tap failure.
+      return {'snapshotError': error.toString()};
+    }
   }
 
   Finder _groupTitle(
@@ -693,7 +787,15 @@ final class TimelineObservation {
       },
     );
     expect(title, findsOneWidget);
-    return title;
+    // Markdown's title wrapper can extend far beyond its painted text. Reveal,
+    // hit testing and the real tap must all target the same actual paragraph,
+    // not the wrapper's empty centre. Resolve it again if the title rebuilds.
+    final paragraph = timelineGroupTitleParagraphFinder(
+      title,
+      skipOffstage: skipOffstage,
+    );
+    expect(paragraph, findsOneWidget);
+    return paragraph;
   }
 
   Future<void> until(
@@ -791,6 +893,8 @@ final class TimelineObservation {
     var interactionIsHeader = false;
     var phase = 'capture';
     final demands = <Map<String, Object?>>[];
+    var advancedEmptyAnchorLayout = false;
+    int? emptyAnchorDirection;
 
     bool matchesCanonical(Element element) {
       final unit = originalUnit;
@@ -1259,6 +1363,7 @@ final class TimelineObservation {
       String kind,
       Future<void> Function() operation, {
       Map<String, Object?>? pointer,
+      Map<String, Object?>? geometry,
     }) async {
       requireOriginal();
       if (clock.elapsed >= deadline) {
@@ -1271,6 +1376,7 @@ final class TimelineObservation {
         'afterPixels': null,
         'afterLayoutPixels': null,
         'pointer': pointer,
+        'geometry': ?geometry,
       };
       if (demands.length == 6) demands.removeAt(0);
       demands.add(record);
@@ -1302,12 +1408,153 @@ final class TimelineObservation {
       }
     }
 
+    Future<void> seekMainAnchor() async {
+      // Controller admission can precede the frame that lays out Flyer rows.
+      // Advance that same layout once, not the reader or the message revision.
+      if (!advancedEmptyAnchorLayout) {
+        advancedEmptyAnchorLayout = true;
+        await demand('advance original Main anchor layout', () async {});
+        return;
+      }
+      final position = originalScrollable!.position;
+      if (!position.hasPixels ||
+          !position.hasContentDimensions ||
+          !position.hasViewportDimension ||
+          !position.pixels.isFinite ||
+          !position.minScrollExtent.isFinite ||
+          !position.maxScrollExtent.isFinite ||
+          !position.viewportDimension.isFinite ||
+          position.viewportDimension <= 0 ||
+          position.minScrollExtent > position.maxScrollExtent) {
+        stop('Main anchor search requires finite original layout geometry');
+      }
+      final axis = originalScrollable!.axisDirection;
+      if (axis != AxisDirection.up && axis != AxisDirection.down) {
+        stop('Main reveal expected the production vertical Main list');
+      }
+      final before = position.pixels;
+      final beforeMax = position.maxScrollExtent;
+      final beforeViewport = position.viewportDimension;
+      final tolerance = position.physics.toleranceFor(position).distance;
+      RenderBox? anchor;
+      int? anchorIndex;
+      Rect? anchorRect;
+      double? anchorOffset;
+      var nearest = double.infinity;
+      // An attached cache row is geometry evidence, never a visible index.
+      // Exclude Offstage keepalives; Flutter computes the reveal offset from
+      // the actual original viewport instead of estimating any row heights.
+      for (final element in find.byType(ChatMessage).evaluate()) {
+        final unit = _mainRevealRowUnit(
+          originalController,
+          originalScrollable!,
+          element,
+        );
+        if (unit == null) continue;
+        final box = element.findRenderObject();
+        if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+        final viewport = RenderAbstractViewport.maybeOf(box);
+        if (viewport is! RenderViewport ||
+            !identical(viewport.offset, position) ||
+            !viewport.attached ||
+            !viewport.hasSize) {
+          continue;
+        }
+        final rect = MatrixUtils.transformRect(
+          box.getTransformTo(viewport),
+          Offset.zero & box.size,
+        );
+        final offset = viewport.getOffsetToReveal(box, 0).offset;
+        if (!rect.isFinite || !offset.isFinite) {
+          stop('Main anchor row has nonfinite original viewport geometry');
+        }
+        if (rect.isEmpty) continue;
+        final reachable = offset
+            .clamp(position.minScrollExtent, position.maxScrollExtent)
+            .toDouble();
+        final distance = (reachable - before).abs();
+        if (distance > tolerance && distance < nearest) {
+          nearest = distance;
+          anchor = box;
+          anchorRect = rect;
+          anchorOffset = reachable;
+          anchorIndex = originalController.messages.indexWhere(
+            (message) => message.id == unit.id,
+          );
+        }
+      }
+      final int direction;
+      if (anchorOffset != null) {
+        direction = (anchorOffset - before).sign.toInt();
+      } else {
+        final canDecrease = before > position.minScrollExtent + tolerance;
+        final canIncrease = before < position.maxScrollExtent - tolerance;
+        if (canDecrease == canIncrease) {
+          stop('Main has no reachable row geometry or unique anchor direction');
+        }
+        direction = canIncrease ? 1 : -1;
+      }
+      if (emptyAnchorDirection != null && emptyAnchorDirection != direction) {
+        stop('Main anchor search cannot reverse without observing an anchor');
+      }
+      emptyAnchorDirection = direction;
+      final geometry = <String, Object?>{
+        'axisDirection': axis.name,
+        'viewport': beforeViewport,
+        'min': position.minScrollExtent,
+        'max': beforeMax,
+        'direction': direction,
+        'mountedAnchorIndex': anchorIndex,
+        'mountedAnchorRect': _mainRevealRect(anchorRect),
+        'reachableAnchorOffset': anchorOffset,
+      };
+      if (anchor != null) {
+        await demand(
+          'expose mounted original Main anchor',
+          () => position.ensureVisible(anchor!),
+          geometry: geometry,
+        );
+      } else {
+        final bounds = tester.getRect(scrollable);
+        if (!bounds.isFinite || bounds.isEmpty) {
+          stop('Main anchor drag requires a finite original hit region');
+        }
+        final distance = (beforeViewport * .8).clamp(1.0, 240.0);
+        final delta = Offset(
+          0,
+          direction * distance * (axis == AxisDirection.up ? 1 : -1),
+        );
+        final view = View.of(tester.element(scrollable));
+        await demand(
+          'drag original Main across anchor gap',
+          () => tester.dragFrom(bounds.center, delta, view: view),
+          pointer: _mainRevealPointer(bounds.center, delta, view.viewId),
+          geometry: geometry,
+        );
+      }
+      // Only the next real layout can establish visibility. If neither the
+      // original position/layout nor its actual rows advanced, fail promptly.
+      if (canonical.evaluate().isEmpty &&
+          _mainRevealIndices(
+            originalController,
+            originalScrollable!,
+            visibleOnly: true,
+          ).isEmpty &&
+          (position.pixels - before).abs() <= tolerance &&
+          position.maxScrollExtent == beforeMax &&
+          position.viewportDimension == beforeViewport) {
+        stop('Main anchor demand made no original scroll/layout progress');
+      }
+    }
+
     while (true) {
       requireOriginal();
       if (clock.elapsed >= deadline) {
         stop('Main did not reveal the requested canonical row');
       }
       if (canonical.evaluate().isNotEmpty) {
+        advancedEmptyAnchorLayout = false;
+        emptyAnchorDirection = null;
         final wanted = originalController.messages.indexWhere(
           (message) => message.id == unitId,
         );
@@ -1381,9 +1628,15 @@ final class TimelineObservation {
         originalScrollable!,
         visibleOnly: true,
       );
-      if (wanted < 0 || visible.isEmpty) {
-        stop('Main reveal has no target index or visible Main anchor');
+      if (wanted < 0) {
+        stop('Main reveal has no original controller target index');
       }
+      if (visible.isEmpty) {
+        await seekMainAnchor();
+        continue;
+      }
+      advancedEmptyAnchorLayout = false;
+      emptyAnchorDirection = null;
       if (wanted >= visible.first && wanted <= visible.last) {
         stop('Main canonical row is absent inside the visible Main range');
       }
@@ -1570,15 +1823,16 @@ final class TimelineObservation {
   Map<String, Object?> _mainRevealPointer(
     Offset start,
     Offset delta,
-    int viewId,
-  ) {
+    int viewId, {
+    int pathLimit = 10,
+  }) {
     final hit = tester.hitTestOnBinding(start, viewId: viewId);
     return {
       'start': [start.dx, start.dy],
       'delta': [delta.dx, delta.dy],
       'viewId': viewId,
       'hitPathCount': hit.path.length,
-      'hitPathAtExactStart': hit.path.take(10).map((entry) {
+      'hitPathAtExactStart': hit.path.take(pathLimit).map((entry) {
         final target = entry.target;
         final creator = target is RenderObject ? target.debugCreator : null;
         final element = creator is DebugCreator ? creator.element : null;
@@ -1636,6 +1890,332 @@ final class TimelineObservation {
     return indices.toList()..sort();
   }
 
+  Future<void> revealWorkHeader(
+    String id, {
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final original = lease;
+    final controller = original.controller;
+    final scrollController = original.scrollController;
+    final generation = original.generation;
+    final sets = original.appliedSets;
+    final reference = unit(id).memberReference;
+    expect(reference, isNotNull);
+    final clock = Stopwatch()..start();
+    final deadline = timeout < const Duration(seconds: 60)
+        ? timeout
+        : const Duration(seconds: 60);
+    final main = find.byWidgetPredicate(
+      (widget) =>
+          widget is Scrollable &&
+          identical(widget.controller, scrollController),
+      skipOffstage: false,
+    );
+    final section = find.byWidgetPredicate(
+      (widget) =>
+          widget is ConversationCurrentConnector &&
+          widget.section == ConversationLiveSection.work &&
+          identical(widget.content, original),
+      skipOffstage: false,
+    );
+    ScrollableState? mainState;
+    final navigation = <Map<String, Object?>>[];
+    var returnedMain = false;
+    var laidOutMissingHeader = false;
+
+    bool containsTarget(Iterable<LiveDisplayBlock> blocks) => blocks.any(
+      (block) =>
+          block.id == id &&
+          block.body is WorkDisplayBlock &&
+          (block.body as WorkDisplayBlock).members == reference,
+    );
+
+    Never stopWork(String reason) {
+      final slice = original.liveStatus?.timelineWork;
+      final position = mainState?.position;
+      final diagnostic = <String, Object?>{
+        'reason': reason,
+        'workId': id,
+        'reference': {
+          'databaseId': reference?.databaseId,
+          'blockId': reference?.blockId,
+        },
+        'generation': generation,
+        'appliedSets': original.appliedSets,
+        'elapsedMillis': clock.elapsedMilliseconds,
+        'paging': slice?.paging.runtimeType.toString(),
+        'pagingError': slice?.paging.error?.toString(),
+        'viewingOlder': slice?.paging.isViewingOlder,
+        'projectedContainsTarget':
+            slice != null && containsTarget(slice.workBlocks),
+        'latestContainsTarget':
+            original.live.value != null &&
+            containsTarget(original.live.value!.blocks),
+        'olderCursor': slice?.effectiveWindow?.older,
+        'effectiveBlockIds': slice?.effectiveWindow?.blocks
+            .map((block) => block.id)
+            .toList(),
+        'projectedWorkIds': slice?.workBlocks.map((block) => block.id).toList(),
+        'latestBlockIds': original.live.value?.blocks
+            .map((block) => block.id)
+            .toList(),
+        'sectionCount': section.evaluate().length,
+        'pixels': position?.hasPixels == true ? position!.pixels : null,
+        'min': position?.hasContentDimensions == true
+            ? position!.minScrollExtent
+            : null,
+        'max': position?.hasContentDimensions == true
+            ? position!.maxScrollExtent
+            : null,
+        'viewport': position?.hasViewportDimension == true
+            ? position!.viewportDimension
+            : null,
+        'axisDirection': position?.axisDirection.name,
+        'rows': groupRow(id, skipOffstage: false)
+            .evaluate()
+            .map((element) => _mainRevealElementInfo(element, mainState))
+            .toList(),
+        'widgetTree': _mainRevealBranches(groupRow(id, skipOffstage: false)),
+        'navigation': navigation,
+      };
+      final output = Platform.environment['ANYWORK_TIMELINE_CONCEPT_OUTPUT'];
+      if (output != null) {
+        File('$output/work-header-reveal-failure.json').writeAsStringSync(
+          '${const JsonEncoder.withIndent('  ').convert(diagnostic)}\n',
+        );
+      }
+      fail('Work header navigation failed: ${jsonEncode(diagnostic)}');
+    }
+
+    void requireOriginal() {
+      if (!identical(lease, original) ||
+          original.isRetired ||
+          original.isReleased ||
+          !original.isMounted ||
+          original.generation != generation ||
+          !identical(original.controller, controller) ||
+          !identical(original.scrollController, scrollController) ||
+          original.appliedSets != sets) {
+        stopWork('Original Work lease/controller/generation/Set changed');
+      }
+      if (main.evaluate().length != 1 ||
+          scrollController.positions.length != 1) {
+        stopWork('Work requires its one original Main Scrollable');
+      }
+      final state = tester.state<ScrollableState>(main);
+      if ((mainState != null && !identical(mainState, state)) ||
+          !identical(state.position, scrollController.position)) {
+        stopWork('Original Main Scrollable changed');
+      }
+      mainState ??= state;
+      if (unit(id).memberReference != reference) {
+        stopWork('Original Work member reference changed');
+      }
+    }
+
+    Duration remaining() {
+      if (clock.elapsed >= deadline) {
+        stopWork('Original Work deadline exceeded');
+      }
+      return deadline - clock.elapsed;
+    }
+
+    Future<void> demand(
+      String action,
+      Future<void> Function() operation,
+    ) async {
+      requireOriginal();
+      remaining();
+      navigation.add({'action': action, 'pixels': mainState!.position.pixels});
+      if (navigation.length > 8) navigation.removeAt(0);
+      await operation();
+      await tester.pump(const Duration(milliseconds: 16));
+      requireOriginal();
+      if (tester.takeException() case final error?) {
+        stopWork('Framework error: $error');
+      }
+      remaining();
+    }
+
+    requireOriginal();
+    await demand('layout original Work location', () async {});
+    while (true) {
+      requireOriginal();
+      remaining();
+      if (unit(id).blockOrder != null) {
+        await reveal(groupHeader(id), id, timeout: remaining());
+        requireOriginal();
+        return;
+      }
+      final slice = original.liveStatus?.timelineWork;
+      if (slice == null) stopWork('No typed Work slice for the original lease');
+      if (slice.paging.error case final error?) {
+        stopWork('Work block paging failed: $error');
+      }
+      if (slice.paging.isLoading) {
+        await demand('join original Work block window load', () async {});
+        continue;
+      }
+      final returnMain = find.byKey(StudioDriverKeys.timelineReturnLive);
+      if (!returnedMain &&
+          returnMain.evaluate().length == 1 &&
+          tester.widget<TextButton>(returnMain).onPressed != null) {
+        returnedMain = true;
+        await demand(
+          'tap Main return-to-live',
+          () => tap(
+            returnMain,
+            timeout: remaining(),
+            isActive: () {
+              requireOriginal();
+              return true;
+            },
+          ),
+        );
+        continue;
+      }
+      if (section.evaluate().length > 1) {
+        stopWork('Original Work section is not unique');
+      }
+      if (section.evaluate().length == 1) {
+        final container = tester.widget<ConversationCurrentConnector>(section);
+        if (container.workSlice != slice) {
+          await demand('layout actual Work block slice', () async {});
+          continue;
+        }
+        final current = tester.state(section) as TimelineCurrentDisplay;
+        if (!current.isCurrent || !container.isDisplayActive()) {
+          stopWork('Original Main Work section lost display qualification');
+        }
+        if (!containsTarget(slice.workBlocks)) {
+          final latest = original.live.value;
+          if (slice.paging.isViewingOlder &&
+              latest != null &&
+              containsTarget(latest.blocks)) {
+            final latestControl = find.descendant(
+              of: section,
+              matching: find.text('最新实时片段', skipOffstage: false),
+              skipOffstage: false,
+            );
+            if (latestControl.evaluate().length != 1) {
+              stopWork('Missing original Work latest-window control');
+            }
+            await demand(
+              'tap Work latest block window',
+              () => tap(
+                latestControl,
+                timeout: remaining(),
+                isActive: () {
+                  requireOriginal();
+                  return true;
+                },
+              ),
+            );
+            continue;
+          }
+          stopWork('Target is absent from the effective projected Work window');
+        }
+        final header = find.descendant(
+          of: section,
+          matching: groupHeader(id, skipOffstage: false),
+          skipOffstage: false,
+        );
+        if (header.evaluate().length > 1) {
+          stopWork('Original Work header is not unique');
+        }
+        if (header.evaluate().length == 1) {
+          final rows = find.descendant(
+            of: section,
+            matching: groupRow(id, skipOffstage: false),
+            skipOffstage: false,
+          );
+          if (rows.evaluate().length != 1 ||
+              tester
+                      .widget<TimelineDisplayUnitView>(rows)
+                      .unit
+                      .memberReference !=
+                  reference) {
+            stopWork('Rendered Main Work lost its original member reference');
+          }
+          final title = _groupTitle(
+            id,
+            skipOffstage: false,
+            headerFinder: header,
+          );
+          final element = tester.element(title);
+          if (!identical(Scrollable.maybeOf(element), mainState)) {
+            stopWork('Work title belongs to another scroll owner');
+          }
+          final box = element.findRenderObject();
+          if (box is! RenderBox || !box.attached || !box.hasSize) {
+            stopWork('Work title has no real layout');
+          }
+          final viewport = RenderAbstractViewport.maybeOf(box);
+          if (viewport is! RenderViewport ||
+              !identical(viewport.offset, mainState!.position)) {
+            stopWork('Work title lost its original Main viewport');
+          }
+          final rect = MatrixUtils.transformRect(
+            box.getTransformTo(viewport),
+            Offset.zero & box.size,
+          );
+          if (!rect.isFinite || rect.isEmpty) {
+            stopWork('Work title has invalid geometry');
+          }
+          // Reveal owns Main geometry, not pointer readiness. A visible title
+          // need not move (Main may have zero scroll extent); the existing tap
+          // waits for its actual hit test within the same remaining deadline.
+          if ((Offset.zero & viewport.size).contains(rect.center)) return;
+          await demand(
+            'expose actual Main Work title',
+            () => mainState!.position.ensureVisible(box, alignment: .5),
+          );
+          continue;
+        }
+      }
+      if (!laidOutMissingHeader) {
+        laidOutMissingHeader = true;
+        await demand('layout typed Main Work header', () async {});
+        continue;
+      }
+      final position = mainState!.position;
+      if (!position.hasContentDimensions ||
+          !position.hasViewportDimension ||
+          !position.pixels.isFinite ||
+          !position.minScrollExtent.isFinite ||
+          !position.maxScrollExtent.isFinite ||
+          !position.viewportDimension.isFinite ||
+          position.viewportDimension <= 0) {
+        stopWork('Main Work has invalid scroll geometry');
+      }
+      final axis = position.axisDirection;
+      if (axis != AxisDirection.up && axis != AxisDirection.down) {
+        stopWork('Main Work is not in a vertical viewport');
+      }
+      final edge = axis == AxisDirection.up
+          ? position.minScrollExtent
+          : position.maxScrollExtent;
+      if ((position.pixels - edge).abs() <=
+          position.physics.toleranceFor(position).distance) {
+        stopWork(
+          'Typed Work target is not mounted at the actual Main latest edge',
+        );
+      }
+      final before = position.pixels;
+      final delta = Offset(
+        0,
+        -(position.viewportDimension * .8).clamp(1.0, 240.0),
+      );
+      await demand(
+        'drag Main toward its Work bottom sliver',
+        () => tester.drag(main, delta),
+      );
+      if (position.pixels == before) {
+        stopWork('Main Work navigation cannot advance');
+      }
+    }
+  }
+
   Future<TimelineGroupDisplay> openWork(
     String id, {
     Duration timeout = const Duration(seconds: 60),
@@ -1646,18 +2226,11 @@ final class TimelineObservation {
     expect(reference, isNotNull);
     final controller = lease.controller;
     final sets = lease.appliedSets;
-    final header = groupHeader(id);
-    if (value.blockOrder != null) {
-      await reveal(header, id, timeout: timeout);
-    } else {
-      await until(
-        () => header.evaluate().length == 1,
-        'live Work header $id',
-        timeout: timeout,
-      );
-    }
+    final clock = Stopwatch()..start();
+    Duration remaining() => timeout - clock.elapsed;
+    await revealWorkHeader(id, timeout: remaining());
     if (!groupExpanded(id)) {
-      await tapGroupHeader(id, timeout: timeout);
+      await tapGroupHeader(id, timeout: remaining());
     }
     expect(groupExpanded(id), isTrue);
     TimelineGroupDisplay? display;
@@ -1673,7 +2246,7 @@ final class TimelineObservation {
             display!.atoms.isNotEmpty;
       },
       'complete member result for Work $id',
-      timeout: timeout,
+      timeout: remaining(),
     );
     expect(display!.blockReference, reference);
     expect(
@@ -1925,9 +2498,7 @@ final class TimelineObservation {
     });
     for (final group in groups) {
       if (group.expansion.expanded != true) continue;
-      if (group.blockOrder != null) {
-        await reveal(groupHeader(group.id), group.id);
-      }
+      await revealWorkHeader(group.id);
       await until(
         () => owner.groupDisplays.any(
           (display) => display.unitId == group.id && display.expanded,

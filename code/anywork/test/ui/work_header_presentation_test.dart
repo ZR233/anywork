@@ -255,6 +255,56 @@ void main() {
   }
 
   testWidgets(
+    'Work title paragraph stays hittable without repeated tree searches',
+    (tester) async {
+      const unrelatedCount = 120;
+      await tester.pumpWidget(
+        _host(
+          SingleChildScrollView(
+            child: Column(
+              children: [
+                CompletionRunView(
+                  id: 'paragraph-target',
+                  timing: const WorkTiming(startedAt: 1000),
+                  thinkingSummary: '**精确标题**',
+                  location: WorkDisplayLocation.live,
+                  executionPresent: true,
+                  activity: _thinking,
+                  initiallyExpanded: false,
+                  now: () => _at(1125),
+                  childBuilder: (_) => const Text('paragraph opened this Work'),
+                ),
+                for (var i = 0; i < unrelatedCount; i++) Text('Unrelated $i'),
+              ],
+            ),
+          ),
+        ),
+      );
+      final header = find.byKey(
+        const ValueKey('completion-run-header:paragraph-target'),
+      );
+      var titleResolutions = 0;
+      final title = timelineGroupTitleFinder(
+        tester,
+        header,
+        validateOwner: () => titleResolutions++,
+      );
+      final target = timelineGroupTitleParagraphFinder(title);
+      expect(target, findsOneWidget);
+      // Count semantic re-resolution work, not machine-dependent elapsed time.
+      // Resolving a title once must not resolve it again for every unrelated text.
+      expect(titleResolutions, lessThanOrEqualTo(4 * (unrelatedCount + 1)));
+      expect(title.hitTestable(), findsNothing);
+      expect(target.hitTestable(), findsOneWidget);
+      await tester.tap(target);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('paragraph opened this Work'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
     'history members exceed 420 naturally and parent scrolling reaches final details',
     (tester) async {
       await tester.pumpWidget(

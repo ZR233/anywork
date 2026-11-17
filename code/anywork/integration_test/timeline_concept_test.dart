@@ -68,6 +68,8 @@ const _hotUpdatePrompt = '同一正文内依次追加二十个可控增量，保
 const _hotUpdateHead = '热更新正文：';
 const _imageCalls = ['concept-image-a', 'concept-image-b', 'concept-image-c'];
 const _imageReasoningCount = 40;
+// The fixture emits 40 reasoning atoms, four exec programs and four nested
+// view_image receipts. This is a complete group size, not a transport budget.
 const _imageMemberCount = 48;
 
 /// Three native processes, one isolated SQLite database, one strict provider.
@@ -1821,9 +1823,51 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) async {
-    final seed = await observed.readFixtureAtoms(unit);
+    final seed = await observed.readFixtureAtoms(
+      unit,
+      expectedCount: _imageMemberCount,
+    );
     final source = seed.first.source;
+    expect(source, isA<ForegroundTurnChatSource>());
+    final turnId = (source as ForegroundTurnChatSource).turnId;
+    expect(seed.map((atom) => atom.id).toSet(), hasLength(_imageMemberCount));
+    expect(seed.map((atom) => atom.source).toSet(), {source});
+    expect(seed.map((atom) => atom.turnId).toSet(), {turnId});
+    expect(
+      seed.where((atom) => atom.kind == ChatAtomKind.reasoning),
+      hasLength(_imageReasoningCount),
+    );
+    final programs = seed.where(
+      (atom) => atom.kind == ChatAtomKind.toolCall && atom.tool?.name == 'exec',
+    );
+    expect(
+      programs.map((atom) => atom.tool!.callId),
+      unorderedEquals([..._imageCalls, 'concept-image-failed']),
+    );
+    for (final call in [..._imageCalls, 'concept-image-failed']) {
+      expect(
+        seed.where(
+          (atom) =>
+              atom.kind == ChatAtomKind.toolCall &&
+              atom.tool?.name == 'view_image' &&
+              (atom.tool?.callId.startsWith('$call:nested:') ?? false),
+        ),
+        hasLength(1),
+      );
+    }
     final records = await collectDisplayRecords(observed, source: source);
+    final groupMembers = records
+        .where((entry) => entry.unit.id == unit.id)
+        .toList();
+    expect(groupMembers, hasLength(_imageMemberCount));
+    expect(
+      groupMembers.map((entry) => entry.member!.memberKey).toSet(),
+      hasLength(_imageMemberCount),
+    );
+    expect(
+      groupMembers.map((entry) => entry.record.atom.id),
+      orderedEquals(seed.map((atom) => atom.id)),
+    );
     final originals = records
         .where((entry) => entry.record.contentSource is CompletedOriginal)
         .toList();
@@ -1831,7 +1875,6 @@ final class _ConceptScene {
     for (final entry in originals) {
       atoms.add((await readDisplayRecord(lease, entry.record)).atom!);
     }
-    expect(source, isA<ForegroundTurnChatSource>());
     expect(
       lease.groupDisplays.singleWhere((value) => value.unitId == unit.id),
       same(display),
@@ -1841,8 +1884,18 @@ final class _ConceptScene {
     expect(display.blockReference, unit.memberReference);
     expect(display.loading, isFalse);
     expect(display.error, isNull);
-    expect(display.atoms, isNotEmpty);
-    expect(display.atoms.length, lessThanOrEqualTo(12));
+    // The independently queried complete fixture cut must be displayed in full,
+    // even though its original reader transports at most 12 heads per batch.
+    expect(
+      display.atoms.map((atom) => atom.id),
+      orderedEquals(groupMembers.map((entry) => entry.record.atom.id)),
+    );
+    expect(
+      display.atoms.map((atom) => atom.id).toSet(),
+      hasLength(_imageMemberCount),
+    );
+    expect(display.atoms.map((atom) => atom.source).toSet(), {source});
+    expect(display.atoms.map((atom) => atom.turnId).toSet(), {turnId});
 
     expect(atoms.map((atom) => atom.id).toSet(), hasLength(atoms.length));
     expect(atoms.map((atom) => atom.source).toSet(), {source});
@@ -1913,7 +1966,9 @@ final class _ConceptScene {
     inventories.add({
       'itemId': unit.id,
       'blockOrder': unit.blockOrder,
-      'currentPageCount': display.atoms.length,
+      'completeMemberCount': display.atoms.length,
+      'fixtureExpectedMemberCount': _imageMemberCount,
+      'uniqueMemberKeyCount': groupMembers.length,
       'inventorySource': 'explicit finite fixture queries, not UI accumulation',
       'displayIdentity': identityHashCode(display),
       'blockId': display.blockReference!.blockId,
@@ -3508,8 +3563,8 @@ final class _ConceptScene {
         (block) => block.id == before.id && !block.hasUnfinishedMembers,
       ),
     );
-    // This is the bridge/page handoff. Original preservation and member paging
-    // belong to Runtime tests; card styles and controls belong to widget tests.
+    // This is the bridge/Main handoff. Original preservation and complete member
+    // delivery belong to Runtime tests; card styles belong to widget tests.
     expect(liveWork().single.id, before.id);
     expect(main.where((unit) => unit.id == before.id), isEmpty);
     await capture('a14-empty-keeps-tail');
