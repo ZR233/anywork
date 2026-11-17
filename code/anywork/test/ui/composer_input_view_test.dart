@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show Tristate;
 
 import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_input_state.dart';
@@ -9,7 +10,9 @@ import 'package:anywork/src/features/conversation/composer/views/composer_suppor
 import 'package:anywork/src/l10n/app_localizations.dart';
 import 'package:anywork/src/platform/dropped_file.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
+import 'package:anywork/src/shared/composer_action_button.dart';
 import 'package:anywork_client/studio_client.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -82,6 +85,78 @@ void main() {
         slot ??= rect;
         expect(rect.size, slot.size);
         expect(rect.left, slot.left);
+        final circularSurface = find.descendant(
+          of: button,
+          matching: find.byWidgetPredicate(
+            (widget) => widget is Material && widget.shape is CircleBorder,
+          ),
+        );
+        expect(circularSurface, findsOneWidget);
+        final surfaceRect = tester.getRect(circularSurface);
+        expect(surfaceRect.size, const Size.square(34));
+        final busy = key.currentState!.projection!.action.busy;
+        final visual = find.descendant(
+          of: button,
+          matching: busy
+              ? find.byType(CircularProgressIndicator)
+              : find.byType(Icon),
+        );
+        expect(visual, findsOneWidget);
+        final visualCenter = tester.getCenter(visual);
+        if (!busy) {
+          final richText = find.descendant(
+            of: visual,
+            matching: find.byType(RichText),
+          );
+          expect(richText, findsOneWidget);
+          final paragraph = tester.renderObject<RenderParagraph>(richText);
+          final painter = TextPainter(
+            text: paragraph.text,
+            textDirection: paragraph.textDirection,
+          )..layout();
+          final iconText = paragraph.text.toPlainText();
+          final glyphBoxes = painter.getBoxesForSelection(
+            TextSelection(baseOffset: 0, extentOffset: iconText.length),
+          );
+          expect(
+            glyphBoxes,
+            isNotEmpty,
+            reason: '主操作 RichText 应包含可测量的字形：${iconText.codeUnits}',
+          );
+          final glyphRect = glyphBoxes
+              .map((box) => box.toRect())
+              .reduce((a, b) => a.expandToInclude(b));
+          final glyphCenter = paragraph.localToGlobal(glyphRect.center);
+          painter.dispose();
+          expect(
+            glyphCenter.dx,
+            closeTo(surfaceRect.center.dx, 0.5),
+            reason:
+                '字形排版中心 ${surfaceRect.center.dx - glyphCenter.dx}px '
+                '偏离 34px 圆面中心',
+          );
+          expect(
+            glyphCenter.dy,
+            closeTo(surfaceRect.center.dy, 0.5),
+            reason:
+                '字形排版中心 ${surfaceRect.center.dy - glyphCenter.dy}px '
+                '偏离 34px 圆面中心',
+          );
+        }
+        expect(
+          visualCenter.dx,
+          closeTo(surfaceRect.center.dx, 0.5),
+          reason:
+              '主操作图形/进度中心 ${surfaceRect.center.dx - visualCenter.dx}px '
+              '偏离 34px 圆面中心',
+        );
+        expect(
+          visualCenter.dy,
+          closeTo(surfaceRect.center.dy, 0.5),
+          reason:
+              '主操作图形/进度中心 ${surfaceRect.center.dy - visualCenter.dy}px '
+              '偏离 34px 圆面中心',
+        );
         final relativeSelector =
             tester.getTopLeft(find.text('route')) - rect.topLeft;
         selector ??= relativeSelector;
@@ -122,6 +197,112 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
   }
+
+  testWidgets('共享主操作按钮按状态触发回调并提供提示与无障碍语义', (tester) async {
+    const cases = [
+      (
+        state: ComposerActionButtonState.send,
+        tooltip: '发送',
+        callback: true,
+        enabled: true,
+        busy: false,
+      ),
+      (
+        state: ComposerActionButtonState.sendAndContinue,
+        tooltip: '发送并继续',
+        callback: true,
+        enabled: true,
+        busy: false,
+      ),
+      (
+        state: ComposerActionButtonState.stop,
+        tooltip: '停止',
+        callback: true,
+        enabled: true,
+        busy: false,
+      ),
+      (
+        state: ComposerActionButtonState.continueConversation,
+        tooltip: '继续',
+        callback: true,
+        enabled: true,
+        busy: false,
+      ),
+      (
+        state: ComposerActionButtonState.send,
+        tooltip: '不可用发送',
+        callback: false,
+        enabled: false,
+        busy: false,
+      ),
+      (
+        state: ComposerActionButtonState.busy,
+        tooltip: '正在处理',
+        callback: true,
+        enabled: false,
+        busy: true,
+      ),
+      (
+        state: ComposerActionButtonState.readOnly,
+        tooltip: '只读',
+        callback: true,
+        enabled: false,
+        busy: false,
+      ),
+    ];
+    for (final item in cases) {
+      var calls = 0;
+      const buttonKey = ValueKey('shared-composer-action');
+      await tester.pumpWidget(
+        _app(
+          ComposerActionButton(
+            state: item.state,
+            tooltip: item.tooltip,
+            buttonKey: buttonKey,
+            onPressed: item.callback ? () => calls++ : null,
+          ),
+        ),
+      );
+      final button = find.byKey(buttonKey);
+      expect(button, findsOneWidget);
+      final semantics = find.semantics.byPredicate((node) {
+        final data = node.getSemanticsData();
+        return data.tooltip == item.tooltip &&
+            data.flagsCollection.isEnabled ==
+                (item.enabled ? Tristate.isTrue : Tristate.isFalse);
+      });
+      expect(semantics, findsOneWidget);
+      expect(find.text(item.tooltip), findsNothing);
+      final surface = find.descendant(
+        of: button,
+        matching: find.byWidgetPredicate(
+          (widget) => widget is Material && widget.shape is CircleBorder,
+        ),
+      );
+      expect(surface, findsOneWidget);
+      final surfaceRect = tester.getRect(surface);
+      expect(surfaceRect.size, const Size.square(34));
+      final graphic = find.descendant(
+        of: button,
+        matching: item.busy
+            ? find.byType(CircularProgressIndicator)
+            : find.byType(Icon),
+      );
+      expect(graphic, findsOneWidget);
+      expect(tester.getCenter(graphic), surfaceRect.center);
+      expect(
+        find.descendant(
+          of: button,
+          matching: find.byType(CircularProgressIndicator),
+        ),
+        item.busy ? findsOneWidget : findsNothing,
+      );
+      await tester.tap(button);
+      await tester.pump();
+      expect(calls, item.enabled ? 1 : 0, reason: item.state.name);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+  });
 
   testWidgets('待决交互停止不重复文字，收束状态有禁用语义和进度', (tester) async {
     await tester.pumpWidget(

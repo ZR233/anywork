@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'composer_action_button.dart';
+
 /// Shared input decoration and toolbar geometry. Business owners supply the
 /// editor, protocol-specific configuration and qualified actions.
 class ComposerInputFrame extends StatelessWidget {
@@ -38,29 +40,18 @@ class ComposerInputFrame extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         ...body,
-        LayoutBuilder(
-          builder: (context, constraints) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (constraints.maxWidth < 540 && configuration != null)
-                configuration!,
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  ?attachmentAction,
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: constraints.maxWidth >= 540 && configuration != null
-                        ? configuration!
-                        : const SizedBox.shrink(),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox.square(dimension: 34, child: primaryAction),
-                ],
-              ),
-            ],
-          ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            ?attachmentAction,
+            const SizedBox(width: 6),
+            Expanded(child: configuration ?? const SizedBox.shrink()),
+            const SizedBox(width: 8),
+            SizedBox.square(
+              dimension: ComposerActionButton.dimension,
+              child: primaryAction,
+            ),
+          ],
         ),
       ],
     );

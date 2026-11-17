@@ -6,6 +6,8 @@ import 'package:material_ui/material_ui.dart';
 import '../../../../app/routing/app_route.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_driver_keys.dart';
+import '../../../../shared/composer_configuration_bar.dart';
+import '../../../../shared/studio_menu_label.dart';
 import '../../../status/session_selectors.dart';
 import '../../../shell/thread_preparation_card.dart';
 import '../../interactions/connectors/child_interaction_connector.dart';
@@ -217,36 +219,71 @@ class _ComposerContentViewState extends State<ComposerContentView> {
       ThreadStatusView.faulted => context.l10n.statusModelSwitchWhileInactive,
       _ => context.l10n.statusModelSwitchWhileRunning,
     };
-    return Wrap(
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 2,
-      runSpacing: 4,
-      children: [
-        if (row.mode case final mode?)
-          SessionModeSelector(
-            catalog: widget.state.modeCatalog,
-            mode: mode,
-            usesSnapshot: true,
-            snapshotDisplayName: view.workflow?.currentRun?.modeDisplayName,
-            enabled:
-                !view.hasActiveWorkflow &&
-                backend.status == ThreadStatusView.idle &&
-                view.activeInteraction == null,
-            onExplain: (message) => setState(() => _notice = message),
-            onSelected: actions.setMode,
+    SessionModeSelector modeSelector(bool inMenu) => SessionModeSelector(
+      inMenu: inMenu,
+      catalog: widget.state.modeCatalog,
+      mode: row.mode!,
+      usesSnapshot: true,
+      snapshotDisplayName: view.workflow?.currentRun?.modeDisplayName,
+      enabled:
+          !view.hasActiveWorkflow &&
+          backend.status == ThreadStatusView.idle &&
+          view.activeInteraction == null,
+      onExplain: (message) => setState(() => _notice = message),
+      onSelected: actions.setMode,
+    );
+    final inlineMode = row.mode == null ? null : modeSelector(false);
+    const botIconSize = 16.0;
+    final botLabel = StudioMenuLabel(
+      label: '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
+      leading: const Icon(Icons.smart_toy_outlined, size: botIconSize),
+      maxWidth: double.infinity,
+    );
+    Widget botSettings(bool inMenu) {
+      final botId = view.modelRoute!.botId!;
+      void open() => unawaited(BotDetailsRoute(botId: botId).push(context));
+      return inMenu
+          ? MenuItemButton(
+              key: const ValueKey('bot-model-settings'),
+              onPressed: open,
+              leadingIcon: const Icon(
+                Icons.smart_toy_outlined,
+                size: botIconSize,
+              ),
+              child: Text(botLabel.label),
+            )
+          : TextButton(
+              key: const ValueKey('bot-model-settings'),
+              onPressed: open,
+              style: TextButton.styleFrom(
+                padding: EdgeInsets.zero,
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: botLabel,
+            );
+    }
+
+    return ComposerConfigurationBar(
+      moreTooltip: context.l10n.acpConfigMoreLabel,
+      entries: [
+        if (inlineMode != null)
+          ComposerConfigurationEntry(
+            id: 'native-mode',
+            inline: inlineMode,
+            measureInlineWidth: inlineMode.measureInlineWidth,
+            menuItem: modeSelector(true),
           ),
-        if (view.modelRoute?.botId case final botId?)
-          TextButton.icon(
-            key: const ValueKey('bot-model-settings'),
-            icon: const Icon(Icons.smart_toy_outlined, size: 16),
-            label: Text(
-              '${route?.modelId ?? ''} · ${context.l10n.botsManagedModel}',
-            ),
-            onPressed: () =>
-                unawaited(BotDetailsRoute(botId: botId).push(context)),
+        if (view.modelRoute?.botId != null)
+          ComposerConfigurationEntry(
+            id: 'bot-model',
+            inline: botSettings(false),
+            measureInlineWidth: (context) =>
+                botLabel.measureWidth(context, leadingWidth: botIconSize),
+            menuItem: botSettings(true),
           )
         else
-          ...modelRouteSelectorChildren(
+          ...modelRouteConfigurationEntries(
             accounts: view.accounts,
             accountId: route?.accountId,
             modelId: route?.modelId,

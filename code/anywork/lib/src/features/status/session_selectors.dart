@@ -50,8 +50,10 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
     required this.tooltip,
     required this.items,
     required this.child,
+    required this.menuChild,
     this.onSelected,
     this.enabled = true,
+    this.inMenu = false,
     this.onBlockedTap,
     super.key,
   });
@@ -68,8 +70,12 @@ class _QuietSelectorMenu<T> extends StatefulWidget {
   /// Quiet-label trigger content.
   final Widget child;
 
+  /// Single-line configuration name and current value for a parent menu.
+  final Widget menuChild;
+
   /// Whether rows can be activated and the trigger can open the menu.
   final bool enabled;
+  final bool inMenu;
 
   /// Invoked instead of opening when [enabled] is false.
   final VoidCallback? onBlockedTap;
@@ -93,6 +99,17 @@ class _QuietSelectorMenuState<T> extends State<_QuietSelectorMenu<T>> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.inMenu) {
+      return Tooltip(
+        message: widget.tooltip,
+        child: SubmenuButton(
+          menuChildren: _canOpen
+              ? [for (final item in widget.items) _buildRow(context, item)]
+              : const [],
+          child: widget.menuChild,
+        ),
+      );
+    }
     return MenuAnchor(
       // RawMenuAnchor transfers focus here on pointer-open. Without the same
       // node on the trigger, Escape still reaches the previously focused input.
@@ -184,6 +201,7 @@ class SessionModeSelector extends StatelessWidget {
     required this.mode,
     required this.onSelected,
     this.enabled = true,
+    this.inMenu = false,
     this.snapshotDisplayName,
     this.usesSnapshot = false,
     this.lockedHint,
@@ -193,6 +211,7 @@ class SessionModeSelector extends StatelessWidget {
 
   final ThreadModeId mode;
   final ThreadModeCatalogView catalog;
+  final bool inMenu;
   final ValueChanged<ThreadModeId> onSelected;
   final bool enabled;
   final String? snapshotDisplayName;
@@ -204,21 +223,52 @@ class SessionModeSelector extends StatelessWidget {
   /// 宿主提示区；缺省就地弹一次可关闭提示。
   final ValueChanged<String>? onExplain;
 
-  @override
-  Widget build(BuildContext context) {
+  ({bool deleted, StudioMenuLabel label}) _presentation(BuildContext context) {
     final discovered = catalog.modes;
-    final options = discovered.isEmpty
-        ? ThreadModeId.values
-        : discovered.map((descriptor) => descriptor.mode).toList();
-    if (!options.contains(mode)) options.add(mode);
     final selectedLabel = discovered
         .where((descriptor) => descriptor.id == mode.id)
         .firstOrNull
         ?.displayName;
     final deleted =
         discovered.isNotEmpty && !discovered.any((item) => item.id == mode.id);
+    final currentLabel =
+        selectedLabel ??
+        (deleted
+            ? '${snapshotDisplayName ?? context.compileModeLabel(mode)} · ${usesSnapshot ? context.l10n.modeSnapshotBadge : context.l10n.modeDeletedBadge}'
+            : context.compileModeLabel(mode));
+    return (
+      deleted: deleted,
+      label: StudioMenuLabel(
+        key: StudioDriverKeys.sessionModeLabel,
+        label: currentLabel,
+        enabled: enabled,
+        maxWidth: 96,
+      ),
+    );
+  }
+
+  double measureInlineWidth(BuildContext context) =>
+      _presentation(context).label.measureWidth(context);
+
+  @override
+  Widget build(BuildContext context) {
+    final presentation = _presentation(context);
+    final deleted = presentation.deleted;
+    final currentLabel = presentation.label.label;
+    final discovered = catalog.modes;
+    final options = discovered.isEmpty
+        ? ThreadModeId.values
+        : discovered.map((descriptor) => descriptor.mode).toList();
+    if (!options.contains(mode)) options.add(mode);
     return _QuietSelectorMenu<ThreadModeId>(
+      inMenu: inMenu,
       key: StudioDriverKeys.sessionMode,
+      menuChild: Text(
+        '${context.l10n.statusSessionMode} · $currentLabel',
+        key: StudioDriverKeys.sessionModeLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       tooltip: deleted
           ? (usesSnapshot
                 ? context.l10n.modeDeletedUsingSnapshot
@@ -260,16 +310,7 @@ class SessionModeSelector extends StatelessWidget {
             ),
           ),
       ],
-      child: StudioMenuLabel(
-        key: StudioDriverKeys.sessionModeLabel,
-        label:
-            selectedLabel ??
-            (deleted
-                ? '${snapshotDisplayName ?? context.compileModeLabel(mode)} · ${usesSnapshot ? context.l10n.modeSnapshotBadge : context.l10n.modeDeletedBadge}'
-                : context.compileModeLabel(mode)),
-        enabled: enabled,
-        maxWidth: 96,
-      ),
+      child: presentation.label,
     );
   }
 }
@@ -290,6 +331,7 @@ class ModelRoleSelector extends StatelessWidget {
     required this.effort,
     this.onModelSelected,
     this.enabled = true,
+    this.inMenu = false,
     this.pending = false,
     this.available = true,
     this.unavailableReason,
@@ -299,6 +341,7 @@ class ModelRoleSelector extends StatelessWidget {
   });
 
   final List<ModelSelectionAccount> accounts;
+  final bool inMenu;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -314,8 +357,12 @@ class ModelRoleSelector extends StatelessWidget {
   final String? blockedReason;
   final ValueChanged<String>? onExplain;
 
-  @override
-  Widget build(BuildContext context) {
+  static const double _warningWidth = 32;
+  static const double _pendingSize = 12;
+  static const double _pendingGap = 6;
+
+  ({ModelRouteSelector selector, bool warning, String? filterMessage})
+  _presentation(BuildContext context) {
     final options = modelOptions(accounts);
     final current = modelForRoute(accounts, accountId, modelId);
     final filterMessage = modelTextFilterMessage(context, current?.descriptor);
@@ -326,15 +373,58 @@ class ModelRoleSelector extends StatelessWidget {
         blockedReason ??
         (!enabled ? context.l10n.statusSelectorsNotReady : null) ??
         (options.isEmpty ? context.l10n.modelTextFilterEmpty : null);
+    return (
+      warning: warning,
+      filterMessage: filterMessage,
+      selector: ModelRouteSelector(
+        inMenu: inMenu,
+        selectorKey: StudioDriverKeys.model,
+        options: options,
+        accountId: accountId,
+        modelId: modelId,
+        fieldLabel: context.l10n.statusPlannerModel,
+        tooltip:
+            selectionBlockedReason ??
+            filterMessage ??
+            context.l10n.statusPlannerModel,
+        unresolvedLabel: filterMessage,
+        labelMaxWidth: 140,
+        // Pending is an optimistic projection, not a lock. The controller
+        // supersedes older route intents by stable target identity.
+        enabled: enabled && selectionBlockedReason == null,
+        onBlockedTap: selectionBlockedReason == null
+            ? null
+            : () =>
+                  _explainSelection(context, onExplain, selectionBlockedReason),
+        onSelected: (option) async {
+          await onModelSelected?.call(option.accountId, option.modelId);
+        },
+        optionKeyBuilder: (option) =>
+            StudioDriverKeys.modelOption(option.accountId, option.modelId),
+      ),
+    );
+  }
+
+  double measureInlineWidth(BuildContext context) {
+    final presentation = _presentation(context);
+    return presentation.selector.measureInlineWidth(context) +
+        (presentation.warning ? _warningWidth : 0) +
+        (pending ? _pendingSize + _pendingGap : 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final presentation = _presentation(context);
+    final filterMessage = presentation.filterMessage;
     void explain(String message) =>
         _explainSelection(context, onExplain, message);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (warning)
+        if (presentation.warning)
           SizedBox.square(
-            dimension: 32,
+            dimension: _warningWidth,
             child: IconButton(
               key: const ValueKey('model-route-warning'),
               padding: EdgeInsets.zero,
@@ -357,39 +447,13 @@ class ModelRoleSelector extends StatelessWidget {
           ),
         if (pending)
           const Padding(
-            padding: EdgeInsets.only(right: 6),
+            padding: EdgeInsets.only(right: _pendingGap),
             child: SizedBox.square(
-              dimension: 12,
+              dimension: _pendingSize,
               child: CircularProgressIndicator(strokeWidth: 1.5),
             ),
           ),
-        Flexible(
-          child: ModelRouteSelector(
-            selectorKey: StudioDriverKeys.model,
-            options: options,
-            accountId: accountId,
-            modelId: modelId,
-            fieldLabel: context.l10n.statusPlannerModel,
-            tooltip:
-                selectionBlockedReason ??
-                filterMessage ??
-                context.l10n.statusPlannerModel,
-            unresolvedLabel: filterMessage,
-            labelMaxWidth: 140,
-            // Pending is an optimistic projection, not a lock.  The controller
-            // supersedes older route intents by stable target identity, so users
-            // can select A -> B -> C without waiting for each Bridge round trip.
-            enabled: enabled && selectionBlockedReason == null,
-            onBlockedTap: selectionBlockedReason == null
-                ? null
-                : () => explain(selectionBlockedReason),
-            onSelected: (option) async {
-              await onModelSelected?.call(option.accountId, option.modelId);
-            },
-            optionKeyBuilder: (option) =>
-                StudioDriverKeys.modelOption(option.accountId, option.modelId),
-          ),
-        ),
+        Flexible(child: presentation.selector),
       ],
     );
   }
@@ -404,6 +468,7 @@ class ReasoningEffortSelector extends StatelessWidget {
     required this.effort,
     this.onEffortSelected,
     this.enabled = true,
+    this.inMenu = false,
     this.pending = false,
     this.blockedReason,
     this.onExplain,
@@ -411,6 +476,7 @@ class ReasoningEffortSelector extends StatelessWidget {
   });
 
   final List<ModelSelectionAccount> accounts;
+  final bool inMenu;
   final String accountId;
   final String modelId;
   final String? effort;
@@ -420,8 +486,13 @@ class ReasoningEffortSelector extends StatelessWidget {
   final String? blockedReason;
   final ValueChanged<String>? onExplain;
 
-  @override
-  Widget build(BuildContext context) {
+  ({
+    List<String> efforts,
+    String? selectedEffort,
+    bool selectionEnabled,
+    StudioMenuLabel label,
+  })
+  _presentation(BuildContext context) {
     final currentModel = modelForRoute(accounts, accountId, modelId);
     final efforts = currentModel?.reasoningEfforts ?? const [];
     final selectedEffort = effort?.isNotEmpty == true
@@ -442,8 +513,40 @@ class ReasoningEffortSelector extends StatelessWidget {
         currentModel != null &&
         efforts.isNotEmpty &&
         blockedReason == null;
+    final currentLabel = efforts.isEmpty
+        ? context.l10n.settingsUsageUnsupported
+        : label;
+    return (
+      efforts: efforts,
+      selectedEffort: selectedEffort,
+      selectionEnabled: selectionEnabled,
+      label: StudioMenuLabel(
+        key: StudioDriverKeys.reasoningEffortLabel,
+        label: currentLabel,
+        enabled: selectionEnabled,
+        maxWidth: 140,
+      ),
+    );
+  }
+
+  double measureInlineWidth(BuildContext context) =>
+      _presentation(context).label.measureWidth(context);
+
+  @override
+  Widget build(BuildContext context) {
+    final presentation = _presentation(context);
+    final efforts = presentation.efforts;
+    final selectionEnabled = presentation.selectionEnabled;
+    final currentLabel = presentation.label.label;
     return _QuietSelectorMenu<String>(
+      inMenu: inMenu,
       key: StudioDriverKeys.reasoningEffort,
+      menuChild: Text(
+        '${context.l10n.statusReasoningEffort} · $currentLabel',
+        key: StudioDriverKeys.reasoningEffortLabel,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
       tooltip:
           blockedReason ??
           (efforts.isEmpty
@@ -468,22 +571,12 @@ class ReasoningEffortSelector extends StatelessWidget {
         for (final effort in efforts)
           _QuietMenuItem<String>(
             value: effort,
-            selected: effort == selectedEffort,
+            selected: effort == presentation.selectedEffort,
             itemKey: StudioDriverKeys.reasoningEffortOption(effort),
             child: Text(effort),
           ),
       ],
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 96),
-        child: StudioMenuLabel(
-          key: StudioDriverKeys.reasoningEffortLabel,
-          label: efforts.isEmpty
-              ? context.l10n.settingsUsageUnsupported
-              : label,
-          enabled: selectionEnabled,
-          maxWidth: 140,
-        ),
-      ),
+      child: presentation.label,
     );
   }
 }

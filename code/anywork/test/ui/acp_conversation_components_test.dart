@@ -9,6 +9,7 @@ import 'package:anywork/src/features/conversation/acp/connectors/acp_workspace_c
 import 'package:anywork/src/features/conversation/acp/view_models/acp_configuration_view_model.dart';
 import 'package:anywork/src/features/conversation/acp/view_models/acp_plan_card_view_model.dart';
 import 'package:anywork/src/platform/clipboard_image_reader.dart';
+import 'package:anywork/src/shared/composer_configuration_bar.dart';
 import 'package:anywork_client/acp_sessions.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/services.dart';
@@ -28,9 +29,7 @@ IconButton _sendButtonWidget(WidgetTester tester, String threadId) {
   final primary = find.byKey(
     ValueKey(AcpViewKeyValues.composerPrimaryAction(threadId)),
   );
-  return tester.widget<IconButton>(
-    find.descendant(of: primary, matching: find.byType(IconButton)),
-  );
+  return tester.widget<IconButton>(primary);
 }
 
 void main() {
@@ -129,6 +128,7 @@ void main() {
   });
 
   testWidgets('ACP 发送中提示仅保留无障碍图标，停止原位切换且错误不丢失', (tester) async {
+    var submissions = 0;
     var interrupts = 0;
     Widget composer(AcpComposerViewState state) => acpTestApp(
       SizedBox(
@@ -136,7 +136,7 @@ void main() {
         child: AcpConversationComposerView(
           state: state,
           onDraftChanged: (_) {},
-          onSubmit: () {},
+          onSubmit: () => submissions++,
           onInterrupt: () => interrupts++,
           onPickLocalAttachments: (_) async {},
           onAddRemoteAttachment: (_) async {},
@@ -154,13 +154,11 @@ void main() {
         ),
       ),
     );
-    final primary = find.descendant(
-      of: find.byKey(
-        ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
-      ),
-      matching: find.byType(IconButton),
+    final primary = find.byKey(
+      ValueKey(AcpViewKeyValues.composerPrimaryAction('thread')),
     );
     final button = tester.widget<IconButton>(primary);
+    expectAcpPrimaryGeometry(tester, primary);
     expect(button.onPressed, isNull);
     expect(find.text(button.tooltip!), findsNothing);
     expect(
@@ -171,6 +169,9 @@ void main() {
     );
     expect(find.byType(CircularProgressIndicator), findsOneWidget);
     expect(find.text('attachment could not be read'), findsOneWidget);
+    await tester.tap(primary);
+    expect(submissions, 0);
+    expect(interrupts, 0);
     final sendingRect = tester.getRect(primary);
     await tester.pumpWidget(
       composer(
@@ -182,6 +183,7 @@ void main() {
       ),
     );
     final stop = tester.widget<IconButton>(primary);
+    expectAcpPrimaryGeometry(tester, primary);
     expect(tester.getRect(primary).size, sendingRect.size);
     expect(tester.getRect(primary).left, sendingRect.left);
     expect(find.text(stop.tooltip!), findsNothing);
@@ -191,6 +193,20 @@ void main() {
       ),
       findsOne,
     );
+    await tester.tap(primary);
+    expect(interrupts, 1);
+    await tester.pumpWidget(
+      composer(
+        const AcpComposerViewState(
+          threadId: 'thread',
+          isRunning: true,
+          canInterrupt: true,
+          interrupting: true,
+        ),
+      ),
+    );
+    expectAcpPrimaryGeometry(tester, primary);
+    expect(tester.widget<IconButton>(primary).onPressed, isNull);
     await tester.tap(primary);
     expect(interrupts, 1);
     expect(tester.takeException(), isNull);
@@ -447,14 +463,35 @@ void main() {
     );
     await tester.pumpAndSettle();
     final field = tester.widget<TextField>(find.byType(TextField));
-    field.controller!.selection = const TextSelection.collapsed(offset: 2);
+    field.controller!.value = const TextEditingValue(
+      text: '保留我的草稿',
+      selection: TextSelection.collapsed(offset: 2),
+      composing: TextRange(start: 1, end: 3),
+    );
     final configuration = Completer<void>();
     harness.port.configureResult = configuration;
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+    final booleanControl = find.byKey(
+      ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
+    );
+    final booleanOption = find.descendant(
+      of: booleanControl,
+      matching: find.byType(CheckboxMenuButton),
+    );
+    expect(booleanOption, findsOneWidget);
+    await tester.tap(booleanOption);
     await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(harness.owner.state.configPending, isTrue);
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
     expect(find.byTooltip('正在应用配置，完成前不能发送消息'), findsOneWidget);
     expect(find.text('正在应用配置，完成前不能发送消息'), findsNothing);
+    await tester.tap(
+      find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction('thread'))),
+    );
+    await tester.pump();
+    expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
     harness.update(
       const AcpAgentMessageChunkView(
         AcpContentChunkView(content: AcpTextContentView(text: '异步内容')),
@@ -463,6 +500,19 @@ void main() {
     await tester.pump();
     expect(field.controller!.text, '保留我的草稿');
     expect(field.controller!.selection.baseOffset, 2);
+    expect(
+      field.controller!.value.composing,
+      const TextRange(start: 1, end: 3),
+    );
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<CheckboxMenuButton>(booleanOption).onChanged,
+      isNull,
+      reason: '配置请求在途时，真实菜单选项必须不可交互',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle();
     harness.emit(
       AcpConfiguredEventView(
         AcpConfiguredResponseView(configOptions: [acpBooleanFixture]),
@@ -549,13 +599,12 @@ void main() {
       );
       final originalRect = tester.getRect(action);
       expect(originalRect.size, const Size(34, 34));
-      final tuning = find.byType(Switch);
-      final tuningSize = tester.getSize(tuning);
+      final moreAction = find.byKey(ComposerConfigurationBar.moreKey);
+      final moreRect = tester.getRect(moreAction);
       await tester.tap(action);
       await tester.pump();
       expect(tester.widget<TextField>(input).enabled, isNot(false));
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       await tester.enterText(input, '下一条草稿');
       await tester.pump();
       final controller = tester.widget<TextField>(input).controller!;
@@ -571,8 +620,7 @@ void main() {
       expect(controller.value.composing, const TextRange(start: 1, end: 3));
       expect(controller.selection.baseOffset, 3);
       expect(tester.getRect(action), originalRect);
-      expect(tester.getSize(tuning), tuningSize);
-      expect(tester.widget<Switch>(tuning).onChanged, isNull);
+      expect(tester.getRect(moreAction), moreRect);
       await tester.testTextInput.receiveAction(TextInputAction.send);
       expect(
         harness.port.calls.where((call) => call.$1 == 'prompt'),
@@ -612,8 +660,8 @@ void main() {
       }
       await tester.pump();
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
-      expect(tester.widget<Switch>(tuning).onChanged, isNull);
       expect(tester.getRect(action), originalRect);
+      expect(tester.getRect(moreAction), moreRect);
       if (completionFirst) {
         interrupting.complete();
       } else {
@@ -622,7 +670,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(harness.owner.state.activeRun, isNull);
       expect(_sendButtonWidget(tester, 'thread').onPressed, isNotNull);
-      expect(tester.widget<Switch>(tuning).onChanged, isNotNull);
+      expect(tester.getRect(moreAction), moreRect);
       expect(draft.state.draft, '停止时继续编辑');
       expect(find.byType(CircularProgressIndicator), findsNothing);
       expect(
@@ -648,11 +696,28 @@ void main() {
     );
     await tester.pumpAndSettle();
     harness.port.commandError = StateError('server rejected config');
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(ComposerConfigurationBar.moreKey));
+    await tester.pumpAndSettle();
+    final booleanOption = find.descendant(
+      of: find.byKey(
+        ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
+      ),
+      matching: find.byType(CheckboxMenuButton),
+    );
+    expect(booleanOption, findsOneWidget);
+    await tester.tap(booleanOption);
     await tester.pumpAndSettle();
     expect(find.textContaining('配置失败：'), findsWidgets);
     expect(_sendButtonWidget(tester, 'thread').onPressed, isNull);
     expect(harness.client.drafts.composer('thread').state.draft, '不能丢失的输入');
+    expect(
+      harness.port.calls.where((call) => call.$1 == 'configure'),
+      hasLength(1),
+    );
+    await tester.tap(
+      find.byKey(ValueKey(AcpViewKeyValues.composerPrimaryAction('thread'))),
+    );
+    await tester.pump();
     expect(harness.port.calls.any((call) => call.$1 == 'prompt'), isFalse);
   });
 

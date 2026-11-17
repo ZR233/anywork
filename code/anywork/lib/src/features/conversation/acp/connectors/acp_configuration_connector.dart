@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../l10n/studio_l10n.dart';
+import '../../../../shared/composer_configuration_bar.dart';
 import '../state/acp_view_state.dart';
 import '../view_models/acp_composer_view_model.dart';
 import '../view_models/acp_configuration_view_model.dart';
@@ -12,9 +13,14 @@ import '../widgets/acp_configuration_bar.dart';
 /// Thin Riverpod connector binding [AcpConfigurationViewModel] to the inline
 /// composer [AcpConfigurationBar].
 class AcpConfigurationConnector extends ConsumerWidget {
-  const AcpConfigurationConnector({super.key, required this.threadId});
+  const AcpConfigurationConnector({
+    super.key,
+    required this.threadId,
+    this.leadingEntries = const [],
+  });
 
   final String threadId;
+  final List<ComposerConfigurationEntry> leadingEntries;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -49,6 +55,7 @@ class AcpConfigurationConnector extends ConsumerWidget {
             _ => l10n.acpComposerBlockerNotReady,
           };
     return AcpConfigurationBar(
+      leadingEntries: leadingEntries,
       state: state,
       disabledTooltip: disabledTooltip,
       onSelectValue: (configId, valueId) =>
