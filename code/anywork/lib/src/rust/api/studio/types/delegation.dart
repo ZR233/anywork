@@ -215,18 +215,15 @@ class BridgeDelegationModelDetail {
 
 class BridgeDelegationModelList {
   final List<BridgeDelegationModelListItem> models;
-  final String? nextCursor;
   final BigInt catalogRevision;
 
   const BridgeDelegationModelList({
     required this.models,
-    this.nextCursor,
     required this.catalogRevision,
   });
 
   @override
-  int get hashCode =>
-      models.hashCode ^ nextCursor.hashCode ^ catalogRevision.hashCode;
+  int get hashCode => models.hashCode ^ catalogRevision.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -234,7 +231,6 @@ class BridgeDelegationModelList {
       other is BridgeDelegationModelList &&
           runtimeType == other.runtimeType &&
           models == other.models &&
-          nextCursor == other.nextCursor &&
           catalogRevision == other.catalogRevision;
 }
 
@@ -248,10 +244,7 @@ class BridgeDelegationModelListItem {
   final BigInt? contextWindow;
   final BridgeModelCapabilities capabilities;
   final List<String> reasoningEfforts;
-  final BridgeModelPricing? pricing;
   final BridgeBillingKind billingKind;
-  final BridgeLocalModelPerformanceSummary performance;
-  final BridgeAgentEvaluationSummary evaluations;
 
   const BridgeDelegationModelListItem({
     required this.accountId,
@@ -263,10 +256,7 @@ class BridgeDelegationModelListItem {
     this.contextWindow,
     required this.capabilities,
     required this.reasoningEfforts,
-    this.pricing,
     required this.billingKind,
-    required this.performance,
-    required this.evaluations,
   });
 
   @override
@@ -280,10 +270,7 @@ class BridgeDelegationModelListItem {
       contextWindow.hashCode ^
       capabilities.hashCode ^
       reasoningEfforts.hashCode ^
-      pricing.hashCode ^
-      billingKind.hashCode ^
-      performance.hashCode ^
-      evaluations.hashCode;
+      billingKind.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -299,10 +286,7 @@ class BridgeDelegationModelListItem {
           contextWindow == other.contextWindow &&
           capabilities == other.capabilities &&
           reasoningEfforts == other.reasoningEfforts &&
-          pricing == other.pricing &&
-          billingKind == other.billingKind &&
-          performance == other.performance &&
-          evaluations == other.evaluations;
+          billingKind == other.billingKind;
 }
 
 enum BridgeDelegationPreference { economy, balanced, fast }
@@ -351,32 +335,23 @@ class BridgeGetDelegationModelRequest {
 
 class BridgeListDelegationModelsRequest {
   final List<BridgeDelegationModelCapability> capabilities;
-  final BridgeAgentTaskCategory? taskCategory;
   final String? accountId;
   final BridgeBillingKind? billingKind;
   final BigInt? minContextWindow;
-  final int? limit;
-  final String? cursor;
 
   const BridgeListDelegationModelsRequest({
     required this.capabilities,
-    this.taskCategory,
     this.accountId,
     this.billingKind,
     this.minContextWindow,
-    this.limit,
-    this.cursor,
   });
 
   @override
   int get hashCode =>
       capabilities.hashCode ^
-      taskCategory.hashCode ^
       accountId.hashCode ^
       billingKind.hashCode ^
-      minContextWindow.hashCode ^
-      limit.hashCode ^
-      cursor.hashCode;
+      minContextWindow.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -384,12 +359,9 @@ class BridgeListDelegationModelsRequest {
       other is BridgeListDelegationModelsRequest &&
           runtimeType == other.runtimeType &&
           capabilities == other.capabilities &&
-          taskCategory == other.taskCategory &&
           accountId == other.accountId &&
           billingKind == other.billingKind &&
-          minContextWindow == other.minContextWindow &&
-          limit == other.limit &&
-          cursor == other.cursor;
+          minContextWindow == other.minContextWindow;
 }
 
 class BridgeLocalModelPerformanceSummary {

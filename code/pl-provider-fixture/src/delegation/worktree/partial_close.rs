@@ -51,9 +51,8 @@ pub(super) fn verify(
             WorktreeCleanup::Failed { path: Some(path), .. } if path == &child.git.path),
         "partial-close send probe lacks the exact sealed execution/failed cleanup receipt",
     )?;
-    let route: Detail = flow.read(
+    let route: Detail = flow.model(
         &format!("{label}-route"),
-        "get_delegation_model",
         json!({"accountId":child.spawn.model.account_id,"modelId":child.spawn.model.model_id}),
     )?;
     require(

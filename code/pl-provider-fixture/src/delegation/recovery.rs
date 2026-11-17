@@ -438,9 +438,8 @@ fn check_detail(
     route: &Route,
     expected: &[&Evaluation],
 ) -> Progress<()> {
-    let detail: Detail = flow.read(
+    let detail: Detail = flow.model(
         label,
-        "get_delegation_model",
         json!({"accountId":route.account_id,"modelId":route.model_id}),
     )?;
     require(

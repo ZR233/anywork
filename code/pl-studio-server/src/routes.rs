@@ -29,8 +29,8 @@ use pl_protocol::studio::{
     UpdateMcpDocumentRequest, UpdatePermissionSettingsRequest, UpdateSettingsFieldRequest,
 };
 use pl_protocol::{
-    DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
-    ListDelegationModelsRequest,
+    DelegationModelDetail, DelegationModelDetails, DelegationModelList, GetDelegationModelRequest,
+    GetDelegationModelsRequest, ListDelegationModelsRequest,
 };
 use pl_protocol::{ThreadModeDocument, ThreadModeId, WorkflowPreviewRequest};
 use tokio::io::AsyncWriteExt;
@@ -338,6 +338,7 @@ pub(crate) fn api_router() -> OpenApiRouter<AppState> {
         .routes(routes!(cancel_chatgpt_login))
         .routes(routes!(list_delegation_models))
         .routes(routes!(get_delegation_model))
+        .routes(routes!(get_delegation_models))
         .routes(routes!(read_settings))
         .routes(routes!(reload_settings))
         .routes(routes!(remove_account_model))
@@ -1055,6 +1056,20 @@ async fn get_delegation_model(
         state
             .runtime
             .get_delegation_model(request)
+            .await
+            .map_err(ApiError::from)?,
+    ))
+}
+
+#[utoipa::path(post, path = "/api/v1/delegation/models/details", operation_id = "delegation.getModels", request_body = GetDelegationModelsRequest, responses(StudioApiErrors, (status = 200, body = DelegationModelDetails)))]
+async fn get_delegation_models(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<GetDelegationModelsRequest>,
+) -> Result<Json<DelegationModelDetails>, ApiError> {
+    Ok(Json(
+        state
+            .runtime
+            .get_delegation_models(request)
             .await
             .map_err(ApiError::from)?,
     ))

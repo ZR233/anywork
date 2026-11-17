@@ -247,7 +247,7 @@ IPC 在 Linux/macOS 使用私有短路径 Unix socket，在 Windows 使用拒绝
 
 桌面安装包分发并校验当前 Linux/Windows/macOS 宿主原生 `pl-studio-mcp`，资源在 `data/host-mcp/<target>/`，由显式 `HostMcpSource` 解析。bundled 缺失或校验不符明确失败，不回退 PATH；非打包入口使用显式 external 来源。复用原工程的摘要、压缩及映像租约能力，传给 Agent 的绝对命令路径必须可跨进程使用，原实例持有映像直至进程树回收。ACP 本机进程沿统一 native Executor 创建和回收；SSH helper 的两种 Linux 前台 server 资产保持独立职责，不代替 MCP 服务程序，也不承担本地监督 worker 角色；不在业务会话下载代理或复制临时凭据到资源包。
 
-宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_model`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
+宿主 MCP 工具统一使用 `anywork_` 前缀：`spawn_agent`、`send_message`、`list_agents`、`wait_agent`、`interrupt_agent`、`close_agent`、`list_agent_profiles`、`list_delegation_models`、`get_delegation_models`。具体声明按 root/child、派发模式与可执行目录裁剪；模型查询仅为 Native 自动选模服务。Native 工具名称及用户配置的外部 MCP 保持原定义。协作、查询与参数资格复用 [12.3](./12-collaboration.md#123-子智能体派生spawn_agent与动态参数模式) 的业务入口，不增加 MCP 专用协调器、能力管理器或另一成员目录。
 
 SSH 项目的同一目录按原能力与授权提供 `exec_command`、`write_stdin`、工具任务列举/等待/结果读取/取消，以及 stat、写入、补丁、创建、删除、复制、移动和原 Git 工具，均使用相同前缀。本地 ACP 保留已有协作工具和外部代理原本的本机工具，不在本期额外增加宿主文件/命令访问或其审批能力。读取、列举和搜索仍由命令完成，不新增一套文件浏览接口；不为 MCP 引入 Lua 调度或 Native workflow。复用独立工具作者及普通会话的工作区绑定、路径/符号链接检查、写锁、进程管理和输出归档，不在 handler 内复制操作算法。
 

@@ -775,11 +775,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   BridgeAgentState dco_decode_box_autoadd_bridge_agent_state(dynamic raw);
 
   @protected
-  BridgeAgentTaskCategory dco_decode_box_autoadd_bridge_agent_task_category(
-    dynamic raw,
-  );
-
-  @protected
   BridgeAttachmentAdmissionContext
   dco_decode_box_autoadd_bridge_attachment_admission_context(dynamic raw);
 
@@ -4468,10 +4463,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeAgentTaskCategory?
-  dco_decode_opt_box_autoadd_bridge_agent_task_category(dynamic raw);
-
-  @protected
   BridgeBillingKind? dco_decode_opt_box_autoadd_bridge_billing_kind(
     dynamic raw,
   );
@@ -5625,11 +5616,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   BridgeAgentState sse_decode_box_autoadd_bridge_agent_state(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeAgentTaskCategory sse_decode_box_autoadd_bridge_agent_task_category(
     SseDeserializer deserializer,
   );
 
@@ -10342,12 +10328,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeAgentTaskCategory?
-  sse_decode_opt_box_autoadd_bridge_agent_task_category(
-    SseDeserializer deserializer,
-  );
-
-  @protected
   BridgeBillingKind? sse_decode_opt_box_autoadd_bridge_billing_kind(
     SseDeserializer deserializer,
   );
@@ -11730,12 +11710,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_box_autoadd_bridge_agent_state(
     BridgeAgentState self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_box_autoadd_bridge_agent_task_category(
-    BridgeAgentTaskCategory self,
     SseSerializer serializer,
   );
 
@@ -17328,12 +17302,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   void sse_encode_opt_box_autoadd_bridge_agent_execution(
     BridgeAgentExecution? self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void sse_encode_opt_box_autoadd_bridge_agent_task_category(
-    BridgeAgentTaskCategory? self,
     SseSerializer serializer,
   );
 

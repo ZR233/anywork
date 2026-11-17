@@ -88,36 +88,6 @@ impl StudioStore {
             [account.into(), model.into()])).await?;
         rows.into_iter().map(decode).collect()
     }
-
-    /// SQL reads only the bounded window's scalar values; list queries never load comments.
-    pub(crate) async fn agent_evaluation_summary(
-        &self,
-        account: &str,
-        model: &str,
-    ) -> Result<AgentEvaluationSummary> {
-        let row = self.db.query_one_raw(Statement::from_sql_and_values(DatabaseBackend::Sqlite,
-            "SELECT count(CASE WHEN outcome != 'notRated' THEN 1 END) AS rated,
-                count(CASE WHEN outcome = 'passed' THEN 1 END) AS passed,
-                count(CASE WHEN outcome = 'failed' THEN 1 END) AS failed,
-                count(CASE WHEN outcome = 'notRated' THEN 1 END) AS not_rated,
-                avg(quality) AS quality,avg(instruction_following) AS instruction_following
-             FROM (SELECT outcome,quality,instruction_following FROM agent_evaluations WHERE account_id=? AND model_id=?
-                ORDER BY updated_at DESC,agent_id DESC LIMIT 10)", [account.into(),model.into()])).await?
-            .ok_or_else(|| anyhow::anyhow!("evaluation summary query returned no row"))?;
-        Ok(AgentEvaluationSummary {
-            window: 10,
-            rated_samples: u32::try_from(row.try_get::<i64>("", "rated")?)?,
-            passed: u32::try_from(row.try_get::<i64>("", "passed")?)?,
-            failed: u32::try_from(row.try_get::<i64>("", "failed")?)?,
-            not_rated: u32::try_from(row.try_get::<i64>("", "not_rated")?)?,
-            average_quality: row
-                .try_get::<Option<f64>>("", "quality")?
-                .map(|value| value as f32),
-            average_instruction_following: row
-                .try_get::<Option<f64>>("", "instruction_following")?
-                .map(|value| value as f32),
-        })
-    }
 }
 
 async fn read(db: &impl ConnectionTrait, id: &str) -> Result<Option<AgentEvaluation>> {

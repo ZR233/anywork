@@ -59,16 +59,6 @@ AgentTaskCategory _taskCategoryFromFrb(frb.BridgeAgentTaskCategory value) =>
       frb.BridgeAgentTaskCategory.general => AgentTaskCategory.general,
     };
 
-frb.BridgeAgentTaskCategory _taskCategoryToFrb(AgentTaskCategory value) =>
-    switch (value) {
-      AgentTaskCategory.reasoning => frb.BridgeAgentTaskCategory.reasoning,
-      AgentTaskCategory.coding => frb.BridgeAgentTaskCategory.coding,
-      AgentTaskCategory.tooling => frb.BridgeAgentTaskCategory.tooling,
-      AgentTaskCategory.longContext => frb.BridgeAgentTaskCategory.longContext,
-      AgentTaskCategory.multimodal => frb.BridgeAgentTaskCategory.multimodal,
-      AgentTaskCategory.general => frb.BridgeAgentTaskCategory.general,
-    };
-
 frb.BridgeDelegationModelCapability _delegationCapabilityToFrb(
   DelegationModelCapability value,
 ) => switch (value) {
@@ -100,9 +90,6 @@ frb.BridgeListDelegationModelsRequest _delegationListRequestToFrb(
   ListDelegationModelsRequest value,
 ) => frb.BridgeListDelegationModelsRequest(
   capabilities: value.capabilities.map(_delegationCapabilityToFrb).toList(),
-  taskCategory: value.taskCategory == null
-      ? null
-      : _taskCategoryToFrb(value.taskCategory!),
   accountId: value.accountId,
   billingKind: value.billingKind == null
       ? null
@@ -110,8 +97,6 @@ frb.BridgeListDelegationModelsRequest _delegationListRequestToFrb(
   minContextWindow: value.minContextWindow == null
       ? null
       : BigInt.from(value.minContextWindow!),
-  limit: value.limit,
-  cursor: value.cursor,
 );
 
 LocalModelPerformanceSummary _delegationPerformanceFromFrb(
@@ -136,29 +121,10 @@ AgentEvaluationSummary _evaluationSummaryFromFrb(
   averageInstructionFollowing: value.averageInstructionFollowing,
 );
 
-ModelPricingView _modelPricingFromFrb(frb.BridgeModelPricing value) =>
-    ModelPricingView(
-      currency: value.currency,
-      source: value.source,
-      verifiedAt: value.verifiedAt.toInt(),
-      tiers: List.unmodifiable(
-        value.tiers.map(
-          (tier) => ModelPriceTierView(
-            label: tier.label,
-            input: tier.inputPerMtok,
-            output: tier.outputPerMtok,
-            cacheRead: tier.cacheReadPerMtok,
-            cacheWrite: tier.cacheWritePerMtok,
-          ),
-        ),
-      ),
-    );
-
 DelegationModelList _delegationListFromFrb(
   frb.BridgeDelegationModelList value,
 ) => DelegationModelList(
   catalogRevision: value.catalogRevision.toInt(),
-  nextCursor: value.nextCursor,
   models: List.unmodifiable(
     value.models.map(
       (model) => DelegationModelListItem(
@@ -193,12 +159,7 @@ DelegationModelList _delegationListFromFrb(
           nativeContextFamily: model.capabilities.nativeContextFamily,
         ),
         reasoningEfforts: List.unmodifiable(model.reasoningEfforts),
-        pricing: model.pricing == null
-            ? null
-            : _modelPricingFromFrb(model.pricing!),
         billingKind: _billingKindFromFrb(model.billingKind),
-        performance: _delegationPerformanceFromFrb(model.performance),
-        evaluations: _evaluationSummaryFromFrb(model.evaluations),
       ),
     ),
   ),

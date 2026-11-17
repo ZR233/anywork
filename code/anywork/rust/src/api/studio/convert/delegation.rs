@@ -128,12 +128,9 @@ impl From<BridgeListDelegationModelsRequest> for pl_protocol::ListDelegationMode
     fn from(value: BridgeListDelegationModelsRequest) -> Self {
         Self {
             capabilities: value.capabilities.into_iter().map(Into::into).collect(),
-            task_category: value.task_category.map(Into::into),
             account_id: value.account_id,
             billing_kind: value.billing_kind.map(Into::into),
             min_context_window: value.min_context_window,
-            limit: value.limit,
-            cursor: value.cursor,
         }
     }
 }
@@ -154,13 +151,9 @@ impl From<pl_protocol::DelegationModelList> for BridgeDelegationModelList {
                     context_window: model.context_window,
                     capabilities: model.capabilities.into(),
                     reasoning_efforts: model.reasoning_efforts,
-                    pricing: model.pricing.map(Into::into),
                     billing_kind: model.billing_kind.into(),
-                    performance: model.performance.into(),
-                    evaluations: model.evaluations.into(),
                 })
                 .collect(),
-            next_cursor: value.next_cursor,
             catalog_revision: value.catalog_revision,
         }
     }

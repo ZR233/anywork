@@ -2,8 +2,8 @@
 use super::StudioRuntime;
 use anyhow::Result;
 use pl_protocol::{
-    DelegationModelDetail, DelegationModelList, GetDelegationModelRequest,
-    ListDelegationModelsRequest,
+    DelegationModelDetail, DelegationModelDetails, DelegationModelList, GetDelegationModelRequest,
+    GetDelegationModelsRequest, ListDelegationModelsRequest,
 };
 
 impl StudioRuntime {
@@ -15,7 +15,7 @@ impl StudioRuntime {
         }
     }
 
-    /// Reads a bounded qualified candidate page without network I/O or settings mutations.
+    /// Reads the complete qualified candidate inventory without network I/O or settings mutations.
     pub async fn list_delegation_models(
         &self,
         request: ListDelegationModelsRequest,
@@ -31,5 +31,14 @@ impl StudioRuntime {
         request: GetDelegationModelRequest,
     ) -> Result<DelegationModelDetail> {
         self.delegation_models().get_delegation_model(request).await
+    }
+    /// Reads candidate details and recent feedback together, preserving each item's failure.
+    pub async fn get_delegation_models(
+        &self,
+        request: GetDelegationModelsRequest,
+    ) -> Result<DelegationModelDetails> {
+        self.delegation_models()
+            .get_delegation_models(request)
+            .await
     }
 }

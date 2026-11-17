@@ -38,6 +38,8 @@ pub struct AgentProfileCatalog {
     pub profiles: Vec<AgentProfile>,
     pub diagnostics: Vec<AgentProfileDiagnostic>,
     unavailable_profiles: BTreeSet<String>,
+    /// Indices of Native preset-route diagnostics, inapplicable to automatic dispatch.
+    native_route_diagnostics: BTreeSet<usize>,
     directory_error: Option<String>,
 }
 
@@ -133,6 +135,16 @@ impl AgentProfileCatalog {
                     .unavailable_profiles
                     .contains(&profile.definition.definition_id)
         });
+        if mode == pl_protocol::DelegationMode::Automatic {
+            catalog.diagnostics = self
+                .diagnostics
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !self.native_route_diagnostics.contains(index))
+                .map(|(_, diagnostic)| diagnostic.clone())
+                .collect();
+            catalog.native_route_diagnostics.clear();
+        }
         Ok(catalog)
     }
 
@@ -163,6 +175,9 @@ impl AgentProfileCatalog {
         if let Err(error) = availability {
             self.unavailable_profiles
                 .insert(profile.definition.definition_id.clone());
+            if matches!(profile.binding, AgentBinding::Native(_)) {
+                self.native_route_diagnostics.insert(self.diagnostics.len());
+            }
             self.diagnostics.push(AgentProfileDiagnostic {
                 path: PathBuf::from(&profile.definition.source),
                 message: format!(
@@ -619,4 +634,51 @@ pub(crate) fn validate_user_agent_profile_id(profile_id: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pl_model::{config::AccountConfig, model::ModelInfo, protocol::ProtocolEndpoint};
+    use pl_protocol::DelegationMode;
+
+    #[test]
+    fn automatic_profile_diagnostics_exclude_unused_native_routes() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let paths = ConfigPaths::from_config_dir(dir.path());
+        fs::create_dir(paths.agents_dir())?;
+        let broken = paths.agents_dir().join("broken.toml");
+        fs::write(&broken, "invalid TOML [")?;
+        let mut config = StudioConfig::default_config()?;
+        config.models.accounts.clear();
+        let mut account = AccountConfig::from_explicit_models(
+            ProtocolEndpoint::compatible("Disabled preset", "http://127.0.0.1:1"),
+            vec![ModelInfo::compatible("disabled")],
+        );
+        account.set_model_enabled("disabled", false)?;
+        let account_id = AccountId::new("preset")?;
+        config.models.accounts.insert(account_id.clone(), account);
+        for route in config
+            .models
+            .routes
+            .values_mut()
+            .chain(config.mode_model_routes.values_mut())
+        {
+            *route = ModelRouteConfig {
+                account_id: account_id.clone(),
+                model_id: "disabled".into(),
+                effort: None,
+            };
+        }
+        let catalog = AgentProfileCatalog::discover(&paths, &config, &Default::default());
+        let automatic = catalog.executable(DelegationMode::Automatic)?;
+        assert!(!automatic.profiles.is_empty());
+        assert_eq!(automatic.diagnostics.len(), 1);
+        assert_eq!(automatic.diagnostics[0].path, broken);
+        let fixed = catalog.executable(DelegationMode::Profile)?;
+        assert!(fixed.profiles.is_empty());
+        assert!(fixed.diagnostics.len() > automatic.diagnostics.len());
+        assert_eq!(catalog.diagnostics, fixed.diagnostics);
+        Ok(())
+    }
 }

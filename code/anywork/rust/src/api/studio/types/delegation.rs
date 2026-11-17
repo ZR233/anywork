@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{BridgeModelCapabilities, BridgeModelDescriptor, BridgeModelPricing};
+use super::{BridgeModelCapabilities, BridgeModelDescriptor};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -74,12 +74,9 @@ pub enum BridgeDelegationModelCapability {
 #[derive(Debug, Clone)]
 pub struct BridgeListDelegationModelsRequest {
     pub capabilities: Vec<BridgeDelegationModelCapability>,
-    pub task_category: Option<BridgeAgentTaskCategory>,
     pub account_id: Option<String>,
     pub billing_kind: Option<BridgeBillingKind>,
     pub min_context_window: Option<u64>,
-    pub limit: Option<u8>,
-    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -91,7 +88,6 @@ pub struct BridgeGetDelegationModelRequest {
 #[derive(Debug, Clone)]
 pub struct BridgeDelegationModelList {
     pub models: Vec<BridgeDelegationModelListItem>,
-    pub next_cursor: Option<String>,
     pub catalog_revision: u64,
 }
 
@@ -106,10 +102,7 @@ pub struct BridgeDelegationModelListItem {
     pub context_window: Option<u64>,
     pub capabilities: BridgeModelCapabilities,
     pub reasoning_efforts: Vec<String>,
-    pub pricing: Option<BridgeModelPricing>,
     pub billing_kind: BridgeBillingKind,
-    pub performance: BridgeLocalModelPerformanceSummary,
-    pub evaluations: BridgeAgentEvaluationSummary,
 }
 
 #[derive(Debug, Clone)]

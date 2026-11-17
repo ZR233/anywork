@@ -75,10 +75,10 @@ pub mod presentation;
 pub use delegation::{
     AGENT_EVALUATION_COMMENT_MAX_CHARS, AGENT_EVALUATION_WINDOW, AgentEvaluation,
     AgentEvaluationOutcome, AgentEvaluationSummary, AgentEvaluationWrite, AgentTaskCategory,
-    DELEGATION_MODEL_PAGE_DEFAULT, DELEGATION_MODEL_PAGE_MAX, DelegationMode,
-    DelegationModelCapability, DelegationModelDetail, DelegationModelFilter, DelegationModelList,
-    DelegationModelListItem, DelegationPreference, DelegationSettings, EvaluateAgentReceipt,
-    EvaluateAgentRequest, GetDelegationModelRequest, ListDelegationModelsRequest,
+    DELEGATION_MODEL_DETAILS_MAX, DelegationMode, DelegationModelCapability, DelegationModelDetail,
+    DelegationModelDetails, DelegationModelList, DelegationModelListItem, DelegationModelResult,
+    DelegationPreference, DelegationSettings, EvaluateAgentReceipt, EvaluateAgentRequest,
+    GetDelegationModelRequest, GetDelegationModelsRequest, ListDelegationModelsRequest,
     LocalModelPerformanceSummary,
 };
 pub use error::{PureError, Result};
