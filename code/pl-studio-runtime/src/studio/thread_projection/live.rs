@@ -3765,7 +3765,7 @@ fn fields_equal(
 mod append_only_history_tests {
     use super::*;
     use crate::{
-        history::{HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore},
+        history::{HistoryBody, HistoryDemand, HistoryEventsQuery, HistoryLimits, HistoryStore},
         studio::storage::thread_writer::HistoryChannel,
     };
     use anyhow::{Context, Result};
@@ -3931,8 +3931,8 @@ mod append_only_history_tests {
             "a later canonical final must not replace the accepted boundary observation"
         );
         assert!(
-            prepared
-                .current_state
+            projection
+                .current_state()
                 .as_ref()
                 .is_some_and(|current| current
                     .projection()
@@ -4126,8 +4126,8 @@ mod append_only_history_tests {
             tasks: Arc::from([task]),
             ..Default::default()
         };
-        let (_, prepared) = projection.prepare(&thread, &effect, &state, false).await?;
-        let current = prepared.current_state.as_ref().context("current State")?;
+        projection.prepare(&thread, &effect, &state, false).await?;
+        let current = projection.current_state().context("current State")?;
         let tool_id = super::super::order::tool_id(&invocation.call_id);
         let atom = current
             .projection()
@@ -4227,13 +4227,10 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            let (_, prepared) = projection
+            projection
                 .prepare(&thread, &start, &ThreadSnapshot::default(), false)
                 .await?;
-            let current = prepared
-                .current_state
-                .as_ref()
-                .context("active compaction")?;
+            let current = projection.current_state().context("active compaction")?;
             let atom = current
                 .projection()
                 .atoms
@@ -4256,13 +4253,10 @@ mod append_only_history_tests {
                 }]),
                 ..Default::default()
             };
-            let (_, prepared) = projection
+            projection
                 .prepare(&thread, &finish, &ThreadSnapshot::default(), false)
                 .await?;
-            let current = prepared
-                .current_state
-                .as_ref()
-                .context("settled compaction")?;
+            let current = projection.current_state().context("settled compaction")?;
             assert!(
                 current
                     .projection()

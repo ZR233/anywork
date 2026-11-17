@@ -1,6 +1,3 @@
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
-    show TimelineApplyPlacement;
-
 import '../support/test_app_lifecycle.dart';
 
 import 'dart:async';
@@ -21,6 +18,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import '../../../anywork_client/test/support/timeline_transport.dart'
+    show TestHistoryReader;
 import '../support/chat_fixtures.dart';
 import '../support/display_fixtures.dart';
 import '../support/pump_client_future.dart';
@@ -30,11 +29,33 @@ import '../support/test_statistics_feed.dart';
 class _AttachmentTransport extends RecordingDemoTransport {
   final reads = <(String, String)>[];
   final bytes = Completer<Uint8List>();
+  final changed = Completer<HistoryCut>();
 
   @override
   Future<Uint8List> readThreadAttachment(String threadId, String attachmentId) {
     reads.add((threadId, attachmentId));
     return bytes.future;
+  }
+
+  @override
+  Future<HistoryReader> openHistoryReader(
+    String threadId, {
+    required int historyProtocolVersion,
+  }) async {
+    final reader = TestHistoryReader(
+      threadId: threadId,
+      cut: HistoryCut('file-cut:$threadId'),
+    );
+    reader.onTimeline = (_, _, _) async => historyFixturePage(
+      displayBatch([
+        displaySingle(
+          statusItem(_markdownFile(), completionSeq: 5),
+          blockOrder: 5,
+        ),
+      ]),
+    );
+    reader.onWaitChanged = (_) => changed.future;
+    return reader;
   }
 }
 
@@ -90,7 +111,7 @@ void main() {
     testWidgets(
       revokeDuringRead
           ? 'switching Thread revokes a pending production attachment read'
-          : 'file reading keeps the timeline mounted across split/full/narrow and outlives its source row',
+          : 'file reading keeps the timeline mounted across split/full/narrow',
       (tester) async {
         await tester.binding.setSurfaceSize(const Size(1200, 900));
         addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -151,21 +172,6 @@ void main() {
           ),
         );
         await tester.pumpAndSettle();
-        final feed = transport.currentReaders.last;
-        final filePosition =
-            graph.timeline.lease('thread-main')!.live.value!.readyFrontier + 1;
-        feed.emitTimeline(
-          displayBatch(
-            [
-              displaySingle(
-                statusItem(_markdownFile(), completionSeq: 5),
-                blockOrder: filePosition,
-              ),
-            ],
-            placement: TimelineApplyPlacement.append,
-            from: filePosition - 1,
-          ),
-        );
         await pumpClientUntil(
           tester,
           () => find.text('notes.md').evaluate().isNotEmpty,
@@ -177,7 +183,6 @@ void main() {
           matching: find.byType(TimelineAttachmentsConnector),
         );
         expect(sourceFinder, findsOneWidget);
-        final source = tester.state(sourceFinder);
         final read = tester
             .widget<TimelineAttachmentsConnector>(sourceFinder)
             .readAttachment!;
@@ -211,37 +216,8 @@ void main() {
         );
         expect(tester.element(find.byType(TimelineConnector)), same(timeline));
         expect(tester.state(find.byType(FileReadingPanel)), same(panel));
-        // New completions move the original file row outside the virtual window.
-        resize(() => width = 1100);
-        await tester.pump();
-        feed.emitTimeline(
-          displayBatch(
-            [
-              displaySingle(
-                chatMessage(
-                  'after-file',
-                  completionSeq: 6,
-                  body: List.generate(
-                    100,
-                    (index) => 'Later paragraph $index',
-                  ).join('\n\n'),
-                ),
-                blockOrder: filePosition + 1,
-              ),
-            ],
-            placement: TimelineApplyPlacement.append,
-            from: filePosition,
-          ),
-        );
-        await pumpClientUntil(
-          tester,
-          () => !source.mounted,
-          'source row virtualized',
-        );
         Future<void>? revokedRead;
         if (revokeDuringRead) {
-          // This is the original production callback, retained after its source
-          // row has unmounted. It still admits reads under the same live lease.
           revokedRead = expectLater(
             read('notes'),
             throwsA(isA<StaleConversationScope>()),

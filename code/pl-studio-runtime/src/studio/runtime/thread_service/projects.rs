@@ -2456,10 +2456,7 @@ mod standalone_tests {
                 ThreadAssemblyError, archive_test_spec, spawn_failed_archive_fixture,
             },
         };
-        use pl_core::thread::{
-            ThreadHandle,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
-        };
+        use pl_core::thread::{ThreadHandle, history_sink::HistorySinkHandle};
         use sea_orm::ConnectionTrait;
         use std::{sync::Arc, time::Duration};
 
@@ -2750,33 +2747,9 @@ mod standalone_tests {
             Ok(())
         }
 
-        #[derive(Debug)]
-        struct RejectLaterPrivateWrites {
-            sink: ThreadStorageSink,
-            original_fence: u64,
-        }
-        impl ColdStore for RejectLaterPrivateWrites {
-            fn pressure(&self, id: &str) -> StoragePressure {
-                self.sink.pressure(id)
-            }
-            fn admit(&self, id: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-                if write.effect.sequence > self.original_fence {
-                    return Err(ColdStoreError {
-                        source: Box::new(std::io::Error::other(
-                            "injected later private checkpoint failure",
-                        )),
-                    });
-                }
-                self.sink.admit(id, write)
-            }
-            async fn flush(&self, id: &str, through: u64) -> Result<(), ColdStoreError> {
-                self.sink.flush(id, through).await
-            }
-        }
-
         /// Seeds the isolated home with the durable facts the crashing private owner inherits: the
-        /// project, the required root with a durable owner checkpoint, the required-private catalog
-        /// row, and a real older incarnation's durable earlier checkpoint. This heavy preparation runs
+        /// project, the required root with durable Current, the required-private catalog row, and a
+        /// real older incarnation's durable earlier Current. This heavy preparation runs
         /// in the parent and shuts its runtime down cleanly, so the spawned producer's bounded crash
         /// window only has to cover the original owner's own work.
         async fn seed_private_crash_fixture(base: &Path) -> Result<()> {
@@ -2822,11 +2795,11 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            // A real older incarnation leaves a durable earlier checkpoint before private AttachCold.
-            let old = ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), None).await?;
+            // A real older incarnation leaves durable earlier Current before private attachment.
+            let old = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
             let projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
             let previous = ThreadHandle::resume_without_model(protocol.id.clone(), None)?;
-            previous.attach_storage(ColdStoreHandle::new(old)).await?;
+            previous.attach_history(HistorySinkHandle::new(old)).await?;
             previous.close().await?;
             runtime
                 .store
@@ -2849,7 +2822,7 @@ mod standalone_tests {
             let project = runtime.open_project(&workspace).await?;
             eprintln!("private crash fixture: project reopened");
             // The crashing owner still has to observe the seeded root: assembling required-private
-            // reserves against its live parent entry before the private AttachCold.
+            // reserves against its live parent entry before private history attachment.
             runtime
                 .ensure_thread_owner("required-root")
                 .await?
@@ -2876,6 +2849,19 @@ mod standalone_tests {
                 .context("seeded durable earlier current")?;
             eprintln!("private crash fixture: seeded protocol and current read");
             let old_fence = current.snapshot_revision;
+            if !receipt {
+                let path = runtime
+                    .store
+                    .registered_session_paths(&protocol.id)?
+                    .current_file();
+                tokio::fs::write(
+                    base.join("blocked-current-path"),
+                    path.to_string_lossy().as_bytes(),
+                )
+                .await?;
+                tokio::fs::rename(&path, path.with_extension("json.saved")).await?;
+                tokio::fs::create_dir(&path).await?;
+            }
             let physical = close_factory(&runtime.store)?;
             runtime
                 .store
@@ -2914,23 +2900,14 @@ mod standalone_tests {
                     )
                     .await?;
             }
-            let sink =
-                ThreadStorageSink::new(runtime.store.clone(), protocol.clone(), None).await?;
+            let sink = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
             let _projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
-            let storage = if receipt {
-                ColdStoreHandle::new(sink)
-            } else {
-                ColdStoreHandle::new(RejectLaterPrivateWrites {
-                    sink,
-                    original_fence: old_fence,
-                })
-            };
             let mut spec = archive_test_spec(
                 protocol.id.clone(),
                 protocol.parent_thread_id.clone(),
                 &workspace,
             );
-            spec.cold_store = Some(storage);
+            spec.history_sink = Some(sink);
             spec.initial_extensions.insert(
                 String::new(),
                 pl_core::context::OpaquePayload::text("invalid initialization"),
@@ -3024,6 +3001,13 @@ mod standalone_tests {
                 let evidence = crash_original_private_owner(temp.path(), receipt).await?;
                 let original: ThreadPreparationRecord =
                     serde_json::from_value(evidence["record"].clone())?;
+                if !receipt {
+                    let path = std::path::PathBuf::from(
+                        tokio::fs::read_to_string(temp.path().join("blocked-current-path")).await?,
+                    );
+                    tokio::fs::remove_dir_all(&path).await?;
+                    tokio::fs::rename(path.with_extension("json.saved"), path).await?;
+                }
                 let runtime = StudioRuntime::initialize(options(&home)).await?;
                 assert!(
                     runtime
@@ -3476,7 +3460,7 @@ mod standalone_tests {
                 thread_preparation::PreparationIdentity,
             },
         };
-        use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle};
+        use pl_core::thread::{ThreadHandle, history_sink::HistorySinkHandle};
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
@@ -3892,10 +3876,10 @@ mod standalone_tests {
                     ..Default::default()
                 })
                 .await?;
-            let sink = ThreadStorageSink::new(runtime.store.clone(), child.clone(), None).await?;
+            let sink = ThreadStorageSink::new(runtime.store.clone(), child.clone()).await?;
             let projection = spawn_live_projection_for_thread(runtime.store.clone(), &child.id);
             let owner = ThreadHandle::resume_without_model(child.id.clone(), None)?;
-            owner.attach_storage(ColdStoreHandle::new(sink)).await?;
+            owner.attach_history(HistorySinkHandle::new(sink)).await?;
             owner.close().await?;
             runtime
                 .store
@@ -5437,52 +5421,6 @@ mod standalone_tests {
                 Ok(())
             }
             use crate::studio::store::thread_preparation::{PreparationBinding, PreparationSave};
-            use pl_core::thread::cold::{ColdStore, ColdStoreError, StoragePressure, ThreadWrite};
-            use std::sync::{
-                Arc,
-                atomic::{AtomicBool, AtomicUsize, Ordering},
-            };
-
-            #[derive(Debug)]
-            struct PrivateFlushFailure {
-                sink: ThreadStorageSink,
-                closing: Arc<AtomicBool>,
-                flushes: Arc<AtomicUsize>,
-            }
-
-            impl ColdStore for PrivateFlushFailure {
-                fn pressure(&self, id: &str) -> StoragePressure {
-                    self.sink.pressure(id)
-                }
-                fn admit(
-                    &self,
-                    id: &str,
-                    write: ThreadWrite,
-                ) -> std::result::Result<(), ColdStoreError> {
-                    if write.checkpoint.state.lifecycle == pl_core::thread::ThreadLifecycle::Closed
-                    {
-                        self.closing.store(true, Ordering::SeqCst);
-                    }
-                    self.sink.admit(id, write)
-                }
-                async fn flush(
-                    &self,
-                    id: &str,
-                    sequence: u64,
-                ) -> std::result::Result<(), ColdStoreError> {
-                    self.flushes.fetch_add(1, Ordering::SeqCst);
-                    self.sink.flush(id, sequence).await?;
-                    if self.closing.load(Ordering::SeqCst) {
-                        return Err(ColdStoreError {
-                            source: Box::new(std::io::Error::other(
-                                "private original save ACK failed",
-                            )),
-                        });
-                    }
-                    Ok(())
-                }
-            }
-
             #[tokio::test]
             async fn permanent_delete_private_required_save_records_real_stop_without_save_ack()
             -> Result<()> {
@@ -5528,19 +5466,16 @@ mod standalone_tests {
                         .into_owned(),
                 )?;
                 runtime.store.bind_thread_preparation(id, &binding).await?;
-                let sink = ThreadStorageSink::new(runtime.store.clone(), private, None).await?;
+                let current_file = runtime.store.registered_session_paths(id)?.current_file();
+                tokio::fs::create_dir_all(&current_file).await?;
+                let sink = ThreadStorageSink::new(runtime.store.clone(), private).await?;
                 let projection = spawn_live_projection_for_thread(runtime.store.clone(), id);
-                let flushes = Arc::new(AtomicUsize::new(0));
                 let mut spec = crate::thread_assembler::archive_test_spec(
                     id.into(),
                     Some(root.id.clone()),
                     &workspace,
                 );
-                spec.cold_store = Some(ColdStoreHandle::new(PrivateFlushFailure {
-                    sink,
-                    closing: Arc::new(AtomicBool::new(false)),
-                    flushes: flushes.clone(),
-                }));
+                spec.history_sink = Some(sink);
                 spec.initial_extensions.insert(
                     String::new(),
                     pl_core::context::OpaquePayload::text("invalid initialization"),
@@ -5559,13 +5494,19 @@ mod standalone_tests {
                     .context("retained private owner")?;
                 assert_eq!(record.save, PreparationSave::Required);
                 assert!(!record.stopped);
+                let before = runtime
+                    .store
+                    .state_for(&project.id, id)?
+                    .current_save_state()?
+                    .error
+                    .map(|error| error.to_string())
+                    .context("blocked private current save failure")?;
                 assert!(
                     runtime
                         .session_of(id)
                         .and_then(|session| session.observed_thread(id))
                         .is_some()
                 );
-                let before = flushes.load(Ordering::SeqCst);
                 assert!(
                     !workspace.join(SessionFiles::new(id).root()).exists(),
                     "the first execution removal must also handle an absent bound session"
@@ -5603,9 +5544,14 @@ mod standalone_tests {
                     PreparationBinding::Bound { identity: binding }
                 );
                 assert_eq!(
-                    flushes.load(Ordering::SeqCst),
-                    before,
-                    "deletion must never retry original flush"
+                    runtime
+                        .store
+                        .state_for(&project.id, id)?
+                        .current_save_state()?
+                        .error
+                        .map(|error| error.to_string()),
+                    Some(before),
+                    "deletion must not retry or replace the original Current failure"
                 );
                 assert!(
                     runtime

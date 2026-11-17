@@ -14,13 +14,52 @@ CurrentView currentViewForWorkspace(
   revision: CurrentRevision(ownerId: ownerId, revision: workspace.revision),
   state: ThreadSnapshotFrame(
     workspace: workspace,
-    completedHistoryVersion: completedHistoryVersion,
     schemaVersion: threadSchemaVersion,
   ),
   projection: projection ?? emptyCurrentProjection(workspace.thread.status),
 );
 
-Object testCurrentEvent({
+ThreadWorkspace emptyCurrentWorkspace(String threadId) {
+  final thread = StudioThread(
+    id: threadId,
+    workspaceId: 'workspace',
+    title: 'Thread',
+    mode: ThreadModeId.simple,
+    delegationMode: DelegationMode.profile,
+    delegationPreference: DelegationPreference.balanced,
+    updatedAt: DateTime.utc(2026),
+    workspacePath: '/workspace',
+    status: ThreadStatusView.idle,
+  );
+  return ThreadWorkspace(
+    businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
+    thread: thread,
+    revision: 0,
+    interactions: const [],
+    runtime: const ThreadRuntimeView(
+      modelId: 'model',
+      contextTokens: 0,
+      contextWindow: 1,
+      totalTokens: 0,
+      costLabel: '',
+      activeSkills: [],
+      activeMcpServers: [],
+      activeLspServers: [],
+    ),
+  );
+}
+
+CurrentProjection emptyCurrentProjection(ThreadStatusView status) =>
+    CurrentProjection(
+      logicalStatus: status,
+      executionPresent: false,
+      sources: const [],
+      atoms: const [],
+      previews: const [],
+      collections: const [],
+    );
+
+CurrentFrame testCurrentEvent({
   required ThreadStreamFrame frame,
   String ownerId = 'owner',
   CurrentProjection? projection,
@@ -35,11 +74,6 @@ Object testCurrentEvent({
   ThreadNotificationFrame() => NotificationCurrentFrame(
     revision: CurrentRevision(ownerId: ownerId, revision: frame.revision),
     notification: frame,
-  ),
-  ThreadResyncRequiredFrame() => _CurrentFixtureFailure(
-    ConversationContinuityError(
-      'lagged current metadata: dropped ${frame.dropped}',
-    ),
   ),
 };
 
@@ -276,6 +310,128 @@ final class TestCurrentBodyWatch implements CurrentBodyWatch {
     requestClose();
     await _cancelling;
     await _controller.done;
+  }
+}
+
+class TestHistoryReader implements HistoryReader {
+  TestHistoryReader({
+    this.threadId = 'thread',
+    this.protocolVersion = historyProtocolVersion,
+    HistoryCut? cut,
+  }) : cut = cut ?? HistoryCut('cut-0');
+
+  @override
+  final String threadId;
+  final int protocolVersion;
+  HistoryCut cut;
+  Future<HistoryTimelinePage> Function(HistoryCut?, String?, HistoryDemand)?
+  onTimeline;
+  Future<HistoryEventsPage> Function(
+    HistoryEventsQuery,
+    HistoryCut?,
+    String?,
+    HistoryDemand,
+  )?
+  onEvents;
+  Future<HistoryCut> Function(HistoryCut)? onWaitChanged;
+  int requestCloseCalls = 0;
+  int closeCalls = 0;
+  bool get requested => requestCloseCalls > 0;
+
+  @override
+  OpenHistory get metadata => OpenHistory(
+    readerId: 'history-reader-$threadId',
+    historyProtocolVersion: protocolVersion,
+  );
+
+  @override
+  Future<HistoryCut> capture() async => cut;
+
+  @override
+  Future<HistoryTimelinePage> timelinePage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) async {
+    final read = onTimeline;
+    if (read == null) {
+      throw UnsupportedError('Unscripted history timelinePage');
+    }
+    final actualCut = cut ?? this.cut;
+    final page = await read(actualCut, cursor, demand);
+    this.cut = page.cut;
+    return page;
+  }
+
+  @override
+  Future<HistoryGroupPage> groupPage({
+    required String groupId,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => throw UnsupportedError('Unscripted history groupPage');
+
+  @override
+  Future<HistoryTimelinePage> turnsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => throw UnsupportedError('Unscripted history turnsPage');
+
+  @override
+  Future<HistoryEventsPage> eventsPage({
+    required HistoryEventsQuery query,
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) =>
+      onEvents?.call(query, cut, cursor, demand) ??
+      Future.error(UnsupportedError('Unscripted history eventsPage'));
+
+  @override
+  Future<HistoryEventDetail> readEvent({
+    required String eventId,
+    required HistoryDemand demand,
+  }) => throw UnsupportedError('Unscripted history readEvent');
+
+  @override
+  Future<HistoryBodyPage> listBodies({
+    required String eventId,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => throw UnsupportedError('Unscripted history listBodies');
+
+  @override
+  Future<HistoryBodyWindow> readBody({
+    required HistoryEventBodyRef reference,
+    required int offset,
+    required int maxBytes,
+  }) => throw UnsupportedError('Unscripted history readBody');
+
+  @override
+  Future<HistoryAccounting?> accounting({HistoryCut? cut}) async => null;
+
+  @override
+  Future<HistoryTimelinePage> costsPage({
+    HistoryCut? cut,
+    String? cursor,
+    required HistoryDemand demand,
+  }) => throw UnsupportedError('Unscripted history costsPage');
+
+  @override
+  Future<HistoryCut> waitChanged(HistoryCut after) =>
+      onWaitChanged?.call(after) ??
+      Future.error(UnsupportedError('Unscripted history waitChanged'));
+
+  @override
+  void requestClose() {
+    requestCloseCalls++;
+  }
+
+  @override
+  Future<void> close() async {
+    closeCalls++;
+    requestClose();
   }
 }
 

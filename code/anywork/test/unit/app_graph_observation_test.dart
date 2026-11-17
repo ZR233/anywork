@@ -136,11 +136,11 @@ void main() {
         (id) => id == 'thread-main',
       );
       await timelineReady(graph.timeline, 'thread-main');
-      final connection = transport.currentReaders.single;
+      final connection = _timelineCurrentReader(transport, 'thread-main');
       await connection.watchEntered.future;
       final attemptId = graph.timeline
           .lease('thread-main')!
-          .reader
+          .current
           .metadata
           .readerId;
       final workspaceId = graph.client.selection.state.selectedProjectId!;
@@ -183,7 +183,7 @@ void main() {
       expect(connection.requestCloseCalls, 0);
       expect(connection.closeCalls, 0);
       expect(
-        graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current.metadata.readerId,
         attemptId,
       );
       expect(graph.timeline.lease('thread-main'), isNotNull);
@@ -217,7 +217,7 @@ void main() {
       addTearDown(rebuiltComposer.close);
 
       expect(
-        graph.timeline.lease('thread-main')!.reader.metadata.readerId,
+        graph.timeline.lease('thread-main')!.current.metadata.readerId,
         attemptId,
       );
       expect(
@@ -231,7 +231,10 @@ void main() {
         rebuilt.read(composerDraftControllerProvider('thread-main')).draft,
         'existing session survives observation disposal',
       );
-      expect(transport.currentReaders, hasLength(1));
+      expect(
+        _activeTimelineCurrentReaders(transport, 'thread-main'),
+        hasLength(1),
+      );
       expect(connection.initialViewReads, 1);
 
       final report = await graph.close(budget: testBudgetUntil(_deadline()));
@@ -266,9 +269,12 @@ void main() {
       second.client.directoryCommands.selectThread('thread-main'),
     ]);
     final afterVisibleSelection = first.timeline.monotonicMicros;
-    expect(firstTransport.currentReaders, isEmpty);
     expect(
-      secondTransport.currentReaders,
+      _activeTimelineCurrentReaders(firstTransport, 'thread-main'),
+      isEmpty,
+    );
+    expect(
+      _activeTimelineCurrentReaders(secondTransport, 'thread-main'),
       isEmpty,
       reason: 'canonical visible selection does not fabricate viewport demand',
     );
@@ -317,8 +323,8 @@ void main() {
       isNot(same(second.client.conversations.session('thread-main'))),
     );
     expect(
-      firstTransport.currentReaders.single,
-      isNot(same(secondTransport.currentReaders.single)),
+      _timelineCurrentReader(firstTransport, 'thread-main'),
+      isNot(same(_timelineCurrentReader(secondTransport, 'thread-main'))),
     );
     expect(first.timeline, isNot(same(second.timeline)));
     expect(
@@ -340,8 +346,18 @@ void main() {
       (await first.close(budget: testBudgetUntil(_deadline()))).complete,
       isTrue,
     );
-    expect(firstTransport.currentReaders.single.joined.isCompleted, isTrue);
-    expect(secondTransport.currentReaders.single.requestCloseCalls, 0);
+    expect(
+      firstTransport.currentReaders.every(
+        (reader) => reader.joined.isCompleted,
+      ),
+      isTrue,
+    );
+    expect(
+      secondTransport.currentReaders.every(
+        (reader) => reader.requestCloseCalls == 0,
+      ),
+      isTrue,
+    );
     expect(second.client.isClosed, isFalse);
     expect(second.timeline.lease('thread-main'), isNotNull);
     expect(
@@ -384,7 +400,11 @@ void main() {
               .directoryCommands
               .selectThread('thread-main');
       await firstOpenEntered.future;
-      final late = transport.currentReaders.single;
+      final late = transport.currentReaders.lastWhere(
+        (reader) =>
+            reader.threadId == 'thread-main' &&
+            reader.demand.maxItems != chatDemand.maxItems,
+      );
       await (graph
             ..timeline.updateReadDemand(chatDemand)
             ..setConversationPageVisible(true))
@@ -394,7 +414,7 @@ void main() {
       await timelineReady(graph.timeline, 'thread-alt');
       final currentAttempt = graph.timeline
           .lease('thread-alt')!
-          .reader
+          .current
           .metadata
           .readerId;
       final current = transport.currentReaders.lastWhere(
@@ -415,7 +435,7 @@ void main() {
       expect(late.closeCalls, 1);
       expect(current.requestCloseCalls, 0);
       expect(
-        graph.timeline.lease('thread-alt')!.reader.metadata.readerId,
+        graph.timeline.lease('thread-alt')!.current.metadata.readerId,
         currentAttempt,
       );
       expect(graph.timeline.lease('thread-alt'), isNotNull);
@@ -430,3 +450,22 @@ ProviderContainer _container(AppGraph graph) =>
     ProviderContainer(overrides: [appGraphProvider.overrideWithValue(graph)]);
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
+
+RecordingCurrentReader _timelineCurrentReader(
+  RecordingDemoTransport transport,
+  String threadId,
+) => transport.currentReaders.lastWhere(
+  (reader) =>
+      reader.threadId == threadId &&
+      reader.demand.maxItems == chatDemand.maxItems,
+);
+
+Iterable<RecordingCurrentReader> _activeTimelineCurrentReaders(
+  RecordingDemoTransport transport,
+  String threadId,
+) => transport.currentReaders.where(
+  (reader) =>
+      reader.threadId == threadId &&
+      reader.demand.maxItems == chatDemand.maxItems &&
+      !reader.requested,
+);

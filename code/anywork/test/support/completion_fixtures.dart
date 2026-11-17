@@ -1,27 +1,22 @@
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
-    show TimelineApplyPlacement;
-
 import 'dart:convert';
 
-import 'package:anywork_client/conversation.dart';
 import 'package:anywork_client/models.dart' show ThreadTextChannel;
 
-/// Explicit producer fixtures. This helper does not classify atoms or combine
-/// records; callers choose the domain kind and immutable completion sequence.
-CompletedEntry completionEntry(
+import 'chat_fixtures.dart';
+
+/// Explicit producer fixture. Callers choose the domain kind and immutable
+/// block order; this helper does not classify atoms or combine rows.
+FixtureCompletion completionEntry(
   String id,
   int seq, {
   bool isText = false,
   String databaseId = 'database',
   String? text,
-}) => CompletedEntry(
+}) => FixtureCompletion(
   recordId: id,
   completionSeq: seq,
-
   atom: ChatAtom(
     id: 'atom:$id',
-    completionItemId: id,
-    completionSeq: seq,
     source: const ForegroundTurnChatSource(turnId: 'turn'),
     sourceOrder: null,
     kind: isText ? ChatAtomKind.text : ChatAtomKind.toolCall,
@@ -59,18 +54,4 @@ CompletedEntry completionEntry(
             byteLength: 100,
           ),
   ),
-);
-
-ChatBatch completedBatch(
-  List<CompletedEntry> entries, {
-  TimelineApplyPlacement placement = TimelineApplyPlacement.set,
-  int? from,
-  int? through,
-  String? before,
-}) => ChatBatch(
-  placement: placement,
-  entries: entries,
-  fromSeq: from,
-  throughSeq: through ?? entries.lastOrNull?.completionSeq ?? 0,
-  before: before,
 );

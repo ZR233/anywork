@@ -1,18 +1,30 @@
 import 'package:anywork_client/models.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart';
 
-WorkTiming displayTiming() => WorkTiming(startedAt: 0, finishedAt: null);
+import 'chat_fixtures.dart';
+
+WorkTiming displayTiming() => const WorkTiming(startedAt: 0, finishedAt: 1);
 
 DisplayBlock displayWork(String id, int pos) => DisplayBlock(
   id: id,
   blockOrder: pos,
   body: WorkDisplayBlock(
-    timing: const WorkTiming(startedAt: 0, finishedAt: 1),
-    members: DisplayBlockRef(databaseId: 'db', blockId: id),
+    timing: displayTiming(),
+    members: DisplayBlockRef(
+      blockId: id,
+      cut: HistoryCut('fixture:$id'),
+      anchorSeq: pos,
+      headSeq: pos,
+    ),
+    executionPresent: false,
+    memberCount: 0,
+    unfinishedCount: 0,
+    groupClosed: true,
   ),
 );
 
-DisplayBlock displaySingle(CompletedEntry entry, {int? blockOrder}) =>
+DisplayBlock displaySingle(FixtureCompletion entry, {int? blockOrder}) =>
     DisplayBlock(
       id: entry.recordId,
       blockOrder: blockOrder ?? entry.completionSeq,
@@ -29,34 +41,30 @@ final class TimelineFixtureBatch {
   TimelineFixtureBatch({
     required this.blocks,
     required this.placement,
-    this.fromOrder,
-    required this.throughOrder,
+    this.throughOrder = 0,
+    this.from,
     this.before,
-    this.live,
   });
+
   final List<DisplayBlock> blocks;
   final TimelineApplyPlacement placement;
-  final int? fromOrder;
   final int throughOrder;
+  final int? from;
   final String? before;
-  final CurrentRunSnapshot? live;
 }
 
 TimelineFixtureBatch displayBatch(
   List<DisplayBlock> blocks, {
   TimelineApplyPlacement placement = TimelineApplyPlacement.set,
-  int? from,
   int? through,
+  int? from,
   String? before,
-  CurrentRunSnapshot? live,
 }) => TimelineFixtureBatch(
   blocks: blocks,
   placement: placement,
-  fromOrder: from,
-  throughOrder:
-      through ?? (blocks.isEmpty ? from ?? 0 : blocks.last.blockOrder),
+  throughOrder: through ?? (blocks.isEmpty ? 0 : blocks.last.blockOrder),
+  from: from,
   before: before,
-  live: live,
 );
 
 extension ApplyComponentFixture on TimelineMessageController {
@@ -69,10 +77,13 @@ extension ApplyComponentFixture on TimelineMessageController {
 HistoryTimelinePage historyFixturePage(
   TimelineFixtureBatch update, {
   String databaseId = 'db',
+  HistoryCut? cut,
 }) => HistoryTimelinePage(
-  cut: HistoryCut('$databaseId:${update.throughOrder}'),
+  cut: cut ?? HistoryCut('$databaseId:${update.throughOrder}'),
   entries: [
-    for (final block in update.blocks)
+    // History pages are newest-first; the display owner reverses them into
+    // producer block order when it admits the page.
+    for (final block in update.blocks.reversed)
       HistoryTimelineEntry(
         rowKey: block.id,
         anchorSeq: block.blockOrder,
@@ -81,14 +92,12 @@ HistoryTimelinePage historyFixturePage(
           WorkDisplayBlock(:final members) => WorkHistoryRow(
             HistoryWorkHead(
               groupId: members.blockId,
-              runId: null,
               startedAt: 0,
               boundaryAt: 1,
               closed: true,
               memberCount: 0,
               unfinishedCount: 0,
               executionPresent: false,
-              summary: null,
             ),
           ),
           SingleDisplayBlock(:final record, :final visibility) =>

@@ -16,22 +16,24 @@ class RecordingDemoTransport extends TestDemoStudioTransport {
   Object? failNextCurrentInitial;
 
   Future<void> publishWorkspace(ThreadWorkspace workspace) async {
-    final reader = await _activeCurrent(workspace.thread.id);
-    await reader.emitStateAndWait(
-      ThreadSnapshotFrame(
-        workspace: workspace,
-        completedHistoryVersion: completedHistoryVersion,
-        schemaVersion: threadSchemaVersion,
-      ),
+    var readers = currentReaders
+        .where(
+          (reader) =>
+              reader.threadId == workspace.thread.id && !reader.requested,
+        )
+        .toList();
+    if (readers.isEmpty) {
+      readers = [
+        await (_currentWaiters[workspace.thread.id] ??= Completer()).future,
+      ];
+    }
+    final frame = ThreadSnapshotFrame(
+      workspace: workspace,
+      schemaVersion: threadSchemaVersion,
     );
-  }
-
-  Future<RecordingCurrentReader> _activeCurrent(String threadId) {
-    final existing = currentReaders
-        .where((reader) => reader.threadId == threadId && !reader.requested)
-        .lastOrNull;
-    if (existing != null) return Future.value(existing);
-    return (_currentWaiters[threadId] ??= Completer()).future;
+    await Future.wait([
+      for (final reader in readers) reader.emitStateAndWait(frame),
+    ]);
   }
 
   @override
@@ -86,6 +88,7 @@ class RecordingDemoTransport extends TestDemoStudioTransport {
     failNextCurrentInitial = null;
     final reader = RecordingCurrentReader(
       inner: inner,
+      demand: demand,
       initialFailure: failure,
       mapState: testMapCurrentState,
     );
@@ -114,6 +117,8 @@ final class RecordingHistoryReader implements HistoryReader {
   Future<void>? _closing;
   bool _requested = false;
   void Function()? onClosed;
+  Future<HistoryTimelinePage> Function(HistoryCut?, String?, HistoryDemand)?
+  onTimelinePage;
 
   @override
   OpenHistory get metadata => inner.metadata;
@@ -128,7 +133,8 @@ final class RecordingHistoryReader implements HistoryReader {
     required HistoryDemand demand,
   }) {
     timelineCalls++;
-    return inner.timelinePage(cut: cut, cursor: cursor, demand: demand);
+    return onTimelinePage?.call(cut, cursor, demand) ??
+        inner.timelinePage(cut: cut, cursor: cursor, demand: demand);
   }
 
   @override
@@ -234,11 +240,13 @@ final class RecordingHistoryReader implements HistoryReader {
 final class RecordingCurrentReader implements CurrentReader {
   RecordingCurrentReader({
     required this.inner,
+    required this.demand,
     this.initialFailure,
     this.mapState,
   });
 
   final CurrentReader inner;
+  final ReadDemand demand;
   Object? initialFailure;
   final ThreadStreamFrame Function(ThreadStreamFrame)? mapState;
   int snapshotCalls = 0;
@@ -296,6 +304,12 @@ final class RecordingCurrentReader implements CurrentReader {
     await Future<void>.value();
   }
 
+  void emitCurrentFrame(CurrentFrame frame) {
+    if (_requested) return;
+    deliveredFrames++;
+    _injected.add(frame);
+  }
+
   void emitState(ThreadStreamFrame frame) {
     if (_requested) return;
     final ownerId = metadata.currentOwnerId;
@@ -324,10 +338,6 @@ final class RecordingCurrentReader implements CurrentReader {
         revision: CurrentRevision(ownerId: ownerId, revision: mapped.revision),
         notification: mapped,
       ),
-      ThreadResyncRequiredFrame(:final dropped) =>
-        throw ConversationContinuityError(
-          'scripted Current gap dropped $dropped',
-        ),
     };
     deliveredFrames++;
     _injected.add(event);

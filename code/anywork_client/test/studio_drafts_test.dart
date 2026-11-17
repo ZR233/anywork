@@ -16,8 +16,6 @@ import 'package:anywork_client/accounts_ports.dart';
 import 'support/accounts_test_runtime.dart';
 import 'support/directory_feed.dart';
 
-const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
-
 /// Only transport responses and asynchronous barriers are fake. Draft revision,
 /// route freezing, attachment ownership and operation observation are production.
 final class _DraftTransport extends AccountsTestTransport
@@ -69,8 +67,6 @@ final class _DraftTransport extends AccountsTestTransport
       : StreamController<NewThreadStartEvent>(
           onCancel: () => startCancelGate?.future,
         );
-  ChatBatch? Function(String threadId)? initialForThread;
-  int feedOpens = 0;
   int startCalls = 0;
   int standalonePrepareCalls = 0;
   int activateProjectCalls = 0;
@@ -93,20 +89,6 @@ final class _DraftTransport extends AccountsTestTransport
   Completer<void>? removeAttachmentEntered;
   Completer<void>? removeAttachmentGate;
   Object? removeAttachmentFailure;
-  late _DraftConnection window;
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) async {
-    feedOpens++;
-    return window = _DraftConnection(
-      threadId: threadId,
-      initial: initialForThread?.call(threadId),
-    );
-  }
-
   @override
   Future<CurrentReader> openCurrentReader(
     String threadId, {
@@ -116,15 +98,13 @@ final class _DraftTransport extends AccountsTestTransport
     ScriptedCurrentReader(threadId: threadId, states: frames.stream),
   );
 
-  /// State turns enter through the independent state channel with a real ACK
-  /// wait; the content connection only ever carries Chat frames.
+  /// State turns enter through the production Current reader.
   Future<void> emitTurn(StudioTurnView turn) async {
     final feed = await scriptedCurrentReader(turn.threadId);
     await feed.deliver(
       testCurrentEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: threadSchemaVersion,
-          completedHistoryVersion: completedHistoryVersion,
           workspace: _workspace(
             revision: turn.revision,
             turn: turn,
@@ -358,31 +338,6 @@ final class _DraftTransport extends AccountsTestTransport
   );
 }
 
-/// A controlled content source driven through the production timeline channel.
-final class _DraftConnection extends ScriptedConversationFeed {
-  _DraftConnection({required super.threadId, ChatBatch? initial})
-    : super(initial: initial ?? chatSet(messages: const []));
-  int _completedThrough = 1;
-  Future<void> emitItem(CompletedEntry item) async {
-    final from = _completedThrough++;
-    final entry = CompletedEntry(
-      recordId: item.recordId,
-      completionSeq: _completedThrough,
-      atom: item.atom,
-    );
-    await deliver(
-      ConversationChatEvent(
-        batch: ChatBatch(
-          placement: ChatPlacement.append,
-          fromSeq: from,
-          throughSeq: _completedThrough,
-          entries: [entry],
-        ),
-      ),
-    );
-  }
-}
-
 const _project = StudioProject(
   id: 'project',
   name: 'Project',
@@ -508,7 +463,6 @@ Future<AnyworkClient> _client(
   String id = 'client',
   Future<String?> Function(Uint8List)? stage,
   Future<void> Function(String)? cleanup,
-  TestCompletionConsumer? completionConsumer,
 }) async {
   final coordinator = SettingsWriteCoordinator();
   final board = MutationBoard(clientId: id);
@@ -583,16 +537,8 @@ Future<AnyworkClient> _client(
     domains.acceptFrame(frame);
   }
   client.selection.selectProject(_project.id);
-  client.conversations
-      .session('thread')
-      .content
-      .attachConsumer(
-        completionConsumer ?? TestCompletionConsumer(),
-        demand: _demand,
-      );
   client.conversations.setVisibleThread('thread');
   await scriptedCurrentReader('thread');
-  await transport.window.acknowledged(1);
   return client;
 }
 
@@ -639,79 +585,66 @@ StudioTurnView _inputTurn(
 );
 
 void main() {
-  for (final evictBeforeReceipt in [false, true]) {
-    test(
-      'pre-dispatch input evidence survives unrelated completed batches=$evictBeforeReceipt',
-      () async {
-        final transport = _DraftTransport();
-        final client = await _client(transport);
-        await client.conversations
-            .session('thread')
-            .deliverWorkspace(_workspace());
-        final owner = client.drafts.composer('thread');
-        owner.updateDraft('evidence before receipt');
-        final submitting = owner.submit();
-        final input = await transport.promptEntered.future;
-        final operation = client.mutations.lookup(OperationId(input.inputId))!;
-        await transport.emitTurn(
-          _inputTurn(
-            input.inputId,
-            const CompletedStudioTurnState(
-              startedAt: 1,
-              completedAt: 2,
-              completion: StudioTurnCompletion.normal,
-            ),
+  test(
+    'pre-dispatch input and storage evidence survives until receipt',
+    () async {
+      final transport = _DraftTransport();
+      final client = await _client(transport);
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace());
+      final owner = client.drafts.composer('thread');
+      owner.updateDraft('evidence before receipt');
+      final submitting = owner.submit();
+      final input = await transport.promptEntered.future;
+      final operation = client.mutations.lookup(OperationId(input.inputId))!;
+      await transport.emitTurn(
+        _inputTurn(
+          input.inputId,
+          const CompletedStudioTurnState(
+            startedAt: 1,
+            completedAt: 2,
+            completion: StudioTurnCompletion.normal,
           ),
-        );
-        await client.conversations
-            .session('thread')
-            .deliverWorkspace(_workspace(revision: 2));
-        await client.conversations
-            .session('thread')
-            .deliverNotification(
-              const ThreadNotificationFrame(
-                threadId: 'thread',
-                revision: 3,
-                baseRevision: 2,
-                epoch: 1,
-                update: ThreadStorageUpdate(
-                  storage: ThreadStorageStateView(durableSequence: 7),
-                ),
+        ),
+      );
+      await client.conversations
+          .session('thread')
+          .deliverWorkspace(_workspace(revision: 2));
+      await client.conversations
+          .session('thread')
+          .deliverNotification(
+            const ThreadNotificationFrame(
+              threadId: 'thread',
+              revision: 3,
+              baseRevision: 2,
+              epoch: 1,
+              update: ThreadStorageUpdate(
+                storage: ThreadStorageStateView(durableSequence: 7),
               ),
-            );
-        if (evictBeforeReceipt) {
-          for (var index = 0; index < 101; index++) {
-            await transport.window.emitItem(chatMessage(id: 'tail-$index'));
-          }
-        }
-        await transport.window.emitItem(chatMessage(id: 'unrelated-last'));
-        expect(operation.state.value.receipt, isNull);
-        expect(
-          operation.state.value.durable,
-          isFalse,
-          reason: 'Evidence alone is not backend acceptance',
-        );
-        transport.promptReply.complete(
-          SubmitPromptReceipt(
-            threadId: 'thread',
-            inputId: input.inputId,
-            cursor: 7,
-          ),
-        );
-        await submitting;
-        expect(operation.state.value.observed, isTrue);
-        expect(operation.state.value.effective, isTrue);
-        expect(operation.state.value.durable, isTrue);
-        expect(owner.state.draft, isEmpty);
-        expect(
-          transport.feedOpens,
-          1,
-          reason: 'Input evidence never opens a hidden feed',
-        );
-        await _close(client, transport);
-      },
-    );
-  }
+            ),
+          );
+      expect(operation.state.value.receipt, isNull);
+      expect(
+        operation.state.value.durable,
+        isFalse,
+        reason: 'Evidence alone is not backend acceptance',
+      );
+      transport.promptReply.complete(
+        SubmitPromptReceipt(
+          threadId: 'thread',
+          inputId: input.inputId,
+          cursor: 7,
+        ),
+      );
+      await submitting;
+      expect(operation.state.value.observed, isTrue);
+      expect(operation.state.value.effective, isTrue);
+      expect(operation.state.value.durable, isTrue);
+      expect(owner.state.draft, isEmpty);
+      await _close(client, transport);
+    },
+  );
 
   test('new-thread first baseline before result future binds its pre-registered evidence', () async {
     final transport = _DraftTransport()..startCancelGate = Completer<void>();
@@ -729,10 +662,6 @@ void main() {
     )!;
     final selected = client.selection.source.watch((state) {
       if (state.selectedThreadId == 'new-thread') {
-        client.conversations
-            .session('new-thread')
-            .content
-            .attachConsumer(TestCompletionConsumer(), demand: _demand);
         client.conversations.setVisibleThread('new-thread');
       }
     });
@@ -747,7 +676,6 @@ void main() {
       ),
     );
     await scriptedCurrentReader('new-thread');
-    await transport.window.acknowledged(1);
     final newSession = client.conversations.session('new-thread');
     await newSession.deliverWorkspace(
       _workspace(
@@ -2781,14 +2709,12 @@ void main() {
   });
 
   test(
-    'completion is not durability and storage watermark advances independently',
+    'storage durability advances independently of presentation and turn state',
     () async {
       final transport = _DraftTransport();
-      final consumer = TestCompletionConsumer();
-      final client = await _client(transport, completionConsumer: consumer);
+      final client = await _client(transport);
       final session = client.conversations.session('thread');
       await session.deliverWorkspace(_workspace());
-      await session.content.ready;
       final owner = client.drafts.composer('thread');
       owner.updateDraft('durable input');
       final submission = owner.submit();
@@ -2826,33 +2752,6 @@ void main() {
       expect(operation.state.value.observed, isTrue);
       expect(operation.state.value.effective, isTrue);
       expect(operation.state.value.durable, isFalse);
-      final terminal = chatMessage(
-        id: 'turn-item',
-        seq: 2,
-        body: '{"inputId":"${input.inputId}","completion":"normal"}',
-      );
-      await transport.window.deliver(
-        ConversationChatEvent(
-          batch: ChatBatch(
-            placement: ChatPlacement.append,
-            fromSeq: 1,
-            throughSeq: 2,
-            entries: ([terminal]).toList(),
-          ),
-        ),
-      );
-      expect(
-        consumer.batches.last.entries.cast<CompletedEntry>().map(
-          (entry) => entry,
-        ),
-        [terminal],
-      );
-      expect(
-        operation.state.value.durable,
-        isFalse,
-        reason: 'A completion is not proof of storage durability',
-      );
-      final count = consumer.batches.length;
       await session.deliverNotification(
         const ThreadNotificationFrame(
           threadId: 'thread',
@@ -2865,7 +2764,6 @@ void main() {
         ),
       );
       expect(operation.state.value.durable, isFalse);
-      expect(consumer.batches, hasLength(count));
       await session.deliverNotification(
         const ThreadNotificationFrame(
           threadId: 'thread',
@@ -2878,7 +2776,6 @@ void main() {
         ),
       );
       expect(operation.state.value.durable, isTrue);
-      expect(consumer.batches, hasLength(count));
       await _close(client, transport);
     },
   );
@@ -3371,7 +3268,6 @@ void main() {
     expect(client.selection.state.selectedThreadId, 'thread');
     await client.directoryCommands.openSelectedThread();
     expect(session.isActive, isTrue);
-    expect(transport.feedOpens, 1);
     await client.directoryCommands.resumeThreadHistory('thread', 5);
     expect(transport.resumedThreads, ['thread']);
 
@@ -3623,7 +3519,6 @@ void main() {
     expect(transport.activateProjectCalls, 0);
     await client.directoryCommands.openSelectedThread();
     expect(session.isActive, isTrue);
-    expect(transport.feedOpens, 1);
     await expectLater(
       client.threadCommands.compactThread('thread'),
       throwsA(

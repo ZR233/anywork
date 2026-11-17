@@ -230,7 +230,9 @@ mod migration_tests {
         StudioActivationFactory, StudioChildResources, ThreadActivation, ThreadPreparation,
     };
     use anyhow::{Context, Result};
-    use pl_core::thread::{ThreadHandle, cold::ColdStoreHandle, extensions::ExtensionMutation};
+    use pl_core::thread::{
+        ThreadHandle, extensions::ExtensionMutation, history_sink::HistorySinkHandle,
+    };
     use pl_tool::workspace::SessionFiles;
 
     #[tokio::test]
@@ -546,9 +548,9 @@ mod migration_tests {
                 crate::studio::storage::current_writer::CurrentSource::from_thread(core.clone()),
             )
             .await?;
-        let sink = ThreadStorageSink::new(store.clone(), old.clone(), None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), old.clone()).await?;
         spawn_live_projection(&sink);
-        core.attach_storage(ColdStoreHandle::new(sink)).await?;
+        core.attach_history(HistorySinkHandle::new(sink)).await?;
         core.mutate_extensions(vec![
             ExtensionMutation::Put {
                 id: crate::studio::workspace_receipt::EXTENSION.into(),
@@ -723,9 +725,9 @@ mod migration_tests {
                     ),
                 )
                 .await?;
-            let sink = ThreadStorageSink::new(store.clone(), registered.clone(), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), registered.clone()).await?;
             spawn_live_projection(&sink);
-            core.attach_storage(ColdStoreHandle::new(sink)).await?;
+            core.attach_history(HistorySinkHandle::new(sink)).await?;
             core.mutate_extensions(
                 extensions
                     .into_iter()

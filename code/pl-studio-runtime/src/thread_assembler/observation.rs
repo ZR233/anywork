@@ -77,7 +77,8 @@ async fn history_terminal_report_sequences(
     history: &crate::history::HistoryStore,
     after: u64,
 ) -> anyhow::Result<Vec<(u64, u64)>> {
-    Ok(crate::studio::history_delivery::reports(
+    let mut sequences = Vec::new();
+    for report in crate::studio::history_delivery::reports(
         &history.reader(),
         history.thread_id(),
         Some(after),
@@ -85,9 +86,16 @@ async fn history_terminal_report_sequences(
         1024 * 1024,
     )
     .await?
-    .into_iter()
-    .map(|report| (report.event_seq, report.terminal_sequence))
-    .collect())
+    {
+        let body: serde_json::Value = serde_json::from_str(report.message.payload.content())?;
+        sequences.push((
+            report.event_seq,
+            body["commitSequence"]
+                .as_u64()
+                .context("terminal report has no commit sequence")?,
+        ));
+    }
+    Ok(sequences)
 }
 
 pub(super) async fn latest_terminal_turn(
@@ -675,7 +683,7 @@ mod storage_fault_tests {
         context::{AgentMessageKind, ContextContent, OpaquePayload},
         thread::{
             TurnOutcome, TurnRecord, TurnState,
-            cold::{ColdStore, ColdStoreHandle},
+            history_sink::{HistorySink, HistorySinkHandle},
         },
     };
     use pl_tool::collaboration::thread::WorkspaceRelease;
@@ -962,7 +970,7 @@ mod storage_fault_tests {
                 protocol.workspace_path = workspace.to_string_lossy().into_owned();
             }
             register_test_thread(&self.store, &protocol).await?;
-            let sink = ThreadStorageSink::new(self.store.clone(), protocol, None).await?;
+            let sink = ThreadStorageSink::new(self.store.clone(), protocol).await?;
             let thread = ThreadHandle::restore_current(
                 pl_core::thread::current::ThreadCurrent::new(
                     id.into(),
@@ -971,7 +979,7 @@ mod storage_fault_tests {
                 None,
             )?;
             thread
-                .attach_storage(ColdStoreHandle::new(sink.clone()))
+                .attach_history(HistorySinkHandle::new(sink.clone()))
                 .await?;
             let activation = self.activation(id, parent);
             self.owner.0.state().insert_entry(
@@ -1219,12 +1227,17 @@ mod storage_fault_tests {
             message.clone(),
         )
         .await?;
-        let child_sink = ThreadStorageSink::new(store.clone(), child.clone(), None).await?;
+        let child_sink = ThreadStorageSink::new(store.clone(), child.clone()).await?;
         spawn_live_projection(&child_sink);
-        let mut closed = ticket("child", 2);
-        closed.checkpoint.state.lifecycle = ThreadLifecycle::Closed;
+        let mut closed = (*ticket("child", 2)).clone();
+        closed.state.lifecycle = ThreadLifecycle::Closed;
+        let closed = Arc::new(closed);
         child_sink.admit("child", closed)?;
-        child_sink.flush("child", 2).await?;
+        store
+            .thread_persistence()
+            .history_channel("child")
+            .await_handoff_durable("child", 2)
+            .await?;
         store
             .thread_persistence()
             .history_channel("child")
@@ -1532,7 +1545,7 @@ mod storage_fault_tests {
                     .load_current()
                     .await
                     .map_err(storage_error)?;
-                let sink = ThreadStorageSink::new(self.0.clone(), protocol, None)
+                let sink = ThreadStorageSink::new(self.0.clone(), protocol)
                     .await
                     .map_err(storage_error)?;
                 let model_info = pl_model::model::ModelInfo::compatible("reactivated-model");
@@ -1577,14 +1590,14 @@ mod storage_fault_tests {
                         ),
                     ),
                     capacity: Default::default(),
-                    cold_store: Some(ColdStoreHandle::new(sink)),
+                    history_sink: Some(sink),
                 })
             }
         }
 
         async fn save_cold_thread(store: &StudioStore, protocol: &crate::Thread) -> Result<()> {
             register_test_thread(store, protocol).await?;
-            let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
             let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
             let channel = store.thread_persistence().history_channel(&protocol.id);
             let thread = ThreadHandle::restore_current(
@@ -1594,7 +1607,7 @@ mod storage_fault_tests {
                 ),
                 None,
             )?;
-            thread.attach_storage(ColdStoreHandle::new(sink)).await?;
+            thread.attach_history(HistorySinkHandle::new(sink)).await?;
             let epoch = thread.runtime_epoch();
             let mut current_store = store.state_for(&protocol.workspace_id, &protocol.id)?;
             current_store

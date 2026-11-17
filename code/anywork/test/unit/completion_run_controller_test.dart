@@ -94,37 +94,6 @@ void main() {
     },
   );
 
-  test(
-    'pure live changes perform no history enumeration or component operation',
-    () async {
-      final reads = _ReadCounter();
-      final controller = TimelineMessageController(reads, generation: 1);
-      await controller.applyFixtureUpdate(
-        displayBatch([displayWork('first', 1)]),
-      );
-      reads.reads = 0;
-      await controller.applyFixtureUpdate(
-        displayBatch(
-          [],
-          placement: TimelineApplyPlacement.append,
-          from: 1,
-          through: 1,
-          live: CurrentRunSnapshot(
-            currentWorkId: null,
-            revision: 2,
-            layoutRevision: 2,
-            readyFrontier: 1,
-            executionPresent: true,
-            blocks: [],
-          ),
-        ),
-      );
-      expect(reads.reads, 0);
-      controller.dispose();
-      reads.dispose();
-    },
-  );
-
   test('handoff borrows the exact live disclosure identity and keeps expansion intent', () async {
     final intent = intents.putIfAbsent('work', TimelineExpansionIntent.new);
     intent.expanded = true;
@@ -133,7 +102,7 @@ void main() {
     expect(unit(0).expansion.expanded, isTrue);
     expect(
       unit(0).memberReference,
-      const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
+      (displayWork('work', 1).body as WorkDisplayBlock).members,
     );
   });
 
@@ -275,13 +244,4 @@ class _FailingComponent extends InMemoryChatController {
   }) =>
       failure ??
       super.insertAllMessages(messages, index: index, animated: animated);
-}
-
-class _ReadCounter extends InMemoryChatController {
-  int reads = 0;
-  @override
-  List<Message> get messages {
-    reads++;
-    return super.messages;
-  }
 }

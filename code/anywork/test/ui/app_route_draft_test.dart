@@ -138,10 +138,12 @@ void main() {
         for (var i = 0; i < 40; i++)
           chatMessage('route-item-$i', completionSeq: firstPosition + i),
       ];
-      transport.seedTimelineItems('thread-main', seeded);
-      transport.seedDisplayBlocks(
-        threadId: 'thread-main',
-        blocks: [for (final entry in seeded) displaySingle(entry)],
+      final routeCut = transport.fixedCut = HistoryCut('route-fixed-cut');
+      transport.baseline = historyFixturePage(
+        displayBatch([
+          for (final entry in seeded) displaySingle(entry),
+        ], before: 'older-route'),
+        cut: routeCut,
       );
       await tester.tap(find.byKey(StudioDriverKeys.threadRow('thread-main')));
       await pumpClientUntil(
@@ -158,7 +160,7 @@ void main() {
           .current
           .metadata
           .readerId;
-      final connection = transport.currentReaders.single;
+      final connection = _timelineReader(transport, 'thread-main');
       final composer = graph.client.drafts.composer('thread-main');
       final startedAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final running = transport.emitTurn(
@@ -211,6 +213,7 @@ void main() {
           oldPage.complete(
             historyFixturePage(
               displayBatch([], placement: TimelineApplyPlacement.prepend),
+              cut: transport.fixedCut,
             ),
           );
         }
@@ -274,10 +277,12 @@ void main() {
             body: '隐藏期间完成的真实正文',
             completionSeq: 100,
           );
-          transport.seedTimelineItems('thread-main', [completedBody]);
-          transport.seedDisplayBlocks(
-            threadId: 'thread-main',
-            blocks: [displaySingle(completedBody, blockOrder: 45)],
+          transport.baseline = historyFixturePage(
+            displayBatch([
+              for (final entry in seeded) displaySingle(entry),
+              displaySingle(completedBody, blockOrder: 45),
+            ], before: 'older-route'),
+            cut: routeCut,
           );
           expect(transport.runtimeCancellations, 1);
           expect(session.state.activeTurn, running, reason: '隐藏镜像不以独立订阅追赶后台事实');
@@ -290,20 +295,24 @@ void main() {
             graph.client.conversations.existingSession('thread-main'),
             same(session),
           );
-          expect(transport.currentReaders, hasLength(1));
+          expect(
+            transport.currentReaders.where((reader) => !reader.requested),
+            isEmpty,
+            reason: 'the hidden route owns no live Current reader',
+          );
         },
       );
 
       await pumpClientUntil(
         tester,
         () =>
-            transport.currentReaders.length == 2 &&
+            _activeTimelineReaders(transport, 'thread-main').length == 1 &&
             graph.timeline.lease('thread-main') != null &&
             session.state.activeTurn == null &&
             session.state.runtime?.execution == null,
         'fresh visible feed reads hidden completion',
       );
-      final newConnection = transport.currentReaders.last;
+      final newConnection = _timelineReader(transport, 'thread-main');
       final newLease = graph.timeline.lease('thread-main')!;
       expect(
         newConnection.metadata.readerId,
@@ -317,6 +326,7 @@ void main() {
           displayBatch([
             displaySingle(chatMessage('late-old-page')),
           ], placement: TimelineApplyPlacement.prepend),
+          cut: routeCut,
         ),
       );
       await pumpClientFuture(tester, loading, 'late page from retired lease');
@@ -346,7 +356,10 @@ void main() {
                   item.id == 'settings-completed-body' &&
                   item.atom?.lifecycle is TerminalChatAtom &&
                   item.displayUnit?.body is SingleDisplayBlock &&
-                  item.atom?.completionSeq == 100,
+                  (item.displayUnit!.body as SingleDisplayBlock)
+                          .record
+                          .contentSource
+                      is CompletedOriginal,
             ),
         isNotEmpty,
         reason: '新内容基线包含隐藏期间真正提交的终态事实',
@@ -368,7 +381,6 @@ void main() {
         isNot(attemptId),
       );
       expect(graph.timeline.lease('thread-main') != null, isTrue);
-      expect(transport.currentReaders, hasLength(2));
       expect(connection.requestCloseCalls, greaterThanOrEqualTo(1));
       expect(connection.closeCalls, 1);
       expect(connection.watchCalls, hiddenFrames);
@@ -472,7 +484,7 @@ void main() {
             'registered bot chat receives a fresh baseline',
           );
           await tester.pumpAndSettle();
-          final botFeed = transport.currentReaders.last;
+          final botFeed = _timelineReader(transport, 'thread-alt');
           final botLease = graph.timeline.lease('thread-alt')!;
           expect(botLease, isNot(same(newLease)));
           expect(router.routerDelegate.state.name, BotConversationRoute.name);
@@ -546,7 +558,7 @@ void main() {
           );
           await tester.pumpAndSettle();
           expect(_composerText(tester), 'Bot draft follows route target');
-          final returnedFeed = transport.currentReaders.last;
+          final returnedFeed = _timelineReader(transport, 'thread-alt');
           expect(graph.timeline.lease('thread-alt'), isNot(same(botLease)));
           await tester.tap(find.byKey(StudioDriverKeys.botsChatBack));
           await pumpClientUntil(
@@ -701,6 +713,8 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   int runtimeCancellations = 0;
   late String botProjectId;
   Completer<HistoryTimelinePage>? scriptedPage;
+  HistoryTimelinePage? baseline;
+  HistoryCut fixedCut = HistoryCut('route-default-cut');
   int pageCalls = 0;
 
   @override
@@ -712,10 +726,23 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       threadId,
       historyProtocolVersion: historyProtocolVersion,
     );
-    return _RouteHistoryReader(
-      inner: reader as RecordingHistoryReader,
-      transport: this,
-    );
+    final recording = reader as RecordingHistoryReader;
+    recording.onTimelinePage = (cut, cursor, demand) {
+      pageCalls++;
+      if (threadId == 'thread-main' && cursor == null && baseline
+          case final page?) {
+        return Future.value(page);
+      }
+      final gate = scriptedPage;
+      scriptedPage = null;
+      return gate?.future ??
+          recording.inner.timelinePage(
+            cut: cut,
+            cursor: cursor,
+            demand: demand,
+          );
+    };
+    return recording;
   }
 
   @override
@@ -729,7 +756,7 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
       currentProtocolVersion: currentProtocolVersion,
       demand: demand,
     );
-    if (threadId == 'thread-main') {
+    if (threadId == 'thread-main' && demand.maxItems == chatDemand.maxItems) {
       runtimeSubscriptions++;
       (reader as RecordingCurrentReader).onClosed = () {
         runtimeCancellations++;
@@ -794,19 +821,21 @@ final class _RouteTurnTransport extends RecordingDemoTransport {
   }
 }
 
-final class _RouteHistoryReader extends RecordingHistoryReader {
-  _RouteHistoryReader({required super.inner, required this.transport});
-  final _RouteTurnTransport transport;
-  @override
-  Future<HistoryTimelinePage> timelinePage({
-    HistoryCut? cut,
-    String? cursor,
-    required ReadDemand demand,
-  }) {
-    transport.pageCalls++;
-    final gate = transport.scriptedPage;
-    transport.scriptedPage = null;
-    return gate?.future ??
-        super.timelinePage(cut: cut, cursor: cursor, demand: demand);
-  }
-}
+RecordingCurrentReader _timelineReader(
+  RecordingDemoTransport transport,
+  String threadId,
+) => transport.currentReaders.lastWhere(
+  (reader) =>
+      reader.threadId == threadId &&
+      reader.demand.maxItems == chatDemand.maxItems,
+);
+
+Iterable<RecordingCurrentReader> _activeTimelineReaders(
+  RecordingDemoTransport transport,
+  String threadId,
+) => transport.currentReaders.where(
+  (reader) =>
+      reader.threadId == threadId &&
+      reader.demand.maxItems == chatDemand.maxItems &&
+      !reader.requested,
+);

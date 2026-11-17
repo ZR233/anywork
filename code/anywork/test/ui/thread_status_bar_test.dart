@@ -215,7 +215,7 @@ void main() {
       expect(transport.compactCalls, 1);
       await pumpClientFuture(
         tester,
-        transport.currentReaders.last.emitStateAndWait(
+        _stateCurrentReader(transport).emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -287,7 +287,7 @@ void main() {
       );
       await pumpClientFuture(
         tester,
-        transport.currentReaders.last.emitStateAndWait(
+        _stateCurrentReader(transport).emitStateAndWait(
           _runtimeFrame(
             session,
             session.state.runtime!.copyWith(
@@ -530,7 +530,7 @@ void main() {
     startedItemsNotifications = 0;
     final timelineConnections = transport.currentReaders.length;
 
-    await transport.currentReaders.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -561,7 +561,7 @@ void main() {
       reason: 'FRB-style equal capability lists must not rebuild chrome',
     );
 
-    await transport.currentReaders.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -594,7 +594,7 @@ void main() {
     );
     expect(chromeNotifications, 0);
 
-    await transport.currentReaders.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -612,7 +612,7 @@ void main() {
         ),
       ),
     );
-    await transport.currentReaders.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       ThreadNotificationFrame(
         threadId: 'thread-main',
         epoch: session.state.streamEpoch ?? 1,
@@ -628,7 +628,7 @@ void main() {
     expect(contextNotifications, 0);
     expect(chromeNotifications, 0);
 
-    await transport.currentReaders.last.emitStateAndWait(
+    await _stateCurrentReader(transport).emitStateAndWait(
       _runtimeFrame(
         session,
         session.state.runtime!.copyWith(
@@ -768,3 +768,9 @@ ThreadNotificationFrame _runtimeFrame(
 }
 
 DateTime _deadline() => DateTime.now().add(const Duration(seconds: 5));
+
+RecordingCurrentReader _stateCurrentReader(RecordingDemoTransport transport) =>
+    transport.currentReaders.lastWhere(
+      (reader) =>
+          reader.threadId == 'thread-main' && reader.demand.maxItems == 128,
+    );

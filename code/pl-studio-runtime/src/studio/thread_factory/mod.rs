@@ -407,7 +407,7 @@ mod review_archive_tests {
     use anyhow::Context;
     use pl_core::{
         context::OpaquePayload,
-        thread::{ThreadHandle, cold::ColdStoreHandle, inbox::ThreadMessage},
+        thread::{ThreadHandle, inbox::ThreadMessage},
     };
 
     #[tokio::test]
@@ -697,7 +697,7 @@ mod review_archive_tests {
             },
         )
         .await?;
-        let sink = ThreadStorageSink::new(store.clone(), protocol, None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), protocol).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), id);
         let mut prepared = spec(
             id.into(),
@@ -716,7 +716,7 @@ mod review_archive_tests {
             crate::studio::workspace_receipt::to_payload(assignment).map_err(anyhow::Error::msg)?,
         );
         prepared.current = None;
-        prepared.cold_store = Some(ColdStoreHandle::new(sink));
+        prepared.history_sink = Some(sink);
         let thread = owner.assemble(prepared).await?;
         thread.flush().await?;
         Ok((thread, projection, body))

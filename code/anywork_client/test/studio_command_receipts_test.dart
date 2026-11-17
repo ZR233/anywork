@@ -15,8 +15,6 @@ import 'support/accounts_test_runtime.dart';
 import 'support/directory_feed.dart';
 import 'support/timeline_transport.dart';
 
-const _demand = ReadDemand(maxItems: 20, maxBytes: 65536);
-
 // The native fixture identity used before the SDK conversation migration.
 const _epoch = 'native-runtime-one';
 
@@ -154,7 +152,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   }
 
   final List<StreamController<ThreadStreamFrame>> threadBindings = [];
-  final List<ScriptedConversationFeed> contentWindows = [];
   final List<ContinuationOperationView> continuationReads = [];
   ContinuationOperationView? continuationReadReply;
   int continuationReadCalls = 0;
@@ -194,19 +191,6 @@ final class _Transport extends AccountsTestTransport with DirectoryFeedFixture {
   Future<SettingsStateSnapshot> readSettingsState() {
     if (!settingsReadEntered.isCompleted) settingsReadEntered.complete();
     return settingsRead?.call() ?? Future.value(_settings(1));
-  }
-
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) async {
-    final states = StreamController<ThreadStreamFrame>.broadcast(sync: true);
-    threadBindings.add(states);
-    final feed = ScriptedConversationFeed(threadId: threadId);
-    contentWindows.add(feed);
-    return feed;
   }
 
   @override
@@ -398,32 +382,9 @@ final class _TopicBinding {
   final Future<void> listening;
 }
 
-final class _RouteConflictFeed extends ScriptedConversationFeed {
-  _RouteConflictFeed({
-    required super.threadId,
-    required super.subscriptionId,
-    required super.initial,
-
-    required this.onClose,
-  });
-
-  final Future<void> Function() onClose;
-  Future<void>? _closing;
-
-  @override
-  Future<void> close() => _closing ??= _close();
-
-  Future<void> _close() async {
-    // A feed owns cleanup even if retired before its events getter is consumed.
-    await onClose();
-    await super.close();
-  }
-}
-
-/// A state feed whose native close stays observable and gateable, mirroring
-/// [_RouteConflictFeed] on the independent state channel.
-final class _RouteConflictStateFeed extends ScriptedCurrentReader {
-  _RouteConflictStateFeed({
+/// A Current reader whose native close stays observable and gateable.
+final class _RouteConflictCurrentReader extends ScriptedCurrentReader {
+  _RouteConflictCurrentReader({
     required super.threadId,
     required super.states,
     super.initialView,
@@ -444,45 +405,18 @@ final class _RouteConflictStateFeed extends ScriptedCurrentReader {
 }
 
 final class _RouteConflictTransport extends _Transport {
-  _RouteConflictTransport({this.onStateFeedClose}) {
+  _RouteConflictTransport({this.onCurrentClose}) {
     addTearDown(() async {
-      for (final binding in bindings) {
-        await binding.close();
-      }
       for (final binding in stateBindings) {
         await binding.close();
       }
     });
   }
 
-  final List<StreamController<ThreadStreamFrame>> bindings = [];
   final List<StreamController<ThreadStreamFrame>> stateBindings = [];
-  final Future<void> Function(int index)? onStateFeedClose;
+  final Future<void> Function(int index)? onCurrentClose;
   final List<_RouteCall> attempts = [];
   final refreshEntered = Completer<void>();
-  int windowOpens = 0;
-
-  @override
-  Future<ConversationFeed> openConversationFeed(
-    String threadId, {
-    required ChatScope scope,
-    required ReadDemand demand,
-  }) async {
-    final index = bindings.length;
-    // Frames may have no consumer when opening is retired immediately.
-    final binding = StreamController<ThreadStreamFrame>.broadcast(sync: true);
-    bindings.add(binding);
-    windowOpens++;
-    final feed = _RouteConflictFeed(
-      threadId: threadId,
-      subscriptionId: 'route-conflict-$index',
-      initial: chatSet(messages: const []),
-
-      onClose: Future<void>.value,
-    );
-    contentWindows.add(feed);
-    return feed;
-  }
 
   @override
   Future<CurrentReader> openCurrentReader(
@@ -497,13 +431,13 @@ final class _RouteConflictTransport extends _Transport {
     if (stateBindings.length == 2 && !refreshEntered.isCompleted) {
       refreshEntered.complete();
     }
-    return _RouteConflictStateFeed(
+    return _RouteConflictCurrentReader(
       threadId: threadId,
       states: binding.stream,
       initialView: currentViewForWorkspace(
         _workspace(revision: index + 1, routeRevision: 3),
       ),
-      onClose: () => onStateFeedClose?.call(index) ?? Future<void>.value(),
+      onClose: () => onCurrentClose?.call(index) ?? Future<void>.value(),
     );
   }
 
@@ -934,30 +868,20 @@ Future<AnyworkClient> _client(
   onRuntime?.call(runtime);
   final client = runtime.client;
   client.applyBootstrap(_bootstrap(_epoch, _settings(1)));
-  // The command has a stable selected identity; this test does not open a native
-  // ChatView. State frames enter through the production read-model reducers.
+  // The command has a stable selected identity; Current frames enter through
+  // the production read-model reducers.
   client.selection.restoreStartup(
     workspaceId: 'project',
     threadId: 'thread',
     needsOpen: true,
   );
-  final consumer = TestCompletionConsumer();
-  client.conversations
-      .session('thread')
-      .content
-      .attachConsumer(consumer, demand: _demand);
-  _completionConsumers[client] = consumer;
   client.conversations.setVisibleThread('thread');
   await scriptedCurrentReader('thread');
-  final feed = transport.contentWindows.single;
-  await feed.acknowledged(1);
   await client.conversations.session('thread').deliverWorkspace(_workspace());
   addTearDown(runtime.close);
   client.conversations.setVisibleThread('thread');
   return client;
 }
-
-final _completionConsumers = Expando<TestCompletionConsumer>();
 
 ResourceStamp _stamp(String key, int revision) =>
     ResourceStamp(resourceKey: key, ownerEpoch: _epoch, revision: revision);
@@ -1900,7 +1824,6 @@ void main() {
     client.selection.markOpened();
     final session = client.conversations.existingSession('thread')!;
     await session.deliverWorkspace(_workspace(revision: 40, routeRevision: 2));
-    await session.content.ready;
     final failure = expectLater(
       client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
@@ -2462,7 +2385,6 @@ void main() {
       await session.deliverWorkspace(
         _workspace(revision: 40, routeRevision: 2),
       );
-      await session.content.ready;
       await session.deliverNotification(
         ThreadNotificationFrame(
           threadId: 'thread',
@@ -2486,11 +2408,6 @@ void main() {
         transport.stateBindings,
         hasLength(2),
         reason: 'the resync replaced the state feed',
-      );
-      expect(
-        transport.bindings,
-        hasLength(1),
-        reason: 'a state resync must not reopen valid content',
       );
       expect(session.state.revision, 41);
       expect(
@@ -2538,13 +2455,6 @@ void main() {
       expect(session.state.runtime!.modelId, 'alpha');
       expect(session.state.modelRoute?.modelId, 'alpha');
       expect(session.state.sync.phase, DomainSyncPhase.ready);
-      final delivered = _completionConsumers[client]!.batches;
-      expect(delivered, hasLength(1));
-      expect(delivered.map((batch) => batch.placement), [
-        ChatPlacement.set,
-      ], reason: 'The original content feed keeps its accepted Set');
-      expect(transport.windowOpens, 1);
-      expect(transport.bindings, hasLength(1));
       expect(transport.stateBindings, hasLength(2));
     },
   );
@@ -2556,7 +2466,7 @@ void main() {
         final cancelEntered = Completer<void>();
         final cleanup = Completer<void>();
         final transport = _RouteConflictTransport(
-          onStateFeedClose: (index) {
+          onCurrentClose: (index) {
             if (index != 1) return Future.value();
             cancelEntered.complete();
             return cleanup.future;
@@ -2571,7 +2481,6 @@ void main() {
         await session.deliverWorkspace(
           _workspace(revision: 40, routeRevision: 3),
         );
-        await session.content.ready;
         final changing = client.threadCommands.setThreadModelRoute(
           threadId: 'thread',
           accountId: 'account',
@@ -2634,7 +2543,7 @@ void main() {
       final cancelEntered = Completer<void>();
       final cleanup = Completer<void>();
       final transport = _RouteConflictTransport(
-        onStateFeedClose: (index) {
+        onCurrentClose: (index) {
           if (index != 0) return Future.value();
           cancelEntered.complete();
           return cleanup.future;
@@ -2649,7 +2558,6 @@ void main() {
       await session.deliverWorkspace(
         _workspace(revision: 40, routeRevision: 3),
       );
-      await session.content.ready;
       final changing = client.threadCommands.setThreadModelRoute(
         threadId: 'thread',
         accountId: 'account',
@@ -3858,13 +3766,8 @@ void main() {
       threadId: 'thread',
       needsOpen: true,
     );
-    client.conversations
-        .session('thread')
-        .content
-        .attachConsumer(TestCompletionConsumer(), demand: _demand);
     client.conversations.setVisibleThread('thread');
     await scriptedCurrentReader('thread');
-    await transport.contentWindows.single.acknowledged(1);
     await client.conversations
         .session('thread')
         .deliverWorkspace(

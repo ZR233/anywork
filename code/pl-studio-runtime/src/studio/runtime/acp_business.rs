@@ -110,14 +110,7 @@ mod mixed_tests {
         let parent = owner
             .observed_thread(caller.thread_id.as_str())
             .context("Native parent")?;
-        let scope = owner.native_resources(&parent)?;
-        let mut changes = scope
-            .observations
-            .lock()
-            .unwrap()
-            .last()
-            .context("Native parent observation")?
-            .report_changes();
+        let mut changes = parent.subscribe();
         let expected_id = format!(
             "studio.acp.{}:{}:{}:{}",
             child.agent_id.as_str().len(),
@@ -172,7 +165,7 @@ mod mixed_tests {
                 return Ok::<_, anyhow::Error>(expected_id.clone());
             }
             drop(snapshot);
-            changes.changed().await?;
+            changes.next().await.context("Native parent closed")?;
         }
     })
     .await?
@@ -910,7 +903,13 @@ mod mixed_tests {
                 .to_paused_snapshot()
                 .turns
                 .iter()
-                .any(|turn| turn.state.is_terminal()),
+                .any(|turn| matches!(
+                    turn.state,
+                    pl_core::thread::TurnState::Finished(_)
+                        | pl_core::thread::TurnState::Cancelled
+                        | pl_core::thread::TurnState::Interrupted
+                        | pl_core::thread::TurnState::Failed { .. }
+                )),
             "the child current retains its terminal Turn"
         );
         let protocol = fixture.runtime.agent_facility.product_events
@@ -2117,7 +2116,6 @@ mod tests {
             let persistence = crate::studio::storage_fault_test_support::ThreadStorageSink::new(
                 self.store.clone(),
                 self.thread.clone(),
-                None,
             )
             .await
             .map_err(|error| {
@@ -2126,7 +2124,7 @@ mod tests {
                     source: error.into_boxed_dyn_error(),
                 }
             })?;
-            spec.cold_store = Some(pl_core::thread::cold::ColdStoreHandle::new(persistence));
+            spec.history_sink = Some(persistence);
             Ok(spec)
         }
     }

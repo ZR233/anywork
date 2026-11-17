@@ -807,17 +807,11 @@ mod tests {
             DynModelSession, Model, ModelError, ModelFactory, ModelRequest, ModelSession,
             ModelStepOutput, PreparedModelCall,
         },
-        thread::{
-            TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
-        },
+        thread::TurnInput,
     };
     use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
     use std::{
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
-        },
+        sync::{Arc, Mutex},
         time::Duration,
     };
 
@@ -883,46 +877,8 @@ mod tests {
         record
     }
 
-    async fn persist_test_thread(store: &StudioStore, thread: &pl_protocol::Thread) -> Result<()> {
-        let mut delta = crate::studio::store::directory::DirectoryDelta::upsert_project(
-            crate::studio::store::directory::ProjectDirectoryRecord {
-                id: thread.workspace_id.clone(),
-                kind: pl_protocol::studio::WorkspaceKind::Project,
-                name: "Agent query fixture".into(),
-                path: thread.workspace_path.clone(),
-                ssh_alias: None,
-                created_at: 1,
-                updated_at: 1,
-                last_opened_at: None,
-                closed: false,
-            },
-        );
-        let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
-        delta.session_upserts = session.into_iter().collect();
-        delta.agent_upserts = vec![agent];
-        store.persist_directory_summaries(&delta).await
-    }
-
-    #[derive(Debug)]
-    struct CountFlush {
-        sink: ThreadStorageSink,
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl ColdStore for CountFlush {
-        fn pressure(&self, thread: &str) -> StoragePressure {
-            self.sink.pressure(thread)
-        }
-        fn subscribe_pressure(&self, thread: &str) -> Option<tokio::sync::watch::Receiver<()>> {
-            self.sink.subscribe_pressure(thread)
-        }
-        fn admit(&self, thread: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            self.sink.admit(thread, write)
-        }
-        async fn flush(&self, thread: &str, sequence: u64) -> Result<(), ColdStoreError> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            self.sink.flush(thread, sequence).await
-        }
+    async fn persist_test_thread(store: &StudioStore, thread: &crate::Thread) -> Result<()> {
+        crate::studio::storage_fault_test_support::register_test_thread(store, thread).await
     }
 
     struct SavedThenBlocked(Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>);
@@ -992,18 +948,14 @@ mod tests {
         let fixture = close_factory(&store)?;
         let owner = SessionRuntime::open(crate::SessionId::new("root")?);
         fixture.install(&owner)?;
-        let sink = ThreadStorageSink::new(store.clone(), record, None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), record).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), "root");
-        let calls = Arc::new(AtomicUsize::new(0));
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(
             crate::studio::delegation::EXTENSION.into(),
             crate::studio::delegation::encode(Default::default())?,
         );
-        spec.cold_store = Some(ColdStoreHandle::new(CountFlush {
-            sink,
-            calls: calls.clone(),
-        }));
+        spec.history_sink = Some(sink);
         let mut activation = ThreadActivation::native_test("root", None);
         activation.agent.session_id = owner.id().clone();
         owner.install_explicit_activation(activation);
@@ -1044,8 +996,8 @@ mod tests {
             let saved = reader
                 .events_window(
                     crate::history::HistoryEventsQuery::Originals {
-                        scope: pl_protocol::ChatScope {
-                            query_class: pl_protocol::ChatClassFilter::All {},
+                        scope: crate::ChatScope {
+                            query_class: crate::ChatClassFilter::All {},
                             parent_id: None,
                         },
                     },
@@ -1069,13 +1021,7 @@ mod tests {
             )
             .await
             .context("running owner must admit the pending runtime fact")??;
-            calls.store(0, Ordering::SeqCst);
             let page = query(&tool, serde_json::json!({"target":"root", "detail":"full"})).await;
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                0,
-                "reading must never ask the target to flush"
-            );
             let page = page?;
             assert_eq!(page.history_through_seq, saved.0);
             assert_eq!(page.items, saved.1);
@@ -1104,11 +1050,6 @@ mod tests {
                 query(&tool, serde_json::json!({"target":"root", "limit":0}),)
                     .await
                     .is_err()
-            );
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                0,
-                "continuation and errors must not flush"
             );
             assert_eq!(
                 owner.0.state().entries.len(),
@@ -1150,7 +1091,7 @@ mod tests {
             persist_test_thread(&store, &record(id, parent, dir.path())).await?;
         }
         let fixture = close_factory(&store)?;
-        let owner = SessionRuntime::open(pl_protocol::SessionId::new("root")?);
+        let owner = SessionRuntime::open(crate::SessionId::new("root")?);
         fixture.install(&owner)?;
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(

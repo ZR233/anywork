@@ -526,12 +526,10 @@ Future<Map<String, Object?>> _verifyStateInteractionDetails(
     reason: 'The real State must carry the readable interaction head',
   );
   expect(reference!.collection, 'interactions');
-  expect(reference.databaseId, isNotEmpty);
+  expect(reference.ownerId, isNotEmpty);
   final connector = find.byWidgetPredicate(
     (widget) =>
-        widget is InteractionDetailsConnector &&
-        identical(widget.content, graph.timeline.lease(threadId)) &&
-        widget.reference == reference,
+        widget is InteractionDetailsConnector && widget.reference == reference,
   );
   await _until(
     tester,
@@ -647,7 +645,7 @@ Future<Map<String, Object?>> _verifyStateInteractionDetails(
   );
   return {
     'source': 'native-State.businessRefs.interactions',
-    'databaseId': reference.databaseId,
+    'ownerId': reference.ownerId,
     'collection': reference.collection,
     'revision': reference.revision,
     'interactionId': pending.id,

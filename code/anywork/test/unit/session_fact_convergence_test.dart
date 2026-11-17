@@ -228,13 +228,11 @@ void main() {
     Future<T> stage<T>(String label, Future<T> work) => work.timeout(
       const Duration(seconds: 5),
       onTimeout: () => throw TestFailure(
-        '$label 超时；content=${session.content.state.value.runtimeType}，'
-        'phase=${session.state.sync.phase}，'
+        '$label 超时；phase=${session.state.sync.phase}，'
         'revision=${session.state.watermark.revision}，'
         'epoch=${session.state.watermark.epoch}，'
         'currentReaders=${transport.currentReaders.length}，'
-        'delivered=${transport.currentReaders.last.deliveredFrames}，'
-        'acks=${transport.currentReaders.last.acknowledgements}',
+        'delivered=${_stateCurrentReader(transport, threadId).deliveredFrames}',
       ),
     );
 
@@ -244,7 +242,7 @@ void main() {
       '初始 workspace revision=4 ACK',
       transport.publishWorkspace(workspace.copyWith(revision: 4)),
     );
-    final feed = transport.currentReaders.last;
+    final feed = _stateCurrentReader(transport, threadId);
     await stage(
       'notification revision=5 ACK',
       feed.emitStateAndWait(_notification(revision: 5, epoch: 1)),
@@ -281,7 +279,7 @@ void main() {
         '$label workspace revision=5 ACK',
         transport.publishWorkspace(workspace.copyWith(revision: 5)),
       );
-      final current = transport.currentReaders.last;
+      final current = _stateCurrentReader(transport, threadId);
       await stage(
         '$label notification revision=6 ACK',
         current.emitStateAndWait(_notification(revision: 6, epoch: 1)),
@@ -354,3 +352,10 @@ ThreadNotificationFrame _notification({
     update: const ThreadActivityUpdate(activity: null),
   );
 }
+
+RecordingCurrentReader _stateCurrentReader(
+  RecordingDemoTransport transport,
+  String threadId,
+) => transport.currentReaders.lastWhere(
+  (reader) => reader.threadId == threadId && reader.demand.maxItems == 128,
+);

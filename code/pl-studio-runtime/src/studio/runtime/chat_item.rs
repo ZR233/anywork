@@ -763,7 +763,7 @@ mod tests {
                 11,
                 state,
             );
-            assert!(completion_draft(&item, 1, "database").is_err());
+            assert!(completion_draft(&item, 1, "database", None).is_err());
         }
     }
 
@@ -801,7 +801,7 @@ mod tests {
                 11,
                 state,
             );
-            assert!(completion_draft(&item, 1, "database").is_err());
+            assert!(completion_draft(&item, 1, "database", None).is_err());
         }
         Ok(())
     }
@@ -889,7 +889,7 @@ mod tests {
             Some(ready.clone()),
         );
         assert!(atom(&terminal).wait.is_none());
-        let draft = completion_draft(&terminal, 4, "database")?;
+        let draft = completion_draft(&terminal, 4, "database", None)?;
         let metadata: serde_json::Value = serde_json::from_slice(&draft.metadata)?;
         assert!(metadata.get("wait").is_none());
         let decoded: ChatAtom = serde_json::from_value(metadata)?;
@@ -997,7 +997,7 @@ mod tests {
                 ] {
                     let projected_atom = if expected_outcome.is_some() {
                         serde_json::from_slice::<ChatAtom>(
-                            &completion_draft(&item, 4, "database")?.metadata,
+                            &completion_draft(&item, 4, "database", None)?.metadata,
                         )?
                     } else {
                         atom(&item)
@@ -1049,7 +1049,7 @@ mod tests {
     -> Result<()> {
         let body = "汉📖".repeat(4000);
         let item = text("text", body.clone());
-        let draft = completion_draft(&item, 7, "database")?;
+        let draft = completion_draft(&item, 7, "database", None)?;
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
         assert_eq!(envelope["contract"], "anywork.chat/1");
         assert_eq!(envelope["type"], "text");
@@ -1105,7 +1105,7 @@ mod tests {
             content.data.range((body.len() - 7) as u64, 7)?.as_bytes(),
             "汉📖".as_bytes()
         );
-        assert_eq!(completion_draft(&item, 7, "database")?, draft);
+        assert_eq!(completion_draft(&item, 7, "database", None)?, draft);
         Ok(())
     }
 
@@ -1159,7 +1159,7 @@ mod tests {
     #[test]
     fn short_body_boundary_is_exact_and_retains_the_manifest() -> Result<()> {
         for len in [0, 4096, 4097] {
-            let draft = completion_draft(&text("short", "x".repeat(len)), 3, "database")?;
+            let draft = completion_draft(&text("short", "x".repeat(len)), 3, "database", None)?;
             let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
             let body = &envelope["bodies"][0];
             assert_eq!(body.get("inline").is_some(), len <= 4096);
@@ -1172,7 +1172,7 @@ mod tests {
                 );
             }
         }
-        assert!(completion_draft(&text("missing-db", "body".into()), 1, "").is_err());
+        assert!(completion_draft(&text("missing-db", "body".into()), 1, "", None).is_err());
         Ok(())
     }
 
@@ -1198,7 +1198,7 @@ mod tests {
                     )),
                 )),
             );
-            let draft = completion_draft(&item, 3, "database")?;
+            let draft = completion_draft(&item, 3, "database", None)?;
             assert_eq!(draft.query_class, "conversation");
             let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
             assert_eq!(
@@ -1261,7 +1261,7 @@ mod tests {
             ),
         ));
         let metadata: ChatAtom =
-            serde_json::from_slice(&completion_draft(&item, 1, "database")?.metadata)?;
+            serde_json::from_slice(&completion_draft(&item, 1, "database", None)?.metadata)?;
         assert_eq!(metadata.content_present, Some(true));
         Ok(())
     }

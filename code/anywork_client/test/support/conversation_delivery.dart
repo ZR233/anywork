@@ -5,19 +5,19 @@ import 'package:anywork_client/studio_client.dart';
 import 'timeline_transport.dart';
 
 // Scripted environment delivery, not SDK state mutation. Each helper waits for
-// the real feed ACK, so synchronous freeze assertions observe actual reduction.
-final Map<String, TestCurrentReader> _stateFeeds = {};
-final Map<String, Completer<TestCurrentReader>> _stateWaiting = {};
+// the Current owner to admit the frame before the caller makes its assertion.
+final Map<String, TestCurrentReader> _currentReaders = {};
+final Map<String, Completer<TestCurrentReader>> _currentWaiting = {};
 void registerScriptedCurrentReader(TestCurrentReader feed) {
-  _stateFeeds[feed.threadId] = feed;
-  _stateWaiting.remove(feed.threadId)?.complete(feed);
+  _currentReaders[feed.threadId] = feed;
+  _currentWaiting.remove(feed.threadId)?.complete(feed);
 }
 
 Future<TestCurrentReader> scriptedCurrentReader(String threadId) {
-  final current = _stateFeeds[threadId];
+  final current = _currentReaders[threadId];
   return current != null && !current.requestCloseStarted.isCompleted
       ? Future.value(current)
-      : (_stateWaiting[threadId] ??= Completer()).future;
+      : (_currentWaiting[threadId] ??= Completer()).future;
 }
 
 extension ConversationTestDelivery on ConversationSession {
@@ -27,7 +27,6 @@ extension ConversationTestDelivery on ConversationSession {
       testCurrentEvent(
         frame: ThreadSnapshotFrame(
           schemaVersion: threadSchemaVersion,
-          completedHistoryVersion: completedHistoryVersion,
           workspace: workspace,
         ),
       ),

@@ -48,7 +48,6 @@ final class _ScriptedTransport extends RecordingDemoTransport {
             continuation: null,
           ),
         ),
-        completedHistoryVersion: frame.completedHistoryVersion,
         schemaVersion: frame.schemaVersion,
       );
     }

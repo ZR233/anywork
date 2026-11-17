@@ -4,6 +4,7 @@
 use super::*;
 use crate::studio::store::directory::{DirectoryDelta, ProjectDirectoryRecord};
 use crate::studio::thread_projection::LiveProjection;
+use pl_core::thread::history_sink::HistorySink;
 use std::path::Path;
 
 struct ActiveThread {
@@ -52,13 +53,25 @@ impl WriterFixture {
                     thread
                 })
                 .collect();
-            delta.thread_upserts = threads.clone();
+            for thread in &threads {
+                let (session, agent) = crate::studio::records::directory_facts_from_thread(thread);
+                if let Some(session) = session {
+                    delta.session_upserts.push(session);
+                }
+                delta.agent_upserts.push(agent);
+            }
             fixture.store.persist_directory_summaries(&delta).await?;
             for thread in threads {
-                let sink = ThreadStorageSink::new(fixture.store.clone(), thread, None).await?;
+                let sink = ThreadStorageSink::new(fixture.store.clone(), thread.clone()).await?;
+                let mut projection = LiveProjection::new();
+                projection.bind_execution_history(
+                    sink.0.channel.order_index(),
+                    pl_core::thread::current::RuntimeEpoch::new(),
+                    fixture.store.history(&thread.id).await?,
+                )?;
                 fixture.threads.push(ActiveThread {
                     sink,
-                    projection: LiveProjection::new(),
+                    projection,
                     sequence: 0,
                 });
             }
@@ -76,7 +89,7 @@ impl WriterFixture {
         self.store.calls()
     }
 
-    /// Admission -> real live projection -> history/checkpoint commit and reliable flush ACK.
+    /// Admission -> real live projection -> append-only history commit and durable ACK.
     /// Material-free effects owe no calls work. This boundary deliberately differs from the retired
     /// empty-call-watermark benchmark, which also waited for a second database and its observers.
     pub(crate) async fn empty_effect(&mut self) -> Result<Duration> {
@@ -84,23 +97,19 @@ impl WriterFixture {
         let active = &mut working[0];
         let sequence = active.sequence + 1;
         let id = active.sink.0.thread.id.clone();
-        let write = ThreadWrite {
+        let write = Arc::new(HistoryExport {
             effect: Arc::new(pl_core::thread::ThreadEffectBatch {
                 thread_id: id.clone(),
                 sequence,
                 committed_at: crate::studio::benchmark::FIXTURE_TIME,
                 ..Default::default()
             }),
-            checkpoint: ThreadCheckpoint::capture_transfer(
-                id.clone(),
-                sequence,
-                ThreadSnapshot {
-                    commit_sequence: sequence,
-                    ..Default::default()
-                },
-            ),
+            state: ThreadSnapshot {
+                commit_sequence: sequence,
+                ..Default::default()
+            },
             output_claim: None,
-        };
+        });
         let started = std::time::Instant::now();
         active.sink.admit(&id, write)?;
         let write = active
@@ -109,18 +118,19 @@ impl WriterFixture {
             .channel
             .next_unprojected()
             .context("admitted benchmark effect is owed a live projection")?;
-        let (_, prepared) = active.projection.advance(
-            &active.sink.0.chat,
-            &active.sink.0.thread,
-            &write.effect,
-            &write.checkpoint.state,
-            true,
-        )?;
+        let prepared = active
+            .projection
+            .prepare_committed(&active.sink.0.thread, &write.effect, &write.state)
+            .await?;
         ensure!(
             active.sink.0.channel.prepare(prepared),
             "benchmark projection handoff rejected"
         );
-        tokio::time::timeout(Duration::from_secs(30), active.sink.flush(&id, sequence)).await??;
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            active.sink.0.channel.await_handoff_durable(&id, sequence),
+        )
+        .await??;
         active.sequence = sequence;
         let elapsed = started.elapsed();
         let calls = self.store.calls();
@@ -145,20 +155,17 @@ impl WriterFixture {
     pub(crate) async fn verify_reliable(&self) -> Result<u64> {
         let active = &self.threads[0];
         let history = self.store.history(&active.sink.0.thread.id).await?;
-        let checkpoint = history
-            .checkpoint()
-            .await?
-            .context("benchmark checkpoint")?;
+        let status = active.sink.0.channel.subscribe().borrow().clone();
+        let usage = lock_progress(&active.sink.0).usage.clone();
         ensure!(
             history.watermark().await? == active.sequence
-                && checkpoint.history_fence == active.sequence
-                && checkpoint.state.commit_sequence == active.sequence
-                && checkpoint.state.usage_summary
+                && status.committed_sequence == active.sequence
+                && usage
                     == UsageSummary {
                         applied_sequence: active.sequence,
                         ..Default::default()
                     },
-            "reliable history/checkpoint/accounting verification failed"
+            "reliable history/accounting verification failed"
         );
         Ok(active.sequence)
     }

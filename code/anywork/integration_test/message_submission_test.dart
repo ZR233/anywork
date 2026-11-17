@@ -13,6 +13,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/composer/state/composer_view_state.dart'
     show StartComposerTarget, ThreadComposerTarget;
 import 'package:anywork/src/features/conversation/composer/views/prompt_composer_view.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
 import 'package:anywork/src/features/settings/statistics/view_models/statistics_repository_provider.dart';
 import 'package:anywork/src/infrastructure/frb/statistics/frb_statistics_feed.dart';
@@ -814,11 +815,7 @@ class _SubmissionHistoryReader implements HistoryReader {
     required String eventId,
     String? cursor,
     required HistoryDemand demand,
-  }) => original.listBodies(
-    eventId: eventId,
-    cursor: cursor,
-    demand: demand,
-  );
+  }) => original.listBodies(eventId: eventId, cursor: cursor, demand: demand);
   @override
   Future<HistoryBodyWindow> readBody({
     required HistoryEventBodyRef reference,

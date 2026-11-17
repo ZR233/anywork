@@ -5,7 +5,13 @@ import 'package:anywork/src/features/conversation/timeline/state/timeline_displa
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-const _ref = DisplayBlockRef(databaseId: 'db', blockId: 'group');
+const _cut = HistoryCut('cut-group');
+const _ref = DisplayBlockRef(
+  blockId: 'group',
+  cut: _cut,
+  anchorSeq: 1,
+  headSeq: 1,
+);
 const _demand = ReadDemand(maxItems: 1, maxBytes: 4096);
 
 void main() {
@@ -13,12 +19,14 @@ void main() {
     final handle = _Handle();
     final controller = DisplayMemberController(
       reference: _ref,
+      groupClosed: false,
       demand: _demand,
-      open: (_, _, _) async => handle,
+      open: (_, _, _, _) async => handle,
     );
     await handle.pulling.future;
     final page = DisplayMemberPage(
       block: _ref,
+      cut: _cut,
       revision: 1,
       sealed: false,
       entries: [
@@ -52,12 +60,19 @@ void main() {
     expect(old.retired, isTrue);
     expect(controller.disclosure('row').expanded, isTrue);
     handle.reply.complete(
-      DisplayMemberPage(block: _ref, revision: 2, sealed: false, entries: []),
+      DisplayMemberPage(
+        block: _ref,
+        cut: _cut,
+        revision: 2,
+        sealed: false,
+        entries: [],
+      ),
     );
     await Future<void>.delayed(Duration.zero);
     expect(controller.page, same(page));
     final sealed = DisplayMemberPage(
       block: _ref,
+      cut: _cut,
       revision: 3,
       sealed: true,
       entries: [],
@@ -75,16 +90,18 @@ void main() {
     final handle = _Handle();
     final controller = DisplayMemberController(
       reference: _ref,
+      groupClosed: false,
       demand: _demand,
-      open: (reference, window, demand) async => handle,
+      open: (reference, window, demand, _) async => handle,
     );
     await handle.pulling.future;
     final page = DisplayMemberPage(
       block: _ref,
+      cut: _cut,
       revision: 1,
       sealed: true,
       entries: [],
-      before: 50,
+      nextCursor: '50',
     );
     final accepted = Completer<void>();
     controller.addListener(() {
@@ -110,8 +127,9 @@ void main() {
       final handles = <_Handle>[];
       final controller = DisplayMemberController(
         reference: _ref,
+        groupClosed: false,
         demand: _demand,
-        open: (reference, window, demand) async {
+        open: (reference, window, demand, _) async {
           expect(reference, _ref);
           expect(demand.maxItems, 1);
           windows.add(window);
@@ -122,7 +140,7 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
       final old = handles.single;
-      controller.select(const BeforeDisplayMembers(memberOrder: 50));
+      controller.select(const BeforeDisplayMembers(cursor: '50'));
       expect(old.requested, isTrue);
       await Future<void>.delayed(Duration.zero);
       expect(windows, [
@@ -132,6 +150,7 @@ void main() {
       final current = handles.last;
       final value = DisplayMemberPage(
         block: _ref,
+        cut: _cut,
         revision: 3,
         sealed: false,
         entries: [],
@@ -154,8 +173,9 @@ void main() {
     final windows = <DisplayMemberWindow>[];
     final controller = DisplayMemberController(
       reference: _ref,
+      groupClosed: false,
       demand: _demand,
-      open: (_, window, _) {
+      open: (_, window, _, _) {
         windows.add(window);
         return switch (windows.length) {
           1 => firstOpen.future,
@@ -165,12 +185,13 @@ void main() {
       },
     );
     await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(memberOrder: 50));
+    controller.select(const BeforeDisplayMembers(cursor: '50'));
     await before.pulling.future;
     controller.select(const LatestDisplayMembers());
     await latest.pulling.future;
     final page = DisplayMemberPage(
       block: _ref,
+      cut: _cut,
       revision: 7,
       sealed: false,
       entries: [],
@@ -200,11 +221,12 @@ void main() {
     var opens = 0;
     final controller = DisplayMemberController(
       reference: _ref,
+      groupClosed: false,
       demand: _demand,
-      open: (_, _, _) async => ++opens == 1 ? old : fresh,
+      open: (_, _, _, _) async => ++opens == 1 ? old : fresh,
     );
     await old.pulling.future;
-    controller.select(const BeforeDisplayMembers(memberOrder: 50));
+    controller.select(const BeforeDisplayMembers(cursor: '50'));
     await Future<void>.delayed(Duration.zero);
     expect(controller.cleanupError, same(failure));
     expect(opens, 1);
@@ -236,6 +258,7 @@ void main() {
     );
     final page = DisplayMemberPage(
       block: _ref,
+      cut: _cut,
       revision: 2,
       sealed: false,
       entries: [
@@ -271,8 +294,9 @@ void main() {
     var opens = 0;
     final controller = DisplayMemberController(
       reference: _ref,
+      groupClosed: false,
       demand: _demand,
-      open: (_, _, _) {
+      open: (_, _, _, _) {
         opens++;
         return switch (opens) {
           1 => lateOpen.future,
@@ -282,12 +306,12 @@ void main() {
       },
     );
     await Future<void>.delayed(Duration.zero);
-    controller.select(const BeforeDisplayMembers(memberOrder: 60));
+    controller.select(const BeforeDisplayMembers(cursor: '60'));
     await current.pulling.future;
     lateOpen.complete(original);
     await Future<void>.delayed(Duration.zero);
     expect(controller.error, same(failure));
-    controller.select(const BeforeDisplayMembers(memberOrder: 40));
+    controller.select(const BeforeDisplayMembers(cursor: '40'));
     await Future<void>.delayed(Duration.zero);
     current.closeGate!.complete();
     await Future<void>.delayed(Duration.zero);
@@ -302,7 +326,13 @@ void main() {
     await controller.retry();
     await fresh.pulling.future;
     fresh.reply.complete(
-      DisplayMemberPage(block: _ref, revision: 3, sealed: false, entries: []),
+      DisplayMemberPage(
+        block: _ref,
+        cut: _cut,
+        revision: 3,
+        sealed: false,
+        entries: [],
+      ),
     );
     await Future<void>.delayed(Duration.zero);
     expect(original.closeCalls, 2);

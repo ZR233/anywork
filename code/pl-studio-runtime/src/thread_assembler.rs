@@ -2284,13 +2284,10 @@ mod s2_close_regression_tests {
     use pl_core::{
         context::ContextContent,
         model::{DynModelSession, ModelError, ModelRequest, ModelSession, PreparedModelCall},
-        thread::{
-            ModelStepLimit, ThreadLifecycle, TurnInput,
-            cold::{ColdStore, ColdStoreError, ColdStoreHandle, StoragePressure, ThreadWrite},
-        },
+        thread::{ModelStepLimit, ThreadLifecycle, TurnInput},
     };
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use tokio::sync::{Semaphore, oneshot};
+    use tokio::sync::oneshot;
     use tokio_util::sync::CancellationToken;
 
     #[derive(Debug)]
@@ -2600,33 +2597,6 @@ mod s2_close_regression_tests {
         }
     }
 
-    #[derive(Debug, Clone)]
-    struct GatedFinalSave {
-        closing: Arc<AtomicBool>,
-        entered: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-        release: Arc<Semaphore>,
-    }
-    impl ColdStore for GatedFinalSave {
-        fn pressure(&self, _: &str) -> StoragePressure {
-            StoragePressure::default()
-        }
-        fn admit(&self, _: &str, write: ThreadWrite) -> Result<(), ColdStoreError> {
-            if write.checkpoint.state.lifecycle == ThreadLifecycle::Closed {
-                self.closing.store(true, Ordering::SeqCst);
-            }
-            Ok(())
-        }
-        async fn flush(&self, _: &str, _: u64) -> Result<(), ColdStoreError> {
-            if self.closing.load(Ordering::SeqCst) {
-                if let Some(entered) = self.entered.lock().unwrap().take() {
-                    let _ = entered.send(());
-                }
-                self.release.acquire().await.unwrap().forget();
-            }
-            Ok(())
-        }
-    }
-
     fn register_member(
         owner: &SessionRuntime,
         id: &str,
@@ -2686,7 +2656,7 @@ mod s2_close_regression_tests {
     }
 
     #[tokio::test]
-    async fn s2_close_cancels_parent_before_blocked_child_and_preserves_other_session() {
+    async fn s2_close_cancels_parent_before_child_shutdown_and_preserves_other_session() {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             let owner = SessionRuntime::open(crate::SessionId::new("session-a").unwrap());
             let other = SessionRuntime::open(crate::SessionId::new("session-b").unwrap());
@@ -2713,33 +2683,24 @@ mod s2_close_regression_tests {
             let unrelated_run = start_turn(unrelated);
             let unrelated_cancel = model_started.await.unwrap();
             let child = ThreadHandle::resume_without_model("child-thread".into(), None).unwrap();
-            let (entered, child_waiting) = oneshot::channel();
-            let store = GatedFinalSave {
-                closing: Arc::new(AtomicBool::new(false)),
-                entered: Arc::new(Mutex::new(Some(entered))),
-                release: Arc::new(Semaphore::new(0)),
-            };
-            child
-                .attach_storage(ColdStoreHandle::new(store.clone()))
-                .await
-                .unwrap();
             register_member(&owner, "child-thread", Some("parent-thread"), child);
+            let (broadcast, observed) = oneshot::channel();
+            owner.0.state().s2_close_broadcast = Some(broadcast);
             let close = owner.close_session();
             tokio::pin!(close);
             tokio::select! {
-                result = &mut close => panic!("child save barrier was skipped: {result:?}"),
-                result = child_waiting => result.unwrap(),
+                result = &mut close => panic!("close escaped cancellation observation: {result:?}"),
+                result = observed => result.unwrap(),
             }
             assert!(
                 parent_cancel.is_cancelled(),
-                "parent execution must be cancelled before waiting for child save"
+                "parent execution must be cancelled before child shutdown"
             );
             assert!(
                 !unrelated_cancel.is_cancelled(),
                 "Session A cannot cancel Session B"
             );
             assert!(futures::poll!(&mut close).is_pending());
-            store.release.add_permits(8);
             let report = close.await;
             assert!(report.is_empty(), "{report:?}");
             assert!(parent_run.await.unwrap().is_err());

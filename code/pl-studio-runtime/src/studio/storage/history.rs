@@ -1661,7 +1661,20 @@ impl HistoryStore {
             }
         }
         if let Some(record) = self.read_chat_item(item_id).await?
-            && serde_json::from_slice::<serde_json::Value>(&record.payload)?["type"] != "plan"
+            && serde_json::from_slice::<serde_json::Value>(&record.payload)?["type"] == "plan"
+        {
+            return Ok(None);
+        }
+        if let Some(reader) = self.reader().await?
+            && let Some(detail) = reader
+                .original_for_entity(
+                    item_id.to_owned(),
+                    crate::history::HistoryDemand {
+                        max_rows: 1,
+                        max_bytes: 1024 * 1024,
+                    },
+                )
+                .await?
         {
             let connection = self
                 .reader()
@@ -1672,11 +1685,15 @@ impl HistoryStore {
                 life.execution_order
                     .map(|order| (order, life.last_write_seq))
             });
-            let mut item = crate::studio::runtime::chat_item::execution_item(
-                &record,
+            let mut item = crate::studio::runtime::chat_item::read_execution_item(
+                &reader,
+                detail,
                 &self.state.thread_id,
-                placement,
-            )?;
+            )
+            .await?;
+            if let Some((order, _)) = placement {
+                item.ordinal = order;
+            }
             if let Some(life) = life {
                 if let Some(turn) = life.turn_id {
                     item.turn_id = turn;
@@ -2706,7 +2723,7 @@ pub(crate) async fn persist_completed(
     let drafts = items
         .iter()
         .map(|item| {
-            crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id)
+            crate::studio::runtime::chat_item::completion_draft(item, sequence, &database_id, None)
         })
         .collect::<Result<Vec<_>>>()?;
     let completions = session
@@ -3010,6 +3027,7 @@ mod storage_fault_tests {
                 &item,
                 1,
                 &store.writer().await?.database_id,
+                None,
             )?])
             .await?
             .iter()
@@ -4433,6 +4451,7 @@ mod storage_fault_tests {
             &item,
             1,
             &store.writer().await?.database_id,
+            None,
         )?;
         let published = session.publish_batch(vec![first.clone()]).await?;
         assert_eq!(published[0].header.append_seq, 1);
@@ -4443,6 +4462,7 @@ mod storage_fault_tests {
             &second,
             1,
             &store.writer().await?.database_id,
+            None,
         )?;
         assert_eq!(
             session.publish_batch(vec![second_draft]).await?[0]
@@ -4502,7 +4522,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &second,
                     2,
-                    &store.writer().await?.database_id
+                    &store.writer().await?.database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -4520,7 +4541,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &second,
                     2,
-                    &store.writer().await?.database_id
+                    &store.writer().await?.database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -4629,7 +4651,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &committed,
                     2,
-                    &database_id
+                    &database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header
@@ -4644,7 +4667,8 @@ mod storage_fault_tests {
                 .publish_batch(vec![crate::studio::runtime::chat_item::completion_draft(
                     &committed,
                     3,
-                    &database_id
+                    &database_id,
+                    None,
                 )?])
                 .await?[0]
                 .header

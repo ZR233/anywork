@@ -1818,12 +1818,6 @@ pub(crate) mod archive_tests {
         owner.close("root").await.unwrap();
     }
 
-    #[derive(Debug)]
-    struct FailClosedFlush {
-        sink: crate::studio::storage_fault_test_support::ThreadStorageSink,
-        fail: Arc<AtomicBool>,
-    }
-
     #[derive(Debug, Default, Clone)]
     struct RejectFirstDeletionResourceClose(Arc<std::sync::atomic::AtomicUsize>);
 
@@ -1875,7 +1869,7 @@ pub(crate) mod archive_tests {
             thread_assembler::CloseStorage,
         };
         use futures::FutureExt;
-        use pl_core::thread::ThreadError;
+        use pl_core::thread::{ThreadError, history_sink::HistorySinkHandle};
 
         for execution in [true, false] {
             let temp = tempfile::tempdir()?;
@@ -1899,14 +1893,14 @@ pub(crate) mod archive_tests {
                 ),
             );
             let thread = owner.assemble(prepared).await?;
-            let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
             let binding = Arc::new(sink.binding());
             drop(sink);
             let completing_thread = thread.clone();
             let storage = binding.storage.clone();
             let completion = async move {
                 completing_thread
-                    .attach_storage(storage)
+                    .attach_history(HistorySinkHandle::new(storage))
                     .await
                     .map_err(Arc::new)
             }
@@ -1934,7 +1928,7 @@ pub(crate) mod archive_tests {
                     completion: completion.clone(),
                 }
             });
-            // This current-thread test enqueues AttachCold without yielding to the serial core.
+            // This current-thread test enqueues AttachHistory without yielding to the serial core.
             // The retained completion therefore exists before deletion seals admission.
             let mut queued = completion.clone();
             assert!(futures::poll!(&mut queued).is_pending());
@@ -2008,43 +2002,8 @@ pub(crate) mod archive_tests {
         }
         Ok(())
     }
-    impl pl_core::thread::cold::ColdStore for FailClosedFlush {
-        fn pressure(&self, thread_id: &str) -> pl_core::thread::cold::StoragePressure {
-            self.sink.pressure(thread_id)
-        }
-
-        fn admit(
-            &self,
-            thread_id: &str,
-            write: pl_core::thread::cold::ThreadWrite,
-        ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
-            if write.checkpoint.state.lifecycle == ThreadLifecycle::Closed {
-                self.fail.store(true, Ordering::SeqCst);
-            }
-            self.sink.admit(thread_id, write)
-        }
-
-        async fn flush(
-            &self,
-            thread_id: &str,
-            sequence: u64,
-        ) -> Result<(), pl_core::thread::cold::ColdStoreError> {
-            // The real writer may have committed Closed even though its caller never received a
-            // successful flush ACK. Preserve its real pressure; never invent a durable watermark.
-            self.sink.flush(thread_id, sequence).await?;
-            if self.fail.load(Ordering::SeqCst) {
-                return Err(pl_core::thread::cold::ColdStoreError {
-                    source: Box::new(std::io::Error::other(
-                        "injected closed checkpoint flush failure",
-                    )),
-                });
-            }
-            Ok(())
-        }
-    }
-
     #[tokio::test]
-    async fn archive_setup_failure_before_observer_retains_original_storage_until_real_flush_ack()
+    async fn archive_setup_failure_before_observer_retains_original_current_until_save_ack()
     -> anyhow::Result<()> {
         use crate::studio::{
             StudioStore,
@@ -2055,7 +2014,6 @@ pub(crate) mod archive_tests {
             store::thread_preparation::{PreparationIdentity, PreparationSave},
         };
         use anyhow::Context;
-        use pl_core::thread::cold::ColdStoreHandle;
         let temp = tempfile::tempdir()?;
         let database = temp.path().join("home/data/studio.sqlite");
         let store = StudioStore::open(&database).await.with_context(|| {
@@ -2086,15 +2044,14 @@ pub(crate) mod archive_tests {
                 root_id: protocol.id.clone(),
             })
             .await?;
-        let sink = ThreadStorageSink::new(store.clone(), protocol.clone(), None).await?;
+        let current_file = store.registered_session_paths(&protocol.id)?.current_file();
+        tokio::fs::create_dir_all(&current_file).await?;
+        let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
         let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
-        let failure = Arc::new(AtomicBool::new(false));
         let mut prepared = spec(protocol.id.clone(), None, temp.path());
-        prepared.cold_store = Some(ColdStoreHandle::new(FailClosedFlush {
-            sink,
-            fail: failure.clone(),
-        }));
-        // Invalid extension initialization occurs after AttachCold but before publish_observation.
+        prepared.history_sink = Some(sink);
+        // Invalid extension initialization occurs after history attachment but before
+        // publish_observation.
         prepared.initial_extensions.insert(
             String::new(),
             OpaquePayload::text("invalid extension identity"),
@@ -2105,15 +2062,18 @@ pub(crate) mod archive_tests {
         ));
         let result = owner.assemble(prepared).await;
         assert!(matches!(result, Err(ThreadAssemblyError::Cleanup { .. })));
-        assert!(
-            failure.load(Ordering::SeqCst),
-            "real close reached the failing flush"
-        );
         let retained = owner
             .observed_thread(&protocol.id)
             .expect("original storage owner");
-        assert!(retained.flush().await.is_err());
         assert_eq!(retained.snapshot().lifecycle, ThreadLifecycle::Closed);
+        assert!(
+            store
+                .state_for(&protocol.workspace_id, &protocol.id)?
+                .current_save_state()?
+                .error
+                .is_some(),
+            "the original Current save failure must remain visible"
+        );
         {
             let state = owner.0.state();
             assert!(matches!(
@@ -2139,7 +2099,7 @@ pub(crate) mod archive_tests {
             tokio::fs::read(&pending_file).await?,
             b"not disposable before the original save ACK"
         );
-        failure.store(false, Ordering::SeqCst);
+        tokio::fs::remove_dir(&current_file).await?;
         owner.close(&protocol.id).await?;
         assert!(owner.observed_thread(&protocol.id).is_none());
         let acknowledged = store.thread_preparation(&protocol.id).await?.unwrap();
@@ -2665,9 +2625,7 @@ mod control_tests {
 
     mod publication_commit {
         use super::*;
-        use crate::studio::{
-            ProductEventBus, StudioStore, storage_fault_test_support::close_factory,
-        };
+        use crate::studio::{StudioStore, storage_fault_test_support::close_factory};
         use pl_core::model::{
             DynModelSession, Model, ModelError, ModelFactory, ModelRequest, ModelSession,
             ModelStepOutput, ModelToolCall, PreparedModelCall,
@@ -2676,7 +2634,7 @@ mod control_tests {
 
         struct PersistentFactory {
             physical: PhysicalFactory,
-            events: ProductEventBus,
+            store: StudioStore,
         }
 
         impl std::fmt::Debug for PersistentFactory {
@@ -2709,13 +2667,15 @@ mod control_tests {
                     .to_string();
                 record.parent_thread_id = Some(request.caller.clone());
                 record.workspace_path = self.physical.path.to_string_lossy().into_owned();
-                self.events
-                    .commit_test_thread(&record)
-                    .await
-                    .map_err(|source| ThreadAssemblyError::Resource {
-                        operation: "commit fixture child directory",
-                        source: source.into(),
-                    })?;
+                crate::studio::storage_fault_test_support::register_test_thread(
+                    &self.store,
+                    &record,
+                )
+                .await
+                .map_err(|source| ThreadAssemblyError::Resource {
+                    operation: "commit fixture child directory",
+                    source,
+                })?;
                 self.physical.prepare(request, ()).await
             }
 
@@ -2785,14 +2745,15 @@ mod control_tests {
                     path: dir.path().into(),
                     wait_for_cancel: false,
                 },
-                events: services.events.clone(),
+                store: store.clone(),
             })?;
             services.install(&owner)?;
             let mut record = crate::Thread::placeholder("native-root");
             record.workspace_id = "publication-project".into();
             record.root_thread_id = "native-root".into();
             record.workspace_path = dir.path().to_string_lossy().into_owned();
-            services.events.commit_test_thread(&record).await?;
+            crate::studio::storage_fault_test_support::register_test_thread(&store, &record)
+                .await?;
             let root = member(&owner, dir.path(), "native-root", "native-root", None).await;
             root.mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
                 id: crate::studio::delegation::EXTENSION.into(),

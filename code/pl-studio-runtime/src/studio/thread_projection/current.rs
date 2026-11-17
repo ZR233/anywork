@@ -1304,6 +1304,10 @@ mod tests {
 #[cfg(test)]
 mod business_tests {
     use super::*;
+    use crate::plan_tool::{
+        AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
+    };
+
     fn state(version: u64, text: &str) -> Result<ThreadSnapshot> {
         let plan = AgentSessionPlanState {
             revision: version,
@@ -1336,7 +1340,7 @@ mod business_tests {
         let thread = Thread::placeholder("business-thread");
         let old = state(3, "# Original plan\n\nSteps")?;
         let first = owner.observe(&thread, &old, 10, [])?;
-        let references = first.business_refs_at(&thread.id, &old)?;
+        let references = first.business_refs();
         assert_eq!(references.interactions.as_ref().unwrap().revision, 17);
         let page = super::super::current_page(
             &first,
@@ -1373,10 +1377,6 @@ mod business_tests {
         assert!(Arc::ptr_eq(&first.entries, &next.entries));
         assert!(Arc::ptr_eq(&first.interactions, &next.interactions));
         assert_ne!(next.business_refs().plan, references.plan);
-        assert!(
-            next.business_refs_at(&thread.id, &old).is_err(),
-            "mixed-cut State refs accepted"
-        );
         let old_ref = references.plan.unwrap().document.unwrap();
         assert!(
             next.content(&old_ref).is_none(),
@@ -1448,23 +1448,23 @@ mod business_tests {
         let next = owner.observe(&thread, &after, 4, [])?;
         let cold = CurrentState::cold("interaction-db".into(), thread.id.clone(), 4, &after)?;
         assert_eq!(next.business_refs(), cold.business_refs());
-        assert_eq!(
-            next.business_refs_at(&thread.id, &after)?
-                .interactions
-                .unwrap()
-                .revision,
-            42
-        );
-        assert!(next.business_refs_at(&thread.id, &before).is_err());
+        assert_eq!(next.business_refs().interactions.unwrap().revision, 42);
 
         // A later A -> B -> A can have the same members but a different owner version.
         let mut later = after.clone();
         later.interaction_collection_revision = 44;
-        assert!(next.business_refs_at(&thread.id, &later).is_err());
+        let later = owner.observe(&thread, &later, 5, [])?;
+        assert_eq!(later.business_refs().interactions.unwrap().revision, 44);
+        assert_ne!(later.business_refs(), next.business_refs());
         // The full list remains an independent qualification, not just the numeric version.
         let mut wrong_members = before;
         wrong_members.interaction_collection_revision = 42;
-        assert!(next.business_refs_at(&thread.id, &wrong_members).is_err());
+        let wrong_members = owner.observe(&thread, &wrong_members, 6, [])?;
+        assert_eq!(
+            wrong_members.business_refs().interactions.unwrap().revision,
+            42
+        );
+        assert_ne!(wrong_members.business_refs(), next.business_refs());
         Ok(())
     }
 }

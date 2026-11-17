@@ -5,6 +5,7 @@ import 'package:anywork/src/app/theme/material3_theme.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/file_reading_panel.dart';
 import 'package:anywork/src/features/conversation/timeline/connectors/timeline_media_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/chat_item_presentation.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_file_presentation.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/views/markdown_document_body.dart';
@@ -53,42 +54,44 @@ String artifacts(List<Map<String, Object?>> files, {int version = 1}) =>
       },
     ]);
 
-ChatItemPresentation fileItem(String receipts, {ContentRef? reference}) =>
-    ChatItemPresentation.decode(
-      chatEnvelope(
-        'files-call',
-        type: 'tool',
-        data: {
-          'invocation': {
-            'toolCallId': 'files-call',
-            'name': 'show_files',
-            'presentationContract': 'builtin.show_files@1',
-          },
-          'state': {
-            'kind': 'succeeded',
-            'output': {'attachments': <Object?>[]},
+ChatItemPresentation fileItem(
+  String receipts, {
+  HistoryEventBodyRef? reference,
+}) => ChatItemPresentation.decode(
+  chatEnvelope(
+    'files-call',
+    type: 'tool',
+    data: {
+      'invocation': {
+        'toolCallId': 'files-call',
+        'name': 'show_files',
+        'presentationContract': 'builtin.show_files@1',
+      },
+      'state': {
+        'kind': 'succeeded',
+        'output': {'attachments': <Object?>[]},
+      },
+    },
+    bodies: [
+      inlineBody('tool.arguments', '{"files":[]}'),
+      if (reference == null)
+        inlineBody('tool.output-artifacts', receipts)
+      else
+        {
+          'key': 'tool.output-artifacts',
+          'byteLength': utf8.encode(receipts).length,
+          'reference': {
+            'databaseId': reference.databaseId,
+            'ownerEventId': reference.ownerEventId,
+            'bodyKey': reference.bodyKey,
+            'bodyId': reference.bodyId,
+            'byteStart': reference.byteStart,
+            'byteLength': reference.byteLength,
           },
         },
-        bodies: [
-          inlineBody('tool.arguments', '{"files":[]}'),
-          if (reference == null)
-            inlineBody('tool.output-artifacts', receipts)
-          else
-            {
-              'key': 'tool.output-artifacts',
-              'byteLength': utf8.encode(receipts).length,
-              'reference': {
-                'databaseId': reference.databaseId,
-                'target': {
-                  'kind': 'body',
-                  'owner': {'kind': 'item', 'itemId': 'files-call'},
-                  'key': 'tool.output-artifacts',
-                },
-              },
-            },
-        ],
-      ),
-    );
+    ],
+  ),
+);
 
 Widget app(Widget child) => ProviderScope(
   child: MaterialApp(
@@ -318,27 +321,36 @@ void main() {
       final resources = TimelineImageResources(threadId: 'thread');
       addTearDown(resources.release);
       final receipt = artifacts([readyFile('a', 'old.md', 'archive')]);
-      const reference = ContentRef(
+      const reference = HistoryEventBodyRef(
         databaseId: 'db',
-        target: BodyContentTarget(
-          owner: ItemContentOwner(itemId: 'files-call'),
-          key: 'tool.output-artifacts',
-        ),
+        ownerEventId: 'files-call',
+        bodyKey: 'tool.output-artifacts',
+        bodyId: 'files-call:tool.output-artifacts',
+        byteStart: 0,
+        byteLength: 0,
       );
       final late = Completer<ContentWindow>();
       var count = 0;
+      final intent = TimelineExpansionIntent()
+        ..readHistoryBody = (_, actualReference, range) {
+          expect(actualReference, reference);
+          count++;
+          if (count == 1) {
+            return Future.error(StateError('read denied'));
+          }
+          return late.future;
+        };
+      addTearDown(intent.dispose);
       Widget build(ChatItemPresentation item) => app(
-        TimelineAttachmentsConnector(
-          key: const ValueKey('same-connector'),
-          item: item,
-          resources: resources,
-          readAttachment: (_) async => Uint8List(0),
-          isActive: () => true,
-          readContent: (_, range) {
-            count++;
-            if (count == 1) return Future.error(StateError('read denied'));
-            return late.future;
-          },
+        TimelineGroupBodyIntent(
+          intent: intent,
+          child: TimelineAttachmentsConnector(
+            key: const ValueKey('same-connector'),
+            item: item,
+            resources: resources,
+            readAttachment: (_) async => Uint8List(0),
+            isActive: () => true,
+          ),
         ),
       );
       await tester.pumpWidget(build(fileItem(receipt, reference: reference)));

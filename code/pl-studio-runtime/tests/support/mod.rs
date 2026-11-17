@@ -6,9 +6,9 @@ use pl_model::{
 };
 use pl_provider_fixture::{FixtureServer, Protocol, RealtimeToolCall, Reply, ReplyStage, Step};
 use pl_studio_runtime::{
-    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, ContentRange, CreateThreadRequest, CurrentFrame,
-    HistoryEventBodyRef, NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput,
-    StudioRuntime, StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode,
+    AgentWorkspaceMode, CURRENT_PROTOCOL_VERSION, CreateThreadRequest, CurrentFrame,
+    NewThreadModelRoute, ReadDemand, StudioHostKind, StudioPromptInput, StudioRuntime,
+    StudioRuntimeOptions, ThreadNotification, ThreadWorkspaceMode,
     config::{ConfigPaths, ConfigStore, StudioConfig, UserAgentProfile, save_user_agent_profile},
 };
 use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
@@ -123,17 +123,32 @@ async fn terminal(
     id: &str,
     input: Option<&str>,
 ) -> Result<pl_studio_runtime::Turn> {
+    let deadline = integration_test_deadline()?;
     let demand = current_demand();
     let reader = runtime
         .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
         .await?;
-    let mut watch = reader.watch(None, demand).await?;
-    let observed = tokio::time::timeout(integration_test_deadline()?, async {
+    let observed = tokio::time::timeout(deadline, async {
+        let mut watch = reader.watch(None, demand).await?;
         loop {
-            let Some(CurrentFrame::Notification { notification, .. }) = watch.next().await? else {
-                continue;
+            let frame = watch
+                .next()
+                .await?
+                .context("Current watch ended before terminal Turn")?;
+            let turn = match frame {
+                CurrentFrame::Reset { view } => view
+                    .state
+                    .active_turn
+                    .filter(|turn| turn.state.is_terminal()),
+                CurrentFrame::Notification { notification, .. } => {
+                    match notification.notification {
+                        ThreadNotification::TurnCompleted { turn } => Some(turn),
+                        _ => None,
+                    }
+                }
+                CurrentFrame::Projection { .. } => None,
             };
-            if let ThreadNotification::TurnCompleted { turn } = notification.notification
+            if let Some(turn) = turn
                 && input.is_none_or(|input| turn.input_id.as_deref() == Some(input))
             {
                 return Ok::<_, anyhow::Error>(turn);
@@ -142,8 +157,10 @@ async fn terminal(
     })
     .await
     .context("terminal Turn not observed");
-    reader.close().await.context("close CurrentReader")?;
-    observed?
+    let closed = reader.close().await.context("close CurrentReader");
+    let turn = observed??;
+    closed?;
+    Ok(turn)
 }
 
 pub struct Environment {

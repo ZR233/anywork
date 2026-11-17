@@ -862,10 +862,13 @@ impl Owner {
         );
         snapshot.pending_tool_commits = self.uncommitted_tools.keys().cloned().collect();
         if snapshot.lifecycle == ThreadLifecycle::Closed
+            && self.current_task_start_ordinal.is_none()
             && !self.interrupt.is_deleting()
             && snapshot.persistence.attached
             && snapshot.persistence.durable_sequence < snapshot.commit_sequence
         {
+            // Only the legacy checkpoint port owns a close durability barrier. Current
+            // closes physically before the host drains its independent History queue.
             snapshot.lifecycle = ThreadLifecycle::Closing;
         }
         snapshot.observation_revision = self

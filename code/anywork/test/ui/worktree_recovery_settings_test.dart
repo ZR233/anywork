@@ -191,7 +191,7 @@ void main() {
     );
     await tester.ensureVisible(lookup);
     final selected = graph.client.selection.state.selectedThreadId;
-    final feeds = transport.feeds.length;
+    final feeds = transport.historyReaders.length;
     await tester.tap(lookup);
     await tester.pumpAndSettle();
     expect(find.text(root.workspacePath), findsOneWidget);
@@ -201,7 +201,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(copiedPath, root.workspacePath);
     expect(transport.restores, 0);
-    expect(transport.feeds, hasLength(feeds));
+    expect(transport.historyReaders, hasLength(feeds));
     expect(graph.client.selection.state.selectedThreadId, selected);
     await tester.tap(find.text('关闭'));
     await tester.pumpAndSettle();

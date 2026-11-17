@@ -2042,14 +2042,9 @@ class _WorkflowScenarioTransport extends TestDemoStudioTransport {
   @override
   ThreadStreamFrame testMapCurrentState(ThreadStreamFrame frame) =>
       switch (frame) {
-        ThreadSnapshotFrame(
-          :final workspace,
-          :final completedHistoryVersion,
-          :final schemaVersion,
-        ) =>
+        ThreadSnapshotFrame(:final workspace, :final schemaVersion) =>
           ThreadSnapshotFrame(
             workspace: workspace.copyWith(runtime: _runtime(workspace.runtime)),
-            completedHistoryVersion: completedHistoryVersion,
             schemaVersion: schemaVersion,
           ),
         ThreadNotificationFrame() => switch (frame.update) {

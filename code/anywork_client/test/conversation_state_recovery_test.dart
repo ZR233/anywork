@@ -45,7 +45,6 @@ void main() {
     await reader.deliver(ResetCurrentFrame(_view(9)));
     expect(fixture.session().state.workspace!.revision, 9);
     expect(fixture.transport.currentOpens, hasLength(4));
-    expect(fixture.transport.opens, hasLength(1));
   });
 
   test(
@@ -109,7 +108,6 @@ extension on CurrentView {
     revision: revision,
     state: ThreadSnapshotFrame(
       workspace: state.workspace,
-      completedHistoryVersion: state.completedHistoryVersion,
       schemaVersion: schemaVersion,
     ),
     projection: projection,

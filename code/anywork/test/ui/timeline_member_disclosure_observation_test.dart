@@ -23,8 +23,6 @@ ChatItemPresentation _presentation(
 }) => ChatItemPresentation.decode(
   ChatAtom(
     id: 'member',
-    completionItemId: 'completion',
-    completionSeq: 1,
     source: const ForegroundTurnChatSource(turnId: 'turn'),
     sourceOrder: 1,
     kind: type == 'thinking' ? ChatAtomKind.reasoning : ChatAtomKind.toolCall,

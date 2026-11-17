@@ -140,17 +140,9 @@ pub(in crate::studio) struct RuntimeOrderIndex {
     process_bytes: Arc<AtomicU64>,
     capacity_changed: Mutex<Option<tokio::sync::watch::Sender<u64>>>,
     #[cfg(test)]
-    materialize_gate: Mutex<Option<MaterializeGate>>,
-    #[cfg(test)]
     confirm_saved_entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     #[cfg(test)]
     confirm_saved_calls: AtomicU64,
-}
-
-#[cfg(test)]
-struct MaterializeGate {
-    entered: tokio::sync::oneshot::Sender<()>,
-    release: std::sync::mpsc::Receiver<()>,
 }
 
 struct OrderIndexState {
@@ -312,8 +304,6 @@ impl RuntimeOrderIndex {
             delivery_bytes,
             process_bytes,
             capacity_changed: Mutex::new(None),
-            #[cfg(test)]
-            materialize_gate: Mutex::new(None),
             #[cfg(test)]
             confirm_saved_entered: Mutex::new(None),
             #[cfg(test)]
@@ -2949,22 +2939,6 @@ async fn accounting_retry_due(inner: &Inner) {
     }
 }
 
-/// Atomically writes one effect's history, its latest context increment and its checkpoint.
-///
-/// The writer consumes the same prepared completions and accounting as the live owner, without
-/// projecting or extracting them again. Only this batch's persisted completion prefix is confirmed;
-/// committed usage and compact accounting are published only after the transaction succeeds.
-#[cfg(test)]
-async fn persist_effect(
-    inner: &Inner,
-    sequence: u64,
-    write: &ThreadWrite,
-    projected: &PreparedEffect,
-    encoded_effect_bytes: u64,
-) -> Result<()> {
-    batch::persist_one(inner, sequence, write, projected, encoded_effect_bytes).await
-}
-
 #[derive(Clone, Copy)]
 enum FaultTarget {
     Queued,
@@ -3585,28 +3559,27 @@ pub(crate) mod storage_fault_tests {
     use pl_core::{
         context::{ContextContent, OpaquePayload},
         thread::{
-            ThreadCheckpoint, ThreadEffectBatch, ThreadSnapshot, TurnOutcome, TurnRecord,
-            TurnState,
+            ThreadEffectBatch, ThreadSnapshot, TurnOutcome, TurnRecord, TurnState,
             current::RuntimeEpoch,
+            history_sink::HistorySink,
             input::{InputChange, InputRecord, InputState, ThreadInput},
         },
     };
 
-    pub(crate) fn ticket(thread_id: &str, sequence: u64) -> ThreadWrite {
-        let state = ThreadSnapshot {
-            commit_sequence: sequence,
-            ..Default::default()
-        };
-        ThreadWrite {
+    pub(crate) fn ticket(thread_id: &str, sequence: u64) -> Arc<HistoryExport> {
+        Arc::new(HistoryExport {
             effect: Arc::new(ThreadEffectBatch {
                 thread_id: thread_id.to_owned(),
                 sequence,
                 committed_at: 1,
                 ..Default::default()
             }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread_id.to_owned(), sequence, state),
+            state: ThreadSnapshot {
+                commit_sequence: sequence,
+                ..Default::default()
+            },
             output_claim: None,
-        }
+        })
     }
 
     pub(super) fn test_thread(thread_id: &str) -> crate::Thread {
@@ -3813,11 +3786,11 @@ pub(crate) mod storage_fault_tests {
                         continue;
                     }
                     match projection
-                        .prepare_committed(&thread, &write.effect, &write.checkpoint.state)
+                        .prepare_committed(&thread, &write.effect, &write.state)
                         .await
                     {
                         Ok(prepared) => {
-                            channel.prepare(strip_current(prepared));
+                            channel.prepare(prepared);
                         }
                         Err(error) => {
                             failed.insert(sequence);
@@ -3832,12 +3805,6 @@ pub(crate) mod storage_fault_tests {
                 }
             }
         })
-    }
-
-    fn strip_current(prepared: Arc<PreparedEffect>) -> Arc<PreparedEffect> {
-        let mut handed = (*prepared).clone();
-        handed.current_state = None;
-        Arc::new(handed)
     }
 
     async fn saved_current(
@@ -3892,7 +3859,7 @@ pub(crate) mod storage_fault_tests {
         };
         snapshot.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
         snapshot.turns = Arc::from([turn.clone()]);
-        let terminal = ThreadWrite {
+        let terminal = Arc::new(HistoryExport {
             effect: Arc::new(ThreadEffectBatch {
                 thread_id: thread.id.clone(),
                 sequence,
@@ -3900,21 +3867,23 @@ pub(crate) mod storage_fault_tests {
                 turn: Some(turn),
                 ..Default::default()
             }),
-            checkpoint: ThreadCheckpoint::capture_transfer(thread.id.clone(), sequence, snapshot),
+            state: snapshot,
             output_claim: None,
-        };
-        let sink = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        });
+        let sink = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
         let mut projection = live_projection(&sink).await?;
         let prepared = projection
-            .prepare_committed(thread, &terminal.effect, &terminal.checkpoint.state)
+            .prepare_committed(thread, &terminal.effect, &terminal.state)
             .await?;
         let mut handed = (*prepared).clone();
-        handed.current_state = None;
         handed.parent_report = Some(Arc::new(message));
         let handed = Arc::new(handed);
         sink.admit(&thread.id, terminal)?;
         sink.0.channel.prepare(handed);
-        sink.flush(&thread.id, sequence).await?;
+        sink.0
+            .channel
+            .await_handoff_durable(&thread.id, sequence)
+            .await?;
         sink.0.channel.stop_and_join().await
     }
 
@@ -3922,8 +3891,8 @@ pub(crate) mod storage_fault_tests {
         thread_id: &str,
         sequence: u64,
         input_id: &str,
-    ) -> Result<ThreadWrite> {
-        let mut write = ticket(thread_id, sequence);
+    ) -> Result<Arc<HistoryExport>> {
+        let mut write = (*ticket(thread_id, sequence)).clone();
         let input = InputRecord {
             continuation: None,
             accepted_sequence: sequence,
@@ -3952,9 +3921,9 @@ pub(crate) mod storage_fault_tests {
                 attempt_id: "attempt".into(),
             },
         };
-        write.checkpoint.state.inputs = Arc::from([input.clone()]);
+        write.state.inputs = Arc::from([input.clone()]);
         Arc::make_mut(&mut write.effect).inputs = Arc::from([InputChange::Accepted(input)]);
-        Ok(write)
+        Ok(Arc::new(write))
     }
 }
 
@@ -3966,6 +3935,7 @@ mod writer_tests {
     use super::*;
     use crate::history::{HistoryDemand, HistoryEventsQuery};
     use pl_core::thread::current::RuntimeEpoch;
+    use pl_core::thread::history_sink::HistorySink;
     use sea_orm::{ConnectionTrait, Database};
 
     struct Fixture {
@@ -3980,7 +3950,7 @@ mod writer_tests {
             let temp = tempfile::tempdir()?;
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
             let projection = live_projection(&sink).await?;
             Ok(Self {
                 _temp: temp,
@@ -3990,21 +3960,18 @@ mod writer_tests {
             })
         }
 
-        async fn handoff(&mut self, write: &ThreadWrite) -> Result<Arc<PreparedEffect>> {
+        async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
             let prepared = self
                 .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.checkpoint.state)
+                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
                 .await?;
-            let mut handed = (*prepared).clone();
-            handed.current_state = None;
-            let handed = Arc::new(handed);
             ensure!(
-                self.sink.0.channel.prepare(handed.clone()),
+                self.sink.0.channel.prepare(prepared.clone()),
                 "handoff refused"
             );
-            Ok(handed)
+            Ok(prepared)
         }
 
         fn select(&self, now: Instant) -> batch::Selection {
@@ -4013,7 +3980,9 @@ mod writer_tests {
 
         async fn finish(&mut self, sequence: u64) -> Result<()> {
             self.sink
-                .flush(&self.sink.0.thread.id.as_str(), sequence)
+                .0
+                .channel
+                .await_handoff_durable(&self.sink.0.thread.id, sequence)
                 .await?;
             self.sink.0.channel.stop_and_join().await
         }
@@ -4072,19 +4041,11 @@ mod writer_tests {
         let write = visible_input_ticket("stable-payload", 9, "stable-input")?;
         let first = fixture
             .projection
-            .prepare_committed(
-                &fixture.sink.0.thread,
-                &write.effect,
-                &write.checkpoint.state,
-            )
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
             .await?;
         let second = fixture
             .projection
-            .prepare_committed(
-                &fixture.sink.0.thread,
-                &write.effect,
-                &write.checkpoint.state,
-            )
+            .prepare_committed(&fixture.sink.0.thread, &write.effect, &write.state)
             .await?;
         assert_eq!(first.history_changes.len(), second.history_changes.len());
         for (first, second) in first
@@ -4158,7 +4119,7 @@ mod writer_tests {
         let mut fixture = Fixture::new(id).await?;
         let first = visible_input_ticket(id, 1, "input-1")?;
         fixture.handoff(&first).await?;
-        fixture.sink.flush(id, 1).await?;
+        fixture.sink.0.channel.await_handoff_durable(id, 1).await?;
 
         let path = fixture
             .store
@@ -4192,7 +4153,7 @@ mod writer_tests {
 
         let channel = fixture.sink.0.channel.clone();
         let mut status = channel.subscribe();
-        fixture.sink.flush(id, 3).await?;
+        channel.request_flush(3);
         while status.borrow_and_update().fault.is_none() {
             status.changed().await?;
         }
@@ -4276,7 +4237,7 @@ mod writer_tests {
         let channel = fixture.sink.0.channel.clone();
         let write = ticket(id, 1);
         fixture.handoff(&write).await?;
-        fixture.sink.flush(id, 1).await?;
+        channel.await_handoff_durable(id, 1).await?;
 
         let (release, released) = tokio::sync::oneshot::channel();
         channel.workers.lock().await.push(tokio::spawn(async move {
@@ -4302,18 +4263,16 @@ mod writer_tests {
         );
 
         let store = fixture.store.clone();
-        let reopened = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let reopened = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
         assert!(!Arc::ptr_eq(&channel, &reopened.0.channel));
         let mut projection = live_projection(&reopened).await?;
         let next = ticket(id, 2);
         reopened.admit(id, next.clone())?;
         let prepared = projection
-            .prepare_committed(&reopened.0.thread, &next.effect, &next.checkpoint.state)
+            .prepare_committed(&reopened.0.thread, &next.effect, &next.state)
             .await?;
-        let mut handed = (*prepared).clone();
-        handed.current_state = None;
-        reopened.0.channel.prepare(Arc::new(handed));
-        reopened.flush(id, 2).await?;
+        reopened.0.channel.prepare(prepared);
+        reopened.0.channel.await_handoff_durable(id, 2).await?;
         let page = store
             .history(id)
             .await?
@@ -4339,7 +4298,7 @@ mod writer_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let thread = test_thread("overlapping-channel-release");
         register_test_thread(&store, &thread).await?;
-        let previous = ThreadStorageSink::new(store.clone(), thread.clone(), None).await?;
+        let previous = ThreadStorageSink::new(store.clone(), thread.clone()).await?;
         let previous_channel = previous.0.channel.clone();
         let (waiting, release) = store.thread_persistence().arm_release_gate();
         let writer = previous_channel
@@ -4358,7 +4317,7 @@ mod writer_tests {
         let opening = tokio::spawn({
             let store = store.clone();
             let thread = thread.clone();
-            async move { ThreadStorageSink::new(store, thread, None).await }
+            async move { ThreadStorageSink::new(store, thread).await }
         });
         release
             .send(())
@@ -4399,6 +4358,7 @@ mod writer_tests {
 mod batch_window_tests {
     use super::storage_fault_tests::{live_projection, register_test_thread, test_thread, ticket};
     use super::*;
+    use pl_core::thread::history_sink::HistorySink;
 
     struct Fixture {
         _temp: tempfile::TempDir,
@@ -4412,7 +4372,7 @@ mod batch_window_tests {
             let temp = tempfile::tempdir()?;
             let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
             register_test_thread(&store, &test_thread(id)).await?;
-            let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+            let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
             let projection = live_projection(&sink).await?;
             Ok(Self {
                 _temp: temp,
@@ -4422,18 +4382,18 @@ mod batch_window_tests {
             })
         }
 
-        async fn handoff(&mut self, write: &ThreadWrite) -> Result<Arc<PreparedEffect>> {
+        async fn handoff(&mut self, write: &Arc<HistoryExport>) -> Result<Arc<PreparedEffect>> {
             let id = self.sink.0.thread.id.clone();
             self.sink.admit(&id, write.clone())?;
             let prepared = self
                 .projection
-                .prepare_committed(&self.sink.0.thread, &write.effect, &write.checkpoint.state)
+                .prepare_committed(&self.sink.0.thread, &write.effect, &write.state)
                 .await?;
-            let mut handed = (*prepared).clone();
-            handed.current_state = None;
-            let handed = Arc::new(handed);
-            ensure!(self.sink.0.channel.prepare(handed), "handoff refused");
-            Ok(handed)
+            ensure!(
+                self.sink.0.channel.prepare(prepared.clone()),
+                "handoff refused"
+            );
+            Ok(prepared)
         }
 
         fn select(&self, now: Instant) -> batch::Selection {
@@ -4442,7 +4402,9 @@ mod batch_window_tests {
 
         async fn finish(self, sequence: u64) -> Result<()> {
             self.sink
-                .flush(self.sink.0.thread.id.as_str(), sequence)
+                .0
+                .channel
+                .await_handoff_durable(&self.sink.0.thread.id, sequence)
                 .await?;
             self.sink.0.channel.stop_and_join().await
         }
@@ -4517,9 +4479,7 @@ mod batch_window_tests {
             assert!(matches!(fixture.select(now), batch::Selection::Wait(_)));
             match mode {
                 "flush" => {
-                    let flush = fixture.sink.flush(&id, 1);
-                    tokio::pin!(flush);
-                    assert!(futures::poll!(&mut flush).is_pending());
+                    channel.request_flush(1);
                 }
                 "handoff-barrier" => {
                     let barrier = channel.await_handoff_durable(&id, 1);
@@ -4536,7 +4496,7 @@ mod batch_window_tests {
             let selected = ready(fixture.select(now));
             assert_eq!(selected.len(), 1, "{mode}");
             drop(gate);
-            fixture.sink.flush(&id, 1).await?;
+            channel.await_handoff_durable(&id, 1).await?;
             if mode == "gap" {
                 assert_eq!(lock_progress(&fixture.sink.0).durable, 1);
                 fixture.handoff(&ticket(&id, 2)).await?;
@@ -4568,13 +4528,12 @@ mod batch_window_tests {
         let mut fixture = Fixture::new("batch-large").await?;
         let channel = fixture.sink.0.channel.clone();
         let gate = channel.step_lock.lock().await;
-        let mut large = ticket("batch-large", 1);
+        let mut large = (*ticket("batch-large", 1)).clone();
         let extension = pl_core::thread::extensions::ExtensionRecord {
             revision: 1,
             payload: pl_core::context::OpaquePayload::text("large".repeat(256 * 1024)),
         };
         large
-            .checkpoint
             .state
             .extensions
             .insert("test.large".into(), extension.clone());
@@ -4583,7 +4542,7 @@ mod batch_window_tests {
                 id: "test.large".into(),
                 record: extension,
             }]);
-        fixture.handoff(&large).await?;
+        fixture.handoff(&Arc::new(large)).await?;
         let now = lock_progress(&fixture.sink.0)
             .effects
             .front()
@@ -4611,6 +4570,7 @@ mod watchdog_tests {
         live_projection, register_test_thread, test_thread, visible_input_ticket,
     };
     use super::*;
+    use pl_core::thread::history_sink::HistorySink;
     use sea_orm::{Database, SqliteTransactionMode, TransactionOptions, TransactionTrait};
 
     #[tokio::test]
@@ -4619,7 +4579,7 @@ mod watchdog_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "projection-watchdog";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
         let channel = sink.0.channel.clone();
         let lease = channel.step_lock.lock().await;
         channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
@@ -4644,7 +4604,6 @@ mod watchdog_tests {
         assert_eq!(failed.committed_sequence, 0);
         assert_eq!(failed.queued_records, 4);
         assert_eq!(sink.pressure(id).thread_bytes, retained);
-        assert!(sink.flush(id, 1).await.is_err());
 
         let mut projection = live_projection(&sink).await?;
         let mut deferred_head = None;
@@ -4653,7 +4612,7 @@ mod watchdog_tests {
                 .write
                 .clone();
             let prepared = projection
-                .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
+                .prepare_committed(&sink.0.thread, &write.effect, &write.state)
                 .await?;
             if sequence == 1 {
                 deferred_head = Some(prepared);
@@ -4676,7 +4635,7 @@ mod watchdog_tests {
             .thread_persistence()
             .retry_history(id, failed.fault_generation)
             .await?;
-        sink.flush(id, 4).await?;
+        channel.await_handoff_durable(id, 4).await?;
         assert_eq!(channel.subscribe().borrow().committed_sequence, 4);
         channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW);
         assert!(channel.subscribe().borrow().fault.is_none());
@@ -4688,9 +4647,8 @@ mod watchdog_tests {
         let explicit = channel.subscribe().borrow().clone();
         channel.detect_stall_at(Instant::now() + NO_PROGRESS_WINDOW * 2);
         assert_eq!(*channel.subscribe().borrow(), explicit);
-        assert!(sink.flush(id, 5).await.is_err());
         let prepared = projection
-            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.checkpoint.state)
+            .prepare_committed(&sink.0.thread, &fifth.effect, &fifth.state)
             .await?;
         assert!(channel.prepare(prepared));
         drop(lease);
@@ -4698,7 +4656,7 @@ mod watchdog_tests {
             .thread_persistence()
             .retry_history(id, explicit.fault_generation)
             .await?;
-        sink.flush(id, 5).await?;
+        channel.await_handoff_durable(id, 5).await?;
         channel.stop_and_join().await?;
         Ok(())
     }
@@ -4709,14 +4667,14 @@ mod watchdog_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "sql-watchdog";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store.clone(), test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store.clone(), test_thread(id)).await?;
         let channel = sink.0.channel.clone();
         let lease = channel.step_lock.lock().await;
         let mut projection = live_projection(&sink).await?;
         let write = visible_input_ticket(id, 1, "sql-input")?;
         sink.admit(id, write.clone())?;
         let prepared = projection
-            .prepare_committed(&sink.0.thread, &write.effect, &write.checkpoint.state)
+            .prepare_committed(&sink.0.thread, &write.effect, &write.state)
             .await?;
         assert!(channel.prepare(prepared));
         assert_eq!(
@@ -4772,7 +4730,7 @@ mod watchdog_tests {
                 .iter()
                 .any(|worker| !worker.is_finished())
         );
-        assert!(sink.flush(id, 1).await.is_err());
+        assert!(channel.await_handoff_durable(id, 1).await.is_err());
 
         let mut released = channel.effects_released.subscribe();
         blocker.rollback().await?;
@@ -4786,7 +4744,7 @@ mod watchdog_tests {
             .thread_persistence()
             .retry_history(id, failed.fault_generation)
             .await?;
-        sink.flush(id, 1).await?;
+        channel.await_handoff_durable(id, 1).await?;
         channel.stop_and_join().await?;
         Ok(())
     }
@@ -4798,6 +4756,7 @@ mod execution_index_tests {
         register_test_thread, test_thread, ticket, visible_input_ticket,
     };
     use super::*;
+    use pl_core::thread::history_sink::HistorySink;
     use pl_core::{
         context::{ContextRecord, ContextSource},
         thread::{
@@ -4908,7 +4867,7 @@ mod execution_index_tests {
             20,
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
-        index.materialize(&item, 7)?;
+        index.materialize_execution_batch([ExecutionMaterialization::from_item(&item)], 7)?;
         index.mark_completion("completed", true);
         index.finish_source("attempt-two");
         index.retain::<()>(&Default::default(), Vec::new());
@@ -4962,7 +4921,9 @@ mod execution_index_tests {
             20,
             crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "done", 20)),
         );
-        let rejected = index.materialize(&large, u64::MAX).unwrap_err();
+        let rejected = index
+            .materialize_execution_batch([ExecutionMaterialization::from_item(&large)], u64::MAX)
+            .unwrap_err();
         assert!(
             rejected
                 .to_string()
@@ -4975,59 +4936,12 @@ mod execution_index_tests {
     }
 
     #[tokio::test]
-    async fn execution_index_materialization_serializes_provider_allocation() -> Result<()> {
-        let process = Arc::new(AtomicU64::new(0));
-        let index = Arc::new(RuntimeOrderIndex::new(process, 1024 * 1024));
-        let item = crate::ExecutionItem::new(
-            "materialized".into(),
-            "thread".into(),
-            "turn".into(),
-            1,
-            2,
-            10,
-            20,
-            crate::ExecutionShape::Raw(crate::ThreadRawItem::stored(Vec::new(), "body", 20)),
-        );
-        let (entered, materialize_entered) = tokio::sync::oneshot::channel();
-        let (release, materialize_release) = std::sync::mpsc::channel();
-        *index.materialize_gate.lock().unwrap() = Some(MaterializeGate {
-            entered,
-            release: materialize_release,
-        });
-        let materializing = tokio::task::spawn_blocking({
-            let index = index.clone();
-            move || index.materialize(&item, 1)
-        });
-        materialize_entered.await?;
-
-        let (attempting, attempted) = tokio::sync::oneshot::channel();
-        let provider = tokio::task::spawn_blocking({
-            let index = index.clone();
-            move || {
-                let _ = attempting.send(());
-                index.reserve_observed("attempt", "provider-part")
-            }
-        });
-        attempted.await?;
-        assert!(
-            index.inner.try_lock().is_err(),
-            "provider allocation must wait for the materialization commit"
-        );
-        release.send(())?;
-        materializing.await??;
-        assert!(provider.await?.is_err());
-        assert_eq!(index.assigned("materialized"), Some(1));
-        assert_eq!(index.assigned("provider-part"), None);
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn operation_output_reservation_returns_to_baseline_across_rounds() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "operation-budget";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store, test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
         let baseline = channel.process_bytes.load(Ordering::Acquire);
         for index in 0..32 {
@@ -5072,7 +4986,7 @@ mod execution_index_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "terminal-transfer-budget";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store, test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
         let lease = channel.step_lock.lock().await;
         sink.admit(id, visible_input_ticket(id, 1, "input")?)?;
@@ -5120,7 +5034,7 @@ mod execution_index_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "admission-backpressure";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store, test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
         let lease = channel.step_lock.lock().await;
         channel
@@ -5151,7 +5065,7 @@ mod execution_index_tests {
         let store = StudioStore::open(temp.path().join("data/studio.sqlite")).await?;
         let id = "fault-generation";
         register_test_thread(&store, &test_thread(id)).await?;
-        let sink = ThreadStorageSink::new(store, test_thread(id), None).await?;
+        let sink = ThreadStorageSink::new(store, test_thread(id)).await?;
         let channel = &sink.0.channel;
         record_error(
             &sink.0,

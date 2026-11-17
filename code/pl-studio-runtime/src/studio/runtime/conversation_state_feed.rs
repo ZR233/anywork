@@ -793,9 +793,12 @@ mod storage_fault_tests {
     use anyhow::Result;
 
     #[test]
-    fn state_baseline_carries_qualified_plan_and_rejects_mixed_business_slice() -> Result<()> {
+    fn state_baseline_carries_qualified_plan_without_changing_on_unrelated_progress() -> Result<()>
+    {
+        use crate::plan_tool::{
+            AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState,
+        };
         use crate::studio::thread_projection::CurrentState;
-        use crate::{AgentSessionPlanDocument, AgentSessionPlanPhase, AgentSessionPlanState};
 
         let text = "# The saved Plan\n\nKeep the business references consistent.";
         let mut plan = AgentSessionPlanState {
@@ -818,41 +821,19 @@ mod storage_fault_tests {
         );
         let thread = crate::Thread::placeholder("state-baseline");
         let current = CurrentState::cold("state-db".into(), thread.id.clone(), 7, &state)?;
-        let references = current.business_refs_at(&thread.id, &state)?;
-        let snapshot = crate::studio::thread_projection::project_snapshot(
-            thread.clone(),
-            &state,
-            &state.usage_summary,
-            None,
-            references.clone(),
-        )?;
-        assert_eq!(snapshot.business_refs, references);
-        assert!(
-            snapshot
-                .business_refs
-                .plan
-                .as_ref()
-                .unwrap()
-                .document
-                .is_some()
-        );
-        assert!(snapshot.business_refs.interactions.is_some());
-        assert!(snapshot.activity.is_none());
+        let references = current.business_refs();
+        assert!(references.plan.as_ref().unwrap().document.is_some());
+        assert!(references.interactions.is_some());
         state.commit_sequence = 8;
-        assert_eq!(current.business_refs_at(&thread.id, &state)?, references);
+        assert_eq!(current.business_refs(), references);
         plan.revision = 4;
         state
             .extensions
             .get_mut(crate::plan_tool::PLAN_EXTENSION)
             .unwrap()
             .payload = crate::plan_tool::encode_plan_state(&plan)?;
-        assert!(matches!(
-            current
-                .business_refs_at(&thread.id, &state)
-                .unwrap_err()
-                .downcast_ref::<pl_core::chat::ChatError>(),
-            Some(pl_core::chat::ChatError::StaleContent)
-        ));
+        let changed = CurrentState::cold("state-db".into(), thread.id.clone(), 8, &state)?;
+        assert_ne!(changed.business_refs().plan, references.plan);
         Ok(())
     }
 }

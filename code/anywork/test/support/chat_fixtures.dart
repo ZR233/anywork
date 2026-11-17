@@ -1,17 +1,26 @@
-import 'package:anywork/src/features/conversation/timeline/view_models/timeline_message_controller.dart'
-    show TimelineApplyPlacement;
-
 import 'dart:convert';
 
-import 'package:anywork_client/studio_client.dart';
+import 'package:anywork_client/models.dart';
 
 const chatDemand = ReadDemand(maxItems: 20, maxBytes: 65536);
 
-/// An explicit independent synthetic completion, not a grouping fixture.
+/// A producer-side fixture row. It is deliberately not a public protocol type:
+/// display identity remains the stable History row key and block order.
+final class FixtureCompletion {
+  const FixtureCompletion({
+    required this.recordId,
+    required this.completionSeq,
+    required this.atom,
+  });
+
+  final String recordId;
+  final int completionSeq;
+  final ChatAtom atom;
+}
+
 ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
     ChatAtom(
       id: id,
-      completionItemId: id,
       source: ReceiptChatSource(receiptId: id),
       sourceOrder: null,
       kind: ChatAtomKind.receipt,
@@ -28,15 +37,11 @@ ChatAtom fixtureAtom({required String id, required PayloadData payload}) =>
 ChatAtom chatAtomMessage(
   String id, {
   String body = '中文 🐱',
-  int? completionSeq,
   bool? contentPresent,
 }) => ChatAtom(
   id: id,
   source: ReceiptChatSource(receiptId: id),
   sourceOrder: null,
-  completionSeq: completionSeq,
-  contentPresent: contentPresent,
-  completionItemId: id,
   kind: ChatAtomKind.text,
   delivery: ChatDeliveryKind.independent,
   lifecycle: const TerminalChatAtom(
@@ -44,6 +49,7 @@ ChatAtom chatAtomMessage(
     ended: null,
     outcome: ChatTerminalOutcome.completed,
   ),
+  contentPresent: contentPresent,
   contents: const [],
   payload: InlinePayload(
     bytes: utf8.encode(
@@ -82,7 +88,6 @@ ChatAtom chatEnvelope(
   id: id,
   source: ReceiptChatSource(receiptId: id),
   sourceOrder: null,
-  completionItemId: id,
   kind: ChatAtomKind.receipt,
   delivery: ChatDeliveryKind.independent,
   lifecycle: const TerminalChatAtom(
@@ -110,60 +115,30 @@ Map<String, Object?> inlineBody(String key, String text) => {
   'inline': utf8.encode(text),
 };
 
-ChatBatch chatBatch(
-  List<CompletedEntry> messages, {
-  TimelineApplyPlacement placement = TimelineApplyPlacement.set,
-  String? before,
-  int? fromSeq,
-  int? throughSeq,
-}) => ChatBatch(
-  placement: placement,
-  entries: messages,
-  before: before,
-  fromSeq:
-      fromSeq ??
-      (placement == TimelineApplyPlacement.append && messages.isNotEmpty
-          ? messages.first.completionSeq - 1
-          : null),
-  throughSeq: throughSeq ?? messages.lastOrNull?.completionSeq ?? 0,
-);
-
-CompletedEntry chatMessage(
+FixtureCompletion chatMessage(
   String id, {
   String body = '中文 🐱',
   int completionSeq = 1,
-}) => CompletedEntry(
+}) => FixtureCompletion(
   recordId: id,
   completionSeq: completionSeq,
-
-  atom: chatAtomMessage(id, body: body, completionSeq: completionSeq),
+  atom: chatAtomMessage(id, body: body),
 );
 
-CompletedEntry statusItem(ChatAtom atom, {int completionSeq = 1}) =>
-    CompletedEntry(
-      recordId: atom.completionItemId ?? atom.id,
+FixtureCompletion statusItem(ChatAtom atom, {int completionSeq = 1}) =>
+    FixtureCompletion(
+      recordId: atom.id,
       completionSeq: completionSeq,
-
       atom: atom,
     );
 
-CompletedEntry workItem(
-  String id, {
-  int count = 3,
-  int? completionSeq,
-  int startSeq = 1,
-  bool isText = false,
-  String databaseId = 'database',
-}) {
-  final seq = completionSeq ?? startSeq + count - 1;
-  return CompletedEntry(
+FixtureCompletion workItem(String id, {int count = 3, int? completionSeq}) {
+  final seq = completionSeq ?? count;
+  return FixtureCompletion(
     recordId: id,
     completionSeq: seq,
-
     atom: ChatAtom(
       id: id,
-      completionItemId: id,
-      completionSeq: seq,
       source: const ForegroundTurnChatSource(turnId: 'T'),
       sourceOrder: null,
       kind: ChatAtomKind.toolCall,
@@ -176,7 +151,7 @@ CompletedEntry workItem(
       contents: const [],
       payload: DeferredPayload(
         reference: ContentRef(
-          databaseId: databaseId,
+          databaseId: 'database',
           target: ItemPayloadTarget(itemId: id),
         ),
         byteLength: 100,
@@ -185,28 +160,8 @@ CompletedEntry workItem(
   );
 }
 
-ActivitySnapshot chatActivity({
-  int revision = 0,
-  int through = 0,
-  bool executionPresent = false,
-  List<ActivityEntry> entries = const [],
-}) => ActivitySnapshot(
-  revision: revision,
-  completedThrough: through,
-  executionPresent: executionPresent,
-  entries: entries,
-);
-
-/// A complete State baseline for scripted protocol tests, never a runtime.
-ThreadWorkspace chatWorkspace(
-  String threadId, {
-  ThreadBusinessRefs businessRefs = const ThreadBusinessRefs(
-    plan: null,
-    interactions: null,
-  ),
-}) => ThreadWorkspace(
-  businessRefs: businessRefs,
-  thread: StudioThread(
+ThreadWorkspace chatWorkspace(String threadId) {
+  final thread = StudioThread(
     id: threadId,
     workspaceId: 'workspace',
     title: 'Thread',
@@ -215,17 +170,21 @@ ThreadWorkspace chatWorkspace(
     delegationPreference: DelegationPreference.balanced,
     updatedAt: DateTime.utc(2026),
     workspacePath: '/workspace',
-  ),
-  revision: 1,
-  interactions: const [],
-  runtime: const ThreadRuntimeView(
-    modelId: 'model',
-    contextTokens: 0,
-    contextWindow: 1,
-    totalTokens: 0,
-    costLabel: '',
-    activeSkills: [],
-    activeMcpServers: [],
-    activeLspServers: [],
-  ),
-);
+  );
+  return ThreadWorkspace(
+    businessRefs: const ThreadBusinessRefs(plan: null, interactions: null),
+    thread: thread,
+    revision: 1,
+    interactions: const [],
+    runtime: const ThreadRuntimeView(
+      modelId: 'model',
+      contextTokens: 0,
+      contextWindow: 1,
+      totalTokens: 0,
+      costLabel: '',
+      activeSkills: [],
+      activeMcpServers: [],
+      activeLspServers: [],
+    ),
+  );
+}
