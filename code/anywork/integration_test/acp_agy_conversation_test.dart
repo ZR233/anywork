@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:anywork/src/features/conversation/acp/acp_views.dart';
 import 'package:anywork/src/features/conversation/acp/connectors/acp_composer_connector.dart';
+import 'package:anywork/src/features/conversation/acp/view_models/acp_content_view_model.dart';
 import 'package:anywork/src/features/conversation/composer/widgets/start_model_selector.dart';
 import 'package:anywork/src/shared/studio_driver_keys.dart';
 import 'package:anywork_client/acp.dart';
@@ -478,14 +479,12 @@ void main() {
       final preparedThreadId = owner.state.target!.threadId;
       await record('draft-prepared-before-first-send');
       final marker = 'ACP284LIVEOK${DateTime.now().millisecondsSinceEpoch}';
-      final prompt =
-          remote?.promptA('${marker}A') ??
-          'Reply with exactly $marker and nothing else. Do not call tools, '
-              'run commands, use the network, or read or write any files.';
+      final prompt = remote?.promptA('${marker}A') ?? 'hi';
       final startupMarker = '${marker}READY';
-      final startupPrompt =
-          'Reply with exactly $startupMarker and nothing else. '
-          'Do not call tools, run commands, use the network, or read or write any files.';
+      final startupPrompt = remote == null
+          ? 'hi'
+          : 'Reply with exactly $startupMarker and nothing else. '
+                'Do not call tools, run commands, use the network, or read or write any files.';
       await tester.enterText(
         find.descendant(
           of: find.byType(AcpStartComposerView),
@@ -593,6 +592,45 @@ void main() {
         await record('startup-prompt-observed');
       }
       checkOwner();
+      evidence['startupMessages'] = [
+        for (final item
+            in owner.state.content.whereType<AcpConversationMessageItem>())
+          {
+            'kind': item.kind.name,
+            'visibleText': [
+              for (final block in mapAcpMessageBlocks(item, itemId: 'startup'))
+                if (block case AcpTextBlockPresentation(:final text)) text,
+            ].join(),
+            'audiences': [
+              for (final chunk in item.chunks)
+                chunk.content.annotations?.audience
+                    ?.map((role) => role.name)
+                    .toList(),
+            ],
+          },
+      ];
+      if (remote == null) {
+        final user = owner.state.content
+            .whereType<AcpConversationMessageItem>()
+            .singleWhere(
+              (item) => item.kind == AcpConversationMessageKind.user,
+            );
+        final blocks = mapAcpMessageBlocks(user, itemId: 'startup-user');
+        expect(blocks, hasLength(1));
+        expect((blocks.single as AcpTextBlockPresentation).text, 'hi');
+        expect(
+          find.descendant(
+            of: find.byWidgetPredicate(
+              (widget) =>
+                  widget is AcpTimelineEntryView &&
+                  widget.item is AcpTimelineUserMessage,
+            ),
+            matching: find.text('hi', findRichText: true),
+          ),
+          findsOneWidget,
+        );
+        expect(owner.state.lastCompleted!.completionSequence, BigInt.one);
+      }
       expect(
         owner.state.content.whereType<AcpConversationMessageItem>(),
         isNotEmpty,
