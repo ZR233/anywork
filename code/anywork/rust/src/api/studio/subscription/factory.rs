@@ -172,7 +172,7 @@ pub(crate) mod tests {
                     .open_current_reader(&thread_id, CURRENT_PROTOCOL_VERSION, demand)
                     .await?;
                 let baseline = current.snapshot(demand).await?;
-                let mut watch = current.watch(Some(baseline.revision), demand).await?;
+                let watch = current.watch(Some(baseline.revision), demand).await?;
                 loop {
                     let update = watch
                         .next()
@@ -406,7 +406,7 @@ pub(crate) mod tests {
                 )
                 .await?;
             let baseline = state.snapshot(demand).await?;
-            let mut state = state.watch(Some(baseline.revision), demand).await?;
+            let state = state.watch(Some(baseline.revision), demand).await?;
             env.submit_followup().await?;
             stage.wait_reached().await;
             let before = env.runtime.thread_snapshot(&env.thread_id).await?;

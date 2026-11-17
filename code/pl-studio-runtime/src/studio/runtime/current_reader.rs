@@ -9,7 +9,7 @@ use crate::{
     ThreadSubscriptionUpdate,
 };
 use anyhow::{Context, Result, ensure};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use super::{StudioRuntime, conversation_state_feed::ConversationStateFeed};
@@ -594,9 +594,9 @@ impl CurrentReader {
             }
         })?;
         Ok(CurrentWatch {
-            receiver,
+            receiver: AsyncMutex::new(receiver),
             cancel,
-            task: Some(task),
+            task: AsyncMutex::new(Some(task)),
         })
     }
 
@@ -717,9 +717,9 @@ impl CurrentReader {
             }
         })?;
         Ok(CurrentBodyWatch {
-            receiver,
+            receiver: AsyncMutex::new(receiver),
             cancel,
-            task: Some(task),
+            task: AsyncMutex::new(Some(task)),
         })
     }
 
@@ -741,25 +741,35 @@ impl CurrentReader {
 }
 
 pub struct CurrentWatch {
-    receiver: mpsc::Receiver<Result<CurrentFrame>>,
+    receiver: AsyncMutex<mpsc::Receiver<Result<CurrentFrame>>>,
     cancel: CancellationToken,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl CurrentWatch {
-    pub async fn next(&mut self) -> Result<Option<CurrentFrame>> {
-        tokio::select! { biased; _ = self.cancel.cancelled() => Ok(None), frame = self.receiver.recv() => frame.transpose() }
+    pub async fn next(&self) -> Result<Option<CurrentFrame>> {
+        tokio::select! { biased;
+            _ = self.cancel.cancelled() => Ok(None),
+            frame = async { self.receiver.lock().await.recv().await } => frame.transpose(),
+        }
     }
     pub fn request_close(&self) {
         self.cancel.cancel();
     }
-    pub async fn close(&mut self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         self.request_close();
-        if let Some(task) = self.task.take() {
-            task.await?;
-        }
-        self.receiver.close();
-        while self.receiver.try_recv().is_ok() {}
-        Ok(())
+        let mut task = self.task.lock().await;
+        // Keep the original join handle until it resolves, including if this close waiter is
+        // cancelled. A later close must still join that producer rather than report a false ACK.
+        let joined = match task.as_mut() {
+            Some(task) => task.await.map_err(anyhow::Error::from),
+            None => Ok(()),
+        };
+        task.take();
+        drop(task);
+        let mut receiver = self.receiver.lock().await;
+        receiver.close();
+        while receiver.try_recv().is_ok() {}
+        joined
     }
 }
 impl Drop for CurrentWatch {
@@ -769,25 +779,33 @@ impl Drop for CurrentWatch {
 }
 
 pub struct CurrentBodyWatch {
-    receiver: mpsc::Receiver<Result<ContentWindow>>,
+    receiver: AsyncMutex<mpsc::Receiver<Result<ContentWindow>>>,
     cancel: CancellationToken,
-    task: Option<tokio::task::JoinHandle<()>>,
+    task: AsyncMutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl CurrentBodyWatch {
-    pub async fn next(&mut self) -> Result<Option<ContentWindow>> {
-        tokio::select! { biased; _ = self.cancel.cancelled() => Ok(None), frame = self.receiver.recv() => frame.transpose() }
+    pub async fn next(&self) -> Result<Option<ContentWindow>> {
+        tokio::select! { biased;
+            _ = self.cancel.cancelled() => Ok(None),
+            frame = async { self.receiver.lock().await.recv().await } => frame.transpose(),
+        }
     }
     pub fn request_close(&self) {
         self.cancel.cancel();
     }
-    pub async fn close(&mut self) -> Result<()> {
+    pub async fn close(&self) -> Result<()> {
         self.request_close();
-        if let Some(task) = self.task.take() {
-            task.await?;
-        }
-        self.receiver.close();
-        while self.receiver.try_recv().is_ok() {}
-        Ok(())
+        let mut task = self.task.lock().await;
+        let joined = match task.as_mut() {
+            Some(task) => task.await.map_err(anyhow::Error::from),
+            None => Ok(()),
+        };
+        task.take();
+        drop(task);
+        let mut receiver = self.receiver.lock().await;
+        receiver.close();
+        while receiver.try_recv().is_ok() {}
+        joined
     }
 }
 impl Drop for CurrentBodyWatch {
@@ -1036,7 +1054,7 @@ mod tests {
                 Some("staleCurrentReference")
             );
 
-            let mut watch = reader.watch(Some(view.revision), demand).await?;
+            let watch = reader.watch(Some(view.revision), demand).await?;
             assert!(matches!(
                 watch.next().await?,
                 Some(CurrentFrame::Reset { .. })

@@ -2668,10 +2668,18 @@ async fn a_staged_tool_identity_is_charged_once_against_the_reliable_quota() {
         "one call exposed in stages must not be charged twice"
     );
     assert!(!snapshot.persistence.resume_required);
+    let accepted_calls: Vec<_> = snapshot
+        .context
+        .records
+        .iter()
+        .flat_map(|record| &record.tool_calls)
+        .collect();
+    assert_eq!(accepted_calls.len(), 1, "one resolved call was accepted");
+    assert_eq!(accepted_calls[0].tool_id, "lookup");
     assert_eq!(
         calls.lock().expect("tool log").as_slice(),
-        ["call-7"],
-        "the resolved call is materialized and dispatched exactly once"
+        [accepted_calls[0].call_id.as_str()],
+        "the accepted attempt-scoped call is dispatched exactly once"
     );
     let _ = fixture.shutdown().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), thread.close()).await;

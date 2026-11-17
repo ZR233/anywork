@@ -95,6 +95,8 @@ runtime usage、live usage、时机、工具与后台计数、todo/progress、co
 
 关闭 CurrentReader 先同步封闭准入并取消自己拥有的 metadata/body watch 和 page 读取，再 join 调用方已准入操作；不等待或关闭 HistoryReader。正在等待绑定的读取也必须被关闭唤醒。调用方先取消、底层 reader 后关闭等交错必须共同收束，不能遗留父 reader 或未 join 的子任务。
 
+watch 的读取与关闭使用共享引用，接收队列与原 join handle 由 watch 内部同步。等待下一帧不能持有阻止同步取消的 FRB 独占借用；取消关闭等待者仍保留原 join handle，后续关闭继续等待同一个生产者。
+
 ## 15.4 传输与客户端边界
 
 HTTP 和 FRB 都分别开放 History 与 Current 句柄，沿用同一组 typed DTO 和版本检查，不生成另一套当前缓存、历史水位或事件归约器。History 是纯 query/page/cut/change 能力；Current 是 snapshot/watch/collection/body 能力。二者由调用方显式 close，不通过业务消息完成资源释放。

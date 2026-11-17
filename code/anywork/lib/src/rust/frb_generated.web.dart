@@ -210,18 +210,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   );
 
   @protected
-  BridgeCurrentBodyWatch
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentBodyWatch(
-    dynamic raw,
-  );
-
-  @protected
-  BridgeCurrentWatch
-  dco_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentWatch(
-    dynamic raw,
-  );
-
-  @protected
   BridgeAccountObservation
   dco_decode_Auto_Ref_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeAccountObservation(
     dynamic raw,
@@ -5182,18 +5170,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   @protected
   BridgeThreadsObservation
   sse_decode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCurrentBodyWatch
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentBodyWatch(
-    SseDeserializer deserializer,
-  );
-
-  @protected
-  BridgeCurrentWatch
-  sse_decode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentWatch(
     SseDeserializer deserializer,
   );
 
@@ -11417,20 +11393,6 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   void
   sse_encode_Auto_Owned_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeThreadsObservation(
     BridgeThreadsObservation self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentBodyWatch(
-    BridgeCurrentBodyWatch self,
-    SseSerializer serializer,
-  );
-
-  @protected
-  void
-  sse_encode_Auto_RefMut_RustOpaque_flutter_rust_bridgefor_generatedRustAutoOpaqueInnerBridgeCurrentWatch(
-    BridgeCurrentWatch self,
     SseSerializer serializer,
   );
 

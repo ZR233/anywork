@@ -218,12 +218,28 @@ void main() {
       while (!predicate()) {
         if (elapsed.elapsed > const Duration(seconds: 35)) {
           final selection = graph.client.selection.state;
+          final selectedThread = selection.selectedThreadId;
+          final current = selectedThread == null
+              ? null
+              : graph.client.conversations.session(selectedThread).state;
+          final currentDiagnostic = {
+            'hasSnapshot': current?.hasSnapshot,
+            'revision': current?.revision,
+            'syncPhase': current?.sync.phase.name,
+            'syncError': current?.sync.errorMessage,
+            'activeTurnId': current?.activeTurn?.turnId,
+            'activeInputId': current?.activeTurn?.inputId,
+            'activeStatus': current?.activeTurn?.state.status.name,
+            'lastTurnId': current?.lastTurn?.turnId,
+            'lastStatus': current?.lastTurn?.state.status.name,
+          };
           report['readinessFailure'] = {
             'reason': reason,
             'expectedProjectPath': project,
             'projectId': selection.selectedProjectId,
             'threadId': selection.selectedThreadId,
             'needsOpen': selection.needsOpen,
+            'current': currentDiagnostic,
             'route': router.routeInformationProvider.value.uri.toString(),
             'projects': [
               for (final item
@@ -254,7 +270,7 @@ void main() {
           } catch (error) {
             report['readinessCaptureError'] = error.toString();
           }
-          fail('Timed out: $reason');
+          fail('Timed out: $reason; Current: ${jsonEncode(currentDiagnostic)}');
         }
         await tester.pump(const Duration(milliseconds: 16));
         expect(tester.takeException(), isNull);

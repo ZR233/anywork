@@ -57,7 +57,7 @@ impl ReplyWatch {
                 return Err(read_failure("bot history capture failed", error));
             }
         };
-        let mut current_watch = match current_reader.watch(None, demand()).await {
+        let current_watch = match current_reader.watch(None, demand()).await {
             Ok(watch) => watch,
             Err(error) => {
                 let error = match current_reader.close().await {
@@ -323,7 +323,7 @@ mod tests {
         let reader = runtime
             .open_current_reader(thread_id, crate::CURRENT_PROTOCOL_VERSION, read_demand)
             .await?;
-        let mut watch = reader.watch(None, read_demand).await?;
+        let watch = reader.watch(None, read_demand).await?;
         let observed = tokio::time::timeout(Duration::from_secs(20), async {
             loop {
                 let Some(CurrentFrame::Notification { notification, .. }) = watch.next().await?

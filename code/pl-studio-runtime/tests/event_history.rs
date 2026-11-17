@@ -191,7 +191,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             .runtime
             .open_current_reader(&id, CURRENT_PROTOCOL_VERSION, demand)
             .await?;
-        let mut metadata = reader.watch(None, demand).await?;
+        let metadata = reader.watch(None, demand).await?;
         let Some(CurrentFrame::Reset { view }) = metadata.next().await? else {
             anyhow::bail!("Current watch did not begin with Reset");
         };
@@ -260,6 +260,14 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
         }
         let live_view = reader.snapshot(demand).await?;
         ensure!(
+            live_view.state.active_turn.as_ref().is_some_and(|turn| {
+                turn.input_id.as_deref() == Some("input-current-history")
+                    && matches!(turn.state, pl_studio_runtime::TurnState::Running(_))
+            }),
+            "held provider lost its actual running Turn: {:?}",
+            live_view.state.active_turn
+        );
+        ensure!(
             live_view
                 .state
                 .runtime
@@ -276,7 +284,7 @@ async fn real_prompt_and_saved_stream_are_independent_from_the_later_immutable_h
             "live activity snapshot unexpectedly deferred a State field"
         );
         let r1 = live_view.revision.owner_id;
-        let mut body = reader
+        let body = reader
             .watch_body(
                 reference.clone(),
                 ContentRange {
@@ -546,6 +554,154 @@ async fn accepted_and_committed_pages_share_fixed_cuts_and_immutable_body_ranges
             .bytes,
         b"opaque original bytes"
     );
+    reader.close().await;
+    store.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fixed_main_member_and_turn_pages_survive_terminal_changes_and_rollback() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let store = HistoryStore::open(
+        directory.path().join("history.sqlite"),
+        "fixed-pages",
+        HistoryLimits::default(),
+    )
+    .await?;
+    let reader = store.reader();
+    let run = RuntimeEpoch::new();
+    let mut classifier = HistoryClassifier::new(run);
+    let mut member = entity("member", run, true);
+    member.kind = HistoryEntityKind::ToolCall;
+    member.text_channel = None;
+    member.tool = Some(HistoryToolIdentity {
+        call_id: "call".into(),
+        name: "lookup".into(),
+    });
+    classifier
+        .record(
+            &store,
+            &HistoryEntityChange {
+                event: HistoryEvent::new("member-start", HistoryEventKind::EntityStarted, 10),
+                entity: member.clone(),
+                placement: HistoryPlacement::Work,
+                boundary_observations: Vec::new(),
+                public_summary: None,
+            },
+        )
+        .await?;
+    let group = classifier.open_group().unwrap().to_owned();
+    let mut turn = HistoryTurnHead {
+        turn_id: "turn-a".into(),
+        input_id: Some("input-a".into()),
+        run_id: Some(run.to_string()),
+        state: HistoryTurnState::Running,
+        phase: None,
+        context_disposition: pl_studio_runtime::ThreadContextDisposition::Active,
+        queued_at: Some(9),
+        started_at: Some(10),
+        finished_at: None,
+        updated_at: 10,
+        detail_event_id: None,
+    };
+    let turn_event = |id, kind, head: HistoryTurnHead, anchor| {
+        let mut event = HistoryEvent::new(id, kind, head.updated_at);
+        event.header.run_id = Some(run.to_string());
+        event.header.turn_id = Some("turn-a".into());
+        event.header.row_key = Some("turn:turn-a".into());
+        event.head = Some(HistoryRowHead::Turn(head));
+        event.is_anchor = anchor;
+        event
+    };
+    store
+        .accept_batch(&[turn_event(
+            "turn-start",
+            HistoryEventKind::TurnStarted,
+            turn.clone(),
+            true,
+        )])
+        .await?;
+    store
+        .record_usage(&usage("priced-usage", run, true))
+        .await?;
+    let cut = reader.capture().await?;
+    let main = reader
+        .timeline_page(Some(cut.clone()), None, demand())
+        .await?;
+    let members = reader
+        .group_page(group.clone(), Some(cut.clone()), None, demand())
+        .await?;
+    let turns = reader.turns_page(Some(cut.clone()), None, demand()).await?;
+    let costs = reader.costs_page(Some(cut.clone()), None, demand()).await?;
+    let accounting = reader.accounting(Some(cut.clone())).await?;
+
+    member.state = HistoryEntityState::KnownTerminal {
+        outcome: ChatTerminalOutcome::Completed,
+    };
+    member.finished_at = Some(30);
+    classifier
+        .record(
+            &store,
+            &HistoryEntityChange {
+                event: HistoryEvent::new("member-end", HistoryEventKind::EntityEnded, 30),
+                entity: member,
+                placement: HistoryPlacement::Work,
+                boundary_observations: Vec::new(),
+                public_summary: None,
+            },
+        )
+        .await?;
+    turn.state = HistoryTurnState::Completed;
+    turn.finished_at = Some(30);
+    turn.updated_at = 30;
+    let ended = turn_event("turn-end", HistoryEventKind::TurnEnded, turn.clone(), false);
+    turn.context_disposition = pl_studio_runtime::ThreadContextDisposition::RolledBack;
+    turn.updated_at = 40;
+    store
+        .accept_batch(&[
+            ended,
+            turn_event("rollback", HistoryEventKind::TurnRolledBack, turn, false),
+        ])
+        .await?;
+    store.flush().await?;
+
+    assert_eq!(
+        reader
+            .timeline_page(Some(cut.clone()), None, demand())
+            .await?,
+        main
+    );
+    assert_eq!(
+        reader
+            .group_page(group.clone(), Some(cut.clone()), None, demand())
+            .await?,
+        members
+    );
+    assert_eq!(reader.turns_page(Some(cut), None, demand()).await?, turns);
+    let latest_main = reader.timeline_page(None, None, demand()).await?;
+    let latest_members = reader.group_page(group, None, None, demand()).await?;
+    let latest_turns = reader.turns_page(None, None, demand()).await?;
+    assert_eq!(
+        latest_main.entries.len(),
+        main.entries.len(),
+        "rollback must not hide Timeline rows"
+    );
+    assert_eq!(
+        latest_members.members.len(),
+        members.members.len(),
+        "rollback must not hide members"
+    );
+    assert_ne!(latest_main.entries[0].head, main.entries[0].head);
+    assert!(matches!(&latest_members.members[0].head,
+        HistoryRowHead::Member(head) if matches!(head.state, HistoryEntityState::KnownTerminal { .. })));
+    assert!(matches!(&latest_turns.entries[0].head,
+        HistoryRowHead::Turn(head) if head.context_disposition == pl_studio_runtime::ThreadContextDisposition::RolledBack));
+    assert_eq!(
+        reader.costs_page(None, None, demand()).await?.entries,
+        costs.entries,
+        "rollback must not retract costs"
+    );
+    assert_eq!(reader.accounting(None).await?, accounting);
     reader.close().await;
     store.close().await?;
     Ok(())
@@ -1060,6 +1216,7 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
     empty.state = HistoryEntityState::KnownTerminal {
         outcome: ChatTerminalOutcome::Completed,
     };
+    empty.content_present = Some(false);
     empty.finished_at = Some(16);
     classifier
         .record(
@@ -1074,6 +1231,14 @@ async fn classifier_keeps_boundary_observation_when_tool_ends_in_a_later_work_gr
         )
         .await?;
     assert_eq!(classifier.open_group(), Some(new_group.as_str()));
+    assert!(reader
+        .timeline_page(None, None, demand())
+        .await?
+        .entries
+        .iter()
+        .any(|entry| matches!(&entry.head, HistoryRowHead::Single(head)
+            if head.entity_id == "text"
+                && head.single_visibility == Some(HistorySingleVisibility::FinalEmptyAfterContent))));
     store.flush().await?;
     let old = reader
         .group_page(old_group.clone(), None, None, demand())

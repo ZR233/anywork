@@ -464,7 +464,8 @@ pub struct BridgeCurrentWatch {
 }
 
 impl BridgeCurrentWatch {
-    pub async fn next(&mut self) -> Result<Option<BridgeCurrentFrame>, BridgeError> {
+    // A pending next must keep only a shared FRB borrow so synchronous cancellation can enter.
+    pub async fn next(&self) -> Result<Option<BridgeCurrentFrame>, BridgeError> {
         let frame = self.watch.next().await?;
         match frame {
             None => Ok(None),
@@ -477,7 +478,7 @@ impl BridgeCurrentWatch {
         self.watch.request_close();
     }
 
-    pub async fn close(&mut self) -> Result<(), BridgeError> {
+    pub async fn close(&self) -> Result<(), BridgeError> {
         Ok(self.watch.close().await?)
     }
 }
@@ -487,7 +488,8 @@ pub struct BridgeCurrentBodyWatch {
 }
 
 impl BridgeCurrentBodyWatch {
-    pub async fn next(&mut self) -> Result<Option<BridgeContentWindow>, BridgeError> {
+    // The producer wait must not exclusively borrow the handle needed to cancel that wait.
+    pub async fn next(&self) -> Result<Option<BridgeContentWindow>, BridgeError> {
         let window = self.watch.next().await?;
         Ok(window.map(chat::window))
     }
@@ -497,7 +499,7 @@ impl BridgeCurrentBodyWatch {
         self.watch.request_close();
     }
 
-    pub async fn close(&mut self) -> Result<(), BridgeError> {
+    pub async fn close(&self) -> Result<(), BridgeError> {
         Ok(self.watch.close().await?)
     }
 }

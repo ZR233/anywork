@@ -129,7 +129,7 @@ async fn terminal(
         .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
         .await?;
     let observed = tokio::time::timeout(deadline, async {
-        let mut watch = reader.watch(None, demand).await?;
+        let watch = reader.watch(None, demand).await?;
         loop {
             let frame = watch
                 .next()

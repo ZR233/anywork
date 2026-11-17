@@ -229,7 +229,7 @@ async fn closing_current_joins_metadata_and_body_watches_then_reopens_the_live_o
             .runtime
             .open_current_reader(id, CURRENT_PROTOCOL_VERSION, demand)
             .await?;
-        let mut metadata = reader.watch(None, demand).await?;
+        let metadata = reader.watch(None, demand).await?;
         ensure!(matches!(
             metadata.next().await?,
             Some(CurrentFrame::Reset { .. })
@@ -250,7 +250,7 @@ async fn closing_current_joins_metadata_and_body_watches_then_reopens_the_live_o
         }
         let reference = reference.context("live response body reference")?;
         let owner = reader.snapshot(demand).await?.revision.owner_id;
-        let mut body = reader
+        let body = reader
             .watch_body(
                 reference,
                 ContentRange {

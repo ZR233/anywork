@@ -1070,7 +1070,7 @@ pub(crate) async fn watch(
 async fn run_current_watch(
     state: &AppState,
     owner: &TimelineOwner,
-    mut watch: CurrentWatch,
+    watch: CurrentWatch,
     sender: mpsc::Sender<Result<Event, Infallible>>,
 ) {
     loop {
@@ -1190,7 +1190,7 @@ pub(crate) async fn body_watch(
 async fn run_body_watch(
     state: &AppState,
     owner: &TimelineOwner,
-    mut watch: pl_studio_runtime::CurrentBodyWatch,
+    watch: pl_studio_runtime::CurrentBodyWatch,
     sender: mpsc::Sender<Result<Event, Infallible>>,
 ) {
     loop {

@@ -599,7 +599,7 @@ async fn wait_for_input(
         }
     };
     let result = async {
-        let mut watch = reader.watch(None, current_demand).await?;
+        let watch = reader.watch(None, current_demand).await?;
         let watched = async {
             loop {
                 let frame = watch.next().await?.context("任务状态流提前结束")?;
