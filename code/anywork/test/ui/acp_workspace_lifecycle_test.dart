@@ -136,12 +136,6 @@ void main() {
     final draft = harness.client.drafts.composer('thread');
     expect(draft.state.draft, 'ACP 消息');
 
-    Finder configOverflowButton() => find
-        .descendant(
-          of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
-          matching: find.byType(TextButton),
-        )
-        .first;
     Finder configControl(bool grouped) => find.byKey(
       ValueKey(
         AcpViewKeyValues.configControl(
@@ -172,12 +166,10 @@ void main() {
       gates.add(gate);
       harness.port.configureResult = gate;
       if (grouped == null) {
-        await tester.tap(configOverflowButton());
-        await tester.pumpAndSettle();
-        await tester.tap(booleanPill());
+        await tester.tap(
+          find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+        );
       } else {
-        await tester.tap(configOverflowButton());
-        await tester.pumpAndSettle();
         await tester.tap(selectAnchorButton(grouped));
         await tester.pumpAndSettle();
         if (grouped) expect(find.text('服务端分组'), findsWidgets);
@@ -241,30 +233,25 @@ void main() {
       canonical: options(),
       retainedDraft: 'ACP 消息',
     );
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
     expect(find.textContaining('回答质量 · 标准质量'), findsOneWidget);
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
     await configure(
       grouped: true,
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',
     );
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
     expect(find.textContaining('分析深度 · 深入分析'), findsOneWidget);
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
     await configure(
       canonical: options(groupedChanged: true),
       retainedDraft: 'ACP 消息',
     );
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
-    expect(tester.widget<SwitchListTile>(booleanPill()).onChanged, isNotNull);
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
+    expect(
+      tester
+          .widget<Switch>(
+            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          )
+          .onChanged,
+      isNotNull,
+    );
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(3),
@@ -296,8 +283,17 @@ void main() {
     expect(harness.owner.state.activeRun, run);
     expect(harness.owner.state.sendPending, isFalse);
     expect(harness.owner.state.configPending, isFalse);
-    expect(tester.widget<TextButton>(configOverflowButton()).onPressed, isNull);
-    await tester.tap(configOverflowButton());
+    expect(
+      tester
+          .widget<Switch>(
+            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          )
+          .onChanged,
+      isNull,
+    );
+    await tester.tap(
+      find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+    );
     await flushUi();
     expect(
       harness.port.calls.where((call) => call.$1 == 'configure'),
@@ -525,9 +521,14 @@ void main() {
       harness.port.calls.where((call) => call.$1 == 'configure'),
       hasLength(4),
     );
-    await tester.tap(configOverflowButton());
-    await tester.pumpAndSettle();
-    expect(tester.widget<SwitchListTile>(booleanPill()).value, isTrue);
+    expect(
+      tester
+          .widget<Switch>(
+            find.descendant(of: booleanPill(), matching: find.byType(Switch)),
+          )
+          .value,
+      isTrue,
+    );
     expect(tester.takeException(), isNull);
   });
 }

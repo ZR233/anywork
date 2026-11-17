@@ -6,17 +6,26 @@ import 'package:anywork_client/acp_sessions.dart';
 /// Supplies source frames and records boundary calls, without Client semantics.
 final class ControlledAcpBusinessPort implements AcpBusinessPort {
   final calls = <(String, Object)>[];
+  final enteredOpen = Completer<void>();
   final sources = Queue<ControlledAcpObservation>();
   Completer<AcpSessionObservationPort>? admission;
   Object? commandError;
   Completer<AcpRunIdView>? promptResult;
   Completer<void>? configureResult;
+  final enteredCommit = Completer<void>();
+  Completer<void>? commitDraftResult;
+  Object? commitDraftError;
   Completer<void>? modeResult;
   Completer<void>? answerResult;
   Completer<void>? interruptResult;
   late AcpRunIdView run;
   late AcpBusinessSnapshotView snapshotValue;
-  late AcpBusinessCloseView closeValue;
+  AcpBusinessCloseView closeValue = AcpBusinessCloseView(
+    localComplete: true,
+    sdkFinished: true,
+    cleanupTimedOut: false,
+    unfinishedControls: false,
+  );
   late AcpListSessionsResponseView listValue;
 
   T record<T>(String name, Object request, T result) {
@@ -30,7 +39,16 @@ final class ControlledAcpBusinessPort implements AcpBusinessPort {
     OpenAcpSessionRequestView request,
   ) async {
     calls.add(('open', request));
+    if (!enteredOpen.isCompleted) enteredOpen.complete();
     return admission == null ? sources.removeFirst() : await admission!.future;
+  }
+
+  @override
+  Future<void> commitDraft(AcpSessionTargetView target) async {
+    calls.add(('commitDraft', target));
+    if (!enteredCommit.isCompleted) enteredCommit.complete();
+    if (commitDraftError case final error?) throw error;
+    await commitDraftResult?.future;
   }
 
   @override
@@ -86,6 +104,7 @@ final class ControlledAcpObservation implements AcpSessionObservationPort {
 
   final Queue<AcpSessionFrameView> frames;
   final enteredRead = Completer<void>();
+  final waitingForFrame = Completer<void>();
   Completer<AcpSessionFrameView?>? read;
   Completer<void>? cleanup;
   Object? readError;
@@ -103,6 +122,7 @@ final class ControlledAcpObservation implements AcpSessionObservationPort {
     if (frames.isNotEmpty) return frames.removeFirst();
     if (eof) return null;
     read = Completer<AcpSessionFrameView?>();
+    if (!waitingForFrame.isCompleted) waitingForFrame.complete();
     return read!.future;
   }
 

@@ -1091,24 +1091,24 @@
       stage: 'start',
       acpAccountId: 'acp.codex',
       initialDraft: '排查连接池并发超时重试的退避抖动参数，并补充单元测试。',
-      label: '起始页 · ACP 智能体 Codex（同构三槽 + 动态思考强度）',
-      hint: '去掉右上角切换器，直接在输入卡「模型」菜单选中 Codex (ACP)：模式（自动执行/仅规划/只读）、子模型与思考强度与普通会话共享同一三槽位置；在子模型列表把 gpt-5.4 切到 gpt-6.1-sol 时思考强度原位退回 —（零位移）。'
+      label: '起始页 · ACP 智能体 Codex（服务端动态配置）',
+      hint: 'ACP 配置来自当前真实草稿，按服务端名称、类型和顺序动态呈现；更换目录重新准备，首次发送复用当前 session。SSH 业务根沿原工作区绑定。'
     },
     {
       id: 'start-acp-agy',
       group: 'start',
       stage: 'start',
       acpAccountId: 'acp.agy',
-      label: '起始页 · ACP 智能体 Antigravity（分组模型 + ⚙ 扩展项）',
-      hint: '选中 Antigravity (ACP) 后模型菜单支持按供应商分组选模；除「模式 / 模型 / 思考强度」三槽外，其余布尔开关（AI Credits）与终端策略下拉项按服务端返回动态绘制在「⚙ 调优」浮层中。'
+      label: '起始页 · ACP 智能体 Antigravity（协议顺序与混合配置）',
+      hint: 'ACP 配置来自当前真实草稿，按服务端名称、类型和顺序动态呈现；更换目录重新准备，首次发送复用当前 session。SSH 业务根沿原工作区绑定。'
     },
     {
       id: 'start-acp-grok',
       group: 'start',
       stage: 'start',
       acpAccountId: 'acp.grok',
-      label: '起始页 · ACP 智能体 Grok Build（146 模型搜索 + 静默降级）',
-      hint: 'Grok Build 仅返回 category:"model"（146 个模型），不返回 mode 与 thought_level：模式槽静默收起、思考强度保持 60px 灰态 —，模型菜单内置实时搜索；且因 promptCapabilities.image 为 false，贴图或选图时给出明确提示。'
+      label: '起始页 · ACP 智能体 Grok Build（长选项列表）',
+      hint: 'ACP 配置来自当前真实草稿，按服务端名称、类型和顺序动态呈现；更换目录重新准备，首次发送复用当前 session。SSH 业务根沿原工作区绑定。'
     },
     {
       id: 'start-acp-deferred',
@@ -1116,8 +1116,8 @@
       stage: 'start',
       acpAccountId: 'acp.codex',
       acpDeferred: true,
-      label: '起始页 · ACP 待首次连接（未预探测模型回退态）',
-      hint: '新建页处于新建工作树尚未创建或首次认证前、无法提前探测模型列表时：模型槽优雅显示 [CX] Codex ⌄，模式/思考强度保持静默只读占位，点击 ↑ 即可一气呵成完成工作区创建、ACP 握手并提交首条消息。'
+      label: '起始页 · ACP 草稿准备中',
+      hint: 'ACP 配置来自当前真实草稿，按服务端名称、类型和顺序动态呈现；更换目录重新准备，首次发送复用当前 session。SSH 业务根沿原工作区绑定。'
     },
     {
       id: 'start-acp-ssh-blocked',
@@ -1125,8 +1125,8 @@
       stage: 'start',
       acpAccountId: 'acp.codex',
       initialDraft: '请排查远端仓库构建脚本为什么未产生预编译产物。',
-      label: '起始页 · SSH 远端项目选 ACP（内联阻断与一键恢复）',
-      hint: '当前本地 ACP 服务不支持在 SSH 远端主机拉起进程：外层项目与工作区选择器原位保留，输入卡上方提示阻断原因并提供「改用内置模型」或「切回本地项目」一键恢复。'
+      label: '起始页 · SSH 远端项目选 ACP（宿主协议与远程工作区）',
+      hint: 'ACP 配置来自当前真实草稿，按服务端名称、类型和顺序动态呈现；更换目录重新准备，首次发送复用当前 session。SSH 业务根沿原工作区绑定。'
     },
 
     // Group 2: Runtime Session Composer & Locked Configuration Matrix
@@ -1143,8 +1143,8 @@
       group: 'composer',
       stage: 'session',
       acpAccountId: 'acp.agy',
-      label: 'ACP 会话（Antigravity）· 分组模型 + ⚙ 布尔/下拉动态绘制',
-      hint: '已进入 Antigravity (ACP) 会话：三联槽位与普通会话完全一致，额外返回的 use_ai_credits 布尔开关与 terminal_policy 单选列表自动收纳入「⚙ 调优」浮层动态渲染，不挤压主输入栏高度。'
+      label: 'ACP 会话（Antigravity）· 服务端布尔与下拉动态绘制',
+      hint: '已进入 Antigravity (ACP) 会话：所有配置按服务端名称、类型与返回顺序直接呈现；下拉保留搜索与分组，布尔配置直接显示开关，窄窗自然换行。'
     },
     {
       id: 'acp-claude-legacy',
@@ -1171,7 +1171,7 @@
       acpAccountId: 'acp.codex',
       initialDraft: '补充关闭阶段的连接池句柄泄漏断言。',
       label: 'ACP 运行中 · 与普通会话一致的零位移锁定 + 并发拟稿',
-      hint: 'ACP 会话轮次执行期间与糊来帮内置会话体验 100% 一致：模式、子模型、思考强度及 ⚙ 调优全部等宽置灰只读，文本框与贴图随时可改，主圆钮随草稿原位切换 ■ / ↑。'
+      hint: 'ACP 会话轮次执行期间与糊来帮内置会话体验 100% 一致：全部服务端动态配置等宽置灰只读，文本框与贴图随时可改，主圆钮随草稿原位切换 ■ / ↑。'
     },
     {
       id: 'submission-failed',

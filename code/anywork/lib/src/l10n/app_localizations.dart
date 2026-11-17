@@ -12440,6 +12440,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Missing command'**
   String get timelineLspStateMissingCommand;
+
+  /// No description provided for @acpDraftUseCurrentConfiguration.
+  ///
+  /// In en, this message translates to:
+  /// **'Use current configuration'**
+  String get acpDraftUseCurrentConfiguration;
 }
 
 class _AppLocalizationsDelegate

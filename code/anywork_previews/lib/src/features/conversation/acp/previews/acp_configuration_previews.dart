@@ -123,8 +123,10 @@ Widget acpStartComposerPreview() => _acpPreviewShell(
       text: '梳理当前仓库的 ACP 会话状态流转，并检查组件边界。',
       accountId: 'preview-agent',
       serviceEnabled: true,
+      ready: true,
     ),
     modelSelector: _startModelSelector(),
+    configurationBar: _acpConfigurationBar(enabled: true),
     onDraftChanged: (_) {},
     onSubmit: () {},
   ),
@@ -143,9 +145,11 @@ Widget acpStartComposerLockedPreview() => _acpPreviewShell(
       text: '补充检查失败重试路径。',
       accountId: 'preview-agent',
       serviceEnabled: true,
+      ready: true,
       submitting: true,
     ),
     modelSelector: _startModelSelector(enabled: false),
+    configurationBar: _acpConfigurationBar(enabled: false),
     onDraftChanged: (_) {},
     onSubmit: () {},
   ),
@@ -208,7 +212,7 @@ Widget _acpConfigurationBar({required bool enabled}) => AcpConfigurationBar(
 Widget acpConfigurationWidePreview() =>
     _acpPreviewShell(_acpConfigurationBar(enabled: true));
 
-@Preview(name: 'ACP 服务端配置栏 · 窄窗收纳', group: 'ACP', size: Size(340, 160))
+@Preview(name: 'ACP 服务端配置栏 · 窄窗换行', group: 'ACP', size: Size(340, 260))
 Widget acpConfigurationNarrowPreview() =>
     _acpPreviewShell(_acpConfigurationBar(enabled: true));
 

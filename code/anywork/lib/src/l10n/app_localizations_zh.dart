@@ -6620,4 +6620,7 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get timelineLspStateMissingCommand => '缺少命令';
+
+  @override
+  String get acpDraftUseCurrentConfiguration => '使用当前配置';
 }

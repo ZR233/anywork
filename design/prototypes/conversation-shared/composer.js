@@ -778,7 +778,7 @@
         icons(this.reasonEl);
       }
 
-      // 5. Sync Unified 3+1 Route Selector Bar (Mode · Model/ACP · Thought · + Extra Tuning)
+      // 5. Shared configuration area: Native selectors or protocol-ordered ACP controls.
       const botManaged = s.stage === 'session' && s.frozenThread.botManaged && !locks.isAcp;
       const routeUnavailable = s.stage === 'session' && !s.frozenThread.routeAvailable;
       const acpPending = s.backendKind === 'acp' ? s.acpConfigPending : null;
@@ -788,6 +788,7 @@
         backendKind: s.backendKind,
         acpAccountId: s.acpAccountId,
         deferred: schema.deferred,
+        dynamicOptions: schema.dynamicOptions || [],
         pendingId: acpPending?.configId || null,
         targetType: s.targetType,
         projectId: s.projectId,
@@ -816,7 +817,7 @@
       if (nextRouteSig !== this.routeSignature) {
         this.routeSignature = nextRouteSig;
         const isAcp = schema.kind === 'acp';
-        const showModeSlot = Boolean(schema.modeSlot);
+        const showModeSlot = !isAcp && Boolean(schema.modeSlot);
         const modeOpts = schema.modeSlot?.flatOptions || schema.modeSlot?.options || [];
         const modeTitle = schema.modeSlot?.name || '工作模式';
         const modeCurrentLabel = schema.modeSlot?.currentLabel || mode.label;
@@ -827,11 +828,11 @@
           ? (hasAcpModelSlot ? schema.modelSlot.currentLabel : (schema.account?.name || 'ACP'))
           : model.name;
         const modelTriggerTitle = isAcp
-          ? `${schema.account?.name || 'ACP'}${hasAcpModelSlot ? ' / ' + schema.modelSlot.currentLabel : ''}${schema.deferred ? '（待首条启动后加载）' : ''}`
+          ? `${schema.account?.name || 'ACP'}${hasAcpModelSlot ? ' / ' + schema.modelSlot.currentLabel : ''}${schema.deferred ? '（正在准备配置）' : ''}`
           : `主智能体模型：${model.accountName} / ${model.name}`;
         const modelPending = Boolean(acpPending && schema.modelSlot && acpPending.configId === schema.modelSlot.id);
 
-        const showThoughtSlot = !isAcp || (!schema.deferred && (Boolean(schema.thoughtSlot) || hasAcpModelSlot));
+        const showThoughtSlot = !isAcp;
         const thoughtOptions = isAcp
           ? (schema.thoughtSlot?.flatOptions || schema.thoughtSlot?.options || [])
           : (model.efforts || []).map(ef => ({ value: ef, name: ef }));
@@ -839,7 +840,7 @@
         const thoughtCurrentLabel = schema.thoughtSlot?.currentLabel || thoughtCurrentVal || '—';
         const thoughtPending = Boolean(acpPending && schema.thoughtSlot && acpPending.configId === schema.thoughtSlot.id);
 
-        const showExtraSlot = schema.extraOptions.length > 0;
+        const showExtraSlot = !isAcp && schema.extraOptions.length > 0;
         const extraPending = Boolean(acpPending && schema.extraOptions.some(o => o.id === acpPending.configId));
         const hasExtraActive = schema.extraOptions.some(o =>
           o.type === 'boolean' ? Boolean(o.currentValue) : (o.currentValue && o.currentValue !== 'workspace_safe')
@@ -1043,6 +1044,40 @@
             ` : ''}
           `}
         `;
+
+        if (isAcp) {
+          for (const option of schema.dynamicOptions || []) {
+            const anchor = document.createElement('div');
+            anchor.className = 'cv-menu-anchor';
+            if (option.type === 'boolean') {
+              anchor.innerHTML = `<button type="button" class="cv-quiet-trigger"
+                role="switch" aria-checked="${Boolean(option.currentValue)}"
+                ${!locks.extraEditable ? 'disabled' : ''} title="${escape(option.description || option.name)}">
+                <span>${escape(option.name)}</span><span>${option.currentValue ? '✓' : '○'}</span></button>`;
+              anchor.querySelector('button').addEventListener('click', () =>
+                this.controller.setAcpConfigValue(option.id, !option.currentValue));
+            } else {
+              const choices = option.flatOptions || [];
+              const selected = choices.find(value => value.value === option.currentValue);
+              anchor.innerHTML = `<button type="button" class="cv-quiet-trigger"
+                data-dynamic-trigger aria-haspopup="menu" aria-expanded="false"
+                ${!locks.extraEditable ? 'disabled' : ''} title="${escape(option.description || option.name)}">
+                <span>${escape(option.name)} · ${escape(selected?.name || option.currentValue)}</span>
+                <span class="cv-caret">${icon('chevron-down')}</span></button>
+                <div class="cv-menu align-right" role="menu" hidden>${choices.map(value =>
+                  `<button type="button" class="cv-menu-item" data-dynamic-value="${escape(value.value)}">
+                    <span>${escape(value.name)}</span></button>`).join('')}</div>`;
+              const trigger = anchor.querySelector('[data-dynamic-trigger]');
+              const panel = anchor.querySelector('[role="menu"]');
+              trigger.addEventListener('click', () => this.menuManager.toggle(`acp:${option.id}`, trigger, panel, true));
+              anchor.querySelectorAll('[data-dynamic-value]').forEach(button => button.addEventListener('click', () => {
+                this.menuManager.closeAll();
+                this.controller.setAcpConfigValue(option.id, button.dataset.dynamicValue);
+              }));
+            }
+            this.routeBarEl.append(anchor);
+          }
+        }
 
         const modelPanel = this.routeBarEl.querySelector('[data-menu-panel="model"]');
         const modelResultsEl = modelPanel?.querySelector('.cv-model-menu-results');

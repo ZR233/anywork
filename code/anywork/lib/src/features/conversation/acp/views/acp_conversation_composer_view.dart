@@ -7,6 +7,7 @@ import '../../../../app/theme/studio_tokens.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../../../../shared/studio_chrome.dart';
 import '../../composer/widgets/composer_attachments.dart';
+import '../../../../shared/composer_input_frame.dart';
 import '../../composer/widgets/multiline_enter_shortcuts.dart';
 import '../../composer/widgets/composer_paste_action.dart';
 import '../state/acp_view_state.dart';
@@ -54,6 +55,7 @@ class AcpConversationComposerView extends StatefulWidget {
 
 class _AcpConversationComposerViewState
     extends State<AcpConversationComposerView> {
+  final _focus = FocusNode();
   late TextEditingController _controller = TextEditingController(
     text: widget.state.draftText,
   );
@@ -103,6 +105,7 @@ class _AcpConversationComposerViewState
   @override
   void dispose() {
     _controller.dispose();
+    _focus.dispose();
     super.dispose();
   }
 
@@ -181,6 +184,7 @@ class _AcpConversationComposerViewState
       child: TextField(
         key: ValueKey(AcpViewKeyValues.composerInput(state.threadId)),
         controller: _controller,
+        focusNode: _focus,
         minLines: widget.compact ? 1 : 2,
         maxLines: widget.compact ? 4 : 8,
         textInputAction: TextInputAction.send,
@@ -223,78 +227,50 @@ class _AcpConversationComposerViewState
       );
     }
 
-    return StudioPanel(
-      backgroundColor: colors.surfaceContainerLowest,
-      borderColor: widget.dragging ? colors.primary : colors.outlineVariant,
-      radius: 14,
-      padding: widget.compact
-          ? const EdgeInsets.fromLTRB(12, 8, 10, 6)
-          : const EdgeInsets.fromLTRB(14, 10, 10, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (state.attachments.isNotEmpty) ...[
-            AttachmentDraftRail(
-              attachments: state.attachments,
-              enabled: !state.submitting,
-              onRemove: widget.onRemoveAttachment,
-            ),
-            const SizedBox(height: 8),
-          ],
-          editor,
-          if (blockerText != null && isErrorBlocker) ...[
-            const SizedBox(height: 6),
-            StudioInlineMessage(
-              icon: isErrorBlocker
-                  ? Icons.error_outline_rounded
-                  : Icons.info_outline_rounded,
-              message: blockerText,
-              color: isErrorBlocker ? colors.error : colors.onSurfaceVariant,
-            ),
-          ],
-          if (state.draftError case final draftErr?) ...[
-            const SizedBox(height: 6),
-            StudioInlineMessage(
-              icon: Icons.error_outline_rounded,
-              message: draftErr,
-              color: colors.error,
-            ),
-          ],
-          const SizedBox(height: 6),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              AttachmentMenu(
-                enabled: state.canAttach,
-                localCapabilities: state.localCapabilities,
-                remoteCapabilities: state.remoteCapabilities,
-                onPickLocal: widget.onPickLocalAttachments,
-                onAddUrl: () => _promptRemoteUrl(context),
-              ),
-              if (widget.configurationBar case final configBar?) ...[
-                const SizedBox(width: 4),
-                Expanded(child: configBar),
-              ] else
-                const Spacer(),
-              const SizedBox(width: 8),
-              _PrimaryComposerButton(
-                key: ValueKey(
-                  AcpViewKeyValues.composerPrimaryAction(state.threadId),
-                ),
-                isRunning: state.isRunning,
-                canInterrupt: state.canInterrupt,
-                canSend: canSubmitNow,
-                submitting: state.submitting,
-                interrupting: state.interrupting,
-                disabledTooltip: blockerText,
-                onSend: _submit,
-                onInterrupt: widget.onInterrupt,
-              ),
-            ],
-          ),
-        ],
+    return ComposerInputFrame(
+      focusNode: _focus,
+      compact: widget.compact,
+      dragging: widget.dragging,
+      configuration: widget.configurationBar,
+      attachmentAction: AttachmentMenu(
+        enabled: state.canAttach,
+        localCapabilities: state.localCapabilities,
+        remoteCapabilities: state.remoteCapabilities,
+        onPickLocal: widget.onPickLocalAttachments,
+        onAddUrl: () => _promptRemoteUrl(context),
       ),
+      primaryAction: _PrimaryComposerButton(
+        key: ValueKey(AcpViewKeyValues.composerPrimaryAction(state.threadId)),
+        isRunning: state.isRunning,
+        canInterrupt: state.canInterrupt,
+        canSend: canSubmitNow,
+        submitting: state.submitting,
+        interrupting: state.interrupting,
+        disabledTooltip: blockerText,
+        onSend: _submit,
+        onInterrupt: widget.onInterrupt,
+      ),
+      body: [
+        if (state.attachments.isNotEmpty)
+          AttachmentDraftRail(
+            attachments: state.attachments,
+            enabled: !state.submitting,
+            onRemove: widget.onRemoveAttachment,
+          ),
+        editor,
+        if (blockerText != null && isErrorBlocker)
+          StudioInlineMessage(
+            icon: Icons.error_outline_rounded,
+            message: blockerText,
+            color: colors.error,
+          ),
+        if (state.draftError case final error?)
+          StudioInlineMessage(
+            icon: Icons.error_outline_rounded,
+            message: error,
+            color: colors.error,
+          ),
+      ],
     );
   }
 }

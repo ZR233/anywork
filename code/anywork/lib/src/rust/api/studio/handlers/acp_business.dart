@@ -7,6 +7,7 @@ import '../../../frb_generated.dart';
 import '../types/acp.dart';
 import '../types/acp_business.dart';
 import '../types/acp_business/content.dart';
+import '../types/delegation.dart';
 import '../types/error.dart';
 import 'acp_business/feed.dart';
 
@@ -17,6 +18,11 @@ Future<BridgeAcpSessionObservation> openAcpSession({
 }) => RustLib.instance.api.crateApiStudioHandlersAcpBusinessOpenAcpSession(
   request: request,
 );
+
+Future<void> commitAcpDraft({required BridgeAcpSessionTarget target}) => RustLib
+    .instance
+    .api
+    .crateApiStudioHandlersAcpBusinessCommitAcpDraft(target: target);
 
 Future<BridgeAcpRunId> promptAcpSession({
   required BridgeAcpPromptRequest request,

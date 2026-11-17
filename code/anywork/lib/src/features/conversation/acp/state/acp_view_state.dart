@@ -30,7 +30,6 @@ abstract final class AcpViewKeyValues {
     String valueId,
   ) => ('acp-config-choice', configId, valueId);
   static const String configLegacyMode = 'acp-config-legacy-mode';
-  static const String configOverflow = 'acp-config-overflow';
   static (String, String) permissionDock(String permissionId) =>
       ('acp-permission', permissionId);
   static (String, String, String) permissionOption(
@@ -62,6 +61,9 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
     String? brandKey,
     @Default(false) bool submitting,
     @Default(false) bool serviceEnabled,
+    @Default(false) bool ready,
+    @Default(false) bool preparing,
+    String? preparedThreadId,
     @Default(<AttachmentDraftView>[])
     List<AttachmentDraftView> stagedAttachments,
     String? failureMessage,
@@ -72,6 +74,7 @@ abstract class AcpStartComposerViewState with _$AcpStartComposerViewState {
   bool get canCreate =>
       accountId != null &&
       serviceEnabled &&
+      ready &&
       !submitting &&
       (text.trim().isNotEmpty || stagedAttachments.isNotEmpty);
 }
@@ -372,28 +375,6 @@ abstract class AcpConfigurationViewState with _$AcpConfigurationViewState {
   }) = _AcpConfigurationViewState;
 
   bool get isVisible => controls.isNotEmpty || pending || errorMessage != null;
-
-  List<AcpConfigControlPresentation> get primaryControls => [
-    for (final category in const [
-      AcpConfigCategoryKind.mode,
-      AcpConfigCategoryKind.model,
-      AcpConfigCategoryKind.thoughtLevel,
-    ])
-      ?controls
-          .where(
-            (control) =>
-                control is AcpSelectConfigControl &&
-                    control.category == category ||
-                control is AcpLegacyModeConfigControl &&
-                    category == AcpConfigCategoryKind.mode,
-          )
-          .firstOrNull,
-  ];
-
-  List<AcpConfigControlPresentation> get extraControls {
-    final primary = primaryControls;
-    return controls.where((control) => !primary.contains(control)).toList();
-  }
 }
 
 enum AcpComposerBlockerKind {

@@ -12,6 +12,7 @@ import '../widgets/composer_attachments.dart';
 import '../widgets/multiline_enter_shortcuts.dart';
 import '../widgets/composer_paste_action.dart';
 import 'composer_support_views.dart';
+import '../../../../shared/composer_input_frame.dart';
 
 /// 原因区的最大高度：三行文案在窄矮窗口里换行时改在区内滚动，不撑破底栏。
 const double _composerReasonMaxHeight = 84;
@@ -195,143 +196,88 @@ class PromptComposerViewState extends State<PromptComposerView> {
         )
         .toList();
     final attachmentEnabled = widget.state.enabled;
-    final border = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(widget.creationCard ? 12 : 14),
-      borderSide: BorderSide(
-        color: _dragging
-            ? colors.primary
-            : colors.outlineVariant.withValues(alpha: 0.86),
+    final panel = ComposerInputFrame(
+      focusNode: _inputFocus,
+      creationCard: widget.creationCard,
+      compact: widget.compact,
+      dragging: _dragging,
+      configuration: widget.selectorBar,
+      attachmentAction: AttachmentMenu(
+        enabled: attachmentEnabled,
+        localCapabilities: localCapabilities,
+        remoteCapabilities: remoteCapabilities,
+        onPickLocal: _pickLocalAttachments,
+        onAddUrl: _showUrlDialog,
       ),
-    );
-    // 整个 Composer 共用一层官方输入装饰；焦点直接来自编辑器，不另存状态。
-    final panel = Material(
-      type: MaterialType.transparency,
-      child: ListenableBuilder(
-        listenable: _inputFocus,
-        builder: (context, child) => InputDecorator(
-          isFocused: _inputFocus.hasFocus,
-          decoration: InputDecoration(
-            filled: true,
-            fillColor: colors.surfaceContainerLowest,
-            contentPadding: widget.compact
-                ? const EdgeInsets.fromLTRB(12, 6, 10, 6)
-                : const EdgeInsets.fromLTRB(12, 8, 10, 10),
-            border: border,
-            enabledBorder: border,
-            focusedBorder: border.copyWith(
-              borderSide: BorderSide(color: colors.primary, width: 2),
+      primaryAction: _primaryActionButton(context, action),
+      body: [
+        if (composer.attachments.isNotEmpty)
+          AttachmentDraftRail(
+            attachments: composer.attachments,
+            enabled: attachmentEnabled,
+            onRemove: (id) => widget.actions.removeAttachment(id),
+          ),
+        Actions(
+          actions: {
+            PasteTextIntent: ComposerPasteAction(
+              canPaste: () => widget.state.enabled,
+              paste: _pasteClipboard,
+            ),
+          },
+          // Enter 提交由文本框的 `TextInputAction.send` 交给平台文本输入完成，
+          // 与主按钮共用 [_submit] 的准入判定；Shift+Enter 是唯一的局部换行动作。
+          child: MultilineEnterShortcuts(
+            controller: _controller,
+            child: TextField(
+              key: StudioDriverKeys.composerInput,
+              controller: _controller,
+              focusNode: _inputFocus,
+              autofocus: widget.creationCard,
+              enabled: widget.state.enabled,
+              minLines: widget.compact ? 2 : 3,
+              maxLines: 8,
+              textInputAction: TextInputAction.send,
+              // 提交后保留焦点：排队中的下一次输入不必重新点击输入区。
+              onEditingComplete: () {},
+              onSubmitted: (_) => _submit(),
+              decoration: InputDecoration(
+                hintText: context.l10n.composerHint,
+                isDense: true,
+                filled: false,
+                contentPadding: const EdgeInsets.symmetric(vertical: 8),
+                // 状态边框也显式关闭，避免再次继承主题形成内框。
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+              ),
+              onChanged: widget.actions.updateText,
             ),
           ),
-          child: child,
         ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (composer.attachments.isNotEmpty)
-              AttachmentDraftRail(
-                attachments: composer.attachments,
-                enabled: attachmentEnabled,
-                onRemove: (id) => widget.actions.removeAttachment(id),
-              ),
-            Actions(
-              actions: {
-                PasteTextIntent: ComposerPasteAction(
-                  canPaste: () => widget.state.enabled,
-                  paste: _pasteClipboard,
-                ),
-              },
-              // Enter 提交由文本框的 `TextInputAction.send` 交给平台文本输入完成，
-              // 与主按钮共用 [_submit] 的准入判定；Shift+Enter 是唯一的局部换行动作。
-              child: MultilineEnterShortcuts(
-                controller: _controller,
-                child: TextField(
-                  key: StudioDriverKeys.composerInput,
-                  controller: _controller,
-                  focusNode: _inputFocus,
-                  autofocus: widget.creationCard,
-                  enabled: widget.state.enabled,
-                  minLines: widget.compact ? 2 : 3,
-                  maxLines: 8,
-                  textInputAction: TextInputAction.send,
-                  // 提交后保留焦点：排队中的下一次输入不必重新点击输入区。
-                  onEditingComplete: () {},
-                  onSubmitted: (_) => _submit(),
-                  decoration: InputDecoration(
-                    hintText: context.l10n.composerHint,
-                    isDense: true,
-                    filled: false,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                    // 状态边框也显式关闭，避免再次继承主题形成内框。
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    disabledBorder: InputBorder.none,
-                  ),
-                  onChanged: widget.actions.updateText,
-                ),
+        if (composer.error != null && _showRawComposerError(composer))
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 8, 6),
+              child: Text(
+                composer.error!,
+                key: StudioDriverKeys.composerError,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: colors.error),
               ),
             ),
-            if (composer.error != null && _showRawComposerError(composer))
-              Align(
-                alignment: Alignment.centerLeft,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 2, 8, 6),
-                  child: Text(
-                    composer.error!,
-                    key: StudioDriverKeys.composerError,
-                    style: Theme.of(context).textTheme.bodySmall
-                        ?.copyWith(color: colors.error),
-                  ),
-                ),
-              ),
-            if (widget.state.targetDiagnostic case final diagnostic?)
-              ComposerTargetDiagnosticView(diagnostic: diagnostic),
-            for (final diagnostic in widget.state.additionalDiagnostics)
-              ComposerTargetDiagnosticView(diagnostic: diagnostic),
-            ?_reasonRegion(
-              context,
-              blocker: blocker,
-              continuationNote: showContinuationNote ? continuationNote : null,
-            ),
-            LayoutBuilder(
-              builder: (context, constraints) => Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  if (constraints.maxWidth < 540 && widget.selectorBar != null)
-                    widget.selectorBar!,
-                  Row(
-                    children: [
-                      AttachmentMenu(
-                        enabled: attachmentEnabled,
-                        localCapabilities: localCapabilities,
-                        remoteCapabilities: remoteCapabilities,
-                        onPickLocal: _pickLocalAttachments,
-                        onAddUrl: _showUrlDialog,
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: Wrap(
-                          alignment: WrapAlignment.end,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          spacing: 2,
-                          runSpacing: 4,
-                          children: [
-                            if (constraints.maxWidth >= 540)
-                              ?widget.selectorBar,
-                          ],
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      _primaryActionButton(context, action),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ),
+        if (widget.state.targetDiagnostic case final diagnostic?)
+          ComposerTargetDiagnosticView(diagnostic: diagnostic),
+        for (final diagnostic in widget.state.additionalDiagnostics)
+          ComposerTargetDiagnosticView(diagnostic: diagnostic),
+        ?_reasonRegion(
+          context,
+          blocker: blocker,
+          continuationNote: showContinuationNote ? continuationNote : null,
         ),
-      ),
+      ],
     );
     return DesktopFileDropTarget(
       enabled: attachmentEnabled && localCapabilities.isNotEmpty,

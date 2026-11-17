@@ -328,7 +328,7 @@ mod real_transport {
     async fn real_peer_frb_sdk_gap_keeps_original_product_completion() -> Result<()> {
         let fixture = Fixture::new("gap").await?;
         let outcome = AssertUnwindSafe(timeout(Duration::from_secs(30), async {
-        let opened = fixture.open_intent(AcpOpenIntent::Load("remote-one".into())).await?;
+        let opened = fixture.open_intent(AcpOpenIntent::Load { session_id: "remote-one".into() }).await?;
         let target = opened.target.clone();
         // Deliberately leave the ORIGINAL observation unread while the real SDK fills
         // its window. Runtime publication still completes independently of this reader.

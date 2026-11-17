@@ -1,4 +1,7 @@
 import 'package:anywork_client/acp_sessions.dart';
+import 'package:anywork_client/models.dart' as models;
+
+import '../../rust/api/studio/types/delegation.dart' as delegation;
 
 import '../../rust/api/studio/types/acp.dart' as auth;
 import '../../rust/api/studio/types/acp_business.dart' as b;
@@ -89,6 +92,32 @@ b.BridgeOpenAcpSessionRequest acpOpenToFrb(OpenAcpSessionRequestView v) =>
       threadId: v.threadId,
       intent: switch (v.intent) {
         AcpNewIntentView() => const b.BridgeAcpOpenIntent.new_(),
+        AcpDraftIntentView(
+          :final workspaceMode,
+          :final delegationMode,
+          :final delegationPreference,
+        ) =>
+          b.BridgeAcpOpenIntent.draft(
+            workspaceMode: workspaceMode.isWorktree
+                ? b.BridgeAcpWorkspaceMode.worktree
+                : b.BridgeAcpWorkspaceMode.local,
+            delegationMode: switch (delegationMode) {
+              null => null,
+              models.DelegationMode.profile =>
+                delegation.BridgeDelegationMode.profile,
+              models.DelegationMode.automatic =>
+                delegation.BridgeDelegationMode.automatic,
+            },
+            delegationPreference: switch (delegationPreference) {
+              null => null,
+              models.DelegationPreference.economy =>
+                delegation.BridgeDelegationPreference.economy,
+              models.DelegationPreference.balanced =>
+                delegation.BridgeDelegationPreference.balanced,
+              models.DelegationPreference.fast =>
+                delegation.BridgeDelegationPreference.fast,
+            },
+          ),
         AcpLoadIntentView(:final sessionId) => b.BridgeAcpOpenIntent.load(
           sessionId: b.BridgeAcpRemoteSessionId(value: sessionId.value),
         ),

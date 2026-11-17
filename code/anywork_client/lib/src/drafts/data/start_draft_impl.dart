@@ -17,7 +17,64 @@ import 'composer_draft_impl.dart';
 /// Project drafts and mode-specific route intent survive route observers.
 final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     implements StartSessionDraftOwner {
-  StartSessionDraftImpl(this._dependencies) : super(const StartSessionDraft());
+  StartSessionDraftImpl(this._dependencies) : super(const StartSessionDraft()) {
+    var bindings = {
+      for (final project
+          in _dependencies.project.value.projects?.values ??
+              const <StudioProject>[])
+        project.id: (project.path, project.sshAlias),
+    };
+    _observations.add(
+      _dependencies.project.watch((value) {
+        if (_closed) return;
+        final next = {
+          for (final project
+              in value.projects?.values ?? const <StudioProject>[])
+            project.id: (project.path, project.sshAlias),
+        };
+        final changed = [
+          for (final entry in state.projects.entries)
+            if (entry.value.acpAccountId != null &&
+                bindings[entry.key] != next[entry.key])
+              entry.key,
+        ];
+        bindings = next;
+        for (final workspaceId in changed) {
+          _invalidateAcpBinding(workspaceId);
+        }
+      }),
+    );
+    final accounts = _dependencies.accountSummaries;
+    if (accounts != null) {
+      var connections = {
+        for (final account in accounts.value.accounts)
+          account.identity: (account.acpEnabled, account.acpConnectionRevision),
+      };
+      _observations.add(
+        accounts.watch((value) {
+          if (_closed) return;
+          final next = {
+            for (final account in value.accounts)
+              account.identity: (
+                account.acpEnabled,
+                account.acpConnectionRevision,
+              ),
+          };
+          final changed = [
+            for (final entry in state.projects.entries)
+              if (entry.value.acpAccountId case final accountId?)
+                if (connections[AcpAccountIdentity(accountId)] !=
+                    next[AcpAccountIdentity(accountId)])
+                  entry.key,
+          ];
+          connections = next;
+          for (final workspaceId in changed) {
+            _invalidateAcpBinding(workspaceId);
+          }
+        }),
+      );
+    }
+  }
 
   final DraftsDependencies _dependencies;
   final List<Observation> _observations = [];
@@ -25,6 +82,15 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   final Set<String> _acpUnknown = {};
   final Map<String, int> _acpGenerations = {};
   final Map<String, Completer<void>> _acpReadyWaits = {};
+  final Map<
+    String,
+    ({int generation, String accountId, AcpConversationSession owner})
+  >
+  _acpPrepared = {};
+  final Map<String, ({int generation, Future<void> task})> _acpPreparing = {};
+  final Map<String, Map<AcpConfigId, AcpSessionConfigValueView>>
+  _acpConfigIntents = {};
+  final Map<String, AcpModeId> _acpModeIntents = {};
   final Map<
     String,
     ({
@@ -49,6 +115,16 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   final Set<String> _presentedInputIds = {};
   Future<void>? _closing;
   bool _closed = false;
+
+  void _invalidateAcpBinding(String workspaceId) {
+    _acpGenerations[workspaceId] = (_acpGenerations[workspaceId] ?? 0) + 1;
+    _acpCreatedByWorkspace.remove(workspaceId);
+    _publishAcpPreparation(
+      workspaceId,
+      AcpDraftPreparing(_acpGenerations[workspaceId]!),
+    );
+    unawaited(prepareAcp(workspaceId));
+  }
 
   @override
   ValueObservation<Map<String, List<ComposerSubmission>>> get submissions =>
@@ -149,7 +225,6 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     }
     final project = state.forProject(workspaceId);
     if (project.acpAccountId == accountId) return;
-    _acpGenerations[workspaceId] = (_acpGenerations[workspaceId] ?? 0) + 1;
     _editProject(workspaceId, project.copyWith(acpAccountId: accountId));
   }
 
@@ -185,9 +260,287 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   void _editProject(String workspaceId, StartSessionProjectDraft project) {
     if (_closed) return;
+    final previous = state.forProject(workspaceId);
+    final bindingChanged =
+        previous.acpAccountId != project.acpAccountId ||
+        previous.workspaceMode != project.workspaceMode ||
+        previous.delegationModeOverride != project.delegationModeOverride ||
+        previous.delegationPreferenceOverride !=
+            project.delegationPreferenceOverride;
+    if (bindingChanged) {
+      _acpGenerations[workspaceId] = (_acpGenerations[workspaceId] ?? 0) + 1;
+      _acpCreatedByWorkspace.remove(workspaceId);
+    }
     state = state.copyWith(
       projects: {...state.projects, workspaceId: project},
+      acpPreparations: bindingChanged
+          ? ({...state.acpPreparations}
+              ..remove(workspaceId)
+              ..addAll(
+                project.acpAccountId == null
+                    ? {}
+                    : {
+                        workspaceId: AcpDraftPreparing(
+                          _acpGenerations[workspaceId]!,
+                        ),
+                      },
+              ))
+          : state.acpPreparations,
       revision: state.revision + 1,
+    );
+    if (bindingChanged) unawaited(prepareAcp(workspaceId));
+  }
+
+  @override
+  Future<void> prepareAcp(String workspaceId, {bool retry = false}) {
+    if (_closed ||
+        _dependencies.isClosed ||
+        _acpCreatedByWorkspace.containsKey(workspaceId)) {
+      return Future.value();
+    }
+    final generation = _acpGenerations[workspaceId] ?? 0;
+    final pending = _acpPreparing[workspaceId];
+    if (pending?.generation == generation) return pending!.task;
+    final preparation = state.acpPreparations[workspaceId];
+    if (!retry &&
+        preparation?.generation == generation &&
+        (preparation is AcpDraftReady ||
+            preparation is AcpDraftFailed ||
+            preparation is AcpDraftNeedsConfiguration))
+      return Future.value();
+    final completion = Completer<void>();
+    final task = completion.future;
+    _acpPreparing[workspaceId] = (generation: generation, task: task);
+    unawaited(() async {
+      try {
+        await pending?.task;
+        await _prepareAcp(workspaceId, generation);
+      } finally {
+        if (identical(_acpPreparing[workspaceId]?.task, task))
+          _acpPreparing.remove(workspaceId);
+        completion.complete();
+      }
+    }());
+    return task;
+  }
+
+  void _publishAcpPreparation(String workspaceId, AcpDraftPreparation? value) {
+    state = state.copyWith(
+      acpPreparations: {
+        ...state.acpPreparations,
+        if (value != null) workspaceId: value,
+      }..removeWhere((key, _) => key == workspaceId && value == null),
+    );
+  }
+
+  Future<void> _prepareAcp(String workspaceId, int generation) async {
+    bool current() =>
+        !_closed &&
+        !_dependencies.isClosed &&
+        (_acpGenerations[workspaceId] ?? 0) == generation;
+    if (!current()) return;
+    final sessions = _dependencies.acpSessions;
+    if (sessions == null) {
+      if (state.forProject(workspaceId).acpAccountId != null) {
+        _publishAcpPreparation(
+          workspaceId,
+          AcpDraftFailed(
+            generation,
+            StateError('The ACP business port is not available'),
+          ),
+        );
+      }
+      return;
+    }
+    var dispatched = false;
+    var admitted = false;
+    try {
+      if (_acpUnknown.contains(workspaceId)) {
+        throw StateError('The previous ACP preparation outcome is unresolved');
+      }
+      final previous = _acpPrepared[workspaceId];
+      if (previous != null) {
+        final result = await sessions.discardDraft(previous.owner);
+        if (!result.localComplete)
+          throw StateError('Previous ACP draft cleanup is incomplete');
+        if (previous.accountId == state.forProject(workspaceId).acpAccountId) {
+          _acpConfigIntents[workspaceId] = {
+            ...?_acpConfigIntents[workspaceId],
+            ...previous.owner.configIntents,
+          };
+          if (previous.owner.modeIntent case final mode?) {
+            _acpModeIntents[workspaceId] = mode;
+          }
+        } else {
+          _acpConfigIntents.remove(workspaceId);
+          _acpModeIntents.remove(workspaceId);
+        }
+        _acpPrepared.remove(workspaceId);
+      }
+      if (!current()) return;
+      final draft = state.forProject(workspaceId);
+      if (draft.acpAccountId == null) {
+        _publishAcpPreparation(workspaceId, null);
+        return;
+      }
+      _publishAcpPreparation(workspaceId, AcpDraftPreparing(generation));
+      final account = _dependencies.accountSummaries?.value.account(
+        AcpAccountIdentity(draft.acpAccountId!),
+      );
+      if (account?.acpEnabled != true ||
+          account?.acpConnectionRevision == null) {
+        throw StateError('The ACP service is not available');
+      }
+      dispatched = true;
+      final owner = await sessions.openConversation(
+        OpenAcpSessionRequestView(
+          accountId: draft.acpAccountId!,
+          expectedConnectionRevision: BigInt.from(
+            account!.acpConnectionRevision!,
+          ),
+          workspaceId: workspaceId,
+          intent: AcpDraftIntentView(
+            workspaceMode: draft.workspaceMode,
+            delegationMode: draft.delegationModeOverride,
+            delegationPreference: draft.delegationPreferenceOverride,
+          ),
+        ),
+      );
+      admitted = true;
+      _acpPrepared[workspaceId] = (
+        generation: generation,
+        accountId: draft.acpAccountId!,
+        owner: owner,
+      );
+      if (!current()) {
+        final result = await sessions.discardDraft(owner);
+        if (!result.localComplete)
+          throw StateError('Retired ACP draft cleanup is incomplete');
+        _acpPrepared.remove(workspaceId);
+        return;
+      }
+      await _waitForAcpReady(workspaceId, owner, isCurrent: current);
+      if (_acpModeIntents[workspaceId] case final mode?) {
+        if (owner.state.configOptions != null ||
+            owner.state.modes?.availableModes.any(
+                  (value) => value.id == mode,
+                ) !=
+                true) {
+          throw StateError(
+            'A previously selected ACP mode is unavailable: ${mode.value}',
+          );
+        }
+        await _confirmAcpConfiguration(
+          workspaceId,
+          owner,
+          owner.setMode(mode),
+          current,
+        );
+      }
+      for (final entry
+          in (_acpConfigIntents[workspaceId] ??
+                  const <AcpConfigId, AcpSessionConfigValueView>{})
+              .entries) {
+        if (!current()) return;
+        final option = owner.state.configOptions
+            ?.where((value) => value.id == entry.key)
+            .firstOrNull;
+        final value = entry.value;
+        final supported = switch ((option?.kind, value)) {
+          (AcpBooleanConfigView(), AcpBooleanConfigValueView()) => true,
+          (
+            AcpSelectConfigView(options: final choices),
+            AcpSelectConfigValueView(:final value),
+          ) =>
+            switch (choices) {
+              AcpUngroupedOptionsView(:final options) => options.any(
+                (option) => option.value == value,
+              ),
+              AcpGroupedOptionsView(:final groups) => groups.any(
+                (group) => group.options.any((option) => option.value == value),
+              ),
+            },
+          _ => false,
+        };
+        if (!supported) {
+          _publishAcpPreparation(
+            workspaceId,
+            AcpDraftNeedsConfiguration(
+              generation,
+              owner.state.target!.threadId,
+              StateError(
+                'A previously selected ACP option is unavailable: ${entry.key.value}',
+              ),
+            ),
+          );
+          return;
+        }
+        await _confirmAcpConfiguration(
+          workspaceId,
+          owner,
+          owner.configure(entry.key, value),
+          current,
+        );
+      }
+      if (current())
+        _publishAcpPreparation(
+          workspaceId,
+          AcpDraftReady(generation, owner.state.target!.threadId),
+        );
+    } catch (error) {
+      if (dispatched && !admitted && error is! AcpBusinessFailureView)
+        _acpUnknown.add(workspaceId);
+      if (current()) {
+        final prepared = _acpPrepared[workspaceId];
+        _publishAcpPreparation(
+          workspaceId,
+          prepared?.owner.state.ready == true
+              ? AcpDraftNeedsConfiguration(
+                  generation,
+                  prepared!.owner.state.target!.threadId,
+                  error,
+                )
+              : AcpDraftFailed(generation, error),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmAcpConfiguration(
+    String workspaceId,
+    AcpConversationSession owner,
+    Future<void> command,
+    bool Function() isCurrent,
+  ) async {
+    // The original protocol owner settles an in-flight command when retired.
+    // A directory change wakes this waiter so the queued replacement can close it.
+    unawaited(
+      command.then<void>((_) {}, onError: (Object _, StackTrace __) {}),
+    );
+    await _waitForAcpReady(
+      workspaceId,
+      owner,
+      isCurrent: isCurrent,
+      waitForConfiguration: true,
+    );
+    await command;
+  }
+
+  @override
+  void acceptAcpConfiguration(String workspaceId) {
+    final preparation = state.acpPreparations[workspaceId];
+    final prepared = _acpPrepared[workspaceId];
+    if (preparation is! AcpDraftNeedsConfiguration ||
+        prepared == null ||
+        prepared.generation != (_acpGenerations[workspaceId] ?? 0))
+      return;
+    if (prepared.owner.state.configPending) return;
+    prepared.owner.dismissError();
+    _acpConfigIntents.remove(workspaceId);
+    _acpModeIntents.remove(workspaceId);
+    _publishAcpPreparation(
+      workspaceId,
+      AcpDraftReady(preparation.generation, preparation.threadId),
     );
   }
 
@@ -430,6 +783,8 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
   Future<bool> _createAcpSession(String workspaceId) async {
     var dispatched = false;
     var created = false;
+    ({int generation, String accountId, AcpConversationSession owner})?
+    committing;
     OperationId? frozenId;
     String? createdThreadId;
     try {
@@ -502,6 +857,7 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
                     _dependencies.selectionNavigationGeneration?.call(),
           );
         }
+        if (sent) _acpCreatedByWorkspace.remove(workspaceId);
         return sent;
       }
       if (selection.selectedProjectId != workspaceId ||
@@ -544,27 +900,48 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
       if (!current()) {
         throw StateError('ACP creation cancelled before backend dispatch');
       }
-      dispatched = true;
-      final owner = await sessions.openConversation(
-        OpenAcpSessionRequestView(
-          accountId: project.acpAccountId!,
-          expectedConnectionRevision: BigInt.from(revision),
-          workspaceId: workspaceId,
-          intent: const AcpNewIntentView(),
-        ),
+      await prepareAcp(workspaceId);
+      final prepared = _acpPrepared[workspaceId];
+      final preparation = state.acpPreparations[workspaceId];
+      if (preparation is AcpDraftFailed) throw preparation.error;
+      if (preparation is AcpDraftNeedsConfiguration) throw preparation.error;
+      if (prepared == null || prepared.generation != generation || !current()) {
+        throw StateError('ACP draft is no longer available');
+      }
+      final owner = prepared.owner;
+      await _waitForAcpReady(
+        workspaceId,
+        owner,
+        isCurrent: current,
+        waitForConfiguration: true,
       );
-      await _waitForAcpReady(workspaceId, owner);
+      // Transfer the original draft out before publication can be admitted.
+      // A concurrent binding change may prepare a replacement, but cannot close
+      // a session whose first submission is already being committed.
+      committing = prepared;
+      _acpPrepared.remove(workspaceId);
+      _acpConfigIntents[workspaceId] = owner.configIntents;
+      if (owner.modeIntent case final mode?)
+        _acpModeIntents[workspaceId] = mode;
+      _publishAcpPreparation(workspaceId, null);
+      dispatched = true;
+      await sessions.commitDraft(owner.state.target!);
       created = true;
+      committing = null;
       final target = owner.state.target!;
       createdThreadId = target.threadId;
       final composer =
           _dependencies.composer(target.threadId) as ComposerDraftImpl;
-      _acpCreatedByWorkspace[workspaceId] = (
-        generation: generation,
-        workspacePath: workspace.path,
-        sshAlias: workspace.sshAlias,
-        composer: composer,
-      );
+      if (current()) {
+        _acpCreatedByWorkspace[workspaceId] = (
+          generation: generation,
+          workspacePath: workspace.path,
+          sshAlias: workspace.sshAlias,
+          composer: composer,
+        );
+        _acpConfigIntents.remove(workspaceId);
+        _acpModeIntents.remove(workspaceId);
+      }
       await _dependencies.attachments.transferNewThread(
         workspaceId: workspaceId,
         threadId: target.threadId,
@@ -607,8 +984,24 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
                   _dependencies.selectionNavigationGeneration?.call(),
         );
       }
+      if (sent) _acpCreatedByWorkspace.remove(workspaceId);
       return sent;
     } catch (error) {
+      if (!created && committing != null && error is AcpBusinessFailureView) {
+        if (!_closed &&
+            (_acpGenerations[workspaceId] ?? 0) == committing.generation) {
+          _acpPrepared[workspaceId] = committing;
+          _publishAcpPreparation(
+            workspaceId,
+            AcpDraftReady(
+              committing.generation,
+              committing.owner.state.target!.threadId,
+            ),
+          );
+        } else {
+          await _dependencies.acpSessions!.discardDraft(committing.owner);
+        }
+      }
       if (!created && dispatched && error is! AcpBusinessFailureView) {
         _acpUnknown.add(workspaceId);
       }
@@ -692,13 +1085,16 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
 
   Future<void> _waitForAcpReady(
     String workspaceId,
-    AcpConversationSession owner,
-  ) async {
+    AcpConversationSession owner, {
+    bool Function()? isCurrent,
+    bool waitForConfiguration = false,
+  }) async {
     final completion = Completer<void>();
     _acpReadyWaits[workspaceId] = completion;
     void check(AcpConversationState value) {
       if (completion.isCompleted) return;
       if (_closed ||
+          isCurrent?.call() == false ||
           value.observationEnded ||
           value.disconnected ||
           value.error != null) {
@@ -706,17 +1102,21 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
           value.error ??
               StateError('ACP creation ended before the session was ready'),
         );
-      } else if (value.ready && !value.openPending) {
+      } else if (value.ready &&
+          !value.openPending &&
+          (!waitForConfiguration || !value.configPending)) {
         completion.complete();
       }
     }
 
     final observation = owner.source.watch(check);
+    final draftObservation = source.watch((_) => check(owner.state));
     check(owner.state);
     try {
       await completion.future;
     } finally {
       observation.cancel();
+      draftObservation.cancel();
       if (identical(_acpReadyWaits[workspaceId], completion)) {
         _acpReadyWaits.remove(workspaceId);
       }
@@ -1194,8 +1594,11 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     state = state.copyWith(
       projects: {...state.projects}..remove(workspaceId),
       preparations: {...state.preparations}..remove(workspaceId),
+      acpPreparations: {...state.acpPreparations}..remove(workspaceId),
       revision: state.revision + 1,
     );
+    _acpCreatedByWorkspace.remove(workspaceId);
+    await prepareAcp(workspaceId);
     await _dependencies.attachments.discardProject(workspaceId);
   }
 
@@ -1220,6 +1623,19 @@ final class StartSessionDraftImpl extends ReadModel<StartSessionDraft>
     }
 
     await waitFor(_pendingByWorkspace.values);
+    await waitFor(_acpPreparing.values.map((value) => value.task).toList());
+    for (final prepared in _acpPrepared.values.toList()) {
+      try {
+        final result = await _dependencies.acpSessions!.discardDraft(
+          prepared.owner,
+        );
+        if (!result.localComplete)
+          throw StateError('ACP draft cleanup is incomplete');
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureStack ??= stackTrace;
+      }
+    }
     await waitFor(_retryByInput.values);
     await waitFor(_removeTasks.values);
     await waitFor(_presentationTasks.values);

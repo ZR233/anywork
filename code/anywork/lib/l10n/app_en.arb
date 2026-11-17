@@ -3383,5 +3383,6 @@
     }
   },
   "timelineLspStatusEmpty": "No language servers configured in this workspace",
-  "timelineLspStateMissingCommand": "Missing command"
+  "timelineLspStateMissingCommand": "Missing command",
+  "acpDraftUseCurrentConfiguration": "Use current configuration"
 }

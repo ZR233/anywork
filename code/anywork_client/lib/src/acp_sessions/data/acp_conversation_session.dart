@@ -105,7 +105,8 @@ final class AcpConversationSession {
     this._observation,
     AcpOpenIntentView intent,
   ) : _history = switch (intent) {
-        AcpNewIntentView() => AcpConversationHistory.newSession,
+        AcpNewIntentView() ||
+        AcpDraftIntentView() => AcpConversationHistory.newSession,
         AcpLoadIntentView() => AcpConversationHistory.loadReplay,
         AcpResumeIntentView() => AcpConversationHistory.resumedWithoutHistory,
       } {
@@ -128,6 +129,13 @@ final class AcpConversationSession {
   bool _configFutureDone = false;
   bool _configEventSeen = false;
   final Set<AcpPermissionIdView> _answering = {};
+  final Map<AcpConfigId, AcpSessionConfigValueView> _configIntents = {};
+  AcpModeId? _modeIntent;
+
+  /// Explicit successful user selections, independent of server-owned current state.
+  Map<AcpConfigId, AcpSessionConfigValueView> get configIntents =>
+      Map.unmodifiable(_configIntents);
+  AcpModeId? get modeIntent => _modeIntent;
 
   AcpSessionTargetView? _target;
   AcpAgentCapabilitiesView? _capabilities;
@@ -505,16 +513,20 @@ final class AcpConversationSession {
     }
   }
 
-  Future<void> configure(AcpConfigId id, AcpSessionConfigValueView value) {
+  Future<void> configure(
+    AcpConfigId id,
+    AcpSessionConfigValueView value,
+  ) async {
     final target = _requireTarget();
-    return _configure(
+    await _configure(
       () => _client.configure(
         AcpConfigureRequestView(target: target, configId: id, value: value),
       ),
     );
+    _configIntents[id] = value;
   }
 
-  Future<void> setMode(AcpModeId id) {
+  Future<void> setMode(AcpModeId id) async {
     final target = _requireTarget();
     if (_configOptions != null) {
       throw AcpBusinessFailureView(
@@ -522,9 +534,10 @@ final class AcpConversationSession {
         message: 'Legacy modes are only available when configOptions is absent',
       );
     }
-    return _configure(
+    await _configure(
       () => _client.setMode(AcpSetModeRequestView(target: target, modeId: id)),
     );
+    _modeIntent = id;
   }
 
   Future<void> _configure(Future<void> Function() command) async {

@@ -39,7 +39,7 @@
       return {
         title: '创建期组件融合与双层创建台',
         items: [
-          ['统一新会话与模型融合', '去掉外层「糊来帮 / ACP」独立切换，内置模型与外部 ACP 智能体统一收纳在同一模型下拉菜单；动态配置按 3+1 槽位呈现。'],
+          ['统一新会话与模型融合', '去掉外层「糊来帮 / ACP」独立切换，内置模型与外部 ACP 智能体统一收纳在同一模型下拉菜单；ACP 配置按服务端顺序、名称和类型直接呈现。'],
           ['双层同心创建台', '起始页外层暖米环境栏收纳创建期一次性冻结项（所属项目 / 本地目录 / 新建工作树 / 分发），内层复用统一输入卡。'],
           ['外部化说明边界', '主展示区仅保留纯净真实产品控件，协议探测详情、SSH 兼容提示与预设规则均汇总在右侧检查器。']
         ]
@@ -50,7 +50,7 @@
         title: '运行期动态槽位与零位移交互准则',
         items: [
           ['创建期永久冻结', '所属项目、本地目录 / 独立工作树、子智能体分发（及 ACP 身份）在会话创建后收敛至顶栏等高只读标签。'],
-          ['3+1 动态槽位与单飞确认', '内置与 ACP 模型共享「模式 · 模型 · 思考强度 + ⚙ 调优」底栏，运行中或 ACP 往返确认期间等宽置灰，切换零位移。'],
+          ['动态配置与单飞确认', '内置与 ACP 复用输入卡与工具栏框架；ACP 所有配置直接动态呈现，运行中或 ACP 往返确认期间等宽置灰，切换零位移。'],
           ['并发拟稿与定宽主钮', '运行中文本框与附件（支持图片工具）保持可用，34×34px 定宽主圆钮在「停止 ■」「发送并继续 ↑」「收束中 ◌」「继续 ▶」间原位切换。']
         ]
       };
@@ -76,14 +76,14 @@
     if (page === 'start') {
       return {
         title: '新会话起始页与工作区输入布局',
-        subtitle: '内置模型与外部 ACP 智能体统一收纳在同一模型选择器，动态映射 3+1 配置槽位；外层环境栏管理项目（无项目 / 已有项目搜索 / 新建项目）、工作区与内置分发，协议与规则说明统一外置到右侧检查器。',
+        subtitle: '内置模型与外部 ACP 智能体统一收纳在同一模型选择器，ACP 配置按返回顺序动态渲染；外层环境栏管理项目（无项目 / 已有项目搜索 / 新建项目）、工作区与内置分发，协议与规则说明统一外置到右侧检查器。',
         footerHTML: '展示区仅呈现真实产品界面与开发任务；外部检查器汇总 ACP 协议字段、SSH 兼容性说明与预加载触发按钮。'
       };
     }
     if (page === 'composer') {
       return {
         title: '会话运行时输入框与配置锁定交互',
-        subtitle: '展示内置模型与外部 ACP 会话运行期的 3+1 动态槽位、⚙ 调优二级弹层、往返单飞确认态、运行期等宽不可交互态、并发草稿及子智能体只读底栏。',
+        subtitle: '展示内置模型与外部 ACP 会话运行期的 动态配置控件与分组选项弹层、往返单飞确认态、运行期等宽不可交互态、并发草稿及子智能体只读底栏。',
         footerHTML: '会话运行中文本框与可用附件始终允许并发编辑；当前不可更改的槽位省略锁图标保持等宽置灰（状态切换 0px 位移），所有协议及规则说明置于右侧检查器。'
       };
     }
@@ -478,15 +478,15 @@
         ? [
             { id: 'start-project', label: '内置默认' },
             { id: 'start-acp-codex', label: 'Codex (动态强度)' },
-            { id: 'start-acp-agy', label: 'Antigravity (⚙调优)' },
+            { id: 'start-acp-agy', label: 'Antigravity 动态配置' },
             { id: 'start-acp-grok', label: 'Grok (146/纯文本)' },
             { id: 'start-acp-deferred', label: '首条激活态' },
-            { id: 'start-acp-ssh-blocked', label: 'SSH 阻断' }
+            { id: 'start-acp-ssh-blocked', label: 'SSH 工作区' }
           ]
         : [
             { id: 'idle-editable', label: '内置空闲' },
             { id: 'acp-codex-idle', label: 'Codex ACP' },
-            { id: 'acp-agy-extra', label: 'Antigravity ⚙调优' },
+            { id: 'acp-agy-extra', label: 'Antigravity 动态配置' },
             { id: 'acp-claude-legacy', label: 'Claude 旧版' },
             { id: 'acp-config-pending', label: 'ACP 确认中' },
             { id: 'acp-running-locked', label: 'ACP 运行锁' }
@@ -982,7 +982,7 @@
 
       let modeStatus;
       if (locks.isSubagent) modeStatus = ['子会话只读', 'frozen'];
-      else if (schema.deferred) modeStatus = ['待首次启动后获取', 'locked'];
+      else if (schema.deferred) modeStatus = ['正在准备 ACP 草稿', 'locked'];
       else if (!locks.modeSupported) modeStatus = ['协议未返回 · 槽位省略', 'locked'];
       else if (locks.configPending && state.acpConfigPending?.configId === schema.modeSlot?.id) modeStatus = ['等待 ACP 确认中…', 'warn'];
       else if (locks.modeEditable) modeStatus = [schema.modeSlot?.kind === 'acp-legacy' ? '可切（legacy modes）' : '可切换', 'open'];
@@ -1001,7 +1001,7 @@
       let effortStatus;
       if (locks.isSubagent) effortStatus = ['冻结路由 · 只读', 'frozen'];
       else if (!locks.isStart && state.frozenThread.botManaged && !locks.isAcp) effortStatus = ['已锁 · 机器人统一设置', 'locked'];
-      else if (schema.deferred) effortStatus = ['待首次握手获取', 'locked'];
+      else if (schema.deferred) effortStatus = ['正在准备 ACP 草稿', 'locked'];
       else if (locks.configPending && state.acpConfigPending?.configId === schema.thoughtSlot?.id) modeStatus && (effortStatus = ['等待 ACP 确认中…', 'warn']);
       else if (!locks.effortSupported) effortStatus = ['已锁 · 模型无此参数', 'locked'];
       else if (locks.effortEditable) effortStatus = ['可切换', 'open'];
@@ -1036,7 +1036,7 @@
         ['工作模式', ...modeStatus],
         ['主智能体模型', ...modelStatus],
         ['思考强度', ...effortStatus],
-        ...(extraStatus ? [['⚙ 调优参数', ...extraStatus]] : []),
+        ...(extraStatus ? [['服务端配置', ...extraStatus]] : []),
         ['输入与主操作', ...composerStatus]
       ];
 

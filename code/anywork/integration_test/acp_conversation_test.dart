@@ -36,19 +36,14 @@ void main() {
       requireNativeResize: true,
     );
     debugPrint('ACP native viewport: ${jsonEncode(geometry)}');
-    final configOverflow = find.descendant(
-      of: find.byKey(const ValueKey(AcpViewKeyValues.configOverflow)),
-      matching: find.byType(TextButton),
-    );
-    expect(configOverflow.hitTestable(), findsOneWidget);
     expect(find.byType(TextField).hitTestable(), findsOneWidget);
-    await tester.tap(configOverflow);
-    await tester.pumpAndSettle();
     final booleanConfig = find.byKey(
       ValueKey(AcpViewKeyValues.configControl(acpBooleanFixture.id.value)),
     );
     expect(booleanConfig.hitTestable(), findsOneWidget);
-    await tester.tap(booleanConfig);
+    await tester.tap(
+      find.descendant(of: booleanConfig, matching: find.byType(Switch)),
+    );
     await tester.pumpAndSettle();
     final configure =
         harness.port.calls.where((call) => call.$1 == 'configure').single.$2

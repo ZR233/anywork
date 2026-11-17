@@ -15,7 +15,7 @@ impl StudioThreadFactory {
         &self,
         verified: &WorktreeLease,
         usage: &WorkspaceUsageLease,
-        preparation: &crate::thread_assembler::WorkspacePreparationOwner,
+        preparation: &impl crate::thread_assembler::WorkspaceBindingAdmission,
     ) -> Result<()> {
         self.services
             .store

@@ -29,7 +29,7 @@ class StartEnvironmentBar extends ConsumerWidget {
     return StartEnvironmentBarView(
       state: state!,
       actions: ref.read(provider.notifier),
-      projectOnly: backend.accountId != null,
+      projectOnly: false,
       enabled: backend.enabled,
       onAddProject: onAddProject,
     );
