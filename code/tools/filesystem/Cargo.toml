@@ -7,6 +7,6 @@ license = "Apache-2.0"
 [dependencies]
 pl-agent-tool = { path = "../../pl-agent-tool", features = ["typed"] }
 pl-patch = { path = "../../pl-patch" }
-schemars = "=1.2.3"
+schemars = { workspace = true }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

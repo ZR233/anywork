@@ -6,7 +6,7 @@ use pl_core::chat::{
     ChatBudget, ChatHistoryPage, ChatHistoryRequest, ChatItem, ChatItemHeader, ChatKey,
     ChatPageItem, ChatPublicationSeed, PayloadData, PayloadMode, select_payload,
 };
-use sea_orm::{ConnectionTrait, QueryResult, Value};
+use sea_orm::{ConnectionTrait, QueryResult, Value, sqlx};
 use std::{collections::BTreeMap, sync::Arc};
 
 pub(in crate::studio) mod completed;

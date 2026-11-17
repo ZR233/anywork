@@ -179,6 +179,8 @@ AI 也能使用统一的文件展示工具，把明确选择的图片或文件�
 
   Linux 本地构建需要 Clang、CMake、Ninja、pkg-config 与 GTK 3 开发包（详见 [AGENTS.md](AGENTS.md#桌面-gui)）。Linux 开发者也可使用 [项目级 Docker 构建环境](docker/linux/README.md)，无需自行安装 Rust、Flutter 和原生开发依赖；本地构建与 CI 使用同一环境，Rust 配置来自根 `rust-toolchain.toml`。
 
+  Rust 开发期间建议主动运行 `cargo update`，在清单兼容范围内升级依赖，验证后审查并提交受影响的 `Cargo.lock`。构建和 CI 继续使用已提交锁文件；依赖声明与上游能力替换规则见 [开发依赖升级与确定性构建](design/23-release-update.md#开发依赖升级与确定性构建)。
+
 ### 2. 三步开始第一个任务
 
 1. **设置 → 账号 → 添加账号**：选择账号模板（OpenAI / ChatGPT 订阅登录、DeepSeek、xAI、智谱 API / Coding Plan、小米 MiMo API / Token Plan 或 OpenAI 兼容端点），完成授权或填入 API Key。

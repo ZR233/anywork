@@ -29,13 +29,11 @@ pl-model = { workspace = true }
 pl-core = { workspace = true, features = ["sqlite"] }
 pl-tool = { workspace = true }
 pl-protocol = { workspace = true }
-pl-trace = { workspace = true }
 pl-lsp = { workspace = true }
 pl-lifecycle = { workspace = true }
 anyhow = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true }
-sqlx = { workspace = true }
 libsqlite3-sys = { workspace = true }
 serde = { workspace = true, features = ["rc"] }
 serde_json = { workspace = true }
@@ -43,7 +41,6 @@ prost = { workspace = true }
 flate2 = { workspace = true }
 schemars = { workspace = true }
 utoipa = { workspace = true }
-agent-client-protocol-schema = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 rmcp = { workspace = true, features = ["server", "transport-streamable-http-server"] }
@@ -78,11 +75,6 @@ zstd = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true }
 zeroize = { workspace = true }
-
-# 非 Linux 平台启动 ACP 官方程序走统一后台进程工厂（process-wrap）；Linux 复用 bundled
-# 受监督 worker，因此不需要该依赖。
-[target.'cfg(not(target_os = "linux"))'.dependencies]
-process-wrap = { workspace = true }
 
 [build-dependencies]
 sha2 = { workspace = true }

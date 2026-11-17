@@ -23,6 +23,12 @@
 - 若现有官方或成熟第三方方案都不能满足需求，应先调研自研范围、成本、维护风险和兼容影响，将候选方案、来源、排除理由与取舍记录在计划或交付总结中，并向用户询问是否选择自研；在用户明确选择前，不开始自研实现。等待决定期间可继续进行不改变生产实现的只读调研。
 - 本节是组件路线的特殊决策门槛。质量技能和领域 Skill 只能补充检查，不能以“无需逐项审批”、默认 fallback 或自定义平行实现绕过该门槛。
 
+### Rust 依赖维护
+
+- Rust 依赖使用默认兼容版本要求（如 `"1.2.3"`），不使用 `"=1.2.3"` 精确约束或无限制版本。开发期间建议主动运行 `cargo update`，由 Cargo 在清单范围内自动升级兼容版本，验证、审查并提交根工程及受影响独立测试工程的 `Cargo.lock`。
+- 依赖声明只保留本 crate 直接使用或明确承担功能启用职责的项，按实际用途放入普通、开发、构建或平台专用依赖；已有公共导出满足调用契约时优先复用，不另加声明约束间接依赖版本。升级时查阅官方变更与 API，上游能力满足原契约时替换手写实现并删除旧路径。
+- 开发升级与确定性构建分开：构建和 CI 使用已提交锁文件及 `--locked`，不自动运行更新。工具链、发布工具的固定版本及有明确上游缺口的既有 Git revision 与 Rust 精确版本约束分开核查；桥接运行库、Dart 包和生成器升级须按官方契约配套验证。
+
 ## 架构演进与数据迁移
 
 - 修改前理解当前架构、所有权和完整调用链，优先复用已有逻辑与抽象，沿用领域命名和测试方式，避免建立平行实现或第二份事实源。
@@ -134,7 +140,7 @@ gh pr view PR_NUMBER --repo OWNER/REPO --json body --jq .body
   cargo xtask test-project --suite desktop|native [--set smoke|full]
   ```
 
-- `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。依赖升级必须手动运行对应的依赖更新命令并审查提交新的 lockfile。
+- `build-gui` 基于已提交的 `Cargo.lock` 与 `code/anywork/pubspec.lock` 确定性构建。它允许同步缺失的远程包，但 Flutter 使用 `pub get --enforce-lockfile`，Cargo 使用 `--locked`，不会更新 lockfile 或重新解析版本；`cargo xtask`、`cargo flutter` 和 `cargo dart` 包装命令本身也使用 `--locked`。开发依赖升级遵循前文“Rust 依赖维护”；构建入口不隐式更新依赖。
 - `build-gui` 默认构建 release 并收集到 `dist/anywork-release`；`--debug` 同时选择 Flutter 与 Rust bridge 的 debug 配置，只保留 Flutter 原始 build 输出，用于日常平台编译检查，不作为发布输入。RC 与稳定发布继续使用默认 release 构建。
 - CI 可直接执行同次源码预编译并已核验摘要、平台/环境与编译工作区身份的 xtask，继续使用其原生构建、生成与测试子命令；缺失或身份错误必须失败，不以重新编译或旧缓存掩盖交接失败。普通本地命令仍使用上述 Cargo 入口。
 - Windows 稳定发布先用 `cargo xtask build-gui` 生成 bundle，再用 `release-gui stage --version <x.y.z> --bundle <路径>` 显式打包已校验的预构建输入；`stage` 不再隐式编译。CI 下游直接执行同次构建归档且已核验身份的发布工具，不重新编译工具。仅重跑失败或指定的下游作业可复用该次 run 的构件；完整重跑与过期构件不属于断点续跑保证，见 [发布与更新](design/23-release-update.md#231-版本与发布流)。
