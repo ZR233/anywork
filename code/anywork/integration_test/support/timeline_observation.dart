@@ -433,12 +433,18 @@ final class TimelineObservation {
         : row;
   }
 
-  TimelineCurrentDisplay currentDisplayForWork(String blockId) {
+  // This is the Main container for multiple Works, not a member's Turn owner.
+  // Member identity must be checked on the Work head and mounted renderer.
+  TimelineCurrentDisplay mainCurrentDisplayForWork(String blockId) {
     final parent = find.ancestor(
       of: groupRow(blockId),
       matching: find.byType(ConversationCurrentConnector),
     );
     expect(parent, findsOneWidget);
+    final container = tester.widget<ConversationCurrentConnector>(parent);
+    expect(container.section, ConversationLiveSection.work);
+    expect(container.content, same(lease));
+    expect(container.isDisplayActive(), isTrue);
     final current = tester.state(parent) as TimelineCurrentDisplay;
     expect(
       lease.currentDisplays.where((display) => identical(display, current)),

@@ -12,10 +12,7 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   final ValueNotifier<bool> retirement = ValueNotifier(false);
   VoidCallback Function(TimelineGroupDisplay display)? registerDisplay;
   bool Function()? isDisplayActive;
-  Future<DisplayMembers> Function(
-    DisplayBlockRef,
-    ReadDemand,
-  )?
+  Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand)?
   openDisplayMembers;
   DisplayMemberController? members;
   final Set<Object> _bodyDisplays = {};

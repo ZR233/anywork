@@ -1342,7 +1342,7 @@ final class _ConceptScene {
     );
     final originalHead = work.expansion.members!.entries.single;
     expect(originalHead.record.atom.id, member.id);
-    final originalCurrent = observed.currentDisplayForWork(work.id);
+    final originalCurrent = observed.mainCurrentDisplayForWork(work.id);
     expect(originalCurrent.isCurrent, isTrue);
     final historyIds = items.map((item) => item.id).toList();
     expect(historyIds, isNotEmpty);
@@ -1387,6 +1387,24 @@ final class _ConceptScene {
           record: head.record,
         ));
         if (row.evaluate().length != 1) return false;
+        final rendered = tester.widget<TimelineMemberAtom>(row).atom;
+        for (final atom in [head.record.atom, rendered]) {
+          expect(atom.id, member.id);
+          expect(atom.source, source);
+          expect(
+            atom.source,
+            isA<ForegroundTurnChatSource>().having(
+              (source) => source.turnId,
+              'turnId',
+              activeTurnId,
+            ),
+          );
+          expect(atom.turnId, activeTurnId);
+        }
+        expect(
+          graph.client.conversations.session(threadId).state.activeTurn?.turnId,
+          activeTurnId,
+        );
         final renderer = tester.state(row) as TimelineMemberDisplay;
         final windows = renderer.windows
             .where((window) => window.id == head.memberKey)
@@ -1478,9 +1496,10 @@ final class _ConceptScene {
       'the same live member after explicit Work expansion',
     );
     expect(lease.generation, greaterThan(before.generation));
-    final resumedCurrent = observed.currentDisplayForWork(work.id);
-    expect(resumedCurrent.turnId, activeTurnId);
+    final resumedCurrent = observed.mainCurrentDisplayForWork(work.id);
     final resumed = live.singleWhere((atom) => atom.id == member.id);
+    expect(resumed.source, source);
+    expect(resumed.turnId, activeTurnId);
     expect(resumed.kind, member.kind);
     expect(resumed.sourceOrder, member.sourceOrder);
     expect(resumed.lifecycle, isA<ActiveChatAtom>());
@@ -3039,7 +3058,7 @@ final class _ConceptScene {
     final reason = reasonHead.record.atom;
     final source = reason.source as ForegroundTurnChatSource;
     final owner = lease;
-    final current = observed.currentDisplayForWork(work.id);
+    final current = observed.mainCurrentDisplayForWork(work.id);
     final controller = lease.controller;
     final generation = lease.generation;
     expect(reason.lifecycle, isA<ActiveChatAtom>());
@@ -3048,6 +3067,40 @@ final class _ConceptScene {
       tester,
       () => hasText(_overlapReasoning),
       'A original active prefix is readable before B starts',
+    );
+    final mountedHead = observed
+        .unit(work.id)
+        .expansion
+        .members!
+        .entries
+        .single;
+    expect(mountedHead.memberKey, reasonHead.memberKey);
+    expect(mountedHead.memberOrder, reasonHead.memberOrder);
+    final rendered = tester
+        .widget<TimelineMemberAtom>(
+          observed.liveRenderer((
+            blockId: work.id,
+            displayId: mountedHead.memberKey,
+            record: mountedHead.record,
+          )),
+        )
+        .atom;
+    for (final atom in [reason, mountedHead.record.atom, rendered]) {
+      expect(atom.id, reason.id);
+      expect(atom.source, source);
+      expect(
+        atom.source,
+        isA<ForegroundTurnChatSource>().having(
+          (source) => source.turnId,
+          'turnId',
+          source.turnId,
+        ),
+      );
+      expect(atom.turnId, source.turnId);
+    }
+    expect(
+      graph.client.conversations.session(threadId).state.activeTurn?.turnId,
+      source.turnId,
     );
     await release('a07-reasoning-start');
     await reach(
