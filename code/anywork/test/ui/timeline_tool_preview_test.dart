@@ -2,9 +2,15 @@ import 'dart:convert';
 
 import 'package:flutter/rendering.dart' show RenderParagraph;
 import 'package:anywork/src/app/theme/material3_theme.dart';
+import 'package:anywork/src/domain/models/timeline_commands.dart';
+import 'package:anywork/src/features/conversation/timeline/state/timeline_view_state.dart';
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
+import 'package:anywork/src/features/conversation/timeline/widgets/completion_run_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_patch_diff_view.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/timeline_tool_blocks.dart';
 import 'package:anywork/src/l10n/app_localizations.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/expanded_work_timeline_fixture.dart';
+import 'package:anywork_previews/src/features/conversation/timeline/previews/timeline_preview_fixtures.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/tool_detail_preview_fixtures.dart';
 import 'package:anywork_previews/src/features/conversation/timeline/previews/tool_detail_previews.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -114,7 +120,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('工作组预览切换后确实展开成员并提供有界滚动', (tester) async {
+  testWidgets('工作组预览完整自然展开，仅 Main 滚动即可读到尾部工具正文', (tester) async {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(960, 760);
     addTearDown(() {
@@ -127,18 +133,115 @@ void main() {
     await tester.pumpWidget(expandedWorkGroupScrollToolPreview());
     await tester.pumpAndSettle();
     expect(find.byType(TimelineToolDetails), findsNWidgets(3));
-    final groupScroll = find.byWidgetPredicate(
-      (widget) => widget is SingleChildScrollView && widget.controller != null,
+    final group = find.byType(CompletionRunView);
+    expect(tester.getSize(group).height, greaterThan(420));
+    final originalGroup = tester.widget<CompletionRunView>(group);
+    final previewHost = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    final tail = tester
+        .widgetList<TimelineToolDetails>(find.byType(TimelineToolDetails))
+        .last;
+    final tailText = _expectedReadableText[tail.item.presentationContract]!;
+
+    // Keep the exact preview members and theme, but replace its generic outer
+    // scroll host with the production Main timeline and its borrowed controls.
+    final controls = ExpandedWorkPreviewControls();
+    addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
+      controls.dispose();
+    });
+    await controls.controller.insertMessage(
+      TimelinePreviewFixtures.messages().first,
+      animated: false,
     );
-    expect(groupScroll, findsOneWidget);
-    expect(tester.getSize(groupScroll).height, lessThanOrEqualTo(420));
-    final scroll = tester
-        .widget<SingleChildScrollView>(groupScroll)
-        .controller!;
-    expect(scroll.position.maxScrollExtent, greaterThan(0));
-    await tester.drag(groupScroll, const Offset(0, -220));
+    tester.view.physicalSize = const Size(960, 420);
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: previewHost.locale,
+        theme: previewHost.theme,
+        localizationsDelegates: previewHost.localizationsDelegates,
+        supportedLocales: previewHost.supportedLocales,
+        builder: previewHost.builder,
+        home: Scaffold(
+          body: TimelineView(
+            threadId: 'tool-preview-main',
+            view: const TimelineSessionViewState(
+              threadId: 'tool-preview-main',
+              generation: 1,
+              mode: TimelineDisplayMode.live,
+              connection: TimelineConnectionPhase.ready,
+            ),
+            controls: controls,
+            onLoadOlder: () async {},
+            onRetryOlder: () async {},
+            onReturnLive: () async {},
+            onEnterHistory: () {},
+            onRetryConnection: () {},
+            onLink: (_) {},
+            isSafeLink: (_) => false,
+            remoteImageBuilder: (_, _) => const SizedBox.shrink(),
+            currentWork: Column(
+              children: [
+                const Text('工作组之前：相邻内容'),
+                originalGroup,
+                const Text('工作组之后：相邻内容'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
     await tester.pumpAndSettle();
-    expect(scroll.offset, greaterThan(0));
+    expect(find.byType(TimelineToolDetails), findsNWidgets(3));
+    expect(tester.getSize(group).height, greaterThan(420));
+    expect(controls.scrollController.positions, hasLength(1));
+    final position = controls.scrollController.position;
+    expect(position.maxScrollExtent, greaterThan(0));
+    final verticalScroll = find.byWidgetPredicate(
+      (widget) =>
+          widget is Scrollable &&
+          axisDirectionToAxis(widget.axisDirection) == Axis.vertical,
+    );
+    final mainScroll = find.ancestor(of: group, matching: verticalScroll);
+    expect(mainScroll, findsOneWidget);
+    expect(tester.state<ScrollableState>(mainScroll).position, same(position));
+    for (final element in find.byType(TimelineToolDetails).evaluate()) {
+      final member = find.byElementPredicate(
+        (value) => identical(value, element),
+      );
+      // Inspect only ancestors: tool-body range readers and horizontal code
+      // scrolling below a member are not group-level scroll ownership.
+      final parents = find.ancestor(of: member, matching: verticalScroll);
+      expect(parents, findsOneWidget);
+      expect(tester.state<ScrollableState>(parents).position, same(position));
+      final bounds = tester.getRect(member);
+      expect(bounds.top, greaterThanOrEqualTo(tester.getRect(group).top));
+      expect(bounds.bottom, lessThanOrEqualTo(tester.getRect(group).bottom));
+    }
+
+    // Main is reversed. Begin at the older edge, then reach the last member by
+    // an actual upward drag; do not use ensureVisible to simulate reachability.
+    position.jumpTo(position.maxScrollExtent);
+    await tester.pumpAndSettle();
+    final before = position.pixels;
+    final tailBody = find
+        .descendant(
+          of: find.byWidgetPredicate(
+            (widget) =>
+                widget is TimelineToolDetails && widget.item.id == tail.item.id,
+          ),
+          matching: find.textContaining(tailText),
+        )
+        .last;
+    expect(tailBody.hitTestable(), findsNothing);
+    await tester.drag(mainScroll, Offset(0, -position.maxScrollExtent - 100));
+    await tester.pumpAndSettle();
+    expect(position.pixels, lessThan(before));
+    expect(tailBody.hitTestable(), findsOneWidget);
+    final viewport = tester.getRect(mainScroll);
+    final tailBounds = tester.getRect(tailBody);
+    expect(tailBounds.top, greaterThanOrEqualTo(viewport.top));
+    expect(tailBounds.bottom, lessThanOrEqualTo(viewport.bottom));
+    expect(find.text('工作组之后：相邻内容').hitTestable(), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 

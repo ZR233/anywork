@@ -188,20 +188,18 @@ final class ConversationReadScope implements TimelineQueryScope {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) => _run(() async {
     final resourceId = _allocateResourceId();
     final handle = await _timelineFeed.openDisplayMembers(
       reference: reference,
-      window: window,
       demand: demand,
     );
     final owned = _ScopedDisplayMembers(
       this,
       handle,
       reference,
-      window,
+      demand,
       resourceId,
     );
     _members.add(owned);
@@ -549,14 +547,14 @@ final class _ScopedDisplayMembers implements DisplayMembers {
     this.scope,
     this.handle,
     this.reference,
-    this.window,
+    this.demand,
     this.resourceId,
   );
   final ClientResourceId resourceId;
   final ConversationReadScope scope;
   final DisplayMembers handle;
   final DisplayBlockRef reference;
-  final DisplayMemberWindow window;
+  final ReadDemand demand;
   bool stopping = false;
   bool pulling = false;
   bool closed = false;
@@ -567,10 +565,14 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   (Object, StackTrace)? closeError;
   bool closeSettled = false;
   Future<void>? _closing;
-  DisplayMemberPage? _lastPage;
+  // Transport continuity evidence, not a second published member collection.
+  List<DisplayMemberHead> _lastEntries = const [];
+  List<DisplayMemberHead> _assemblingEntries = [];
+  final Set<String> _assemblingKeys = {};
+  ({int revision, bool sealed})? _assembling;
 
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     if (stopping || !scope.isActive)
       return Future.error(const StaleConversationScope());
     if (ended) return Future.value(null);
@@ -579,50 +581,86 @@ final class _ScopedDisplayMembers implements DisplayMembers {
     pulling = true;
     return scope._run(() async {
       try {
-        final page = await handle.next();
+        final batch = await handle.next();
         if (stopping || !scope.isActive) throw const StaleConversationScope();
-        if (page == null) {
-          if (!sealed) {
+        if (batch == null) {
+          if (!sealed || _assembling != null) {
             throw const ConversationContinuityError(
-              'Display members ended before sealed page',
+              'Display members ended before a complete sealed result',
             );
           }
           ended = true;
           return null;
         }
-        var order = 0;
-        final keys = <String>{};
-        // Member revision and block sealing are independent. An unchanged
-        // bounded page may seal without another member revision.
-        final previous = _lastPage;
-        final sameRevisionSeal =
-            previous != null &&
-            page.revision == revision &&
-            page.sealed &&
-            _sameMemberPageContents(previous, page);
+        final current = _assembling;
         var valid =
             !sealed &&
-            page.block == reference &&
-            (page.revision > revision || sameRevisionSeal);
-        for (final entry in page.entries) {
+            batch.block == reference &&
+            batch.entries.length <= demand.maxItems &&
+            (batch.complete || batch.entries.isNotEmpty);
+        if (current == null) {
+          // Member revision and observation sealing are independent. Only an
+          // identical complete result may seal without a new member revision.
+          valid =
+              valid &&
+              batch.offset == 0 &&
+              (batch.revision > revision ||
+                  (revision >= 0 &&
+                      batch.revision == revision &&
+                      batch.sealed));
+        } else {
+          valid =
+              valid &&
+              batch.offset == _assemblingEntries.length &&
+              batch.revision == current.revision &&
+              batch.sealed == current.sealed;
+        }
+        var order = _assemblingEntries.lastOrNull?.memberOrder ?? 0;
+        final keys = <String>{};
+        for (final entry in batch.entries) {
           valid =
               valid &&
               entry.memberKey.isNotEmpty &&
+              !_assemblingKeys.contains(entry.memberKey) &&
               keys.add(entry.memberKey) &&
               entry.memberOrder > order;
-          if (window case BeforeDisplayMembers(:final memberOrder)) {
-            valid = valid && entry.memberOrder < memberOrder;
-          }
           order = entry.memberOrder;
         }
         if (!valid)
           throw const ConversationContinuityError(
-            'Invalid display member page',
+            'Invalid display member batch',
           );
-        revision = page.revision;
-        sealed = page.sealed;
-        _lastPage = page.sealed ? null : page;
-        return page;
+
+        if (batch.revision == revision) {
+          final end = batch.offset + batch.entries.length;
+          var unchanged =
+              end <= _lastEntries.length &&
+              (!batch.complete || end == _lastEntries.length);
+          for (var i = 0; unchanged && i < batch.entries.length; i++) {
+            unchanged = _sameMemberHead(
+              _lastEntries[batch.offset + i],
+              batch.entries[i],
+            );
+          }
+          if (!unchanged) {
+            throw const ConversationContinuityError(
+              'Sealing changed display members without a new revision',
+            );
+          }
+        }
+        _assemblingEntries.addAll(batch.entries);
+        if (batch.complete) {
+          revision = batch.revision;
+          sealed = batch.sealed;
+          _lastEntries = sealed ? const [] : _assemblingEntries;
+          _assemblingEntries = [];
+          _assemblingKeys.clear();
+          _assembling = null;
+        } else {
+          _assembling = (revision: batch.revision, sealed: batch.sealed);
+          _assemblingKeys.addAll(keys);
+        }
+        return batch;
       } finally {
         pulling = false;
       }
@@ -632,7 +670,10 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   @override
   void requestClose() {
     stopping = true;
-    _lastPage = null;
+    _lastEntries = const [];
+    _assemblingEntries = [];
+    _assemblingKeys.clear();
+    _assembling = null;
     if (closed) return;
     try {
       handle.requestClose();
@@ -679,28 +720,21 @@ final class _ScopedDisplayMembers implements DisplayMembers {
   }
 }
 
-// Compare only the last admitted bounded page, not a member/history mirror.
 // FRB allocates fresh values, so allocation identity cannot prove continuity.
-bool _sameMemberPageContents(DisplayMemberPage a, DisplayMemberPage b) =>
-    a.before == b.before &&
+bool _sameMemberHead(DisplayMemberHead a, DisplayMemberHead b) =>
+    a.memberKey == b.memberKey &&
+    a.memberOrder == b.memberOrder &&
+    _factFields(a.record.startFact) == _factFields(b.record.startFact) &&
+    _factFields(a.record.endFact) == _factFields(b.record.endFact) &&
+    _displaySourceFields(a.record.contentSource) ==
+        _displaySourceFields(b.record.contentSource) &&
+    _atomFields(a.record.atom) == _atomFields(b.record.atom) &&
     _sameValues(
-      a.entries,
-      b.entries,
-      (a, b) =>
-          a.memberKey == b.memberKey &&
-          a.memberOrder == b.memberOrder &&
-          _factFields(a.record.startFact) == _factFields(b.record.startFact) &&
-          _factFields(a.record.endFact) == _factFields(b.record.endFact) &&
-          _displaySourceFields(a.record.contentSource) ==
-              _displaySourceFields(b.record.contentSource) &&
-          _atomFields(a.record.atom) == _atomFields(b.record.atom) &&
-          _sameValues(
-            a.record.atom.contents,
-            b.record.atom.contents,
-            (a, b) => a.role == b.role && a.reference == b.reference,
-          ) &&
-          _samePayload(a.record.atom.payload, b.record.atom.payload),
-    );
+      a.record.atom.contents,
+      b.record.atom.contents,
+      (a, b) => a.role == b.role && a.reference == b.reference,
+    ) &&
+    _samePayload(a.record.atom.payload, b.record.atom.payload);
 
 Object _displaySourceFields(DisplayContentSource source) => switch (source) {
   CurrentAtom() => (CurrentAtom,),

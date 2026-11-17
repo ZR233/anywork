@@ -3,10 +3,9 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    DisplayBlockRef, DisplayMemberWindow, HistoryDelta, HistoryPlacement, OpenTimeline,
-    PRESENTATION_VERSION, ReadDemand, StudioError, StudioErrorCode, StudioErrorReason,
-    TIMELINE_READER_PROTOCOL_VERSION, TailSnapshot, TailUpdate, TimelinePage, ViewCursor,
-    ViewUpdate,
+    DisplayBlockRef, HistoryDelta, HistoryPlacement, OpenTimeline, PRESENTATION_VERSION,
+    ReadDemand, StudioError, StudioErrorCode, StudioErrorReason, TIMELINE_READER_PROTOCOL_VERSION,
+    TailSnapshot, TailUpdate, TimelinePage, ViewCursor, ViewUpdate,
 };
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
@@ -182,12 +181,9 @@ impl TimelineReader {
     pub async fn open_members(
         &self,
         reference: DisplayBlockRef,
-        window: DisplayMemberWindow,
         demand: ReadDemand,
     ) -> Result<DisplayMembers> {
-        self.reader
-            .open_display_members(reference, window, demand)
-            .await
+        self.reader.open_display_members(reference, demand).await
     }
 
     pub async fn next(&self, after: ViewCursor) -> Result<ViewUpdate> {

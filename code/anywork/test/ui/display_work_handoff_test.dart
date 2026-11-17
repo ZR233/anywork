@@ -15,18 +15,18 @@ import '../support/display_fixtures.dart';
 
 void main() {
   testWidgets(
-    'expanded live block moves to history without reopening its bounded member demand',
+    'expanded live block moves to history without reopening its complete member observation',
     (tester) async {
       final intent = TimelineExpansionIntent()..expanded = true;
       final native = _Members();
       final images = TimelineImageResources(threadId: 'thread');
       var opens = 0;
-      intent.openDisplayMembers = (reference, window, demand) async {
+      intent.openDisplayMembers = (reference, demand) async {
         expect(
           reference,
           const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
         );
-        expect(window, isA<LatestDisplayMembers>());
+
         expect(demand.maxItems, lessThan(10000));
         opens++;
         return native;
@@ -69,7 +69,9 @@ void main() {
       await tester.pumpWidget(host(live, 'live'));
       await tester.pump();
       native.page.complete(
-        DisplayMemberPage(
+        DisplayMemberBatch(
+          offset: 0,
+          complete: true,
           block: const DisplayBlockRef(databaseId: 'db', blockId: 'work'),
           revision: 1,
           sealed: false,
@@ -88,18 +90,13 @@ void main() {
               ),
             ),
           ],
-          before: 500,
         ),
       );
       await tester.pump();
       expect(find.text('已完成成员仍在组内'), findsOneWidget);
       expect(find.text('更早成员'), findsNothing);
       expect(find.text('最新成员'), findsNothing);
-      expect(find.byType(Scrollable), findsOneWidget);
-      expect(
-        tester.getSize(find.byType(Scrollable)).height,
-        lessThanOrEqualTo(420),
-      );
+      expect(find.byType(Scrollable), findsNothing);
       final demand = intent.members;
       final history = TimelineDisplayUnit(
         block: DisplayBlock(id: 'work', blockOrder: 1, body: body),
@@ -113,11 +110,7 @@ void main() {
       expect(native.requested, isFalse);
       expect(find.text('已完成成员仍在组内'), findsOneWidget);
       expect(find.text('更早成员'), findsNothing);
-      expect(find.byType(Scrollable), findsOneWidget);
-      expect(
-        tester.getSize(find.byType(Scrollable)).height,
-        lessThanOrEqualTo(420),
-      );
+      expect(find.byType(Scrollable), findsNothing);
       await tester.tap(
         find.byKey(const ValueKey('completion-run-header:work')),
       );
@@ -137,12 +130,12 @@ void main() {
 class _Content extends Fake implements ConversationContent {}
 
 class _Members implements DisplayMembers {
-  final page = Completer<DisplayMemberPage?>();
-  final changed = Completer<DisplayMemberPage?>();
+  final page = Completer<DisplayMemberBatch?>();
+  final changed = Completer<DisplayMemberBatch?>();
   int calls = 0;
   bool requested = false;
   @override
-  Future<DisplayMemberPage?> next() =>
+  Future<DisplayMemberBatch?> next() =>
       calls++ == 0 ? page.future : changed.future;
   @override
   void requestClose() {

@@ -1,14 +1,13 @@
 import 'package:anywork_client/conversation.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
 
-/// Actual mounted expanded Run window. No query is started by these
+/// Actual mounted complete Work members. No query is started by these
 /// synchronous borrows; business Children keeps its independent parent domain.
 abstract interface class TimelineGroupDisplay {
   String get unitId;
   bool get isCurrent;
   bool get expanded;
   DisplayBlockRef? get blockReference;
-  String? get before;
   bool get loading;
   Object? get error;
   Iterable<ChatAtom> get atoms;

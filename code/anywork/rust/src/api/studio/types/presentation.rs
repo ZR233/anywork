@@ -76,12 +76,6 @@ pub struct BridgeLiveDisplayBlock {
     pub thinking_summary: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeDisplayMemberWindow {
-    Latest,
-    Before { member_order: u64 },
-}
-
 #[derive(Debug, Clone)]
 pub struct BridgeDisplayMemberHead {
     pub member_key: String,
@@ -90,12 +84,13 @@ pub struct BridgeDisplayMemberHead {
 }
 
 #[derive(Debug, Clone)]
-pub struct BridgeDisplayMemberPage {
+pub struct BridgeDisplayMemberBatch {
     pub block: BridgeDisplayBlockRef,
     pub revision: u64,
+    pub offset: u64,
     pub sealed: bool,
+    pub complete: bool,
     pub entries: Vec<BridgeDisplayMemberHead>,
-    pub before: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

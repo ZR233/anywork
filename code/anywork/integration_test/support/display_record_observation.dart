@@ -37,27 +37,11 @@ Future<List<ObservedDisplayRecord>> collectDisplayRecords(
       }
       continue;
     }
-    DisplayMemberWindow window = const LatestDisplayMembers();
-    int? before;
-    final keys = <String>{};
-    while (true) {
-      final page = await observed.readMemberPage(
-        unit.memberReference!,
-        window: window,
-        demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
-      );
-      for (final member in page.entries) {
-        expect(keys.add(member.memberKey), isTrue);
-        if (wanted(member.record)) {
-          result.add((unit: unit, member: member, record: member.record));
-        }
+    final members = await observed.readMemberInventory(unit);
+    for (final member in members) {
+      if (wanted(member.record)) {
+        result.add((unit: unit, member: member, record: member.record));
       }
-      final next = page.before;
-      if (next == null) break;
-      expect(page.entries, isNotEmpty);
-      if (before != null) expect(next, lessThan(before));
-      before = next;
-      window = BeforeDisplayMembers(memberOrder: next);
     }
   }
   return result;

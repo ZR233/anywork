@@ -105,19 +105,6 @@ final class LiveDisplayBlock {
   final String? thinkingSummary;
 }
 
-sealed class DisplayMemberWindow {
-  const DisplayMemberWindow();
-}
-
-final class LatestDisplayMembers extends DisplayMemberWindow {
-  const LatestDisplayMembers();
-}
-
-final class BeforeDisplayMembers extends DisplayMemberWindow {
-  const BeforeDisplayMembers({required this.memberOrder});
-  final int memberOrder;
-}
-
 final class DisplayMemberHead {
   const DisplayMemberHead({
     required this.memberKey,
@@ -129,19 +116,21 @@ final class DisplayMemberHead {
   final DisplayRecord record;
 }
 
-final class DisplayMemberPage {
-  DisplayMemberPage({
+final class DisplayMemberBatch {
+  DisplayMemberBatch({
     required this.block,
     required this.revision,
+    required this.offset,
     required this.sealed,
+    required this.complete,
     required List<DisplayMemberHead> entries,
-    this.before,
   }) : entries = List.unmodifiable(entries);
   final DisplayBlockRef block;
   final int revision;
+  final int offset;
   final bool sealed;
+  final bool complete;
   final List<DisplayMemberHead> entries;
-  final int? before;
 }
 
 const timelineReaderProtocolVersion = 1;

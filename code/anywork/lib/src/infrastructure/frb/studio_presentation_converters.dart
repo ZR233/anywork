@@ -11,17 +11,6 @@ frb_presentation.BridgeDisplayBlockRef _displayBlockRefToFrb(
   blockId: value.blockId,
 );
 
-frb_presentation.BridgeDisplayMemberWindow _displayMemberWindowToFrb(
-  DisplayMemberWindow value,
-) => switch (value) {
-  LatestDisplayMembers() =>
-    const frb_presentation.BridgeDisplayMemberWindow.latest(),
-  BeforeDisplayMembers(:final memberOrder) =>
-    frb_presentation.BridgeDisplayMemberWindow.before(
-      memberOrder: BigInt.from(memberOrder),
-    ),
-};
-
 WorkTiming _workTimingFromFrb(frb_presentation.BridgeWorkTiming value) =>
     WorkTiming(
       startedAt: value.startedAt == null
@@ -182,12 +171,14 @@ ViewUpdate _viewUpdateFromFrb(
   },
 );
 
-DisplayMemberPage _displayMemberPageFromFrb(
-  frb_presentation.BridgeDisplayMemberPage value,
-) => DisplayMemberPage(
+DisplayMemberBatch _displayMemberBatchFromFrb(
+  frb_presentation.BridgeDisplayMemberBatch value,
+) => DisplayMemberBatch(
   block: _displayBlockRefFromFrb(value.block),
   revision: _exactTimelineInt(value.revision, 'display member revision'),
+  offset: _exactTimelineInt(value.offset, 'display member offset'),
   sealed: value.sealed,
+  complete: value.complete,
   entries: [
     for (final member in value.entries)
       DisplayMemberHead(
@@ -199,5 +190,4 @@ DisplayMemberPage _displayMemberPageFromFrb(
         record: _displayRecordFromFrb(member.record),
       ),
   ],
-  before: _exactNullableTimelineInt(value.before, 'display member boundary'),
 );

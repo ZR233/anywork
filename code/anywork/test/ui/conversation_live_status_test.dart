@@ -1,4 +1,7 @@
 import 'dart:convert';
+
+import 'package:anywork/src/features/conversation/timeline/views/timeline_view.dart';
+
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -435,7 +438,38 @@ void main() {
       ]) {
         await tester.pumpWidget(preview());
         await tester.pump(const Duration(milliseconds: 300));
-        expect(tester.takeException(), isNull);
+        expect(tester.takeException(), isNull, reason: preview.toString());
+        expect(
+          find.descendant(
+            of: find.byType(ConversationActivityBar),
+            matching: find.byType(CompletionRunView),
+          ),
+          findsNothing,
+          reason: 'Work must use Main rather than the output dock: $preview',
+        );
+        if (preview == conversationLiveStatusLongToolPreview) {
+          expect(find.byType(TimelineView), findsOneWidget);
+          expect(find.byType(CompletionRunView), findsOneWidget);
+          final details = tester.widget<TimelineToolDetails>(
+            find.byType(TimelineToolDetails),
+          );
+          final output =
+              jsonDecode(details.item.output) as Map<String, dynamic>;
+          final text =
+              (output['stdout'] as Map<String, dynamic>)['content'] as String;
+          expect(text.split('\n'), hasLength(60));
+          expect(text, endsWith('检查第 60 项：通过。'));
+          final main = find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollable &&
+                widget.axisDirection == AxisDirection.up,
+          );
+          expect(main, findsOneWidget);
+          expect(
+            tester.state<ScrollableState>(main).position.maxScrollExtent,
+            greaterThan(0),
+          );
+        }
         await tester.pumpWidget(const SizedBox.shrink());
       }
     });
@@ -747,7 +781,7 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     });
 
-    testWidgets('长工具输出在有界工作组内滚动到末行且代码长行可以横向阅读', (tester) async {
+    testWidgets('长工具输出随父时间线滚动到末行且代码长行可以横向阅读', (tester) async {
       await tester.binding.setSurfaceSize(const Size(360, 480));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       const lastLine = '末行检查完成';
@@ -758,31 +792,33 @@ void main() {
       ].join('\n');
       await tester.pumpWidget(
         _wrapWithApp(
-          ConversationActivityBar(
-            children: [
-              CompletionRunView(
-                id: 'long-output-group',
-                timing: const WorkTiming(startedAt: 100, finishedAt: 200),
-                initiallyExpanded: true,
-                location: WorkDisplayLocation.history,
-                childBuilder: (_) => TimelineToolDetails(
+          SingleChildScrollView(
+            child: Column(
+              children: [
+                CompletionRunView(
+                  id: 'long-output-group',
+                  timing: const WorkTiming(startedAt: 100, finishedAt: 200),
                   initiallyExpanded: true,
-                  item: TimelineToolPresentation(
-                    id: 'long-output',
-                    toolCallId: 'long-output',
-                    name: 'exec',
-                    presentationContract: 'builtin.exec@2',
-                    statusString: 'succeeded',
-                    arguments: '{"command":"cargo flutter analyze"}',
-                    output: jsonEncode({
-                      'stdout': {'content': output},
-                      'stderr': {'content': ''},
-                      'exitCode': 0,
-                    }),
+                  location: WorkDisplayLocation.history,
+                  childBuilder: (_) => TimelineToolDetails(
+                    initiallyExpanded: true,
+                    item: TimelineToolPresentation(
+                      id: 'long-output',
+                      toolCallId: 'long-output',
+                      name: 'exec',
+                      presentationContract: 'builtin.exec@2',
+                      statusString: 'succeeded',
+                      arguments: '{"command":"cargo flutter analyze"}',
+                      output: jsonEncode({
+                        'stdout': {'content': output},
+                        'stderr': {'content': ''},
+                        'exitCode': 0,
+                      }),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           width: 360,
           textScaler: TextScaler.linear(1.6),
@@ -794,13 +830,14 @@ void main() {
       final positions = tester
           .stateList<ScrollableState>(find.byType(Scrollable))
           .map((state) => state.position);
-      final groupScroll = tester
-          .widget<CompletionRunScrollScope>(
-            find.byType(CompletionRunScrollScope),
-          )
-          .controller;
-      expect(groupScroll.position.viewportDimension, lessThanOrEqualTo(420));
-      expect(groupScroll.position.maxScrollExtent, greaterThan(280));
+      final mainScroll = tester
+          .state<ScrollableState>(find.byType(Scrollable).first)
+          .position;
+      expect(
+        tester.getSize(find.byType(CompletionRunView)).height,
+        greaterThan(420),
+      );
+      expect(mainScroll.maxScrollExtent, greaterThan(280));
       expect(
         positions.any((position) => position.axis == Axis.horizontal),
         isTrue,
@@ -809,9 +846,9 @@ void main() {
         const ValueKey('completion-run-header:long-output-group'),
       );
       final header = tester.getRect(headerFinder);
-      groupScroll.jumpTo(groupScroll.position.maxScrollExtent);
+      mainScroll.jumpTo(mainScroll.maxScrollExtent);
       await tester.pumpAndSettle();
-      expect(tester.getRect(headerFinder), header);
+      expect(tester.getRect(headerFinder).top, lessThan(header.top));
       final paragraph = tester.renderObject<RenderParagraph>(
         find.byWidgetPredicate(
           (widget) => widget is RichText && widget.text.toPlainText() == output,
@@ -827,15 +864,7 @@ void main() {
       final glyph = boxes.single.toRect().shift(
         paragraph.localToGlobal(Offset.zero),
       );
-      final viewport = tester
-          .getRect(
-            find.byWidgetPredicate(
-              (widget) =>
-                  widget is SingleChildScrollView &&
-                  widget.controller == groupScroll,
-            ),
-          )
-          .inflate(1);
+      final viewport = tester.getRect(find.byType(Scrollable).first).inflate(1);
       expect(viewport.contains(glyph.topLeft), isTrue);
       expect(viewport.contains(glyph.bottomRight), isTrue);
       await tester.pumpWidget(const SizedBox.shrink());
@@ -1576,10 +1605,14 @@ void main() {
             ),
           ];
 
-      Size? baselineCardSize;
-      Offset? baselineLogoOffset;
-      Offset? baselineTitleOffset;
+      // Work headers now live in Main, not inside the dock card. Keep each
+      // actual presentation location stable instead of comparing unrelated
+      // parent padding/card extents or animation owners across that boundary.
+      final baselineCardSizes = <bool, Size>{};
+      final baselineLogoOffsets = <bool, Offset>{};
+      final baselineTitleOffsets = <bool, Offset>{};
       double? previousCatPhase;
+      String? previousCatOwner;
 
       for (final stage in stages) {
         harness.currentWorkId = stage.currentWorkId;
@@ -1588,7 +1621,17 @@ void main() {
         await tester.pumpWidget(harness.build());
         await tester.pump();
 
-        final barFinder = find.byKey(const ValueKey('conversation-activity'));
+        final inMainWork = stage.currentWorkId != null;
+        final catOwner = stage.currentWorkId ?? 'output-dock';
+        if (previousCatOwner != catOwner) {
+          previousCatPhase = null;
+        }
+        previousCatOwner = catOwner;
+        final barFinder = inMainWork
+            ? find.byKey(
+                ValueKey('completion-run-header:${stage.currentWorkId}'),
+              )
+            : find.byKey(const ValueKey('conversation-activity'));
         expect(barFinder, findsOneWidget, reason: stage.name);
         final barRect = tester.getRect(barFinder);
 
@@ -1604,11 +1647,7 @@ void main() {
           matching: find.byType(TimelineActivityIndicator),
         );
         expect(indicatorFinder, findsOneWidget, reason: stage.name);
-        final currentWork = find.descendant(
-          of: barFinder,
-          matching: find.byType(CompletionRunView),
-        );
-        if (currentWork.evaluate().isNotEmpty) {
+        if (inMainWork) {
           expect(find.byType(ConversationActivityStatus), findsNothing);
           expect(
             find.byKey(const ValueKey('conversation-activity-trailing-meta')),
@@ -1682,8 +1721,14 @@ void main() {
         final logoRelative = slotRect.topLeft - barRect.topLeft;
         final titleRelative = titleRect.topLeft - barRect.topLeft;
 
-        baselineLogoOffset ??= logoRelative;
-        baselineTitleOffset ??= titleRelative;
+        final baselineLogoOffset = baselineLogoOffsets.putIfAbsent(
+          inMainWork,
+          () => logoRelative,
+        );
+        final baselineTitleOffset = baselineTitleOffsets.putIfAbsent(
+          inMainWork,
+          () => titleRelative,
+        );
         expect(
           logoRelative.dx,
           closeTo(baselineLogoOffset.dx, 0.001),
@@ -1706,7 +1751,10 @@ void main() {
         );
 
         if (stage.collapsedSingleRow) {
-          baselineCardSize ??= barRect.size;
+          final baselineCardSize = baselineCardSizes.putIfAbsent(
+            inMainWork,
+            () => barRect.size,
+          );
           expect(
             barRect.size.height,
             closeTo(baselineCardSize.height, 0.001),
@@ -1843,7 +1891,11 @@ class _ZeroJitterHarness {
       outputPaging: const LatestLiveWindow(),
       timelineWorkPaging: const LatestLiveWindow(),
     );
-    final presenting = aggregate.barState as LiveStatusPresenting;
+    final presenting = switch (aggregate.barState) {
+      LiveStatusPresenting() => aggregate.barState as LiveStatusPresenting,
+      LiveStatusDockMasked(:final obscured) => obscured,
+      LiveStatusHidden() => null,
+    };
     Widget section(ConversationLiveSection s) => ConversationCurrentConnector(
       section: s,
       threadId: 'thread',

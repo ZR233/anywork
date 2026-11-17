@@ -93,6 +93,7 @@ LiveStatusView _observe({
   PendingInteraction? interaction,
   String? activeTurnId = 'turn',
   LiveWindowPagingState outputPaging = const LatestLiveWindow(),
+  LiveWindowPagingState timelineWorkPaging = const LatestLiveWindow(),
 }) => LiveStatusProjection.project(
   threadId: 'thread',
   observation: LiveStatusInputs(
@@ -112,13 +113,13 @@ LiveStatusView _observe({
     latestLive: live,
   ),
   outputPaging: outputPaging,
-  timelineWorkPaging: const LatestLiveWindow(),
+  timelineWorkPaging: timelineWorkPaging,
 );
 
 LiveStatusView _project(PendingInteraction? interaction) =>
     _observe(live: _live, interaction: interaction);
 
-// The scripted boundary supplies only a typed member page. The real SDK,
+// The scripted boundary supplies only typed member batches. The real SDK,
 // Timeline lease, connectors and renderers own admission and display lifecycle.
 final class _PlanVisibilityTransport extends RecordingDemoTransport {
   late ChatAtom waitAtom;
@@ -163,18 +164,15 @@ final class _PlanVisibilityFeed extends RecordingTimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) {
     if (reference.blockId != 'plan-work') {
-      return super.openDisplayMembers(
-        reference: reference,
-        window: window,
-        demand: demand,
-      );
+      return super.openDisplayMembers(reference: reference, demand: demand);
     }
     final handle = _PlanVisibilityMembers(
-      DisplayMemberPage(
+      DisplayMemberBatch(
+        offset: 0,
+        complete: true,
         block: reference,
         revision: 1,
         sealed: false,
@@ -197,13 +195,13 @@ final class _PlanVisibilityFeed extends RecordingTimelineReader {
 
 final class _PlanVisibilityMembers implements DisplayMembers {
   _PlanVisibilityMembers(this.first);
-  DisplayMemberPage? first;
-  Completer<DisplayMemberPage?>? pending;
+  DisplayMemberBatch? first;
+  Completer<DisplayMemberBatch?>? pending;
   bool stopping = false;
   bool closed = false;
   bool sealed = false;
 
-  void send(DisplayMemberPage page) {
+  void send(DisplayMemberBatch page) {
     final waiting = pending;
     pending = null;
     if (waiting == null) {
@@ -215,7 +213,7 @@ final class _PlanVisibilityMembers implements DisplayMembers {
   }
 
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     if (stopping) return Future.value(null);
     final page = first;
     first = null;
@@ -224,7 +222,7 @@ final class _PlanVisibilityMembers implements DisplayMembers {
       return Future.value(page);
     }
     if (sealed) return Future.value(null);
-    return (pending = Completer<DisplayMemberPage?>()).future;
+    return (pending = Completer<DisplayMemberBatch?>()).future;
   }
 
   @override
@@ -279,15 +277,20 @@ void main() {
           summary: '后台命令仍在运行',
         ),
       );
-      expect(projected.timelineWork.workBlocks, isEmpty);
-      final surface = (projected.barState as LiveStatusPresenting).surface;
-      expect(surface, isA<LiveStatusWorkSurface>());
       expect(
-        (surface as LiveStatusWorkSurface).workBlock.id,
+        projected.timelineWork.workBlocks.single,
+        same(live.blocks.single),
+      );
+      expect(
+        projected.timelineWork.mergedWorkActivity?.blockId,
         'background-tail',
       );
-      expect(surface.mergedActivity?.summary, '后台命令仍在运行');
-      expect(surface.standaloneNotices, isEmpty);
+      expect(
+        projected.timelineWork.mergedActivityFor('background-tail')?.summary,
+        '后台命令仍在运行',
+      );
+      expect(projected.timelineWork.mergedActivityFor('unrelated'), isNull);
+      expect(projected.barState, isA<LiveStatusHidden>());
     },
   );
 
@@ -342,16 +345,43 @@ void main() {
           ),
         ),
       );
-      final surface =
-          (selected.barState as LiveStatusPresenting).surface
-              as LiveStatusWorkSurface;
-      expect(surface.workBlock, same(latest.blocks.single));
-      expect(surface.mergedActivity?.kind, ConversationActivityKind.thinking);
-      expect(surface.workBlock.id, 'tail');
-      expect(selected.timelineWork.workBlocks, isEmpty);
+      expect(
+        selected.timelineWork.workBlocks.single,
+        same(latest.blocks.single),
+      );
+      expect(selected.timelineWork.mergedWorkActivity?.blockId, 'tail');
+      expect(
+        selected.timelineWork.mergedActivityFor('tail')?.kind,
+        ConversationActivityKind.thinking,
+      );
+      final surface = (selected.barState as LiveStatusPresenting).surface;
+      expect(surface, isA<LiveStatusNoticeOnlySurface>());
+      expect(surface.blocks, isEmpty);
+      expect(surface.standaloneNotices, isEmpty);
       expect(
         (selected.barState as LiveStatusPresenting).paging.olderWindow,
         same(older),
+      );
+      final readingOldWork = _observe(
+        live: latest,
+        activeTurnId: null,
+        timelineWorkPaging: (selected.barState as LiveStatusPresenting).paging,
+      );
+      expect(
+        readingOldWork.timelineWork.workBlocks.single,
+        same(older.blocks.single),
+      );
+      expect(readingOldWork.timelineWork.mergedWorkActivity, isNull);
+      final noticeOnly =
+          (readingOldWork.barState as LiveStatusPresenting).surface;
+      expect(noticeOnly, isA<LiveStatusNoticeOnlySurface>());
+      expect(noticeOnly.blocks, isEmpty);
+      expect(noticeOnly.standaloneNotices.single, isA<ExecutionLiveNotice>());
+      expect(
+        (noticeOnly.standaloneNotices.single as ExecutionLiveNotice).view.kind,
+        ConversationActivityKind.thinking,
+        reason:
+            'An off-page current Work cannot absorb the live activity notice',
       );
     },
   );
@@ -517,16 +547,19 @@ void main() {
           expect(matched.notice, same(notice));
           expect(matched.notice.view.summary, '可靠状态概要');
           expect(matched.notice.view.thinkingSummary, '有界思考概要');
-          final presenting = aggregate.barState as LiveStatusPresenting;
-          expect(presenting.surface, isA<LiveStatusWorkSurface>());
           expect(
-            (presenting.surface as LiveStatusWorkSurface)
-                .mergedActivity
-                ?.summary,
+            aggregate.timelineWork.workBlocks.single,
+            same(live.blocks.single),
+          );
+          expect(
+            aggregate.timelineWork.mergedWorkActivity?.blockId,
+            'opaque-block',
+          );
+          expect(
+            aggregate.timelineWork.mergedActivityFor('opaque-block')?.summary,
             '可靠状态概要',
           );
-          expect(presenting.surface.standaloneNotices, isEmpty);
-          expect(aggregate.timelineWork.workBlocks, isEmpty);
+          expect(aggregate.barState, isA<LiveStatusHidden>());
           final work = live.blocks.single;
           for (final blocked in [
             TailSnapshot(
@@ -628,12 +661,16 @@ void main() {
           notices: [notice],
         );
         final aggregate = _observe(live: live, status: status);
-        final presenting = aggregate.barState as LiveStatusPresenting;
         expect(placement, isNotNull, reason: kind.name);
-        expect(presenting.effectiveWindow, same(live));
-        expect(presenting.surface, isA<LiveStatusWorkSurface>());
+        expect(aggregate.timelineWork.effectiveWindow, same(live));
+        expect(
+          aggregate.timelineWork.workBlocks.single,
+          same(live.blocks.single),
+        );
+        expect(aggregate.timelineWork.mergedWorkActivity?.blockId, 'work');
+        expect(aggregate.timelineWork.mergedActivityFor('work'), notice.view);
         expect(placement!.notice, same(notice));
-        expect(presenting.surface.standaloneNotices, isEmpty);
+        expect(aggregate.barState, isA<LiveStatusHidden>());
       }
     });
   }
@@ -748,11 +785,12 @@ void main() {
         status: _status,
       );
       expect(coldWork.primaryActivity, isNull);
-      expect(coldWork.timelineWork.workBlocks, isEmpty);
-      final resting = (coldWork.barState as LiveStatusPresenting).surface;
-      expect((resting as LiveStatusWorkSurface).workBlock.id, 'work');
-      expect(resting.mergedActivity, isNull);
-      expect(resting.standaloneNotices, isEmpty);
+      expect(
+        coldWork.timelineWork.workBlocks.single,
+        same(coldWorkWindow.blocks.single),
+      );
+      expect(coldWork.timelineWork.mergedWorkActivity, isNull);
+      expect(coldWork.barState, isA<LiveStatusHidden>());
 
       final coldSingleWindow = TailSnapshot(
         currentWorkId: null,
@@ -1005,9 +1043,40 @@ void main() {
           skipOffstage: false,
         );
         final workElement = workView.evaluate().single;
+        expect(lease.live.value!.currentWorkId, 'plan-work');
+        void expectWorkInMainTimeline() {
+          expect(
+            find.ancestor(
+              of: workView,
+              matching: find.byType(TimelineConnector),
+            ),
+            findsOneWidget,
+          );
+          expect(
+            find.ancestor(
+              of: workView,
+              matching: find.byType(
+                ConversationActivityViewport,
+                skipOffstage: false,
+              ),
+            ),
+            findsNothing,
+          );
+          expect(
+            find.descendant(
+              of: find.byType(LiveStatusBar),
+              matching: workView,
+              skipOffstage: false,
+            ),
+            findsNothing,
+          );
+        }
+
+        expectWorkInMainTimeline();
         await publish([question]);
         await tester.pump();
-        expect(find.byType(TimelineWaitPanel), findsNothing);
+        expect(find.byType(TimelineWaitPanel), findsOneWidget);
+        expectWorkInMainTimeline();
         expect(
           find.byType(TimelineWaitPanel, skipOffstage: false),
           findsOneWidget,
@@ -1124,11 +1193,15 @@ void main() {
         expect(find.byType(InteractionDetailsConnector), findsNothing);
         expect(tester.getSize(find.byType(LiveStatusBar)).height, 0);
         expect(find.byType(ConversationActivityBar), findsNothing);
-        expect(find.byType(ConversationActivityViewport), findsOneWidget);
+        expect(
+          find.byType(ConversationActivityViewport),
+          olderSource == null ? findsNothing : findsOneWidget,
+        );
+        expectWorkInMainTimeline();
         expect(find.text(olderText, findRichText: true), findsNothing);
         expect(find.text('计划待决期间仍然可见的实际正文', findRichText: true), findsNothing);
         expect(originalDetails.mounted, isFalse);
-        expect(find.byType(TimelineWaitPanel), findsNothing);
+        expect(find.byType(TimelineWaitPanel), findsOneWidget);
         expect(workView.evaluate().single, same(workElement));
         expect(lease.live.value, same(live));
         expect(graph.timeline.lease(threadId), same(lease));
@@ -1236,7 +1309,9 @@ void main() {
           body: work.body,
         );
         transport.members.single.send(
-          DisplayMemberPage(
+          DisplayMemberBatch(
+            offset: 0,
+            complete: true,
             block: const DisplayBlockRef(
               databaseId: 'plan-visibility',
               blockId: 'plan-work',
@@ -1371,11 +1446,16 @@ void main() {
     expect(state.barState, isA<LiveStatusDockMasked>());
     expect((state.barState as LiveStatusDockMasked).interactionId, 'plan');
     expect(state.primaryActivity?.kind, ConversationActivityKind.thinking);
-    expect(state.timelineWork.workBlocks, isEmpty);
+    expect(state.timelineWork.workBlocks.single, same(work));
+    expect(
+      state.timelineWork.mergedActivityFor(work.id)?.kind,
+      ConversationActivityKind.thinking,
+    );
     final masked = state.barState as LiveStatusDockMasked;
     expect(
-      (masked.obscured!.surface as LiveStatusWorkSurface).workBlock,
-      same(work),
+      masked.obscured,
+      isNull,
+      reason: 'The Work is not a hidden dock surface',
     );
 
     final restored = LiveStatusProjection.project(
@@ -1390,7 +1470,12 @@ void main() {
       outputPaging: const LatestLiveWindow(),
       timelineWorkPaging: const LatestLiveWindow(),
     );
-    expect(restored.barState, isA<LiveStatusPresenting>());
+    expect(restored.barState, isA<LiveStatusHidden>());
+    expect(restored.timelineWork.workBlocks.single, same(work));
+    expect(
+      restored.timelineWork.mergedWorkActivity,
+      state.timelineWork.mergedWorkActivity,
+    );
   });
 
   for (final turnId in ['turn', 'other-turn']) {

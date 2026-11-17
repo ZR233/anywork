@@ -13,8 +13,7 @@ use axum::{
 };
 use futures::Stream;
 use pl_studio_runtime::{
-    DisplayBlockRef, DisplayMemberWindow, OpenTimeline, ReadDemand, TailSnapshot, TimelinePage,
-    ViewCursor, ViewUpdate,
+    DisplayBlockRef, OpenTimeline, ReadDemand, TailSnapshot, TimelinePage, ViewCursor, ViewUpdate,
 };
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -211,7 +210,6 @@ pub(crate) async fn close(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MembersRequest {
     reference: DisplayBlockRef,
-    window: DisplayMemberWindow,
     demand: ReadDemand,
 }
 
@@ -237,7 +235,7 @@ pub(crate) async fn members(
     let source = lease
         .owner
         .reader
-        .open_display_members(request.reference, request.window, request.demand)
+        .open_display_members(request.reference, request.demand)
         .await?;
     let member = Arc::new(tokio::sync::Mutex::new(Some(source)));
     lease
@@ -269,14 +267,14 @@ pub(crate) async fn members(
             };
             match received {
                 Ok(Some(page)) => {
-                    let sealed = page.sealed;
+                    let finished = page.complete && page.sealed;
                     match Event::default().event("members").json_data(page) {
                         Ok(event) => {
                             capacity.send(Ok(event));
                         }
                         Err(_) => break,
                     }
-                    if sealed {
+                    if finished {
                         break;
                     }
                 }
@@ -317,7 +315,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timeline_requests_require_explicit_demand_and_fixed_member_window() {
+    fn timeline_requests_require_demand_and_reject_member_windows() {
         assert!(serde_json::from_value::<OpenRequest>(serde_json::json!({})).is_err());
         assert!(
             serde_json::from_value::<OpenRequest>(serde_json::json!({
@@ -325,23 +323,23 @@ mod tests {
             }))
             .is_err()
         );
-        assert!(
-            serde_json::from_value::<MembersRequest>(serde_json::json!({
-                "reference": { "databaseId": "db", "blockId": "work" },
-                "demand": { "maxItems": 1, "maxBytes": 4096 }
-            }))
-            .is_err()
-        );
-        let request: MembersRequest = serde_json::from_value(serde_json::json!({
+        let value = serde_json::json!({
             "reference": { "databaseId": "db", "blockId": "work" },
-            "window": { "kind": "before", "memberOrder": 7 },
             "demand": { "maxItems": 1, "maxBytes": 4096 }
-        }))
-        .unwrap();
-        assert_eq!(
-            request.window,
-            DisplayMemberWindow::Before { member_order: 7 }
-        );
+        });
+        let request: MembersRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(request.reference.block_id, "work");
         assert_eq!(request.demand.max_items, 1);
+        for window in [
+            serde_json::json!({ "kind": "latest" }),
+            serde_json::json!({ "kind": "before", "memberOrder": 7 }),
+        ] {
+            let mut old_request = value.clone();
+            old_request["window"] = window;
+            assert!(serde_json::from_value::<MembersRequest>(old_request).is_err());
+        }
+        let mut missing_demand = value;
+        missing_demand.as_object_mut().unwrap().remove("demand");
+        assert!(serde_json::from_value::<MembersRequest>(missing_demand).is_err());
     }
 }

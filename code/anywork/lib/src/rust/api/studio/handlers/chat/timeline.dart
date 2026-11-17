@@ -31,7 +31,7 @@ Future<BridgeTimelineReader> openTimelineReader({
 abstract class BridgeDisplayMembers implements RustOpaqueInterface {
   Future<void> close();
 
-  Future<BridgeDisplayMemberPage?> next();
+  Future<BridgeDisplayMemberBatch?> next();
 
   void requestClose();
 }
@@ -77,7 +77,6 @@ abstract class BridgeTimelineReader implements RustOpaqueInterface {
 
   Future<BridgeDisplayMembers> openDisplayMembers({
     required BridgeDisplayBlockRef reference,
-    required BridgeDisplayMemberWindow window,
     required BridgeReadDemand demand,
   });
 

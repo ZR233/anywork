@@ -146,7 +146,6 @@ async fn empty_production_feed_shares_query_qualification_and_close_wakes_receiv
 
 mod lifecycle {
     use super::{production::timeline, production::work_reference, *};
-    use crate::DisplayMemberWindow;
     use crate::{
         runtime_test_support::Environment,
         studio::runtime::conversation_feed::tests::completed_runs::{Harness, start},
@@ -185,7 +184,7 @@ mod lifecycle {
                 assert!(matches!(poll!(&mut receiving), Poll::Pending));
                 reader.read_business_refs().await?;
                 let mut members = reader
-                    .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+                    .open_display_members(reference.clone(), demand(1))
                     .await?;
                 let first = members
                     .next()
@@ -222,7 +221,7 @@ mod lifecycle {
             assert!(reader.read_business_refs().await.is_err());
             assert!(
                 reader
-                    .open_display_members(reference, DisplayMemberWindow::Latest, demand(1))
+                    .open_display_members(reference, demand(1))
                     .await
                     .is_err()
             );
@@ -238,7 +237,6 @@ mod lifecycle {
 mod live_cursor {
     use super::production::{timeline, work_reference};
     use super::*;
-    use crate::DisplayMemberWindow;
     use crate::{
         runtime_test_support::Environment,
         studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
@@ -271,11 +269,7 @@ mod live_cursor {
             let older = feed.reader().load_live_older(&before, demand(1)).await?;
             let mut members = feed
                 .reader()
-                .open_display_members(
-                    reference,
-                    DisplayMemberWindow::Before { member_order: 2 },
-                    demand(1),
-                )
+                .open_display_members(reference, demand(2))
                 .await?;
             let active = members.next().await?.context("first member")?;
             assert_eq!(active.entries[0].member_order, 1);
@@ -335,7 +329,7 @@ mod live_cursor {
 
 mod production {
     use super::*;
-    use crate::{ChatActiveStatus, ChatAtomLifecycle, ChatScope, DisplayMemberWindow};
+    use crate::{ChatActiveStatus, ChatAtomLifecycle, ChatScope};
     use crate::{
         ConversationEvent,
         runtime_test_support::Environment,
@@ -656,7 +650,7 @@ mod production {
         );
         let mut members = hot_feed
             .reader()
-            .open_display_members(old_members.clone(), DisplayMemberWindow::Latest, demand(1))
+            .open_display_members(old_members.clone(), demand(1))
             .await?;
         let frozen = members
             .next()
@@ -1065,31 +1059,30 @@ mod production {
             assert_eq!(live.blocks[0].state, DisplayBlockState::Open);
             let reference = work_reference(&live)?;
             let reader = feed.reader().clone();
-            let mut latest = reader
-                .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+            let mut members = reader
+                .open_display_members(reference.clone(), demand(1))
                 .await?;
-            let page = latest.next().await?.context("fixed cold member page")?;
+            let first = members
+                .next()
+                .await?
+                .context("first resting member batch")?;
             assert!(
-                !page.sealed,
-                "execution retirement must not seal a mutable business block"
+                !first.sealed,
+                "execution retirement must not freeze the business block"
             );
-            assert_eq!(page.revision, before.open[0].revision);
-            assert_eq!(page.entries, [expected[1].clone()]);
-            assert_eq!(page.before, Some(2));
-            assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
-            let mut older = reader
-                .open_display_members(
-                    reference.clone(),
-                    DisplayMemberWindow::Before { member_order: 2 },
-                    demand(1),
-                )
-                .await?;
-            let prefix = older.next().await?.context("fixed cold prefix")?;
-            assert!(!prefix.sealed);
-            assert_eq!(prefix.entries, [expected[0].clone()]);
-            assert!(prefix.before.is_none());
-            assert!(futures::poll!(Box::pin(older.next()).as_mut()).is_pending());
-            older.close().await?;
+            assert!(!first.complete);
+            assert_eq!(first.offset, 0);
+            assert_eq!(first.revision, before.open[0].revision);
+            assert_eq!(first.entries, [expected[0].clone()]);
+            let last = members
+                .next()
+                .await?
+                .context("complete resting member result")?;
+            assert!(!last.sealed && last.complete);
+            assert_eq!(last.offset, 1);
+            assert_eq!(last.revision, first.revision);
+            assert_eq!(last.entries, [expected[1].clone()]);
+            assert!(futures::poll!(Box::pin(members.next()).as_mut()).is_pending());
             let after = h
                 .history
                 .display_recovery()
@@ -1097,7 +1090,7 @@ mod production {
                 .context("unchanged saved tail")?;
             assert_eq!(
                 after.open, before.open,
-                "observing a fixed page must not freeze its business block"
+                "observing all members must not freeze its business block"
             );
             assert_eq!(
                 (after.effect, after.published),
@@ -1121,7 +1114,7 @@ mod production {
             let mut wrong_database = reference.clone();
             wrong_database.database_id.push_str("-stale");
             let stale = reader
-                .open_display_members(wrong_database, DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(wrong_database, demand(1))
                 .await
                 .err()
                 .context("wrong database must be rejected")?;
@@ -1130,7 +1123,7 @@ mod production {
                 Some(ChatError::StaleContent)
             ));
             let mut cancelled = reader
-                .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(reference.clone(), demand(1))
                 .await?;
             cancelled.request_close();
             assert!(matches!(
@@ -1145,7 +1138,7 @@ mod production {
             let mut missing_reference = reference.clone();
             missing_reference.block_id = "missing-snapshot".into();
             let mut missing = reader
-                .open_display_members(missing_reference, DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(missing_reference, demand(1))
                 .await?;
             assert!(
                 missing.next().await.is_err(),
@@ -1153,9 +1146,7 @@ mod production {
             );
             missing.close().await?;
 
-            let mut captured_cold = reader
-                .open_display_members(reference, DisplayMemberWindow::Latest, demand(1))
-                .await?;
+            let mut captured_cold = reader.open_display_members(reference, demand(1)).await?;
             env.runtime
                 .thread_observations
                 .observation_slot(&h.thread.id)
@@ -1164,11 +1155,20 @@ mod production {
                 .next()
                 .await?
                 .context("same Store after execution replacement")?;
-            assert_eq!(unchanged.entries, [expected[1].clone()]);
+            assert_eq!(unchanged.entries, [expected[0].clone()]);
+            assert!(!unchanged.complete);
+            let remainder = captured_cold
+                .next()
+                .await?
+                .context("same Store remaining members")?;
+            assert!(remainder.complete && !remainder.sealed);
+            assert_eq!(remainder.revision, unchanged.revision);
+            assert_eq!(remainder.offset, 1);
+            assert_eq!(remainder.entries, [expected[1].clone()]);
             assert!(!unchanged.sealed);
             captured_cold.close().await?;
-            assert!(futures::poll!(Box::pin(latest.next()).as_mut()).is_pending());
-            latest.close().await?;
+            assert!(futures::poll!(Box::pin(members.next()).as_mut()).is_pending());
+            members.close().await?;
             reader.close().await?;
             feed.close().await?;
             Ok(())
@@ -1199,7 +1199,7 @@ mod production {
             let reference = work_reference(&timeline(&mut feed).await?.live.context("hot tail")?)?;
             let reader = feed.reader().clone();
             let mut members = reader
-                .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+                .open_display_members(reference.clone(), demand(2))
                 .await?;
             let first = members.next().await?.context("terminal open page")?;
             assert!(!first.sealed);
@@ -1348,7 +1348,7 @@ mod production {
             let reference = work_reference(&first_live)?;
             let reader = feed.reader().clone();
             let mut members = reader
-                .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(reference.clone(), demand(1))
                 .await?;
             let active = members.next().await?.context("active member page")?;
             assert!(!active.sealed);
@@ -1590,7 +1590,7 @@ mod production {
             }
             assert_eq!(delivered[0].id, reference.block_id);
             let mut hot_members = reader
-                .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(reference.clone(), demand(1))
                 .await?;
             let hot = hot_members
                 .next()
@@ -1599,14 +1599,14 @@ mod production {
             assert!(hot.sealed);
             assert!(hot_members.next().await?.is_none());
 
-            // A parked event receiver has no query/credit ownership. Query a sealed window while it waits.
+            // A parked event receiver has no query/credit ownership. Query a sealed member result while it waits.
             let cancel = feed.cancellation_token();
             {
                 let receiving = feed.receive();
                 tokio::pin!(receiving);
                 assert!(matches!(poll!(&mut receiving), Poll::Pending));
                 let mut independent = reader
-                    .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(1))
+                    .open_display_members(reference.clone(), demand(1))
                     .await?;
                 assert_eq!(
                     independent
@@ -1735,7 +1735,7 @@ mod production {
             }
             let mut cold_members = cold_feed
                 .reader()
-                .open_display_members(reference, DisplayMemberWindow::Latest, demand(1))
+                .open_display_members(reference, demand(1))
                 .await?;
             let cold = cold_members.next().await?.context("cold members")?;
             assert_eq!(cold, hot);

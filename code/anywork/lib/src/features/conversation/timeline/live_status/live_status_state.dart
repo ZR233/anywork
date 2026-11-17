@@ -253,57 +253,9 @@ sealed class LiveStatusPrimarySurface {
 
   /// 独立渲染在块列表上方的阶段/故障通知（已被开放 Work 头或流式正文吸收的通知不含在内）。
   List<LiveStatusNotice> get standaloneNotices;
-
-  /// 若指定开放 `Work` 吸收了当前轮次活动通知，返回其吸收后的通知视图。
-  ConversationActivityView? mergedActivityFor(String blockId) => null;
 }
 
-/// 表面 1：当前活跃前台轮次的开放工作组（`WorkDisplayBlock`）占据实时状态栏。
-final class LiveStatusWorkSurface extends LiveStatusPrimarySurface {
-  LiveStatusWorkSurface({
-    required this.workBlock,
-    List<LiveDisplayBlock> precedingSingles = const [],
-    this.mergedActivity,
-    required this.headerIndicatorStyle,
-    List<LiveStatusNotice> standaloneNotices = const [],
-  }) : precedingSingles = List.unmodifiable(precedingSingles),
-       standaloneNotices = List.unmodifiable(standaloneNotices),
-       blocks = List.unmodifiable([...precedingSingles, workBlock]);
-
-  final LiveDisplayBlock workBlock;
-  final List<LiveDisplayBlock> precedingSingles;
-  final ConversationActivityView? mergedActivity;
-  final TimelineActivityIndicatorStyle headerIndicatorStyle;
-  @override
-  final List<LiveStatusNotice> standaloneNotices;
-  @override
-  final List<LiveDisplayBlock> blocks;
-
-  @override
-  ConversationActivityView? mergedActivityFor(String blockId) =>
-      workBlock.id == blockId ? mergedActivity : null;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is LiveStatusWorkSurface &&
-          identical(workBlock, other.workBlock) &&
-          listEquals(precedingSingles, other.precedingSingles) &&
-          mergedActivity == other.mergedActivity &&
-          headerIndicatorStyle == other.headerIndicatorStyle &&
-          listEquals(standaloneNotices, other.standaloneNotices);
-
-  @override
-  int get hashCode => Object.hash(
-    workBlock,
-    Object.hashAll(precedingSingles),
-    mergedActivity,
-    headerIndicatorStyle,
-    Object.hashAll(standaloneNotices),
-  );
-}
-
-/// 表面 2：流式正文、活跃压缩原子或更早实时单块（`SingleDisplayBlock`）占据实时状态栏。
+/// 流式正文表面：流式正文、活跃压缩原子或更早实时单块（`SingleDisplayBlock`）占据实时状态栏。
 final class LiveStatusStreamingSurface extends LiveStatusPrimarySurface {
   LiveStatusStreamingSurface({
     required List<LiveDisplayBlock> singleBlocks,
@@ -332,7 +284,7 @@ final class LiveStatusStreamingSurface extends LiveStatusPrimarySurface {
   );
 }
 
-/// 表面 3：无实时块占据底栏，仅展示纯阶段通知（思考中、压缩中、`exec` 运行中、审批或存储故障等）或分页回退。
+/// 纯通知表面：无实时块占据底栏，仅展示纯阶段通知（思考中、压缩中、`exec` 运行中、审批或存储故障等）或分页回退。
 final class LiveStatusNoticeOnlySurface extends LiveStatusPrimarySurface {
   LiveStatusNoticeOnlySurface({List<LiveStatusNotice> notices = const []})
     : standaloneNotices = List.unmodifiable(notices);
@@ -439,6 +391,7 @@ final class LiveStatusPresenting extends LiveStatusMachineState {
 final class LiveStatusTimelineWorkSlice {
   LiveStatusTimelineWorkSlice({
     List<LiveDisplayBlock> workBlocks = const [],
+    this.mergedWorkActivity,
     this.effectiveWindow,
     this.paging = const LatestLiveWindow(),
   }) : workBlocks = List.unmodifiable(workBlocks);
@@ -446,8 +399,15 @@ final class LiveStatusTimelineWorkSlice {
   static final empty = LiveStatusTimelineWorkSlice();
 
   final List<LiveDisplayBlock> workBlocks;
+  final ({String blockId, ConversationActivityView activity})?
+  mergedWorkActivity;
   final TailSnapshot? effectiveWindow;
   final LiveWindowPagingState paging;
+
+  ConversationActivityView? mergedActivityFor(String blockId) =>
+      mergedWorkActivity?.blockId == blockId
+      ? mergedWorkActivity?.activity
+      : null;
 
   bool get hasVisibleContent =>
       workBlocks.isNotEmpty ||
@@ -460,12 +420,17 @@ final class LiveStatusTimelineWorkSlice {
       identical(this, other) ||
       other is LiveStatusTimelineWorkSlice &&
           listEquals(workBlocks, other.workBlocks) &&
+          mergedWorkActivity == other.mergedWorkActivity &&
           identical(effectiveWindow, other.effectiveWindow) &&
           paging == other.paging;
 
   @override
-  int get hashCode =>
-      Object.hash(Object.hashAll(workBlocks), effectiveWindow, paging);
+  int get hashCode => Object.hash(
+    Object.hashAll(workBlocks),
+    mergedWorkActivity,
+    effectiveWindow,
+    paging,
+  );
 }
 
 /// 状态机纯输入快照：仅保存客户端已归约的不可变领域值，不持有原生流或可变句柄。

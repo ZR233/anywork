@@ -417,15 +417,10 @@ class RecordingTimelineReader extends MappedTimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) {
     detailCalls++;
-    return super.openDisplayMembers(
-      reference: reference,
-      window: window,
-      demand: demand,
-    );
+    return super.openDisplayMembers(reference: reference, demand: demand);
   }
 
   @override

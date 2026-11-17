@@ -255,39 +255,91 @@ void main() {
   }
 
   testWidgets(
-    'history members use a bounded viewport and scrolling reaches the final details',
+    'Work title paragraph stays hittable without repeated tree searches',
     (tester) async {
+      const unrelatedCount = 120;
       await tester.pumpWidget(
         _host(
-          CompletionRunView(
-            id: 'history',
-            timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
-            location: WorkDisplayLocation.history,
-            initiallyExpanded: true,
-            childBuilder: (_) => const Column(
+          SingleChildScrollView(
+            child: Column(
               children: [
-                SizedBox(height: 500),
-                Text('member failure and cancellation details'),
+                CompletionRunView(
+                  id: 'paragraph-target',
+                  timing: const WorkTiming(startedAt: 1000),
+                  thinkingSummary: '**精确标题**',
+                  location: WorkDisplayLocation.live,
+                  executionPresent: true,
+                  activity: _thinking,
+                  initiallyExpanded: false,
+                  now: () => _at(1125),
+                  childBuilder: (_) => const Text('paragraph opened this Work'),
+                ),
+                for (var i = 0; i < unrelatedCount; i++) Text('Unrelated $i'),
               ],
             ),
           ),
         ),
       );
-      final viewport = find.byType(Scrollable);
-      expect(viewport, findsOneWidget);
-      expect(tester.getSize(viewport).height, lessThanOrEqualTo(420));
+      final header = find.byKey(
+        const ValueKey('completion-run-header:paragraph-target'),
+      );
+      var titleResolutions = 0;
+      final title = timelineGroupTitleFinder(
+        tester,
+        header,
+        validateOwner: () => titleResolutions++,
+      );
+      final target = timelineGroupTitleParagraphFinder(title);
+      expect(target, findsOneWidget);
+      // Count semantic re-resolution work, not machine-dependent elapsed time.
+      // Resolving a title once must not resolve it again for every unrelated text.
+      expect(titleResolutions, lessThanOrEqualTo(4 * (unrelatedCount + 1)));
+      expect(title.hitTestable(), findsNothing);
+      expect(target.hitTestable(), findsOneWidget);
+      await tester.tap(target);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('paragraph opened this Work'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets(
+    'history members exceed 420 naturally and parent scrolling reaches final details',
+    (tester) async {
+      await tester.pumpWidget(
+        _host(
+          SingleChildScrollView(
+            child: CompletionRunView(
+              id: 'history',
+              timing: const WorkTiming(startedAt: 1000, finishedAt: 1125),
+              location: WorkDisplayLocation.history,
+              initiallyExpanded: true,
+              childBuilder: (_) => const Column(
+                children: [
+                  SizedBox(height: 900),
+                  Text('member failure and cancellation details'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
       expect(
         tester.getSize(find.byType(CompletionRunView)).height,
-        lessThan(500),
+        greaterThan(900),
+      );
+      expect(
+        find.descendant(
+          of: find.byType(CompletionRunView),
+          matching: find.byType(Scrollable),
+        ),
+        findsNothing,
       );
       final details = find.text('member failure and cancellation details');
       expect(details.hitTestable(), findsNothing);
-      await tester.drag(viewport, const Offset(0, -220));
+      await tester.ensureVisible(details);
       await tester.pumpAndSettle();
-      expect(
-        tester.state<ScrollableState>(viewport).position.pixels,
-        greaterThan(0),
-      );
       expect(details.hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
@@ -417,6 +469,7 @@ class _LiveHarness {
           );
     final workSlice = LiveStatusTimelineWorkSlice(
       workBlocks: projected.timelineWorkBlocks,
+      mergedWorkActivity: projected.mergedWorkActivity,
       effectiveWindow: live.value,
     );
     Widget section(ConversationLiveSection section) =>

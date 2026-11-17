@@ -91,13 +91,15 @@ HTTP 适配器只在原读取所有者存活期间索引该读取能力，不另
 | `POST /timeline/older` | before、demand、原读取资格 | 纯查询 TimelinePage |
 | `POST /timeline/live-older` | before、demand、原读取资格 | TailSnapshot |
 | `POST /timeline/close` | 原订阅资格 | 撤销准入并汇合原资源 |
-| `POST /timeline/members` | reference、固定 window、demand、原订阅资格 | 有界 DisplayMemberPage SSE，本次页观察 sealed 后结束；冷 saved-only 页固定后结束不代表业务块封组，见 [26.7](./26-timeline-content.md#267-内容成员窗口与资源) |
+| `POST /timeline/members` | reference、demand、原订阅资格 | DisplayMemberBatch SSE；同一完整逻辑结果按连续 offset 分批，complete 后才完整；complete && sealed 后结束，冷源结束不代表业务块封组，见 [26.7](./26-timeline-content.md#267-内容完整成员与资源) |
 | `POST /contents/manifest` | itemId、continuation、demand | ContentManifestPage |
 | `POST /contents/read` | reference、range | ContentWindow |
 | `POST /contents/watch` | reference、range | 有界 ContentWindow SSE |
 | `POST /current/page` | reference、continuation、demand | CurrentCollectionPage |
 
-这些路径以 `/api/v1/threads/{thread_id}` 为前缀；Main 按段代表跳读，Run/Children 按完成 seq 分页，continuation 不互换。`POST /chat/completed` 接受 recordId/demand，经原 lease 返回有界 CompletedEntry。查询不占发送位置或信用；内容 watch 只关闭自身观察，会话流仍为单未确认普通批次。
+成员流请求不再接受成员 window，响应不再是独立 Latest／Before 页，而是同一修订下的完整集合批次；offset 以条目数量连续推进，sealed 在该结果各批保持一致，只有 complete && sealed 才允许正常 EOF。原 demand 上限仍只约束单批，不约束完整组的成员数量。Runtime、HTTP/SSE、FRB、SDK 和 GUI 同步迁移，仓库外成员流消费者须更新请求／解码，不提供旧窗口回退；主时间线分页、原件与正文接口不变。
+
+这些路径以 `/api/v1/threads/{thread_id}` 为前缀；主 Timeline 按冻结展示块游标上翻，完成原件 Records 按完成 seq 及原 scope 的显式类别／真实父级过滤。成员批次 offset 只表示同一完整结果内的位置，不是可跨结果复用的分页游标。`POST /chat/completed` 接受 recordId/demand，经原 lease 返回有界 CompletedEntry。查询不占发送位置或信用；内容 watch 只关闭自身观察，会话流仍为单未确认普通批次。
 
 ## 7.7 实时运行事实与前端细粒度投影
 

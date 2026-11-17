@@ -3023,10 +3023,10 @@ final class _RealtimeScene {
           .singleOrNull;
       if (display == null) continue;
       expect(display.error, isNull);
-      final page = unit.expansion.members?.page;
-      if (page == null) continue;
-      expect(page.block, display.blockReference);
-      for (final head in page.entries) {
+      final controller = unit.expansion.members;
+      if (controller == null || !controller.hasSnapshot) continue;
+      expect(controller.reference, display.blockReference);
+      for (final head in controller.entries) {
         if (_isOriginalToolCompletion(head.record, atom)) {
           yield (
             blockId: unit.id,
@@ -3212,10 +3212,10 @@ final class _RealtimeScene {
         admissionsTruncated++;
         return;
       }
-      final page = memberController!.page;
+      final controller = memberController!;
       admissions.add({
         'sampleMillis': clock.elapsedMilliseconds,
-        'revision': page?.revision,
+        'revision': controller.revision,
         'controllerIdentity': identityHashCode(memberController),
         'samePreparedController': identical(
           memberController,
@@ -3224,7 +3224,7 @@ final class _RealtimeScene {
         'loading': memberController.loading,
         'error': memberController.error?.toString(),
         'members': [
-          for (final head in page?.entries ?? const <DisplayMemberHead>[])
+          for (final head in controller.entries)
             if (isRequestedCall(head.record.atom.tool?.callId))
               {
                 'callId': head.record.atom.tool?.callId,
@@ -3268,7 +3268,7 @@ final class _RealtimeScene {
             : <String, Object?>{
                 'iteration': iteration++,
                 'sampleMillis': clock.elapsedMilliseconds,
-                'revision': memberController!.page?.revision,
+                'revision': memberController!.revision,
                 'pumpStart': null,
                 'pumpEnd': null,
               };
@@ -3399,7 +3399,7 @@ final class _RealtimeScene {
             false;
         frame?.addAll({
           'sampleMillis': clock.elapsedMilliseconds,
-          'revision': memberController?.page?.revision,
+          'revision': memberController?.revision,
           'membersAvailable': observerReady,
           'titlesHitTestable': titlesHitTestable,
           'members': [

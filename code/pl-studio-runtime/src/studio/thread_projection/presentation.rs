@@ -224,6 +224,11 @@ pub(in crate::studio) struct DisplayMemberCut {
     pub complete: bool,
 }
 
+pub(in crate::studio) enum DisplayMemberCapture {
+    Unchanged,
+    Captured(DisplayMemberCut),
+}
+
 pub(in crate::studio) struct PresentationState {
     database: String,
     open_work: Option<BlockOrder>,
@@ -252,6 +257,8 @@ pub(in crate::studio) struct PresentationState {
     applied_effect: u64,
     changes: Option<tokio::sync::watch::Sender<u64>>,
     retained: u64,
+    #[cfg(test)]
+    member_head_reads: std::cell::Cell<u64>,
 }
 
 struct HeaderBatch {
@@ -289,6 +296,8 @@ impl Default for PresentationState {
             applied_effect: Default::default(),
             changes: Default::default(),
             retained: Default::default(),
+            #[cfg(test)]
+            member_head_reads: Default::default(),
         }
     }
 }
@@ -666,6 +675,23 @@ impl PresentationState {
             .subscribe()
     }
 
+    pub fn capture_members(
+        &self,
+        block_id: &str,
+        delivered: Option<(u64, bool)>,
+        fixed_snapshot: bool,
+    ) -> Option<DisplayMemberCapture> {
+        let order = *self.by_id.get(block_id)?;
+        let header = self.blocks.get(&order)?;
+        // This check and the changed result share the same owner lock. Unrelated content wakes
+        // must not enumerate an unchanged group or split the header/overlay into separate cuts.
+        if delivered == Some((header.revision, fixed_snapshot || header.sealed)) {
+            return Some(DisplayMemberCapture::Unchanged);
+        }
+        self.member_cut(block_id, None, usize::MAX)
+            .map(DisplayMemberCapture::Captured)
+    }
+
     pub fn member_cut(
         &self,
         block_id: &str,
@@ -745,6 +771,11 @@ impl PresentationState {
         }
     }
 
+    #[cfg(test)]
+    pub fn member_head_reads(&self) -> u64 {
+        self.member_head_reads.get()
+    }
+
     /// Resident overlay for a requested block/window. A restored block's saved terminal rows
     /// remain in SQLite; the consumer merges this bounded overlay with that captured durable cut.
     pub fn member_heads(
@@ -753,6 +784,8 @@ impl PresentationState {
         before: Option<u64>,
         limit: usize,
     ) -> Vec<Arc<DisplayMemberWrite>> {
+        #[cfg(test)]
+        self.member_head_reads.set(self.member_head_reads.get() + 1);
         let Some(order) = self.by_id.get(block_id).copied() else {
             return Vec::new();
         };

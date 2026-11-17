@@ -68,6 +68,8 @@ const _hotUpdatePrompt = '同一正文内依次追加二十个可控增量，保
 const _hotUpdateHead = '热更新正文：';
 const _imageCalls = ['concept-image-a', 'concept-image-b', 'concept-image-c'];
 const _imageReasoningCount = 40;
+// The fixture emits 40 reasoning atoms, four exec programs and four nested
+// view_image receipts. This is a complete group size, not a transport budget.
 const _imageMemberCount = 48;
 
 /// Three native processes, one isolated SQLite database, one strict provider.
@@ -1340,9 +1342,9 @@ final class _ConceptScene {
           display.unitId == work.id &&
           display.blockReference == work.memberReference,
     );
-    final originalHead = work.expansion.members!.page!.entries.single;
+    final originalHead = work.expansion.members!.entries.single;
     expect(originalHead.record.atom.id, member.id);
-    final originalCurrent = observed.currentDisplayForWork(work.id);
+    final originalCurrent = observed.mainCurrentDisplayForWork(work.id);
     expect(originalCurrent.isCurrent, isTrue);
     final historyIds = items.map((item) => item.id).toList();
     expect(historyIds, isNotEmpty);
@@ -1387,6 +1389,24 @@ final class _ConceptScene {
           record: head.record,
         ));
         if (row.evaluate().length != 1) return false;
+        final rendered = tester.widget<TimelineMemberAtom>(row).atom;
+        for (final atom in [head.record.atom, rendered]) {
+          expect(atom.id, member.id);
+          expect(atom.source, source);
+          expect(
+            atom.source,
+            isA<ForegroundTurnChatSource>().having(
+              (source) => source.turnId,
+              'turnId',
+              activeTurnId,
+            ),
+          );
+          expect(atom.turnId, activeTurnId);
+        }
+        expect(
+          graph.client.conversations.session(threadId).state.activeTurn?.turnId,
+          activeTurnId,
+        );
         final renderer = tester.state(row) as TimelineMemberDisplay;
         final windows = renderer.windows
             .where((window) => window.id == head.memberKey)
@@ -1478,9 +1498,10 @@ final class _ConceptScene {
       'the same live member after explicit Work expansion',
     );
     expect(lease.generation, greaterThan(before.generation));
-    final resumedCurrent = observed.currentDisplayForWork(work.id);
-    expect(resumedCurrent.turnId, activeTurnId);
+    final resumedCurrent = observed.mainCurrentDisplayForWork(work.id);
     final resumed = live.singleWhere((atom) => atom.id == member.id);
+    expect(resumed.source, source);
+    expect(resumed.turnId, activeTurnId);
     expect(resumed.kind, member.kind);
     expect(resumed.sourceOrder, member.sourceOrder);
     expect(resumed.lifecycle, isA<ActiveChatAtom>());
@@ -1489,7 +1510,6 @@ final class _ConceptScene {
         .unit(work.id)
         .expansion
         .members!
-        .page!
         .entries
         .single;
     expect(resumedHead.memberKey, originalHead.memberKey);
@@ -1595,7 +1615,6 @@ final class _ConceptScene {
       'runReference': reference(value.blockReference),
       'isCurrent': value.isCurrent,
       'expanded': value.expanded,
-      'before': value.before,
       'loading': value.loading,
       'error': value.error?.toString(),
       'mountedMemberCount': value.atoms.length,
@@ -1657,27 +1676,11 @@ final class _ConceptScene {
     try {
       final display = await observed.openWork(id, timeout: remaining());
       original = display;
-      await observed.selectLatestMembers(display, timeout: remaining());
       final ids = <String>{};
-      var olderPageCommands = 0;
-      while (true) {
-        await _until(
-          tester,
-          () {
-            expect(display.isCurrent, isTrue);
-            expect(display.expanded, isTrue);
-            if (display.error case final error?) throw error;
-            return !display.loading;
-          },
-          'original group member window is ready',
-          timeout: remaining(),
-        );
-        ids.addAll(display.atoms.map((atom) => atom.id));
-        if (display.before == null) break;
-        // Scroll the original Work viewport to request its next older page.
-        await observed.loadOlderMemberPage(display, timeout: remaining());
-        olderPageCommands++;
-      }
+      expect(display.isCurrent && display.expanded, isTrue);
+      if (display.error case final error?) throw error;
+      expect(display.loading, isFalse);
+      ids.addAll(display.atoms.map((atom) => atom.id));
       expect(ids, isNotEmpty);
       final observations =
           (report['memberPageObservations'] ??= <Map<String, Object?>>[])
@@ -1686,7 +1689,6 @@ final class _ConceptScene {
         'itemId': id,
         'reusedMountedWindow': reusedWindow,
         'memberScopeOpenCommands': reusedWindow ? 0 : 1,
-        'olderPageCommands': olderPageCommands,
         'costMeaning':
             'explicit UI demands; not physical/native IO page counts',
         'distinctObservedMembers': ids.length,
@@ -1709,7 +1711,6 @@ final class _ConceptScene {
     );
     expect(display.isCurrent, isTrue);
     expect(display.expanded, isTrue);
-    expect(display.before, isNull);
     expect(display.loading, isFalse);
     _recordMemberInventory(
       'earliest-member-before-close',
@@ -1822,9 +1823,51 @@ final class _ConceptScene {
     TimelineDisplayUnit unit,
     TimelineGroupDisplay display,
   ) async {
-    final seed = await observed.readFixtureAtoms(unit);
+    final seed = await observed.readFixtureAtoms(
+      unit,
+      expectedCount: _imageMemberCount,
+    );
     final source = seed.first.source;
+    expect(source, isA<ForegroundTurnChatSource>());
+    final turnId = (source as ForegroundTurnChatSource).turnId;
+    expect(seed.map((atom) => atom.id).toSet(), hasLength(_imageMemberCount));
+    expect(seed.map((atom) => atom.source).toSet(), {source});
+    expect(seed.map((atom) => atom.turnId).toSet(), {turnId});
+    expect(
+      seed.where((atom) => atom.kind == ChatAtomKind.reasoning),
+      hasLength(_imageReasoningCount),
+    );
+    final programs = seed.where(
+      (atom) => atom.kind == ChatAtomKind.toolCall && atom.tool?.name == 'exec',
+    );
+    expect(
+      programs.map((atom) => atom.tool!.callId),
+      unorderedEquals([..._imageCalls, 'concept-image-failed']),
+    );
+    for (final call in [..._imageCalls, 'concept-image-failed']) {
+      expect(
+        seed.where(
+          (atom) =>
+              atom.kind == ChatAtomKind.toolCall &&
+              atom.tool?.name == 'view_image' &&
+              (atom.tool?.callId.startsWith('$call:nested:') ?? false),
+        ),
+        hasLength(1),
+      );
+    }
     final records = await collectDisplayRecords(observed, source: source);
+    final groupMembers = records
+        .where((entry) => entry.unit.id == unit.id)
+        .toList();
+    expect(groupMembers, hasLength(_imageMemberCount));
+    expect(
+      groupMembers.map((entry) => entry.member!.memberKey).toSet(),
+      hasLength(_imageMemberCount),
+    );
+    expect(
+      groupMembers.map((entry) => entry.record.atom.id),
+      orderedEquals(seed.map((atom) => atom.id)),
+    );
     final originals = records
         .where((entry) => entry.record.contentSource is CompletedOriginal)
         .toList();
@@ -1832,7 +1875,6 @@ final class _ConceptScene {
     for (final entry in originals) {
       atoms.add((await readDisplayRecord(lease, entry.record)).atom!);
     }
-    expect(source, isA<ForegroundTurnChatSource>());
     expect(
       lease.groupDisplays.singleWhere((value) => value.unitId == unit.id),
       same(display),
@@ -1842,8 +1884,18 @@ final class _ConceptScene {
     expect(display.blockReference, unit.memberReference);
     expect(display.loading, isFalse);
     expect(display.error, isNull);
-    expect(display.atoms, isNotEmpty);
-    expect(display.atoms.length, lessThanOrEqualTo(12));
+    // The independently queried complete fixture cut must be displayed in full,
+    // even though its original reader transports at most 12 heads per batch.
+    expect(
+      display.atoms.map((atom) => atom.id),
+      orderedEquals(groupMembers.map((entry) => entry.record.atom.id)),
+    );
+    expect(
+      display.atoms.map((atom) => atom.id).toSet(),
+      hasLength(_imageMemberCount),
+    );
+    expect(display.atoms.map((atom) => atom.source).toSet(), {source});
+    expect(display.atoms.map((atom) => atom.turnId).toSet(), {turnId});
 
     expect(atoms.map((atom) => atom.id).toSet(), hasLength(atoms.length));
     expect(atoms.map((atom) => atom.source).toSet(), {source});
@@ -1914,7 +1966,9 @@ final class _ConceptScene {
     inventories.add({
       'itemId': unit.id,
       'blockOrder': unit.blockOrder,
-      'currentPageCount': display.atoms.length,
+      'completeMemberCount': display.atoms.length,
+      'fixtureExpectedMemberCount': _imageMemberCount,
+      'uniqueMemberKeyCount': groupMembers.length,
       'inventorySource': 'explicit finite fixture queries, not UI accumulation',
       'displayIdentity': identityHashCode(display),
       'blockId': display.blockReference!.blockId,
@@ -2112,11 +2166,9 @@ final class _ConceptScene {
       isEmpty,
       reason: 'A folded live Work must not open member or body demand',
     );
-    final active = (await observed.readMemberPage(initialWork.memberReference!))
-        .entries
-        .single
-        .record
-        .atom;
+    final active = (await observed.readMemberSnapshot(
+      initialWork.memberReference!,
+    )).entries.single.record.atom;
     final source = active.source;
     expect(source, isA<ForegroundTurnChatSource>());
     expect(active.lifecycle, isA<ActiveChatAtom>());
@@ -2288,7 +2340,7 @@ final class _ConceptScene {
     expect(g2, isNot(g1));
     expect(secondWork.memberReference, isNot(firstWork.memberReference));
     expect(
-      (await observed.readMemberPage(secondWork.memberReference!))
+      (await observed.readMemberSnapshot(secondWork.memberReference!))
           .entries
           .single
           .record
@@ -3002,12 +3054,11 @@ final class _ConceptScene {
   ) async {
     expect(work.state, DisplayBlockState.sealed);
     expect(work.blockOrder, greaterThan(0));
-    final page = await observed.readMemberPage(
+    final page = await observed.readMemberSnapshot(
       work.memberReference!,
       demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
     );
     expect(page.sealed, isTrue);
-    expect(page.before, isNull);
     expect(page.entries, hasLength(2));
     final timing = work.timing!;
     expect(
@@ -3058,11 +3109,11 @@ final class _ConceptScene {
     );
     final work = observed.liveWork.single;
     final ref = work.memberReference!;
-    final reasonHead = (await observed.readMemberPage(ref)).entries.single;
+    final reasonHead = (await observed.readMemberSnapshot(ref)).entries.single;
     final reason = reasonHead.record.atom;
     final source = reason.source as ForegroundTurnChatSource;
     final owner = lease;
-    final current = observed.currentDisplayForWork(work.id);
+    final current = observed.mainCurrentDisplayForWork(work.id);
     final controller = lease.controller;
     final generation = lease.generation;
     expect(reason.lifecycle, isA<ActiveChatAtom>());
@@ -3071,6 +3122,40 @@ final class _ConceptScene {
       tester,
       () => hasText(_overlapReasoning),
       'A original active prefix is readable before B starts',
+    );
+    final mountedHead = observed
+        .unit(work.id)
+        .expansion
+        .members!
+        .entries
+        .single;
+    expect(mountedHead.memberKey, reasonHead.memberKey);
+    expect(mountedHead.memberOrder, reasonHead.memberOrder);
+    final rendered = tester
+        .widget<TimelineMemberAtom>(
+          observed.liveRenderer((
+            blockId: work.id,
+            displayId: mountedHead.memberKey,
+            record: mountedHead.record,
+          )),
+        )
+        .atom;
+    for (final atom in [reason, mountedHead.record.atom, rendered]) {
+      expect(atom.id, reason.id);
+      expect(atom.source, source);
+      expect(
+        atom.source,
+        isA<ForegroundTurnChatSource>().having(
+          (source) => source.turnId,
+          'turnId',
+          source.turnId,
+        ),
+      );
+      expect(atom.turnId, source.turnId);
+    }
+    expect(
+      graph.client.conversations.session(threadId).state.activeTurn?.turnId,
+      source.turnId,
     );
     await release('a07-reasoning-start');
     await reach(
@@ -3478,8 +3563,8 @@ final class _ConceptScene {
         (block) => block.id == before.id && !block.hasUnfinishedMembers,
       ),
     );
-    // This is the bridge/page handoff. Original preservation and member paging
-    // belong to Runtime tests; card styles and controls belong to widget tests.
+    // This is the bridge/Main handoff. Original preservation and complete member
+    // delivery belong to Runtime tests; card styles belong to widget tests.
     expect(liveWork().single.id, before.id);
     expect(main.where((unit) => unit.id == before.id), isEmpty);
     await capture('a14-empty-keeps-tail');
@@ -4087,7 +4172,6 @@ final class _ConceptScene {
     await observed.closeWork(display);
     _recordMemberInventory('media-closed', imageGroup.id, original: display);
     expect(display.atoms, isEmpty);
-    expect(display.before, isNull);
     expect(imageGroup.expansion.bodyActive, isFalse);
     final joinedWait = Stopwatch()..start();
     expect(

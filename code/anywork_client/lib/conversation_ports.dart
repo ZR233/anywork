@@ -40,7 +40,6 @@ abstract interface class TimelineReader {
   });
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   });
   void requestClose();

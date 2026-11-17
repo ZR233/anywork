@@ -69,12 +69,7 @@ Widget _host(TimelineDisplayUnit unit, _Content content) => MaterialApp(
 
 TimelineDisplayUnit _unit(
   String id,
-  Future<DisplayMembers> Function(
-    DisplayBlockRef,
-    DisplayMemberWindow,
-    ReadDemand,
-  )
-  open,
+  Future<DisplayMembers> Function(DisplayBlockRef, ReadDemand) open,
 ) {
   final unit = TimelineDisplayUnit.live(
     block: LiveDisplayBlock(
@@ -94,15 +89,16 @@ TimelineDisplayUnit _unit(
   return unit;
 }
 
-DisplayMemberPage _page(
+DisplayMemberBatch _page(
   TimelineDisplayUnit unit,
   List<ChatAtom> atoms, {
   int revision = 1,
-}) => DisplayMemberPage(
+}) => DisplayMemberBatch(
+  offset: 0,
+  complete: true,
   block: unit.memberReference!,
   revision: revision,
   sealed: false,
-  before: 70,
   entries: [
     for (var i = 0; i < atoms.length; i++)
       DisplayMemberHead(
@@ -183,9 +179,9 @@ void main() {
       var opens = 0;
       final content = _Content();
       final members = _Members();
-      final unit = _unit('retry', (reference, window, demand) async {
+      final unit = _unit('retry', (reference, demand) async {
         expect(reference.blockId, 'retry');
-        expect(window, isA<LatestDisplayMembers>());
+
         expect(demand.maxItems, 12);
         if (opens++ == 0) throw StateError('成员读取失败');
         return members;
@@ -214,9 +210,9 @@ void main() {
       final opened = <_Members>[];
       final references = <DisplayBlockRef>[];
       TimelineGroupDisplay? display;
-      final unit = _unit('group', (reference, window, demand) async {
+      final unit = _unit('group', (reference, demand) async {
         references.add(reference);
-        expect(window, isA<LatestDisplayMembers>());
+
         expect(demand.maxItems, 12);
         final members = _Members();
         opened.add(members);
@@ -273,7 +269,7 @@ void main() {
       var opens = 0;
       var registrations = 0;
       TimelineGroupDisplay? display;
-      final unit = _unit('page-admission', (_, _, _) async {
+      final unit = _unit('page-admission', (_, _) async {
         opens++;
         return members;
       })..expansion.expanded = true;
@@ -349,13 +345,13 @@ void main() {
       (tester) async {
         final content = _Content();
         final pending = Completer<DisplayMembers>();
-        final a = _unit('A', (_, _, _) => pending.future)
+        final a = _unit('A', (_, _) => pending.future)
           ..expansion.expanded = true;
         await tester.pumpWidget(_host(a, content));
         await _frames(tester);
         a.expansion.retire();
         final current = _Members();
-        final b = _unit('B', (_, _, _) async => current)
+        final b = _unit('B', (_, _) async => current)
           ..expansion.expanded = true;
         await tester.pumpWidget(_host(b, content));
         await _frames(tester);
@@ -390,7 +386,7 @@ void main() {
       (tester) async {
         final content = _Content();
         final opened = <_Members>[];
-        final unit = _unit('deferred', (_, _, _) async {
+        final unit = _unit('deferred', (_, _) async {
           final members = _Members();
           opened.add(members);
           return members;
@@ -442,21 +438,21 @@ void main() {
 
 /// Only the external handle's next/close timing. No projection or UI reduction.
 final class _Members implements DisplayMembers {
-  Completer<DisplayMemberPage?>? _next;
+  Completer<DisplayMemberBatch?>? _next;
   Completer<void>? closeGate;
   int nextCalls = 0;
   int closeCalls = 0;
   bool closeRequested = false;
   bool closed = false;
   @override
-  Future<DisplayMemberPage?> next() {
+  Future<DisplayMemberBatch?> next() {
     nextCalls++;
     if (closeRequested) return Future.value(null);
     expect(_next, isNull, reason: 'At most one next is outstanding');
-    return (_next = Completer<DisplayMemberPage?>()).future;
+    return (_next = Completer<DisplayMemberBatch?>()).future;
   }
 
-  void deliver(DisplayMemberPage page) {
+  void deliver(DisplayMemberBatch page) {
     final pending = _next!;
     _next = null;
     pending.complete(page);

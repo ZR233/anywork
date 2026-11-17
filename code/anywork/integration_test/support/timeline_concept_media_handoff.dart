@@ -59,51 +59,33 @@ extension _MediaHandoffScene on _ConceptScene {
       'startedAt': work.timing!.startedAt,
       'pages': pages,
     };
-    DisplayMemberWindow window = const LatestDisplayMembers();
-    int? before;
-    // Pending ToolImages may append real wait members to this Work. Walk
-    // strictly backwards from the first page's cut, rather than restarting
-    // Latest or requiring the mutable total/revision to remain unchanged.
-    while (true) {
-      final page = await observed.readMemberPage(
-        reference,
-        window: window,
-        demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
-      );
-      expect(lease, same(owner));
-      expect(page.block, reference);
-      var previousOrder = 0;
-      for (final member in page.entries) {
-        expect(member.memberOrder, greaterThan(previousOrder));
-        if (before != null) expect(member.memberOrder, lessThan(before));
-        expect(seen.add(member.memberKey), isTrue);
-        expect(member.record.atom.turnId, turnId);
-        previousOrder = member.memberOrder;
-        if (member.record.atom.source == source &&
-            member.record.atom.tool?.callId == _mediaCall &&
-            member.record.contentSource is CompletedOriginal) {
-          matches.add(member);
-        }
+    final snapshot = await observed.readMemberSnapshot(
+      reference,
+      demand: const ReadDemand(maxItems: 12, maxBytes: 64 * 1024),
+    );
+    expect(lease, same(owner));
+    expect(snapshot.block, reference);
+    var previousOrder = 0;
+    for (final member in snapshot.entries) {
+      expect(member.memberOrder, greaterThan(previousOrder));
+      expect(seen.add(member.memberKey), isTrue);
+      expect(member.record.atom.turnId, turnId);
+      previousOrder = member.memberOrder;
+      if (member.record.atom.source == source &&
+          member.record.atom.tool?.callId == _mediaCall &&
+          member.record.contentSource is CompletedOriginal) {
+        matches.add(member);
       }
-      pages.add({
-        'beforeRequested': before,
-        'beforeReturned': page.before,
-        'revision': page.revision,
-        'memberOrders': page.entries
-            .map((member) => member.memberOrder)
-            .toList(),
-        'callIds': page.entries
-            .map((member) => member.record.atom.tool?.callId)
-            .toList(),
-      });
-      final next = page.before;
-      if (next == null) break;
-      expect(page.entries, isNotEmpty);
-      expect(next, page.entries.first.memberOrder);
-      if (before != null) expect(next, lessThan(before));
-      before = next;
-      window = BeforeDisplayMembers(memberOrder: next);
     }
+    pages.add({
+      'revision': snapshot.revision,
+      'memberOrders': snapshot.entries
+          .map((member) => member.memberOrder)
+          .toList(),
+      'callIds': snapshot.entries
+          .map((member) => member.record.atom.tool?.callId)
+          .toList(),
+    });
     expect(
       matches,
       hasLength(1),

@@ -37,7 +37,7 @@ State 与内容是独立资源：Repository 是 Dart State 唯一写入口，Sta
 
 当前正文／思考活动的资格由原 owner 已可靠准入且仍 Active 的同 Turn、同 attempt 原子决定；有界 progress 只为这些原子提供当前摘要，不单独创造活动资格。缺少 progress 窗口不撤销真实 Active 原子，已结束原子的残留 progress 也不能恢复旧正文或思考。State 独立交付不等于绕过可靠开始准入，测试中的合成 State 必须建立与其声称活动相符的可靠事实。工具的 `background` 是相对当前前台阶段的补充计数，不是持久的“曾转后台”标签：仅余工具且工具本身成为活动主体时为 0；模型阶段与工具并行时，工具仍计入后台。真实任务身份、执行状态和转后台原件不受该计数影响。
 
-Work 与正文分区可同时挂载各自的当前 renderer。原 display lease 对诊断者提供所有仍有效 renderer 的只读资源借用集合，注册与撤销只影响对应原资源，不能以一个最后写入的槽覆盖另一个仍挂载资源，也不能保留含糊的单资源别名。诊断必须从当前块／有界成员页取得实际展示行身份与 `DisplayRecord`，按父块、原 lease/generation、内容引用关联唯一 renderer 及其已有窗口；原 atom ID 仅用于事实关联，不代替 block ID 或 member key。资源枚举不打开查询、不复制业务列表、不改变读取或关闭所有权；换代先撤销旧资源资格，再由原 owner 收束窗口。
+Work 与正文分区可同时挂载各自的当前 renderer。原 display lease 对诊断者提供所有仍有效 renderer 的只读资源借用集合，注册与撤销只影响对应原资源，不能以一个最后写入的槽覆盖另一个仍挂载资源，也不能保留含糊的单资源别名。诊断必须从当前块／已完整接纳的成员集合取得实际展示行身份与 `DisplayRecord`，按父块、原 lease/generation、内容引用关联唯一 renderer 及其已有窗口；原 atom ID 仅用于事实关联，不代替 block ID 或 member key。资源枚举不打开查询、不复制业务列表、不改变读取或关闭所有权；换代先撤销旧资源资格，再由原 owner 收束窗口。
 
 ### 已接纳输入与已接收外部内容
 
@@ -128,7 +128,7 @@ DisplayObservation 自有命名空间，不借用当前 atom 或未来完成原�
 
 存储表和迁移归 [17](./17-studio-storage.md)。块小头保存种类、来源、boundary、计数、真实时间、有界概要和内容/成员引用，不保存全成员 ID 数组、全部 ChatAtom、正文、完整 payload 或 ThreadSnapshot。成员保存展示行身份、关联身份、顺序、可空开始/结束事实引用及类型化内容来源。完成原件使用真实 completion_id；未结束观察使用独立命名的 sealed 显示快照，不分配 completion ID 或 finished_at。冻结引用不得指向会变化的当前 atom，也不能仅存 generation/长度后再读最新前缀。
 
-历史、尾部和成员页均按同方向、同键范围有界读取。短 Store 锁捕获数据库身份、修订、前沿、最大位置、目标组头及成员上界，并保留请求范围前 K 个驻留行的不可变 Arc；随后在锁外新建 SQLite 短快照，查询同范围前 K 行。按键归并至多 2K 个候选，捕获 Arc 始终覆盖同键数据库行，再以 K/字节预算截成完整行。数据库查询不先按 sealed 或 terminal 过滤，避免旧数据库状态改变候选集合；合并后才解释冻结状态。新增键由 captured last_order/next_member 排除，旧值由 captured Arc 保留。每个独立页形成新切面，不承诺跨页长快照。
+历史与尾部继续按同方向、同键范围有界读取：短 Store 锁捕获数据库身份、修订、前沿、最大位置及请求范围前 K 个驻留行的不可变 Arc，锁外查询同范围 SQLite 行，按键归并并以 K／字节预算截成完整行。完整成员观察沿同一 Store 捕获目标组头、成员上界及全部必要的驻留 overlay，随后在锁外读齐该切面的轻量成员行；捕获时已终态的行不可变，捕获时未终态的 Arc 覆盖同键数据库新值，captured next_member 排除捕获后新增键。冷源在一个已 pin 的短事务内取得完整成员结果。组装结束即释放数据库事务；同一不可变结果由原观察句柄分批交付，不在等待消费者时持有数据库锁或事务，也不把多个独立窗口拼成同一快照。
 
 两个可丢弃的驻留下界分别证明块尾部和当前组成员尾部的完整覆盖。冷恢复从已知最大位置加一开始，回收位置 q 后下界只向 q+1 提升；溢出时放弃证明。DESC 足 K 行且候选均在完整范围内，或整个请求范围已覆盖时可零 SQL；ASC 必须从完整范围内开始。仅有 K 行驻留不足以跳过夹在其中的数据库行。不满足证明则执行一次有界查询，不补 COUNT、存在性查询、全历史检查或正文解码。
 
@@ -176,25 +176,25 @@ plan=None 为真无计划；Some/document=None 为有计划无文档。interacti
 
 原 reader 的 read_business_refs 与 State 基线共用领域投影。一次性工具可查询，GUI 持续跟踪只消费 State，不在命令/Timeline 后补偿刷新。不恢复 ChatBatch.current，不把组和正文放进 State。
 
-## 26.7 内容、成员窗口与资源
+## 26.7 内容、完整成员与资源
 
 listContents/readContent/readAttachment/watchContent/pageCurrent 沿原 reader、权限、范围和短读租约。大正文按 offset 读取，不先拼全文再截取。ContentRef 绑定库/资格和 ItemPayload/Body；原执行内容向完成原件的 ContentBlock 移交不复制全文，追加不换 generation、替换才换。边界派生观察使用独立命名空间并共享 immutable chunks，不覆盖 canonical atom 内容；CurrentAtom→FrozenObservation 可更换内容引用，稳定不变的是所属块/行身份。普通内容窗口保留 offset、bytes、generation、availableThrough、sealed。
 
-DisplayMemberWindow 为 Latest 或 Before{member_order}。DisplayMemberPage 携块引用、revision、sealed、有界轻量 entries 与 before。句柄首次 next 返回当前页，后续在该块成员结构/状态或封存资格改变时返回完整最新页；单个在途 next，接纳后再取。交付身份为 `(revision, sealed)`：封存若仅改变资格，可接同 revision 的封存页；若捕获改变了记录或内容引用，须推进 revision。普通重复、版本倒退及封存后新数据仍是错误。token 不触发成员列表重读；切换窗口替换观察，不拼不同 revision 的可变页。
+`openDisplayMembers(reference, demand)` 观察指定工作组的完整轻量成员集合；不再接受 Latest／Before 成员窗口。每个 `DisplayMemberBatch { block, revision, offset, sealed, complete, entries }` 受原 ReadDemand 数量与实际编码字节预算约束，预算只限制单批，不限制组总成员数。offset 是同一结果内从零开始的连续条目数量，不是稀疏 member_order 游标；entries 跨批保持 member_order 严格升序、member_key 非空且唯一。同一结果的 block、revision、sealed 保持不变，complete 只标识该完整逻辑结果的最后一批。非完整批不能为空；空组可用 offset=0 的完整空批表达。每个句柄只有一个在途 next，接纳后才取下一批；未交付完当前不可变结果，不切换到新修订。普通重复、版本倒退、跳批、混修订、封存结果之后的新数据及完整批之前的 EOF 都是错误。
 
-成员呈现所有者在同一有界观察内区分结构与行数据通知：稳定成员身份与顺序未变时，仅通知内容或状态确有变化的成员，列表容器和未变化行不因整页交付重新构建。结构变化才更新成员列表；行的展开意图、正文读取资格和封存退役仍由原显示租约持有，不建立第二份业务集合或逐行后端订阅。
+成员呈现所有者在同一完整成员观察内区分结构与行数据通知：稳定成员身份与顺序未变时，仅通知内容或状态确有变化的成员，列表容器和未变化行不因完整结果交付重新构建。结构变化才更新成员列表；行的展开意图、正文读取资格和封存退役仍由原显示租约持有，不建立第二份业务集合或逐行后端订阅。
 
-成员页的 sealed 只表示**本次有界观察的快照不再变化**，不同于 DisplayHeader.sealed 的业务块冻结事实，也不等于全部成员 terminal。冷 saved-only 源没有成员变化订阅，首次 next 在原短读事务内取得该窗口的一致切面，以 sealed 页交付，之后正常 EOF；不为读取明细激活执行、促 flush、封组或分配第二展示位置。该切面在首次查询时形成，不承诺句柄创建时已固定全组，也不把多个 Before 窗口拼成跨 revision 的事务快照。同一 Store 的执行附加不替换读取身份，每页按当次模式捕获切面；原数据库身份、读取权限、source epoch、取消和资格复核仍适用，运行时重启或数据库身份变化明确使旧资格失效。
+批次的 sealed 表示这份完整逻辑结果的观察切面不再变化，不是业务块冻结，也不等于全部成员 terminal；sealed 可在每批声明，但只有 complete && sealed 后观察才能正常 EOF。冷 saved-only 源在首次 next 的短读事务取得全组一致结果，分批读完后结束；不激活执行、促 flush、封组或分配第二展示位置。切面在首次查询形成，而不是在句柄创建时形成。原数据库身份、读取权限、source epoch、取消和资格复核对每批仍适用，运行时重启或数据库身份变化使旧资格明确失效。
 
-热源中业务块仍开放时，即使全部成员已 terminal，也继续原成员订阅，后续工作仍可更新该窗口；真实业务边界冻结块后交付 sealed 页，即使其中有未终态的 FrozenObservation。正常 EOF 前必须交付一张 sealed 页；首页缺失、未固定的热观察意外结束和资格失效仍是错误，不能以任意 EOF 充当完成。固定页不保持无用 watch，页封存或 EOF 都不能反向改写业务块小头。
+热源中业务块仍开放时，即使全部成员已 terminal，也继续原成员观察；成员新增、轻量状态／引用变化和封存资格变化才产生下一份完整逻辑结果，同一内容引用下的 token 增长不触发成员集合重读。完整结果的 revision 必须前进；仅观察资格由未封存变为封存时，允许同 revision 重交完整且成员内容完全相同的封存结果，不得夹带成员变更。真实业务边界冻结块后，结果可含尚未终态的 FrozenObservation。正常 EOF 必须已收齐封存结果，初次结果缺失、半组 EOF、开放热观察意外结束和资格失效仍是错误。固定结果不保持无用 watch；流的 complete／sealed 不反向改写业务块小头。
 
-DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始/结束事实引用和类型化内容来源：CurrentAtom、FrozenObservation、CompletedOriginal。CurrentAtom 只用于开放行；FrozenObservation 绑定本库、本块/行及 sealed 内容命名空间，缺失旧切面明确 Unavailable，不回退最新内容；CompletedOriginal 使用真实 completion_id。同组开始/结束可同一行，跨组必须新 member_key；同一行实时到历史 ref/key 不变。组总数来自头，不用窗口长度覆盖。展开意图由 display lease 按 block_id 保存，不依赖跨父 Widget 移动自动保留 State。
+DisplayMemberHead 含稳定 member_key/order、轻量 ChatAtom、可空开始／结束事实引用和类型化内容来源：CurrentAtom、FrozenObservation、CompletedOriginal；只携内容引用，不携工具正文或原件。CurrentAtom 只用于开放行；FrozenObservation 绑定本库、本块／行及 sealed 内容命名空间，缺失旧切面明确 Unavailable，不回退最新内容；CompletedOriginal 使用真实 completion_id。同组开始／结束可同一行，跨组必须新 member_key；同一行实时到历史 ref/key 不变。公开 Work 头不承诺成员总数，不从单批长度推导组总数；界面只有收齐 complete 后才能把当前完整集合视为已加载。展开意图由 display lease 按 block_id 保存，不依赖跨父 Widget 移动自动保留 State。
 
 共享形状统一为 `DisplayRecord { atom, start_fact: Option<ChatFactPosition>, end_fact: Option<ChatFactPosition>, content_source }`，Single 持一份 record，成员头持 member_key/order 及 record，不另复制可空 completion_id。`DisplayContentSource` 为 CurrentAtom、FrozenObservation{captured_at: Option<i64>, available: bool} 或 CompletedOriginal{completion_id: String}；FrozenObservation.available=false 明确旧切面不可用，不能授予动态内容读取资格。公开 payload/Body 引用在捕获时重写到 `ContentOwner::DisplayObservation{block_id,member_key}` 的独立 owner，沿原内容存储和权限读取；真实完成原件和媒体资源继续原身份。Live 的 `DisplayBlockState` 为 Open 或 Sealed，后者只表示已冻结待发布，不是 closing 等待成员结束。事实引用仅表示该展示行实际接纳的事实：跨组 terminal-only 新行的 start_fact 为 None，即使 atom 保留原执行 started 时间也不能声称本组收到过开始。
 
 `available=false` 不仅约束正文：无法证明的旧等待/运行状态、公开参数和摘要也不得呈现为边界事实，显示中性“旧边界观察不可用”；能证明尚未终态时可同时说明“封存时尚未结束”。不可用证据属于具体成员，不维护组级未知、运行或等待计数，也不借较新摘要填补。新边界捕获必须完整，不能以 Unavailable 掩盖捕获失败。
 
-`DisplayMembers` 是查询 scope 交出的有界只读观察能力，声明在 Client 公开会话领域接口；transport 使用同一能力类型。Feature 通过公开查询 API 使用它，不为取得类型导入底层传输端口。
+`DisplayMembers` 是查询 scope 交出的单拉取只读观察能力，声明在 Client 公开会话领域接口，transport 使用同一能力类型。SDK 校验批次连续性、修订、身份、成员顺序及封存规则；Feature 通过公开查询 API 使用它，不为取得类型导入底层传输端口。原显示租约下的工作组成员 ViewModel 自动串行装配同一修订，完整后才发布新集合，后续按稳定键只通知变化行。新结果装配失败保留已完整接纳的旧结果及明确错误，不以半组或任意 EOF 冒充成功；折叠、换源、失去资格与关闭时废弃未完整批次并保留真实清理责任。原租约在接纳封存 Live 或历史 Work 头时同步撤销该组 CurrentAtom 正文资格，不等待成员封存批、Widget 重建或收起动画。成员缓存仅限实际展开组的全部轻量头，正文、原件和媒体仍按原独立窗口读取。
 
 完成卡的 Deferred payload 是原件定位，不是把业务卡降级为原始 JSON 的展示类型。实际挂载且仍有资格的 Single 卡或展开成员，沿原 `read_completed` 以 completion 身份、有界预算读取 canonical envelope，核对原件、atom、来源及完成身份后，复用原业务解码和 renderer；保留外层 block/member key、展开意图与 Main controller，不把解码结果回写展示头或另建消息列表。折叠 Work 不枚举或预读成员原件；正文、输出和媒体仍由原引用按各自窗口读取。metadata 单次读取采用现有 64 KiB 预算；若返回仍为 Deferred、身份矛盾或解码失败，明确呈现该限制或错误，不自动扩大预算、累计任意全文或把截断信封当作业务卡。离页、收起及资格换代撤销局部读取，迟到结果不得恢复已退役视图。底层原文范围查看器不承担业务 envelope 解码。
 
@@ -224,7 +224,7 @@ Flutter 的时间线会话所有者持唯一应用队列、读取器、显示代
 
 发送临时回显继续归原 Composer 提交 owner：同步冻结 inputId、正文和附件后立即交出当前草稿，区分发送中、已接纳等待同步、明确发送失败及发送结果待确认，精简呈现遵循 [19.11](19-studio-ui.md#1911-运行中发送消息与剪贴板粘贴)。明确失败保留内容及原因，并提供仅针对该失败项的重试与移除；未知结果不暴露普通重试，防止重复发送。内容与附件所有权按 [25.8](25-frontend-state.md#258-输入草稿与附件所有权账本) 结算，展示不能复制另一套提交状态。临时回显不是 canonical 输入或工作成员；原输入接纳后按 inputId 结算，不按正文去重、不因封组重复插入、不扫描历史或新增持久消息仓储。回显与正式正文共用现有 Markdown 展示能力。
 
-唯一当前尾组由 current_work_id 定位，不限前台或当前 Turn。Active 时进入实时状态栏；无真实活动为 Resting 静态尾卡；冷源确有未收束/不可用成员为 Unrestored；有可见边界为 Sealed。它们是原 State、sealed 和内容资格的派生呈现，不增加可写业务 owner。Resting 仍位于 ready_frontier 之后的可变尾部，不插入历史 controller 后撤回。当前尾卡只挂一处，同 ID 动静切换保留展开意图与原读取 owner，不因样式关闭共享资源。Plan/问答 dock 仅遮蔽，不删除尾组或重建审批资格。
+唯一当前尾组由 current_work_id 定位，不限前台或当前 Turn；与其他 Work 一起只挂在主 Timeline 的实时工作区，不能挂入限高状态栏或复制第二张尾卡。原实时状态栏保留独立流式正文、轻量通知及交互，不承载工作组成员。真实活动为 Active，无真实活动为 Resting 静态尾卡；冷源确有未收束/不可用成员为 Unrestored，有可见边界为 Sealed。它们是原 State、sealed 和内容资格的派生呈现，不增加可写业务 owner。Resting 仍位于 ready_frontier 之后的可变尾部，不插入历史 controller 后撤回。同 ID 动静切换及 live→history 保留展开意图与原读取 owner，不因布局或样式关闭共享资源。普通活动只在实际可见的对应 Work 头吸收，关键通知仍独立保留；Plan/问答仅遮蔽原 dock，不遮蔽或删除主 Timeline 工作组，不重建审批资格。
 
 ### 折叠呈现与文案
 
@@ -233,7 +233,7 @@ Flutter 的时间线会话所有者持唯一应用队列、读取器、显示代
 - 准备、思考及压缩使用同一固定顶行几何呈现对应轻量状态；压缩不伪造工作组。已有同源当前正文 renderer 时不再叠加普通“正在输出”。上一正文可靠结束后，权威 owner 清除该正文活动资格及旧摘要，不从有界窗口缺正文推断无活动，也不从已有 response parts 推断仍在输出。
 - 普通活动提示归属于 current_work_id 指向的开放 Work，活动内容来自原 State，不要求来源/Turn 相同。普通提示不能覆盖真实保存、停止、审批、错误和冷源提示；缺真实活动不播放动画。有可靠组摘要时可复用原单行摘要/展开组件，旧失败、取消与 Transferred 不替换真实活动阶段。来源字段与成员计数不推导执行状态；无 activeTurnId 的纯后台活动仍正常呈现。
 - 已封存待发布段及已冻结历史 Work 位于 Timeline 工作区且默认折叠，主标题保持纯文本“工作了 2 分 5 秒”等同口径完成态文案，不展示思考摘要，也不以“工作记录 · N 项”、裸小数秒或原始进度数替代。组内调用失败同样不改变标题颜色与图标，真实结果、取消和交接均保留在具体成员详情与其可访问说明；正常停止保持中性，不伪装错误或成功。
-- 点击才展开原成员窗口；按稳定 block_id 保存的用户展开意图跨 live→history 交接保持，不能因“默认折叠”强制收起用户已打开的组。实时与历史工作组共享有界展开区：短内容自然高度，长内容在组内滚动，最大高度不超过 420 逻辑像素并受实际可用高度约束。滚动到阅读边界按需读取原成员分页，不设置“更多／更早成员／最新成员”按钮；保留阅读锚点，新增数据不打断正在阅读的位置。只保留有界成员阅读窗口，不预读全部历史；固定分页的不同读取切面不被表述为全组事务快照。
+- 点击才请求该组完整轻量成员；按稳定 block_id 保存的展开意图跨 live→history 交接保持，不能因默认折叠强制收起用户已打开的组。实时与历史工作组展开后全部成员按顺序自然排布，不设置组级高度封顶、独立 Scrollable、成员分页控件或滚轮翻页。长组和成员高度变化由主 Timeline 的同一官方聊天列表／滚动所有者处理，不能为重新测量高度伪造消息更新、创建第二滚动控制器或做逐行定时补偿。底部阅读与用户主动上滚的意图分别保持；成员状态和正文局部变化不重建无关行、不强制抢回底部。自动分批装配是底层传输行为，不是用户分页；工作项自身的折叠和有界正文读取不因全组展开变为全文预读。
 - 工作组成员共用活动条目外壳。折叠与不可展开态均为语义图标加单行主文案，不附加二级描述或因附属信息换成第二行；展开入口、真实状态及必要的可访问说明保持明确。完整目标可通过提示或详情内的一份语义标题访问。
 - 窄窗和大字号下优先压缩或省略摘要，保留图标、时长与可操作的展开入口，不靠缩小字号、重复标题换行或裁掉操作掩盖溢出。复用现有主题、字体、图标和交互组件，不另造预览专用外观。
 

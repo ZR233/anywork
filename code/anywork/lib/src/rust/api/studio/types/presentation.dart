@@ -12,7 +12,7 @@ import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 import 'thread_stream/item.dart';
 part 'presentation.freezed.dart';
 
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `assert_fields_are_eq`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `eq`, `eq`, `eq`, `eq`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 class BridgeDisplayBlock {
   final String id;
@@ -90,6 +90,45 @@ sealed class BridgeDisplayContentSource with _$BridgeDisplayContentSource {
   }) = BridgeDisplayContentSource_CompletedOriginal;
 }
 
+class BridgeDisplayMemberBatch {
+  final BridgeDisplayBlockRef block;
+  final BigInt revision;
+  final BigInt offset;
+  final bool sealed;
+  final bool complete;
+  final List<BridgeDisplayMemberHead> entries;
+
+  const BridgeDisplayMemberBatch({
+    required this.block,
+    required this.revision,
+    required this.offset,
+    required this.sealed,
+    required this.complete,
+    required this.entries,
+  });
+
+  @override
+  int get hashCode =>
+      block.hashCode ^
+      revision.hashCode ^
+      offset.hashCode ^
+      sealed.hashCode ^
+      complete.hashCode ^
+      entries.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BridgeDisplayMemberBatch &&
+          runtimeType == other.runtimeType &&
+          block == other.block &&
+          revision == other.revision &&
+          offset == other.offset &&
+          sealed == other.sealed &&
+          complete == other.complete &&
+          entries == other.entries;
+}
+
 class BridgeDisplayMemberHead {
   final String memberKey;
   final BigInt memberOrder;
@@ -113,52 +152,6 @@ class BridgeDisplayMemberHead {
           memberKey == other.memberKey &&
           memberOrder == other.memberOrder &&
           record == other.record;
-}
-
-class BridgeDisplayMemberPage {
-  final BridgeDisplayBlockRef block;
-  final BigInt revision;
-  final bool sealed;
-  final List<BridgeDisplayMemberHead> entries;
-  final BigInt? before;
-
-  const BridgeDisplayMemberPage({
-    required this.block,
-    required this.revision,
-    required this.sealed,
-    required this.entries,
-    this.before,
-  });
-
-  @override
-  int get hashCode =>
-      block.hashCode ^
-      revision.hashCode ^
-      sealed.hashCode ^
-      entries.hashCode ^
-      before.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is BridgeDisplayMemberPage &&
-          runtimeType == other.runtimeType &&
-          block == other.block &&
-          revision == other.revision &&
-          sealed == other.sealed &&
-          entries == other.entries &&
-          before == other.before;
-}
-
-@freezed
-sealed class BridgeDisplayMemberWindow with _$BridgeDisplayMemberWindow {
-  const BridgeDisplayMemberWindow._();
-
-  const factory BridgeDisplayMemberWindow.latest() =
-      BridgeDisplayMemberWindow_Latest;
-  const factory BridgeDisplayMemberWindow.before({
-    required BigInt memberOrder,
-  }) = BridgeDisplayMemberWindow_Before;
 }
 
 class BridgeDisplayRecord {

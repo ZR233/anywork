@@ -298,7 +298,7 @@ abstract class RustLibApi extends BaseApi {
     required BridgeDisplayMembers that,
   });
 
-  Future<BridgeDisplayMemberPage?>
+  Future<BridgeDisplayMemberBatch?>
   crateApiStudioHandlersChatTimelineBridgeDisplayMembersNext({
     required BridgeDisplayMembers that,
   });
@@ -483,7 +483,6 @@ abstract class RustLibApi extends BaseApi {
   crateApiStudioHandlersChatTimelineBridgeTimelineReaderOpenDisplayMembers({
     required BridgeTimelineReader that,
     required BridgeDisplayBlockRef reference,
-    required BridgeDisplayMemberWindow window,
     required BridgeReadDemand demand,
   });
 
@@ -2532,7 +2531,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<BridgeDisplayMemberPage?>
+  Future<BridgeDisplayMemberBatch?>
   crateApiStudioHandlersChatTimelineBridgeDisplayMembersNext({
     required BridgeDisplayMembers that,
   }) {
@@ -2553,7 +2552,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         },
         codec: SseCodec(
           decodeSuccessData:
-              sse_decode_opt_box_autoadd_bridge_display_member_page,
+              sse_decode_opt_box_autoadd_bridge_display_member_batch,
           decodeErrorData: sse_decode_bridge_error,
         ),
         constMeta:
@@ -3912,7 +3911,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   crateApiStudioHandlersChatTimelineBridgeTimelineReaderOpenDisplayMembers({
     required BridgeTimelineReader that,
     required BridgeDisplayBlockRef reference,
-    required BridgeDisplayMemberWindow window,
     required BridgeReadDemand demand,
   }) {
     return handler.executeNormal(
@@ -3925,10 +3923,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
           );
           sse_encode_box_autoadd_bridge_display_block_ref(
             reference,
-            serializer,
-          );
-          sse_encode_box_autoadd_bridge_display_member_window(
-            window,
             serializer,
           );
           sse_encode_box_autoadd_bridge_read_demand(demand, serializer);
@@ -3946,7 +3940,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         ),
         constMeta:
             kCrateApiStudioHandlersChatTimelineBridgeTimelineReaderOpenDisplayMembersConstMeta,
-        argValues: [that, reference, window, demand],
+        argValues: [that, reference, demand],
         apiImpl: this,
       ),
     );
@@ -3956,7 +3950,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   get kCrateApiStudioHandlersChatTimelineBridgeTimelineReaderOpenDisplayMembersConstMeta =>
       const TaskConstMeta(
         debugName: "BridgeTimelineReader_open_display_members",
-        argNames: ["that", "reference", "window", "demand"],
+        argNames: ["that", "reference", "demand"],
       );
 
   @override
@@ -11591,19 +11585,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeDisplayMemberPage dco_decode_box_autoadd_bridge_display_member_page(
+  BridgeDisplayMemberBatch dco_decode_box_autoadd_bridge_display_member_batch(
     dynamic raw,
   ) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_bridge_display_member_page(raw);
-  }
-
-  @protected
-  BridgeDisplayMemberWindow dco_decode_box_autoadd_bridge_display_member_window(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    return dco_decode_bridge_display_member_window(raw);
+    return dco_decode_bridge_display_member_batch(raw);
   }
 
   @protected
@@ -17394,6 +17380,22 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeDisplayMemberBatch dco_decode_bridge_display_member_batch(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 6)
+      throw Exception('unexpected arr length: expect 6 but see ${arr.length}');
+    return BridgeDisplayMemberBatch(
+      block: dco_decode_bridge_display_block_ref(arr[0]),
+      revision: dco_decode_u_64(arr[1]),
+      offset: dco_decode_u_64(arr[2]),
+      sealed: dco_decode_bool(arr[3]),
+      complete: dco_decode_bool(arr[4]),
+      entries: dco_decode_list_bridge_display_member_head(arr[5]),
+    );
+  }
+
+  @protected
   BridgeDisplayMemberHead dco_decode_bridge_display_member_head(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
@@ -17404,38 +17406,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memberOrder: dco_decode_u_64(arr[1]),
       record: dco_decode_bridge_display_record(arr[2]),
     );
-  }
-
-  @protected
-  BridgeDisplayMemberPage dco_decode_bridge_display_member_page(dynamic raw) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
-    return BridgeDisplayMemberPage(
-      block: dco_decode_bridge_display_block_ref(arr[0]),
-      revision: dco_decode_u_64(arr[1]),
-      sealed: dco_decode_bool(arr[2]),
-      entries: dco_decode_list_bridge_display_member_head(arr[3]),
-      before: dco_decode_opt_box_autoadd_u_64(arr[4]),
-    );
-  }
-
-  @protected
-  BridgeDisplayMemberWindow dco_decode_bridge_display_member_window(
-    dynamic raw,
-  ) {
-    // Codec=Dco (DartCObject based), see doc to use other codecs
-    switch (raw[0]) {
-      case 0:
-        return BridgeDisplayMemberWindow_Latest();
-      case 1:
-        return BridgeDisplayMemberWindow_Before(
-          memberOrder: dco_decode_u_64(raw[1]),
-        );
-      default:
-        throw Exception("unreachable");
-    }
   }
 
   @protected
@@ -24039,12 +24009,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeDisplayMemberPage?
-  dco_decode_opt_box_autoadd_bridge_display_member_page(dynamic raw) {
+  BridgeDisplayMemberBatch?
+  dco_decode_opt_box_autoadd_bridge_display_member_batch(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null
         ? null
-        : dco_decode_box_autoadd_bridge_display_member_page(raw);
+        : dco_decode_box_autoadd_bridge_display_member_batch(raw);
   }
 
   @protected
@@ -26731,19 +26701,11 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeDisplayMemberPage sse_decode_box_autoadd_bridge_display_member_page(
+  BridgeDisplayMemberBatch sse_decode_box_autoadd_bridge_display_member_batch(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_bridge_display_member_page(deserializer));
-  }
-
-  @protected
-  BridgeDisplayMemberWindow sse_decode_box_autoadd_bridge_display_member_window(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    return (sse_decode_bridge_display_member_window(deserializer));
+    return (sse_decode_bridge_display_member_batch(deserializer));
   }
 
   @protected
@@ -34086,6 +34048,27 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  BridgeDisplayMemberBatch sse_decode_bridge_display_member_batch(
+    SseDeserializer deserializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_block = sse_decode_bridge_display_block_ref(deserializer);
+    var var_revision = sse_decode_u_64(deserializer);
+    var var_offset = sse_decode_u_64(deserializer);
+    var var_sealed = sse_decode_bool(deserializer);
+    var var_complete = sse_decode_bool(deserializer);
+    var var_entries = sse_decode_list_bridge_display_member_head(deserializer);
+    return BridgeDisplayMemberBatch(
+      block: var_block,
+      revision: var_revision,
+      offset: var_offset,
+      sealed: var_sealed,
+      complete: var_complete,
+      entries: var_entries,
+    );
+  }
+
+  @protected
   BridgeDisplayMemberHead sse_decode_bridge_display_member_head(
     SseDeserializer deserializer,
   ) {
@@ -34098,43 +34081,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       memberOrder: var_memberOrder,
       record: var_record,
     );
-  }
-
-  @protected
-  BridgeDisplayMemberPage sse_decode_bridge_display_member_page(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    var var_block = sse_decode_bridge_display_block_ref(deserializer);
-    var var_revision = sse_decode_u_64(deserializer);
-    var var_sealed = sse_decode_bool(deserializer);
-    var var_entries = sse_decode_list_bridge_display_member_head(deserializer);
-    var var_before = sse_decode_opt_box_autoadd_u_64(deserializer);
-    return BridgeDisplayMemberPage(
-      block: var_block,
-      revision: var_revision,
-      sealed: var_sealed,
-      entries: var_entries,
-      before: var_before,
-    );
-  }
-
-  @protected
-  BridgeDisplayMemberWindow sse_decode_bridge_display_member_window(
-    SseDeserializer deserializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-
-    var tag_ = sse_decode_i_32(deserializer);
-    switch (tag_) {
-      case 0:
-        return BridgeDisplayMemberWindow_Latest();
-      case 1:
-        var var_memberOrder = sse_decode_u_64(deserializer);
-        return BridgeDisplayMemberWindow_Before(memberOrder: var_memberOrder);
-      default:
-        throw UnimplementedError('');
-    }
   }
 
   @protected
@@ -42955,14 +42901,14 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  BridgeDisplayMemberPage?
-  sse_decode_opt_box_autoadd_bridge_display_member_page(
+  BridgeDisplayMemberBatch?
+  sse_decode_opt_box_autoadd_bridge_display_member_batch(
     SseDeserializer deserializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     if (sse_decode_bool(deserializer)) {
-      return (sse_decode_box_autoadd_bridge_display_member_page(deserializer));
+      return (sse_decode_box_autoadd_bridge_display_member_batch(deserializer));
     } else {
       return null;
     }
@@ -46196,21 +46142,12 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_box_autoadd_bridge_display_member_page(
-    BridgeDisplayMemberPage self,
+  void sse_encode_box_autoadd_bridge_display_member_batch(
+    BridgeDisplayMemberBatch self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bridge_display_member_page(self, serializer);
-  }
-
-  @protected
-  void sse_encode_box_autoadd_bridge_display_member_window(
-    BridgeDisplayMemberWindow self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bridge_display_member_window(self, serializer);
+    sse_encode_bridge_display_member_batch(self, serializer);
   }
 
   @protected
@@ -52389,6 +52326,20 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  void sse_encode_bridge_display_member_batch(
+    BridgeDisplayMemberBatch self,
+    SseSerializer serializer,
+  ) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_bridge_display_block_ref(self.block, serializer);
+    sse_encode_u_64(self.revision, serializer);
+    sse_encode_u_64(self.offset, serializer);
+    sse_encode_bool(self.sealed, serializer);
+    sse_encode_bool(self.complete, serializer);
+    sse_encode_list_bridge_display_member_head(self.entries, serializer);
+  }
+
+  @protected
   void sse_encode_bridge_display_member_head(
     BridgeDisplayMemberHead self,
     SseSerializer serializer,
@@ -52397,34 +52348,6 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.memberKey, serializer);
     sse_encode_u_64(self.memberOrder, serializer);
     sse_encode_bridge_display_record(self.record, serializer);
-  }
-
-  @protected
-  void sse_encode_bridge_display_member_page(
-    BridgeDisplayMemberPage self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    sse_encode_bridge_display_block_ref(self.block, serializer);
-    sse_encode_u_64(self.revision, serializer);
-    sse_encode_bool(self.sealed, serializer);
-    sse_encode_list_bridge_display_member_head(self.entries, serializer);
-    sse_encode_opt_box_autoadd_u_64(self.before, serializer);
-  }
-
-  @protected
-  void sse_encode_bridge_display_member_window(
-    BridgeDisplayMemberWindow self,
-    SseSerializer serializer,
-  ) {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    switch (self) {
-      case BridgeDisplayMemberWindow_Latest():
-        sse_encode_i_32(0, serializer);
-      case BridgeDisplayMemberWindow_Before(memberOrder: final memberOrder):
-        sse_encode_i_32(1, serializer);
-        sse_encode_u_64(memberOrder, serializer);
-    }
   }
 
   @protected
@@ -59487,15 +59410,15 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
-  void sse_encode_opt_box_autoadd_bridge_display_member_page(
-    BridgeDisplayMemberPage? self,
+  void sse_encode_opt_box_autoadd_bridge_display_member_batch(
+    BridgeDisplayMemberBatch? self,
     SseSerializer serializer,
   ) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
     sse_encode_bool(self != null, serializer);
     if (self != null) {
-      sse_encode_box_autoadd_bridge_display_member_page(self, serializer);
+      sse_encode_box_autoadd_bridge_display_member_batch(self, serializer);
     }
   }
 
@@ -61092,7 +61015,7 @@ class BridgeDisplayMembersImpl extends RustOpaque
   Future<void> close() => RustLib.instance.api
       .crateApiStudioHandlersChatTimelineBridgeDisplayMembersClose(that: this);
 
-  Future<BridgeDisplayMemberPage?> next() => RustLib.instance.api
+  Future<BridgeDisplayMemberBatch?> next() => RustLib.instance.api
       .crateApiStudioHandlersChatTimelineBridgeDisplayMembersNext(that: this);
 
   void requestClose() => RustLib.instance.api
@@ -61530,13 +61453,11 @@ class BridgeTimelineReaderImpl extends RustOpaque
 
   Future<BridgeDisplayMembers> openDisplayMembers({
     required BridgeDisplayBlockRef reference,
-    required BridgeDisplayMemberWindow window,
     required BridgeReadDemand demand,
   }) => RustLib.instance.api
       .crateApiStudioHandlersChatTimelineBridgeTimelineReaderOpenDisplayMembers(
         that: this,
         reference: reference,
-        window: window,
         demand: demand,
       );
 

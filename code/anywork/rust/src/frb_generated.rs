@@ -2482,7 +2482,6 @@ fn wire__crate__api__studio__handlers__chat__timeline__BridgeTimelineReader_open
             let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_that = <RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<BridgeTimelineReader>>>::sse_decode(&mut deserializer);
 let api_reference = <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_decode(&mut deserializer);
-let api_window = <crate::api::studio::types::presentation::BridgeDisplayMemberWindow>::sse_decode(&mut deserializer);
 let api_demand = <crate::api::studio::types::chat::BridgeReadDemand>::sse_decode(&mut deserializer);deserializer.end(); move |context| async move {
                     transform_result_sse::<_, crate::api::studio::types::error::BridgeError>((move || async move {
                         let mut api_that_guard = None;
@@ -2494,7 +2493,7 @@ let decode_indices_ = flutter_rust_bridge::for_generated::lockable_compute_decod
             }
         }
         let api_that_guard = api_that_guard.unwrap();
- let output_ok = crate::api::studio::handlers::chat::timeline::BridgeTimelineReader::open_display_members(&*api_that_guard, api_reference, api_window, api_demand).await?;   std::result::Result::Ok(output_ok)
+ let output_ok = crate::api::studio::handlers::chat::timeline::BridgeTimelineReader::open_display_members(&*api_that_guard, api_reference, api_demand).await?;   std::result::Result::Ok(output_ok)
                     })().await)
                 } })
 }
@@ -16472,6 +16471,32 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayContent
     }
 }
 
+impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberBatch {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
+        let mut var_block =
+            <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_decode(
+                deserializer,
+            );
+        let mut var_revision = <u64>::sse_decode(deserializer);
+        let mut var_offset = <u64>::sse_decode(deserializer);
+        let mut var_sealed = <bool>::sse_decode(deserializer);
+        let mut var_complete = <bool>::sse_decode(deserializer);
+        let mut var_entries =
+            <Vec<crate::api::studio::types::presentation::BridgeDisplayMemberHead>>::sse_decode(
+                deserializer,
+            );
+        return crate::api::studio::types::presentation::BridgeDisplayMemberBatch {
+            block: var_block,
+            revision: var_revision,
+            offset: var_offset,
+            sealed: var_sealed,
+            complete: var_complete,
+            entries: var_entries,
+        };
+    }
+}
+
 impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberHead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
@@ -16486,49 +16511,6 @@ impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberH
             member_order: var_memberOrder,
             record: var_record,
         };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberPage {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut var_block =
-            <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_decode(
-                deserializer,
-            );
-        let mut var_revision = <u64>::sse_decode(deserializer);
-        let mut var_sealed = <bool>::sse_decode(deserializer);
-        let mut var_entries =
-            <Vec<crate::api::studio::types::presentation::BridgeDisplayMemberHead>>::sse_decode(
-                deserializer,
-            );
-        let mut var_before = <Option<u64>>::sse_decode(deserializer);
-        return crate::api::studio::types::presentation::BridgeDisplayMemberPage {
-            block: var_block,
-            revision: var_revision,
-            sealed: var_sealed,
-            entries: var_entries,
-            before: var_before,
-        };
-    }
-}
-
-impl SseDecode for crate::api::studio::types::presentation::BridgeDisplayMemberWindow {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
-        let mut tag_ = <i32>::sse_decode(deserializer);
-        match tag_ {
-            0 => {
-                return crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Latest;
-            }
-            1 => {
-                let mut var_memberOrder = <u64>::sse_decode(deserializer);
-                return crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Before{member_order: var_memberOrder};
-            }
-            _ => {
-                unimplemented!("");
-            }
-        }
     }
 }
 
@@ -26400,12 +26382,12 @@ impl SseDecode for Option<crate::api::studio::types::command::BridgeDeleteThread
     }
 }
 
-impl SseDecode for Option<crate::api::studio::types::presentation::BridgeDisplayMemberPage> {
+impl SseDecode for Option<crate::api::studio::types::presentation::BridgeDisplayMemberBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {
         if (<bool>::sse_decode(deserializer)) {
             return Some(
-                <crate::api::studio::types::presentation::BridgeDisplayMemberPage>::sse_decode(
+                <crate::api::studio::types::presentation::BridgeDisplayMemberBatch>::sse_decode(
                     deserializer,
                 ),
             );
@@ -36935,6 +36917,35 @@ impl
 }
 // Codec=Dco (DartCObject based), see doc to use other codecs
 impl flutter_rust_bridge::IntoDart
+    for crate::api::studio::types::presentation::BridgeDisplayMemberBatch
+{
+    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+        [
+            self.block.into_into_dart().into_dart(),
+            self.revision.into_into_dart().into_dart(),
+            self.offset.into_into_dart().into_dart(),
+            self.sealed.into_into_dart().into_dart(),
+            self.complete.into_into_dart().into_dart(),
+            self.entries.into_into_dart().into_dart(),
+        ]
+        .into_dart()
+    }
+}
+impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
+    for crate::api::studio::types::presentation::BridgeDisplayMemberBatch
+{
+}
+impl
+    flutter_rust_bridge::IntoIntoDart<
+        crate::api::studio::types::presentation::BridgeDisplayMemberBatch,
+    > for crate::api::studio::types::presentation::BridgeDisplayMemberBatch
+{
+    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayMemberBatch {
+        self
+    }
+}
+// Codec=Dco (DartCObject based), see doc to use other codecs
+impl flutter_rust_bridge::IntoDart
     for crate::api::studio::types::presentation::BridgeDisplayMemberHead
 {
     fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
@@ -36956,65 +36967,6 @@ impl
     > for crate::api::studio::types::presentation::BridgeDisplayMemberHead
 {
     fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayMemberHead {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::presentation::BridgeDisplayMemberPage
-{
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        [
-            self.block.into_into_dart().into_dart(),
-            self.revision.into_into_dart().into_dart(),
-            self.sealed.into_into_dart().into_dart(),
-            self.entries.into_into_dart().into_dart(),
-            self.before.into_into_dart().into_dart(),
-        ]
-        .into_dart()
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeDisplayMemberPage
-{
-}
-impl
-    flutter_rust_bridge::IntoIntoDart<
-        crate::api::studio::types::presentation::BridgeDisplayMemberPage,
-    > for crate::api::studio::types::presentation::BridgeDisplayMemberPage
-{
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayMemberPage {
-        self
-    }
-}
-// Codec=Dco (DartCObject based), see doc to use other codecs
-impl flutter_rust_bridge::IntoDart
-    for crate::api::studio::types::presentation::BridgeDisplayMemberWindow
-{
-    fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
-        match self {
-            crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Latest => {
-                [0.into_dart()].into_dart()
-            }
-            crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Before {
-                member_order,
-            } => [1.into_dart(), member_order.into_into_dart().into_dart()].into_dart(),
-            _ => {
-                unimplemented!("");
-            }
-        }
-    }
-}
-impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive
-    for crate::api::studio::types::presentation::BridgeDisplayMemberWindow
-{
-}
-impl
-    flutter_rust_bridge::IntoIntoDart<
-        crate::api::studio::types::presentation::BridgeDisplayMemberWindow,
-    > for crate::api::studio::types::presentation::BridgeDisplayMemberWindow
-{
-    fn into_into_dart(self) -> crate::api::studio::types::presentation::BridgeDisplayMemberWindow {
         self
     }
 }
@@ -52687,6 +52639,23 @@ crate::api::studio::types::presentation::BridgeDisplayContentSource::CompletedOr
     }
 }
 
+impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberBatch {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
+        <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_encode(
+            self.block, serializer,
+        );
+        <u64>::sse_encode(self.revision, serializer);
+        <u64>::sse_encode(self.offset, serializer);
+        <bool>::sse_encode(self.sealed, serializer);
+        <bool>::sse_encode(self.complete, serializer);
+        <Vec<crate::api::studio::types::presentation::BridgeDisplayMemberHead>>::sse_encode(
+            self.entries,
+            serializer,
+        );
+    }
+}
+
 impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberHead {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
@@ -52696,42 +52665,6 @@ impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberH
             self.record,
             serializer,
         );
-    }
-}
-
-impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberPage {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        <crate::api::studio::types::presentation::BridgeDisplayBlockRef>::sse_encode(
-            self.block, serializer,
-        );
-        <u64>::sse_encode(self.revision, serializer);
-        <bool>::sse_encode(self.sealed, serializer);
-        <Vec<crate::api::studio::types::presentation::BridgeDisplayMemberHead>>::sse_encode(
-            self.entries,
-            serializer,
-        );
-        <Option<u64>>::sse_encode(self.before, serializer);
-    }
-}
-
-impl SseEncode for crate::api::studio::types::presentation::BridgeDisplayMemberWindow {
-    // Codec=Sse (Serialization based), see doc to use other codecs
-    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
-        match self {
-            crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Latest => {
-                <i32>::sse_encode(0, serializer);
-            }
-            crate::api::studio::types::presentation::BridgeDisplayMemberWindow::Before {
-                member_order,
-            } => {
-                <i32>::sse_encode(1, serializer);
-                <u64>::sse_encode(member_order, serializer);
-            }
-            _ => {
-                unimplemented!("");
-            }
-        }
     }
 }
 
@@ -60317,12 +60250,12 @@ impl SseEncode for Option<crate::api::studio::types::command::BridgeDeleteThread
     }
 }
 
-impl SseEncode for Option<crate::api::studio::types::presentation::BridgeDisplayMemberPage> {
+impl SseEncode for Option<crate::api::studio::types::presentation::BridgeDisplayMemberBatch> {
     // Codec=Sse (Serialization based), see doc to use other codecs
     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {
         <bool>::sse_encode(self.is_some(), serializer);
         if let Some(value) = self {
-            <crate::api::studio::types::presentation::BridgeDisplayMemberPage>::sse_encode(
+            <crate::api::studio::types::presentation::BridgeDisplayMemberBatch>::sse_encode(
                 value, serializer,
             );
         }

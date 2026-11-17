@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::owner::{closed, error};
 use crate::api::studio::{
     convert::{chat, presentation},
-    types::{BridgeContentWindow, BridgeDisplayMemberPage, BridgeError},
+    types::{BridgeContentWindow, BridgeDisplayMemberBatch, BridgeError},
 };
 use crate::frb_generated::SseEncode;
 use registry::{AdmissionError, WatchRegistry};
@@ -72,7 +72,6 @@ impl ContentWatches {
         reader: &ConversationReader,
         facade_cancel: &CancellationToken,
         reference: pl_studio_runtime::DisplayBlockRef,
-        window: pl_studio_runtime::DisplayMemberWindow,
         demand: pl_studio_runtime::ReadDemand,
     ) -> Result<String, BridgeError> {
         let reader = reader.clone();
@@ -80,7 +79,7 @@ impl ContentWatches {
             facade_cancel,
             NativeWatch::OpeningMembers(Box::pin(async move {
                 reader
-                    .open_display_members(reference, window, demand)
+                    .open_display_members(reference, demand)
                     .await
                     .map_err(BridgeError::from)
             })),
@@ -157,7 +156,7 @@ impl ContentWatches {
     pub(super) async fn next_members(
         &self,
         id: &str,
-    ) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
+    ) -> Result<Option<BridgeDisplayMemberBatch>, BridgeError> {
         match self.lookup(id)? {
             Some(owner) => owner.next_members().await,
             None => Ok(None),
@@ -292,14 +291,14 @@ impl WatchOwner {
         result?.map(bounded_window).transpose()
     }
 
-    async fn next_members(&self) -> Result<Option<BridgeDisplayMemberPage>, BridgeError> {
+    async fn next_members(&self) -> Result<Option<BridgeDisplayMemberBatch>, BridgeError> {
         if self.cancel.is_cancelled() {
             return Ok(None);
         }
         let _next = self.next_gate.try_lock().map_err(|_| {
             error(
                 StudioErrorCode::Conflict,
-                "a member window read is already in flight",
+                "a member batch read is already in flight",
             )
         })?;
         let mut native = tokio::select! {
@@ -313,7 +312,7 @@ impl WatchOwner {
             NativeWatch::Failed(error) => return Err(error.clone()),
             _ => {
                 return Err(BridgeError::invalid_argument(
-                    "observation is not an open member window",
+                    "observation is not an open member observation",
                 ));
             }
         };
@@ -325,8 +324,10 @@ impl WatchOwner {
         if self.cancel.is_cancelled() {
             return Ok(None);
         }
-        let sealed = result.as_ref().is_none_or(|page| page.sealed);
-        let page = result.map(presentation::member_page);
+        let finished = result
+            .as_ref()
+            .is_none_or(|batch| batch.complete && batch.sealed);
+        let page = result.map(presentation::member_batch);
         if let Some(page) = &page {
             let mut serializer = flutter_rust_bridge::for_generated::SseSerializer::new();
             Some(page.clone()).sse_encode(&mut serializer);
@@ -335,12 +336,12 @@ impl WatchOwner {
             {
                 return Err(error(
                     StudioErrorCode::Overloaded,
-                    "member page exceeds the encoded transport budget",
+                    "member batch exceeds the encoded transport budget",
                 ));
             }
         }
-        if sealed {
-            // A fixed sealed page needs no watch. Keep the slot until native close succeeds.
+        if finished {
+            // Deliver every batch before retiring a sealed result; retain failed close responsibility.
             watch.request_close();
             watch.close().await?;
             *native = NativeWatch::Closed;

@@ -1,7 +1,7 @@
-//! Bounded display-head selection. The original reader owns qualification and I/O.
+//! Budgeted display-head delivery. The original reader owns qualification and I/O.
 //!
-//! Inputs are already indexed newest-first by the presentation owner or display tables;
-//! these helpers never enumerate atomic completion history or load member bodies.
+//! Timeline windows use owner/storage indices; member observations capture one complete lightweight
+//! cut before delivery. Neither path enumerates atomic completion history or loads member bodies.
 
 use super::{
     ConversationReader,
@@ -10,8 +10,8 @@ use super::{
 use crate::DisplayBlockState;
 use crate::studio::thread_projection::presentation::{BlockOrder, DisplayHeader, display_upper};
 use crate::{
-    DisplayBlock, DisplayBlockRef, DisplayMemberHead, DisplayMemberPage, DisplayMemberWindow,
-    LiveDisplayBlock, ReadDemand, TailSnapshot, TimelinePage,
+    DisplayBlock, DisplayBlockRef, DisplayMemberBatch, DisplayMemberHead, LiveDisplayBlock,
+    ReadDemand, TailSnapshot, TimelinePage,
 };
 use anyhow::{Result, ensure};
 use pl_core::chat::ChatError;
@@ -361,7 +361,6 @@ impl ConversationReader {
     pub async fn open_display_members(
         &self,
         reference: DisplayBlockRef,
-        window: DisplayMemberWindow,
         demand: ReadDemand,
     ) -> Result<DisplayMembers> {
         demand.validate(1)?;
@@ -371,62 +370,76 @@ impl ConversationReader {
             resources.database_id.as_deref() == Some(reference.database_id.as_str()),
             ChatError::StaleContent
         );
-        if let DisplayMemberWindow::Before { member_order } = window {
-            ensure!(
-                member_order > 0,
-                ChatError::InvalidArgument("invalid member boundary".into())
-            );
-        }
-        // Register before reading any header/page. Token wakes are filtered by the block revision.
+        // Register before capturing the complete result. Token wakes are filtered by block revision.
         let changed = Some(resources.conversation.content_changes());
         Ok(DisplayMembers {
             observation: ReadObservation::new(self.clone(), changed),
             reference,
-            window,
             demand,
             delivered: None,
+            pending: None,
             #[cfg(test)]
             cut_barrier: None,
         })
     }
 
-    async fn display_member_page(
-        &self,
-        reference: &DisplayBlockRef,
-        window: DisplayMemberWindow,
-        demand: ReadDemand,
-        fixed_snapshot: bool,
-        delivered: Option<(u64, bool)>,
-        #[cfg(test)] cut_barrier: &mut Option<DisplayMemberReadBarrier>,
-    ) -> Result<Option<DisplayMemberPage>> {
+    async fn validate_display_members(&self, reference: &DisplayBlockRef) -> Result<()> {
         let permit = self.resources().await?;
         let resources = permit.as_ref().ok_or_else(cancelled)?;
         ensure!(
             resources.database_id.as_deref() == Some(reference.database_id.as_str()),
             ChatError::StaleContent
         );
-        let before = match window {
-            DisplayMemberWindow::Latest => None,
-            DisplayMemberWindow::Before { member_order } => Some(member_order),
-        };
+        ensure!(
+            resources
+                .conversation
+                .current_conversation()
+                .is_none_or(|source| { source.session.epoch() == resources.session.epoch() }),
+            resync()
+        );
+        Ok(())
+    }
+
+    async fn capture_display_members(
+        &self,
+        reference: &DisplayBlockRef,
+        fixed_snapshot: bool,
+        delivered: Option<(u64, bool)>,
+        #[cfg(test)] cut_barrier: &mut Option<DisplayMemberReadBarrier>,
+    ) -> Result<Option<PendingDisplayMembers>> {
+        let permit = self.resources().await?;
+        let resources = permit.as_ref().ok_or_else(cancelled)?;
+        ensure!(
+            resources.database_id.as_deref() == Some(reference.database_id.as_str()),
+            ChatError::StaleContent
+        );
         use crate::studio::conversation_store::{ReadCut, ReadRequest};
+        use crate::studio::thread_projection::presentation::DisplayMemberCapture;
         let (hot, cold_snapshot) = match resources
             .conversation
             .capture(ReadRequest::Members {
                 block: &reference.block_id,
-                before,
-                limit: demand.max_items as usize,
+                delivered,
+                fixed_snapshot,
             })
             .await?
         {
-            ReadCut::Ready { members, .. } => (members, None),
+            ReadCut::Ready {
+                source, members, ..
+            } => {
+                ensure!(
+                    source.session.epoch() == resources.session.epoch(),
+                    resync()
+                );
+                match members {
+                    Some(DisplayMemberCapture::Unchanged) => return Ok(None),
+                    Some(DisplayMemberCapture::Captured(cut)) => (Some(cut), None),
+                    None => (None, None),
+                }
+            }
             ReadCut::Cold(snapshot) => (None, snapshot),
         };
-        if hot.as_ref().is_some_and(|cut| {
-            delivered == Some((cut.header.revision, fixed_snapshot || cut.header.sealed))
-        }) {
-            return Ok(None);
-        }
+        let saved_only = hot.is_none();
         #[cfg(test)]
         if let Some(barrier) = cut_barrier.take() {
             // The owner lock is already released; retain the real cut while the test commits.
@@ -446,17 +459,12 @@ impl ConversationReader {
         let (header, mut members) = match hot {
             Some(cut) if cut.complete => (cut.header, cut.overlay),
             overlay => {
-                // Rows which did not yet exist at this captured header cannot enter its window.
+                // Rows which did not yet exist at this captured header cannot enter its result.
                 // Previously terminal rows are immutable; every previously unfinished row is in
                 // the resident overlay, which replaces any newer SQLite value at that identity.
                 let saved_before = overlay
                     .as_ref()
-                    .map(|cut| {
-                        before
-                            .unwrap_or(u64::MAX)
-                            .min(cut.header.next_member.saturating_add(1))
-                    })
-                    .or(before);
+                    .map(|cut| cut.header.next_member.saturating_add(1));
                 let saved = match cold_snapshot {
                     Some(snapshot) => {
                         snapshot
@@ -464,7 +472,7 @@ impl ConversationReader {
                                 &reference.database_id,
                                 &reference.block_id,
                                 saved_before,
-                                demand.max_items as usize,
+                                i64::MAX as usize,
                             )
                             .await?
                     }
@@ -475,7 +483,7 @@ impl ConversationReader {
                                 &reference.database_id,
                                 &reference.block_id,
                                 saved_before,
-                                demand.max_items as usize,
+                                i64::MAX as usize,
                                 overlay.as_ref().map(|cut| cut.header.clone()),
                             )
                             .await?
@@ -483,17 +491,17 @@ impl ConversationReader {
                 };
                 match overlay {
                     Some(cut) => {
-                        let mut members =
-                            saved.entries.into_iter().map(Arc::new).collect::<Vec<_>>();
-                        for member in cut.overlay {
-                            match members.binary_search_by_key(&member.head.member_order, |m| {
-                                m.head.member_order
-                            }) {
-                                Ok(index) => members[index] = member,
-                                Err(index) => members.insert(index, member),
-                            }
-                        }
-                        (cut.header, members)
+                        let mut members = saved
+                            .entries
+                            .into_iter()
+                            .map(|member| (member.head.member_order, Arc::new(member)))
+                            .collect::<std::collections::BTreeMap<_, _>>();
+                        members.extend(
+                            cut.overlay
+                                .into_iter()
+                                .map(|member| (member.head.member_order, member)),
+                        );
+                        (cut.header, members.into_values().collect())
                     }
                     None => (
                         saved.header,
@@ -502,22 +510,44 @@ impl ConversationReader {
                 }
             }
         };
-        // A cold window is fixed by its original short read, without freezing the business block.
-        let stamp = (header.revision, fixed_snapshot || header.sealed);
+        // A saved-only result is fixed by its one short transaction, not a business freeze.
+        let stamp = (
+            header.revision,
+            fixed_snapshot || saved_only || header.sealed,
+        );
         if delivered == Some(stamp) {
             return Ok(None);
         }
+        if let Some((revision, sealed)) = delivered {
+            ensure!(
+                !sealed && (stamp.0 > revision || (stamp.0 == revision && stamp.1)),
+                resync()
+            );
+        }
         members.sort_by_key(|member| member.head.member_order);
-        let page = member_page(
-            reference.clone(),
-            header.revision,
-            stamp.1,
-            window,
-            members.iter().rev().map(|member| &member.head),
-            demand,
-        )?;
+        let mut previous = 0;
+        let mut keys = std::collections::HashSet::new();
+        for member in &members {
+            ensure!(
+                member.head.member_order > previous
+                    && !member.head.member_key.is_empty()
+                    && keys.insert(member.head.member_key.as_str()),
+                resync()
+            );
+            previous = member.head.member_order;
+        }
+        let result = PendingDisplayMembers {
+            revision: stamp.0,
+            sealed: stamp.1,
+            offset: 0,
+            entries: members
+                .into_iter()
+                .map(|member| member.head.clone())
+                .collect::<Vec<_>>()
+                .into_iter(),
+        };
         self.ensure()?;
-        Ok(Some(page))
+        Ok(Some(result))
     }
 }
 
@@ -553,9 +583,9 @@ struct DisplayMemberReadBarrier {
 pub struct DisplayMembers {
     observation: ReadObservation,
     reference: DisplayBlockRef,
-    window: DisplayMemberWindow,
     demand: ReadDemand,
     delivered: Option<(u64, bool)>,
+    pending: Option<PendingDisplayMembers>,
     #[cfg(test)]
     cut_barrier: Option<DisplayMemberReadBarrier>,
 }
@@ -569,32 +599,63 @@ impl DisplayMembers {
     }
     pub async fn close(&mut self) -> Result<()> {
         self.request_close();
+        self.pending = None;
         self.observation.seal();
         Ok(())
     }
-    pub async fn next(&mut self) -> Result<Option<DisplayMemberPage>> {
+    pub async fn next(&mut self) -> Result<Option<DisplayMemberBatch>> {
+        let result = self.next_batch().await;
+        if result.is_err() {
+            self.pending = None;
+        }
+        result
+    }
+
+    async fn next_batch(&mut self) -> Result<Option<DisplayMemberBatch>> {
+        // Pending data is not a new lease: scope, identity, epoch and cancellation still apply.
+        self.observation
+            .query(
+                self.observation
+                    .reader
+                    .validate_display_members(&self.reference),
+            )
+            .await?;
+        if self.pending.is_some() {
+            return self.deliver_pending().map(Some);
+        }
         while self.observation.next().await? {
-            let page = self
+            let result = self
                 .observation
-                .query(self.observation.reader.display_member_page(
+                .query(self.observation.reader.capture_display_members(
                     &self.reference,
-                    self.window,
-                    self.demand,
                     self.observation.is_fixed_snapshot(),
                     self.delivered,
                     #[cfg(test)]
                     &mut self.cut_barrier,
                 ))
                 .await?;
-            if let Some(page) = page {
-                self.delivered = Some((page.revision, page.sealed));
-                if page.sealed {
-                    self.observation.seal();
-                }
-                return Ok(Some(page));
+            if let Some(result) = result {
+                self.pending = Some(result);
+                return self.deliver_pending().map(Some);
             }
         }
         Ok(None)
+    }
+
+    fn deliver_pending(&mut self) -> Result<DisplayMemberBatch> {
+        let batch = self
+            .pending
+            .as_mut()
+            .expect("captured member result")
+            .next_batch(&self.reference, self.demand)?;
+        if batch.complete {
+            self.pending = None;
+            self.delivered = Some((batch.revision, batch.sealed));
+            if batch.sealed {
+                self.observation.seal();
+            }
+        }
+        Ok(batch)
     }
 }
 
@@ -719,101 +780,51 @@ pub(super) fn live_window<'a>(
     Ok(result)
 }
 
-/// Select member metadata only. A range seek belongs to the original owner/storage adapter.
-pub(super) fn member_page<'a>(
-    block: DisplayBlockRef,
+/// One immutable owner cut; advancing the delivery cursor never performs another capture or I/O.
+struct PendingDisplayMembers {
     revision: u64,
     sealed: bool,
-    window: DisplayMemberWindow,
-    newest_first: impl IntoIterator<Item = &'a DisplayMemberHead>,
-    demand: ReadDemand,
-) -> Result<DisplayMemberPage> {
-    demand.validate(1)?;
-    let boundary = match window {
-        DisplayMemberWindow::Latest => u64::MAX,
-        DisplayMemberWindow::Before { member_order } => {
-            ensure!(
-                member_order > 0,
-                ChatError::InvalidArgument("member window boundary must be positive".into())
-            );
-            member_order
+    offset: u64,
+    entries: std::vec::IntoIter<DisplayMemberHead>,
+}
+
+impl PendingDisplayMembers {
+    fn next_batch(
+        &mut self,
+        block: &DisplayBlockRef,
+        demand: ReadDemand,
+    ) -> Result<DisplayMemberBatch> {
+        demand.validate(1)?;
+        let mut batch = DisplayMemberBatch {
+            block: block.clone(),
+            revision: self.revision,
+            offset: self.offset,
+            sealed: self.sealed,
+            complete: self.entries.len() == 0,
+            entries: Vec::new(),
+        };
+        let remaining = self.entries.as_slice();
+        let mut bytes = 0;
+        let mut count = 0;
+        for head in remaining.iter().take(demand.max_items as usize) {
+            let candidate_bytes = bytes + encoded_size(head)?;
+            batch.complete = count + 1 == remaining.len();
+            if !fits(demand, encoded_size(&batch)?, candidate_bytes, count + 1) {
+                break;
+            }
+            bytes = candidate_bytes;
+            count += 1;
         }
-    };
-    let mut result = DisplayMemberPage {
-        block,
-        revision,
-        sealed,
-        entries: Vec::new(),
-        before: None,
-    };
-    let mut heads = newest_first.into_iter().peekable();
-    let mut bytes = 0;
-    let mut previous = boundary;
-    while let Some(head) = heads.next() {
+        ensure!(remaining.is_empty() || count > 0, too_small());
+        batch.complete = count == remaining.len();
+        batch.entries = self.entries.by_ref().take(count).collect();
         ensure!(
-            head.member_order > 0 && head.member_order < previous,
-            ChatError::Conflict("member index is outside the requested descending window".into())
+            encoded_size(&batch)? <= demand.max_bytes as usize,
+            too_small()
         );
-        previous = head.member_order;
-        let item_bytes = encoded_size(head)?;
-        let envelope = DisplayMemberPage {
-            block: result.block.clone(),
-            revision,
-            sealed,
-            entries: Vec::new(),
-            before: None,
-        };
-        if !fits(
-            demand,
-            encoded_size(&envelope)?,
-            bytes + item_bytes,
-            result.entries.len() + 1,
-        ) {
-            ensure!(!result.entries.is_empty(), too_small());
-            result.before = Some(
-                result
-                    .entries
-                    .last()
-                    .expect("nonempty bounded page")
-                    .member_order,
-            );
-            break;
-        }
-        bytes += item_bytes;
-        result.entries.push(head.clone());
-        result.before = (heads.peek().is_some()
-            || (result.entries.len() == demand.max_items as usize && head.member_order > 1))
-            .then_some(head.member_order);
-        if result.entries.len() == demand.max_items as usize {
-            break;
-        }
+        self.offset += count as u64;
+        Ok(batch)
     }
-    loop {
-        let envelope = DisplayMemberPage {
-            block: result.block.clone(),
-            revision,
-            sealed,
-            entries: Vec::new(),
-            before: result.before,
-        };
-        if fits(
-            demand,
-            encoded_size(&envelope)?,
-            bytes,
-            result.entries.len(),
-        ) {
-            break;
-        }
-        let removed = result.entries.pop().ok_or_else(too_small)?;
-        bytes -= encoded_size(&removed)?;
-        result.before = Some(result.entries.last().ok_or_else(too_small)?.member_order);
-    }
-    result.entries.reverse();
-    ensure!(
-        encoded_size(&result)? <= demand.max_bytes as usize,
-        too_small()
-    );
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -1119,62 +1130,615 @@ mod tests {
     }
 
     #[test]
-    fn member_windows_preserve_stable_orders_and_real_terminal_without_body() -> Result<()> {
-        let members: Vec<_> = (1..=5).map(member).collect();
-        let page = member_page(
-            reference(),
-            8,
-            false,
-            DisplayMemberWindow::Latest,
-            members.iter().rev(),
+    fn member_batches_preserve_full_sparse_order_and_real_wire_budget_without_body() -> Result<()> {
+        let members: Vec<_> = (1..=29)
+            .map(|order| {
+                let mut head = member(order * 3);
+                head.member_key = format!("成员\"\\\n-{order}");
+                head
+            })
+            .collect();
+        // Deliberately budget by encoded UTF-8 JSON, not character count or approximate head size.
+        let two = DisplayMemberBatch {
+            block: reference(),
+            revision: 8,
+            offset: 28,
+            sealed: true,
+            complete: false,
+            entries: members[27..29].to_vec(),
+        };
+        let byte_budget = serde_json::to_vec(&two)?.len() as u32;
+        for budget in [
             demand(2),
-        )?;
+            ReadDemand {
+                max_items: 4096,
+                max_bytes: byte_budget,
+            },
+        ] {
+            let mut pending = PendingDisplayMembers {
+                revision: 8,
+                sealed: true,
+                offset: 0,
+                entries: members.clone().into_iter(),
+            };
+            let mut actual = Vec::new();
+            let mut batches = 0;
+            loop {
+                let batch = pending.next_batch(&reference(), budget)?;
+                assert_eq!(batch.offset, actual.len() as u64);
+                assert_eq!(
+                    (batch.block.clone(), batch.revision, batch.sealed),
+                    (reference(), 8, true)
+                );
+                assert!(!batch.entries.is_empty());
+                assert!(batch.entries.len() <= budget.max_items as usize);
+                assert!(serde_json::to_vec(&batch)?.len() <= budget.max_bytes as usize);
+                assert!(batch.entries.iter().all(|m| m.record.atom.payload.is_none()
+                    && m.record.atom.completion_item_id.is_none()));
+                batches += 1;
+                actual.extend(batch.entries);
+                if batch.complete {
+                    break;
+                }
+            }
+            assert!(batches > 12);
+            assert_eq!(actual, members);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn member_batches_empty_and_exact_encoded_byte_boundaries() -> Result<()> {
+        let full = DisplayMemberBatch {
+            block: reference(),
+            revision: 1,
+            offset: 0,
+            sealed: true,
+            complete: true,
+            entries: vec![member(7)],
+        };
+        let exact = serde_json::to_vec(&full)?.len() as u32;
+        for bytes in [exact - 1, exact, exact + 1] {
+            let mut pending = PendingDisplayMembers {
+                revision: 1,
+                sealed: true,
+                offset: 0,
+                entries: full.entries.clone().into_iter(),
+            };
+            let result = pending.next_batch(
+                &reference(),
+                ReadDemand {
+                    max_items: 1,
+                    max_bytes: bytes,
+                },
+            );
+            if bytes < exact {
+                assert!(matches!(
+                    result.unwrap_err().downcast_ref::<ChatError>(),
+                    Some(ChatError::InvalidDemand(_))
+                ));
+                assert_eq!(pending.offset, 0);
+                assert_eq!(pending.entries.len(), 1);
+            } else {
+                assert_eq!(result?, full);
+            }
+        }
+        let mut pending = PendingDisplayMembers {
+            revision: 1,
+            sealed: true,
+            offset: 0,
+            entries: Vec::new().into_iter(),
+        };
+        let empty = pending.next_batch(&reference(), demand(1))?;
         assert_eq!(
-            page.entries
-                .iter()
-                .map(|m| m.member_order)
-                .collect::<Vec<_>>(),
-            [4, 5]
+            (empty.offset, empty.complete, empty.sealed),
+            (0, true, true)
         );
-        assert_eq!(page.before, Some(4));
-        assert!(!page.sealed);
+        assert!(empty.entries.is_empty());
         assert!(
-            page.entries
-                .iter()
-                .all(|m| m.record.atom.completion_item_id.is_none())
-        );
-        assert!(page.entries.iter().all(|m| m.record.atom.payload.is_none()));
-        let frozen = member_page(
-            reference(),
-            9,
-            true,
-            DisplayMemberWindow::Before { member_order: 4 },
-            members[..3].iter().rev(),
-            demand(2),
-        )?;
-        assert_eq!(
-            frozen
-                .entries
-                .iter()
-                .map(|m| m.member_order)
-                .collect::<Vec<_>>(),
-            [2, 3]
-        );
-        assert_eq!(frozen.before, Some(2));
-        assert!(frozen.sealed);
-        assert_eq!(frozen.block, page.block);
-        assert!(
-            member_page(
-                reference(),
-                9,
-                true,
-                DisplayMemberWindow::Before { member_order: 4 },
-                members.iter().rev(),
-                demand(2),
-            )
-            .is_err()
+            pending
+                .next_batch(
+                    &reference(),
+                    ReadDemand {
+                        max_items: 1,
+                        max_bytes: 1
+                    }
+                )
+                .is_err()
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_member_result_keeps_pending_cut_then_refreshes_early_rows_and_seals_last()
+    -> Result<()> {
+        use crate::{
+            runtime_test_support::Environment,
+            studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
+        };
+        let env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let mut h = Harness::new(&env).await?;
+            let ids = (1..=15).map(|i| format!("full-{i}")).collect::<Vec<_>>();
+            let initial = h
+                .effect(
+                    ids.iter().map(|id| start(id, true)).collect(),
+                    ids[1..]
+                        .iter()
+                        .map(|id| finish(id, true, "durable body never in member head"))
+                        .collect::<Result<_>>()?,
+                )
+                .await?;
+            let expected = initial
+                .display
+                .as_ref()
+                .context("initial members")?
+                .members
+                .iter()
+                .map(|member| member.head.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(expected.len(), 15);
+            h.save(&initial).await?;
+            h.projection
+                .presentation()
+                .lock()
+                .unwrap()
+                .confirm(initial.sequence);
+            let reference = DisplayBlockRef {
+                database_id: h
+                    .history
+                    .conversation_database_id()
+                    .await?
+                    .context("database")?,
+                block_id: initial.display.as_ref().unwrap().blocks[0]
+                    .header
+                    .id
+                    .clone(),
+            };
+            let feed = env
+                .runtime
+                .open_timeline_reader(
+                    &h.thread.id,
+                    crate::PRESENTATION_VERSION,
+                    crate::TIMELINE_READER_PROTOCOL_VERSION,
+                    demand(1),
+                )
+                .await?;
+            let reader = feed.reader().clone();
+            let mut members = reader
+                .open_display_members(reference.clone(), demand(2))
+                .await?;
+            let first = members.next().await?.context("first batch")?;
+            assert_eq!(first.entries, expected[..2]);
+            assert!(!first.complete && !first.sealed);
+            let revision = first.revision;
+            let mut actual = first.entries;
+
+            // The pending result must not replace its already captured first row or admit a new row.
+            let changed = h
+                .effect(
+                    vec![start("after-pending", true)],
+                    vec![finish(&ids[0], true, "updated original body")?],
+                )
+                .await?;
+            let delta = changed.display.as_ref().context("updated display")?;
+            let updated_first = delta
+                .members
+                .iter()
+                .find(|m| m.head.member_order == 1)
+                .context("early member completion")?
+                .head
+                .clone();
+            let added = delta
+                .members
+                .iter()
+                .find(|m| m.head.member_order == 16)
+                .context("new member")?
+                .head
+                .clone();
+            h.save(&changed).await?;
+            h.projection
+                .presentation()
+                .lock()
+                .unwrap()
+                .confirm(changed.sequence);
+            loop {
+                let batch = members.next().await?.context("pending suffix")?;
+                assert_eq!(
+                    (batch.revision, batch.offset, batch.sealed),
+                    (revision, actual.len() as u64, false)
+                );
+                actual.extend(batch.entries);
+                if batch.complete {
+                    break;
+                }
+            }
+            assert_eq!(actual, expected);
+
+            let mut refreshed = Vec::new();
+            let mut next_revision = None;
+            loop {
+                let batch = members.next().await?.context("next full result")?;
+                assert!(batch.revision > revision);
+                assert_eq!(*next_revision.get_or_insert(batch.revision), batch.revision);
+                assert_eq!(batch.offset, refreshed.len() as u64);
+                refreshed.extend(batch.entries);
+                if batch.complete {
+                    break;
+                }
+            }
+            let mut updated = expected;
+            updated[0] = updated_first;
+            updated.push(added);
+            assert_eq!(refreshed, updated);
+            // A content-only wake on the original notification chain must not reread unchanged
+            // members from SQL or the resident owner, replay the result, or produce an empty batch.
+            let reads = h.history.reader_calls();
+            let member_reads = h
+                .projection
+                .presentation()
+                .lock()
+                .unwrap()
+                .member_head_reads();
+            assert!(member_reads > 0);
+            h.conversation.publication.apply(
+                h.conversation
+                    .publication
+                    .current()
+                    .context("current source")?,
+            );
+            assert!(poll!(Box::pin(members.next()).as_mut()).is_pending());
+            assert_eq!(h.history.reader_calls(), reads);
+            assert_eq!(
+                h.projection
+                    .presentation()
+                    .lock()
+                    .unwrap()
+                    .member_head_reads(),
+                member_reads,
+                "unchanged member revision must not traverse the resident group"
+            );
+
+            // A business boundary freezes the entire 16-row result. Sealed is not an early EOF.
+            let text = h
+                .effect(vec![start("seal-boundary", false)], vec![])
+                .await?;
+            h.save(&text).await?;
+            let visible = h
+                .content_available(vec![start("seal-boundary", false)])
+                .await?;
+            h.save(&visible).await?;
+            let mut frozen = Vec::new();
+            let mut sealed_revision = None;
+            loop {
+                let batch = members.next().await?.context("sealed batch before EOF")?;
+                assert!(batch.sealed);
+                assert_eq!(
+                    *sealed_revision.get_or_insert(batch.revision),
+                    batch.revision
+                );
+                assert_eq!(batch.offset, frozen.len() as u64);
+                assert_eq!(batch.complete, batch.offset == 14);
+                frozen.extend(batch.entries);
+                if batch.complete {
+                    break;
+                }
+            }
+            assert_eq!(frozen.len(), 16);
+            assert_eq!(&frozen[..15], &updated[..15]);
+            assert!(matches!(
+                frozen[15].record.content_source,
+                crate::DisplayContentSource::FrozenObservation { .. }
+            ));
+            assert!(members.next().await?.is_none());
+            members.close().await?;
+            reader.close().await?;
+            feed.close().await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn pending_members_recheck_local_cancel_close_and_reader_qualification() -> Result<()> {
+        use crate::{
+            runtime_test_support::Environment,
+            studio::runtime::conversation_feed::tests::completed_runs::{Harness, start},
+        };
+        let env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let mut h = Harness::new(&env).await?;
+            let initial = h
+                .effect(vec![start("one", true), start("two", true)], vec![])
+                .await?;
+            let reference = DisplayBlockRef {
+                database_id: h
+                    .history
+                    .conversation_database_id()
+                    .await?
+                    .context("database")?,
+                block_id: initial.display.as_ref().context("display")?.blocks[0]
+                    .header
+                    .id
+                    .clone(),
+            };
+            let feed = env
+                .runtime
+                .open_timeline_reader(
+                    &h.thread.id,
+                    crate::PRESENTATION_VERSION,
+                    crate::TIMELINE_READER_PROTOCOL_VERSION,
+                    demand(1),
+                )
+                .await?;
+            let reader = feed.reader().clone();
+            for close in [false, true] {
+                let mut members = reader
+                    .open_display_members(reference.clone(), demand(1))
+                    .await?;
+                assert!(!members.next().await?.context("pending first")?.complete);
+                assert!(members.pending.is_some());
+                if close {
+                    members.close().await?;
+                    assert!(members.pending.is_none());
+                } else {
+                    members.cancellation_token().cancel();
+                }
+                assert!(matches!(
+                    members
+                        .next()
+                        .await
+                        .unwrap_err()
+                        .downcast_ref::<ChatError>(),
+                    Some(ChatError::Cancelled)
+                ));
+                assert!(members.pending.is_none());
+                reader.ensure()?;
+                members.close().await?;
+            }
+            let mut blocked = reader
+                .open_display_members(reference.clone(), demand(1))
+                .await?;
+            assert!(
+                !blocked
+                    .next()
+                    .await?
+                    .context("first before scope access loss")?
+                    .complete
+            );
+            let mut issue = crate::studio::StudioRecoveryRegistry::execution_workspace_issue(
+                &h.thread,
+                &anyhow::anyhow!("test access revoked"),
+            );
+            issue.impact = crate::StudioRecoveryImpact::AccessBlocked;
+            env.runtime.recovery.replace(vec![issue]);
+            let denied = blocked.next().await.unwrap_err();
+            assert_eq!(
+                denied
+                    .downcast_ref::<crate::StudioError>()
+                    .context("access error")?
+                    .code,
+                crate::StudioErrorCode::Unavailable
+            );
+            assert!(blocked.pending.is_none());
+            blocked.close().await?;
+            env.runtime.recovery.replace(Vec::new());
+            let mut members = reader.open_display_members(reference, demand(1)).await?;
+            assert!(
+                !members
+                    .next()
+                    .await?
+                    .context("first before invalidation")?
+                    .complete
+            );
+            reader.invalidate();
+            let error = members.next().await.unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<crate::StudioError>()
+                    .context("resync error")?
+                    .reason(),
+                Some(crate::StudioErrorReason::ConversationResyncRequired.label())
+            );
+            assert!(members.pending.is_none());
+            members.close().await?;
+            reader.close().await?;
+            feed.close().await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn saved_only_members_use_one_short_snapshot_and_finish_all_sealed_batches() -> Result<()>
+    {
+        use crate::{
+            runtime_test_support::Environment,
+            studio::conversation_store::ConversationStore,
+            studio::runtime::{
+                conversation_feed::tests::completed_runs::{Harness, finish, start},
+                conversation_reader::ReadResources,
+            },
+        };
+        let env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let mut h = Harness::new(&env).await?;
+            let ids = (1..=15).map(|i| format!("cold-{i}")).collect::<Vec<_>>();
+            let initial = h
+                .effect(
+                    ids.iter().map(|id| start(id, true)).collect(),
+                    ids.iter()
+                        .map(|id| finish(id, true, "saved original body"))
+                        .collect::<Result<_>>()?,
+                )
+                .await?;
+            h.save(&initial).await?;
+            h.projection
+                .presentation()
+                .lock()
+                .unwrap()
+                .confirm(initial.sequence);
+            let expected = initial
+                .display
+                .as_ref()
+                .context("saved members")?
+                .members
+                .iter()
+                .map(|member| member.head.clone())
+                .collect::<Vec<_>>();
+            let reference = DisplayBlockRef {
+                database_id: h
+                    .history
+                    .conversation_database_id()
+                    .await?
+                    .context("database")?,
+                block_id: initial.display.as_ref().unwrap().blocks[0]
+                    .header
+                    .id
+                    .clone(),
+            };
+            // Reopen only the saved source, without activating or mutating its business owner.
+            let cold = ConversationStore::new(h.history.clone())?;
+            let conversation = cold.open_reader();
+            conversation.bind_database(Some(&reference.database_id))?;
+            let reader = ConversationReader::new(
+                crate::studio::ids::new_id("cold-members"),
+                ChatScope::conversation(None),
+                h.session.head_seq(),
+                env.runtime
+                    .thread_observations
+                    .observation_slot(&h.thread.id),
+                env.runtime.thread_observations.read_lifetime(),
+                ReadResources {
+                    history: h.history.clone(),
+                    session: cold.session().clone(),
+                    database_id: Some(reference.database_id.clone()),
+                    conversation,
+                    thread: h.thread.clone(),
+                    recovery: env.runtime.recovery.clone(),
+                },
+            );
+            let mut members = reader
+                .open_display_members(reference.clone(), demand(2))
+                .await?;
+            let reads = h.history.reader_calls();
+            let first = members.next().await?.context("cold first batch")?;
+            assert_eq!(h.history.reader_calls() - reads, 1);
+            assert!(first.sealed && !first.complete);
+            assert_eq!(first.offset, 0);
+            let revision = first.revision;
+            let mut actual = first.entries;
+            let changed = h
+                .effect(vec![start("after-cold-cut", true)], vec![])
+                .await?;
+            h.save(&changed).await?;
+            let reads = h.history.reader_calls();
+            loop {
+                let batch = members
+                    .next()
+                    .await?
+                    .context("remaining cold batch, not EOF")?;
+                assert_eq!(
+                    (batch.revision, batch.offset, batch.sealed),
+                    (revision, actual.len() as u64, true)
+                );
+                actual.extend(batch.entries);
+                if batch.complete {
+                    break;
+                }
+            }
+            assert_eq!(actual, expected);
+            assert!(members.next().await?.is_none());
+            assert_eq!(
+                h.history.reader_calls(),
+                reads,
+                "delivery retains no transaction and performs no new SQL reads"
+            );
+            let saved = h
+                .history
+                .display_recovery()
+                .await?
+                .context("business block remains open")?;
+            assert!(!saved.open[0].sealed);
+            assert_eq!(saved.open[0].next_member, 16);
+            members.close().await?;
+            reader.close().await?;
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        env.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn sparse_member_capture_overrides_newer_sql_updates_and_excludes_new_rows() -> Result<()>
+    {
+        use crate::{
+            runtime_test_support::Environment,
+            studio::runtime::conversation_feed::tests::completed_runs::{Harness, finish, start},
+        };
+        use tokio::sync::oneshot;
+        let env = Environment::new(vec![], vec![]).await?;
+        let result = async {
+            let mut h = Harness::new(&env).await?;
+            let initial = h.effect(vec![start("saved", true), start("active", true)],
+                vec![finish("saved", true, "saved body")?]).await?;
+            let expected = initial.display.as_ref().context("members")?.members.iter()
+                .map(|member| member.head.clone()).collect::<Vec<_>>();
+            h.save(&initial).await?;
+            h.projection.presentation().lock().unwrap().confirm(initial.sequence);
+            let reference = DisplayBlockRef {
+                database_id: h.history.conversation_database_id().await?.context("database")?,
+                block_id: initial.display.as_ref().unwrap().blocks[0].header.id.clone(),
+            };
+            let feed = env.runtime.open_timeline_reader(&h.thread.id, crate::PRESENTATION_VERSION,
+                crate::TIMELINE_READER_PROTOCOL_VERSION, demand(1)).await?;
+            let reader = feed.reader().clone();
+            let mut members = reader.open_display_members(reference, demand(1)).await?;
+            let (entered, captured) = oneshot::channel();
+            let (resume, released) = oneshot::channel();
+            members.cut_barrier = Some(DisplayMemberReadBarrier { entered, resume: released });
+            let first = {
+                let reading = members.next();
+                tokio::pin!(reading);
+                tokio::time::timeout(crate::runtime_test_support::integration_test_deadline()?, async {
+                    tokio::select! {
+                        reached = captured => reached.context("captured sparse cut"),
+                        result = &mut reading => anyhow::bail!("read bypassed capture barrier: {result:?}"),
+                    }
+                }).await??;
+                let changed = h.effect(vec![start("new-after-cut", true)],
+                    vec![finish("active", true, "new terminal SQL value")?]).await?;
+                h.save(&changed).await?;
+                h.projection.presentation().lock().unwrap().confirm(changed.sequence);
+                resume.send(()).map_err(|_| anyhow::anyhow!("read dropped"))?;
+                reading.await?.context("old cut first batch")?
+            };
+            assert_eq!(first.entries, expected[..1]);
+            assert!(!first.complete);
+            let second = members.next().await?.context("captured active member")?;
+            assert_eq!(second.entries, expected[1..]);
+            assert_eq!((second.offset, second.revision, second.complete), (1, first.revision, true));
+            assert!(matches!(second.entries[0].record.atom.lifecycle, ChatAtomLifecycle::Active { .. }));
+            let mut refreshed = Vec::new();
+            loop {
+                let batch = members.next().await?.context("updated cut")?;
+                assert!(batch.revision > first.revision);
+                refreshed.extend(batch.entries);
+                if batch.complete { break; }
+            }
+            assert_eq!(refreshed.len(), 3);
+            assert_eq!(refreshed[0], expected[0]);
+            assert_eq!(refreshed[1].member_key, expected[1].member_key);
+            assert!(matches!(refreshed[1].record.atom.lifecycle, ChatAtomLifecycle::Terminal { .. }));
+            assert_eq!(refreshed[2].member_order, 3);
+            members.close().await?;
+            reader.close().await?;
+            feed.close().await?;
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        env.finish(result).await
     }
 
     #[tokio::test]
@@ -1237,7 +1801,7 @@ mod tests {
         );
 
         let mut members = reader
-            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+            .open_display_members(reference.clone(), demand(2))
             .await?;
         let (entered, captured) = oneshot::channel();
         let (resume, released) = oneshot::channel();
@@ -1302,7 +1866,7 @@ mod tests {
         assert_eq!(old_page.revision, captured_revision);
         assert!(!old_page.sealed);
         assert_eq!(old_page.entries, [saved_member.clone(), pending_member.clone()]);
-        assert!(old_page.before.is_none());
+        assert_eq!((old_page.offset, old_page.complete), (0, true));
         assert!(terminal_row.upgrade().is_none(), "completed query drops its last overlay reference");
         assert!(captured_head.upgrade().is_none(), "completed query drops its old header reference");
         members.close().await?;
@@ -1320,29 +1884,23 @@ mod tests {
             0
         );
         let mut latest = reader
-            .open_display_members(reference.clone(), DisplayMemberWindow::Latest, demand(2))
+            .open_display_members(reference.clone(), demand(2))
             .await?;
         let newest = latest.next().await?.context("latest member page")?;
         assert_eq!(newest.revision, latest_cut.open[0].revision);
         assert!(newest.revision > captured_revision);
-        assert_eq!(newest.entries, [pending_member, newer_member]);
-        let mut older = reader
-            .open_display_members(
-                reference,
-                DisplayMemberWindow::Before { member_order: newest.before.context("older prefix")? },
-                demand(2),
-            )
-            .await?;
-        let prefix = older.next().await?.context("saved prefix page")?;
-        assert_eq!(prefix.entries, [saved_member]);
-        assert!(prefix.before.is_none());
+        assert_eq!(newest.entries, [saved_member, pending_member]);
+        assert_eq!((newest.offset, newest.complete), (0, false));
+        let suffix = latest.next().await?.context("saved suffix batch")?;
+        assert_eq!(suffix.entries, [newer_member]);
+        assert_eq!((suffix.offset, suffix.complete), (2, true));
+        assert_eq!(suffix.revision, newest.revision);
         assert_eq!(
-            prefix.entries.iter().chain(&newest.entries)
+            newest.entries.iter().chain(&suffix.entries)
                 .map(|member| member.member_order).collect::<Vec<_>>(),
             [1, 2, 3],
             "the captured overlay's stable key/order is neither lost nor duplicated after cleanup"
         );
-        older.close().await?;
         latest.close().await?;
         reader.close().await?;
         feed.close().await?;

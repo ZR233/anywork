@@ -8,6 +8,7 @@ import 'package:anywork/src/features/conversation/timeline/state/chat_item_prese
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_image_resources.dart';
 import 'package:anywork/src/features/conversation/timeline/view_models/timeline_member_controller.dart';
+import 'package:anywork/src/features/conversation/timeline/view_models/display_member_controller.dart';
 import 'package:anywork/src/presentation/view_models/timeline_session_owner.dart';
 import 'package:anywork_client/studio_client.dart';
 import 'package:flutter_chat_core/flutter_chat_core.dart';
@@ -26,6 +27,133 @@ import '../../../anywork_client/test/support/product_topic_owner.dart';
 // The transport supplies only explicit facts and I/O barriers.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  for (final historical in [false, true]) {
+    for (final membersFirst in [false, true]) {
+      test(
+        'seal ${historical ? 'historical' : 'live'} head ${membersFirst ? 'after' : 'before'} member result revokes without a widget rebuild',
+        () async {
+          const reference = DisplayBlockRef(
+            databaseId: 'lease-seal',
+            blockId: 'seal-work',
+          );
+          final body = WorkDisplayBlock(
+            timing: displayTiming(),
+            members: reference,
+          );
+          final open = LiveDisplayBlock(
+            id: reference.blockId,
+            blockOrder: 1,
+            state: DisplayBlockState.open,
+            body: body,
+          );
+          final h = _Harness([]);
+          h.transport.initial = displayBatch(
+            [],
+            through: 0,
+            live: TailSnapshot(
+              revision: 1,
+              layoutRevision: 1,
+              readyFrontier: 0,
+              currentWorkId: reference.blockId,
+              executionPresent: true,
+              blocks: [open],
+            ),
+          );
+          await h.open();
+          final lease = h.lease;
+          final unit = lease.liveUnit(open, true);
+          final native = _SealMembers();
+          h.transport.reader.displayMembers = native;
+          final controller = DisplayMemberController(
+            reference: reference,
+            demand: chatDemand,
+            open: (reference, demand) =>
+                lease.openDisplayMembers(reference: reference, demand: demand),
+          );
+          unit.expansion.members = controller;
+          addTearDown(() async {
+            await controller.close();
+            controller.dispose();
+          });
+          Future<void> published(int revision) {
+            if (controller.revision == revision) return Future.value();
+            final ready = Completer<void>();
+            void changed() {
+              if (controller.revision != revision) return;
+              controller.removeListener(changed);
+              ready.complete();
+            }
+
+            controller.addListener(changed);
+            return ready.future.timeout(const Duration(seconds: 5));
+          }
+
+          final first = published(1);
+          native.send(_sealBatch(reference, false));
+          await first;
+          final old = controller.disclosure('mutable-row')..expanded = true;
+          if (membersFirst) {
+            final sealed = published(2);
+            native.send(_sealBatch(reference, true));
+            await sealed;
+            expect(controller.sealed, isTrue);
+          }
+          final frozen = LiveDisplayBlock(
+            id: open.id,
+            blockOrder: open.blockOrder,
+            state: DisplayBlockState.sealed,
+            body: body,
+          );
+          h.transport.feed.emitTimeline(
+            displayBatch(
+              historical
+                  ? [DisplayBlock(id: open.id, blockOrder: 1, body: body)]
+                  : [],
+              placement: ChatPlacement.append,
+              from: 0,
+              through: historical ? 1 : 0,
+              live: TailSnapshot(
+                revision: 2,
+                layoutRevision: 2,
+                readyFrontier: historical ? 1 : 0,
+                currentWorkId: null,
+                executionPresent: true,
+                blocks: historical ? [] : [frozen],
+              ),
+            ),
+          );
+          await h.transport.feed.accepted(2);
+          // No pumpWidget/pump and no connector: the lease admission itself must
+          // revoke CurrentAtom qualification, independent of any closing animation.
+          expect(h.lease, same(lease));
+          expect(unit.expansion.members, same(controller));
+          if (membersFirst) {
+            expect(controller.disclosure('mutable-row'), same(old));
+            expect(old.retired, isFalse);
+            expect(controller.awaitingSealed, isFalse);
+          } else {
+            expect(old.retired, isTrue);
+            expect(controller.disclosure('mutable-row').expanded, isTrue);
+            expect(controller.awaitingSealed, isTrue);
+            expect(
+              controller.entries.single.record.contentSource,
+              isA<CurrentAtom>(),
+            );
+            final sealed = published(2);
+            native.send(_sealBatch(reference, true));
+            await sealed;
+          }
+          expect(controller.sealed, isTrue);
+          expect(
+            controller.entries.single.record.contentSource,
+            isA<FrozenObservation>(),
+          );
+          expect(controller.error, isNull);
+        },
+      );
+    }
+  }
 
   test('current renderer borrows coexist, unregister independently and retire together', () async {
     final h = _Harness([chatMessage('main')]);
@@ -307,7 +435,6 @@ void main() {
             databaseId: 'reentry-database',
             blockId: 'work',
           ),
-          window: const LatestDisplayMembers(),
           demand: chatDemand,
         );
         final memberId = scope.cleanupReport.unresolved.single.resourceId;
@@ -770,7 +897,6 @@ void main() {
         databaseId: 'query-database',
         blockId: 'work',
       ),
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final watchId = watchScope.cleanupReport.unresolved.single.resourceId;
@@ -919,7 +1045,6 @@ void main() {
         databaseId: 'query-database',
         blockId: 'work',
       ),
-      window: const LatestDisplayMembers(),
       demand: chatDemand,
     );
     final memberId = scope.cleanupReport.unresolved
@@ -1023,6 +1148,79 @@ void main() {
     expect(card.body('body'), same(body));
     expect(card.inlineText('body'), 'unchanged');
   });
+}
+
+DisplayMemberBatch _sealBatch(DisplayBlockRef reference, bool sealed) =>
+    DisplayMemberBatch(
+      block: reference,
+      revision: sealed ? 2 : 1,
+      offset: 0,
+      complete: true,
+      sealed: sealed,
+      entries: [
+        DisplayMemberHead(
+          memberKey: 'mutable-row',
+          memberOrder: 8,
+          record: DisplayRecord(
+            contentSource: sealed
+                ? const FrozenObservation(capturedAt: 10, available: true)
+                : const CurrentAtom(),
+            atom: ChatAtom(
+              id: 'mutable-member',
+              source: const ForegroundTurnChatSource(turnId: 'turn'),
+              sourceOrder: 1,
+              kind: ChatAtomKind.reasoning,
+              delivery: ChatDeliveryKind.foreground,
+              lifecycle: const ActiveChatAtom(
+                started: null,
+                status: ChatActiveStatus.running,
+              ),
+              contents: const [],
+            ),
+          ),
+        ),
+      ],
+    );
+
+/// Only the external member transport timing. Admission remains in the real
+/// SDK, DisplayMemberController and TimelineDisplayLease.
+final class _SealMembers implements DisplayMembers {
+  final _queued = <DisplayMemberBatch>[];
+  Completer<DisplayMemberBatch?>? _pending;
+  bool _closed = false;
+  bool _sealed = false;
+  void send(DisplayMemberBatch batch) {
+    final pending = _pending;
+    _pending = null;
+    if (pending == null) {
+      _queued.add(batch);
+    } else {
+      pending.complete(batch);
+    }
+  }
+
+  @override
+  Future<DisplayMemberBatch?> next() async {
+    if (_closed || _sealed) return null;
+    final batch = _queued.isNotEmpty
+        ? _queued.removeAt(0)
+        : await (_pending = Completer<DisplayMemberBatch?>()).future;
+    _sealed = batch?.complete == true && batch?.sealed == true;
+    return batch;
+  }
+
+  @override
+  void requestClose() {
+    _closed = true;
+    _pending?.complete(null);
+    _pending = null;
+    _queued.clear();
+  }
+
+  @override
+  Future<void> close() async {
+    requestClose();
+  }
 }
 
 final class _CurrentDisplay implements TimelineCurrentDisplay {
@@ -1455,7 +1653,6 @@ final class _TimelineQueries extends Fake implements TimelineReader {
   @override
   Future<DisplayMembers> openDisplayMembers({
     required DisplayBlockRef reference,
-    required DisplayMemberWindow window,
     required ReadDemand demand,
   }) async {
     reader.memberOpens++;

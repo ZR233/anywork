@@ -316,7 +316,6 @@ TimelineDisplayFacts? _timelineFacts(
             },
             null => null,
           },
-          'before': display.before,
           'loading': display.loading,
           'error': display.error?.toString(),
           'items': StudioDriverState.timelineItemsJson([
