@@ -168,7 +168,8 @@ mod mixed_tests {
             changes.next().await.context("Native parent closed")?;
         }
     })
-    .await?
+    .await
+    .context("Native parent Current did not receive the ACP result")?
     }
 
     async fn close_fixture(
@@ -352,7 +353,8 @@ mod mixed_tests {
                 changed.changed().await?;
             }
         })
-        .await?
+        .await
+        .context("wait for the next ACP completion")?
     }
 
     fn rebuild_native_parent_and_restore_child<'a>(
@@ -893,25 +895,6 @@ mod mixed_tests {
             }),
             "the child's original failed Turn remains durable"
         );
-        let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
-        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
-            &fixture.runtime.store, &record.into(),
-        ).await?.context("Native child's own saved current")?;
-        assert!(
-            current
-                .state
-                .to_paused_snapshot()
-                .turns
-                .iter()
-                .any(|turn| matches!(
-                    turn.state,
-                    pl_core::thread::TurnState::Finished(_)
-                        | pl_core::thread::TurnState::Cancelled
-                        | pl_core::thread::TurnState::Interrupted
-                        | pl_core::thread::TurnState::Failed { .. }
-                )),
-            "the child current retains its terminal Turn"
-        );
         let protocol = fixture.runtime.agent_facility.product_events
             .thread_snapshot(identity.thread_id.as_str())?.context("Native child projection")?;
         assert_eq!(
@@ -928,6 +911,11 @@ mod mixed_tests {
         assert!(closed.error.is_none(), "{closed:?}");
         assert!(closed.agents[0].execution_closed);
         assert!(closed.agents[0].worktree_cleanup.is_terminal());
+        let record = fixture.runtime.store.read_thread(identity.thread_id.as_str()).await?.context("Native child record")?;
+        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
+            &fixture.runtime.store, &record.into(),
+        ).await?.context("Native child's own final saved current")?;
+        assert_eq!(current.state.lifecycle, pl_core::thread::ThreadLifecycle::Closed);
         let close_record = fixture.runtime.store.agent_close(identity.thread_id.as_str()).await?.context("durable permanent close")?;
         assert!(close_record.execution_closed && close_record.worktree_cleanup.is_terminal());
         assert!(owner.observed_thread(caller.thread_id.as_str()).is_none());

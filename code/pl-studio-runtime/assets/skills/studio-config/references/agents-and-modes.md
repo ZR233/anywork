@@ -51,7 +51,13 @@ can dispatch ordinary children when their referenced definition is valid and ena
 in both delegation modes. Automatic model selection applies only to Native children;
 do not supply `modelSelection`, Native effort, `writablePaths`, structured review or
 Native workflow arguments to an ACP child. New ACP children use the service's default
-session configuration; later configuration changes belong to that session.
+session configuration unless `spawn_agent.acpConfig` explicitly supplies an ordered
+array such as `[{"id":"model","value":"gemini-4-hydrogen"}]`. IDs and string/boolean
+values must be declared by that service; they are applied and confirmed before the
+first message, without changing the Profile or account. Invalid/dynamically changed
+options prevent submission and preserve the created member with `messageAccepted=false`.
+There is no implicit inheritance of a parent's selected model. Later configuration
+changes belong to that session. Native targets reject ACP configuration overrides.
 
 ACP callers receive the `anywork_` collaboration tools through direct HTTP when advertised,
 or the standard ACP v1 stdio MCP transport otherwise. The host provides the authenticated

@@ -2678,23 +2678,15 @@ mod s2_close_regression_tests {
             let unrelated_cancel = model_started.await.unwrap();
             let child = ThreadHandle::resume_without_model("child-thread".into(), None).unwrap();
             register_member(&owner, "child-thread", Some("parent-thread"), child);
-            let (broadcast, observed) = oneshot::channel();
-            owner.0.state().s2_close_broadcast = Some(broadcast);
-            let close = owner.close_session();
-            tokio::pin!(close);
-            tokio::select! {
-                result = &mut close => panic!("close escaped cancellation observation: {result:?}"),
-                result = observed => result.unwrap(),
-            }
+            let report = owner.close_session().await;
             assert!(
                 parent_cancel.is_cancelled(),
-                "parent execution must be cancelled before child shutdown"
+                "closing Session A must cancel its parent execution"
             );
             assert!(
                 !unrelated_cancel.is_cancelled(),
                 "Session A cannot cancel Session B"
             );
-            let report = close.await;
             assert!(report.is_empty(), "{report:?}");
             assert!(parent_run.await.unwrap().is_err());
             assert!(!unrelated_cancel.is_cancelled());

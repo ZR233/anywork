@@ -1,4 +1,4 @@
-//! One Current metadata watch plus immutable History original coverage for one reply target.
+//! Independent Current metadata and History change observations for one reply target.
 
 use super::content::{
     FinalError, activity_preview, demand, history_turn_items, history_turn_terminal, read_failure,
@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub(super) struct ReplyWatch {
     current_reader: CurrentReader,
     history_reader: crate::history::HistoryReader,
+    history_cut: crate::history::HistoryCut,
     current_watch: CurrentWatch,
     view: CurrentView,
     input_id: Option<String>,
@@ -40,6 +41,20 @@ impl ReplyWatch {
                     )),
                 };
                 return Err(read_failure("bot history reader open failed", error));
+            }
+        };
+        let history_cut = match history_reader.capture().await {
+            Ok(cut) => cut,
+            Err(error) => {
+                let close = current_reader.close().await;
+                history_reader.close().await;
+                let error = match close {
+                    Ok(()) => error.into(),
+                    Err(close) => anyhow::Error::new(error).context(format!(
+                        "closing current after history capture also failed: {close:#}"
+                    )),
+                };
+                return Err(read_failure("bot history capture failed", error));
             }
         };
         let mut current_watch = match current_reader.watch(None, demand()).await {
@@ -73,6 +88,7 @@ impl ReplyWatch {
         Ok(Self {
             current_reader,
             history_reader,
+            history_cut,
             current_watch,
             view,
             input_id: None,
@@ -130,16 +146,26 @@ impl ReplyWatch {
             self.refresh_current()?;
             return Ok(());
         }
-        let items = history_turn_items(&self.history_reader, &turn_id).await?;
-        let terminal = history_turn_terminal(&self.history_reader, &turn_id).await?;
+        let cut = self
+            .history_reader
+            .capture()
+            .await
+            .map_err(|error| read_failure("bot history capture failed", error))?;
+        let mut items = history_turn_items(&self.history_reader, &turn_id, cut.clone()).await?;
+        let terminal = history_turn_terminal(&self.history_reader, &turn_id, cut.clone()).await?;
+        let finished = terminal.is_some();
+        if let Some(terminal) = terminal {
+            items.push(terminal);
+        }
         let mut projection = ReplyProjection::new();
         projection.replace(items)?;
         projection.mark_covered();
-        if terminal {
+        if finished {
             projection.mark_history_terminal();
         }
         self.observed_state = projection.terminal();
         self.projection = Some(projection);
+        self.history_cut = cut;
         self.refresh_current()?;
         Ok(())
     }
@@ -187,12 +213,16 @@ impl ReplyWatch {
     }
 
     pub(super) async fn receive(&mut self) -> Result<(), FinalError> {
-        let frame = self
-            .current_watch
-            .next()
-            .await
-            .map_err(|error| read_failure("bot current watch failed", error))?
-            .ok_or_else(|| gap("bot current watch ended before reply completed"))?;
+        let frame = tokio::select! {
+            changed = self.history_reader.wait_changed(self.history_cut.clone()) => {
+                self.history_cut = changed
+                    .map_err(|error| read_failure("bot history watch failed", error))?;
+                return self.ensure_coverage().await;
+            }
+            frame = self.current_watch.next() => frame,
+        }
+        .map_err(|error| read_failure("bot current watch failed", error))?
+        .ok_or_else(|| gap("bot current watch ended before reply completed"))?;
         match frame {
             CurrentFrame::Reset { view } => self.view = *view,
             CurrentFrame::Projection {
@@ -259,6 +289,7 @@ impl ReplyWatch {
 
     pub(super) async fn close(&mut self) -> Result<(), FinalError> {
         self.current_watch.request_close();
+        self.history_reader.request_close();
         let mut errors = Vec::new();
         if let Err(error) = self.current_watch.close().await {
             errors.push(read_failure("bot current watch close failed", error));
@@ -545,6 +576,37 @@ mod tests {
                 watch
                     .select_target(&env.runtime, "input-binding-explicit", Some(&turn.id))
                     .await?;
+                let settled = tokio::time::timeout(Duration::from_secs(10), async {
+                    while watch.terminal(&turn.id).is_none() {
+                        watch.receive().await?;
+                    }
+                    Ok::<_, FinalError>(())
+                })
+                .await;
+                if settled.is_err() {
+                    eprintln!(
+                        "reply History status: {:?}",
+                        env.runtime.persistence_queue_snapshot()
+                    );
+                    let page = watch
+                        .history_reader
+                        .events_page(
+                            crate::history::HistoryEventsQuery::Turn {
+                                turn_id: turn.id.clone(),
+                            },
+                            None,
+                            None,
+                            crate::history::HistoryDemand::default(),
+                        )
+                        .await?;
+                    for entry in page.entries.iter().take(12) {
+                        eprintln!(
+                            "reply History entry: seq={} kind={:?} head={:?}",
+                            entry.header.seq, entry.header.kind, entry.head
+                        );
+                    }
+                }
+                settled??;
                 let projection = watch.projection().expect("target projection");
                 assert_eq!(projection.file_displays().count(), 1);
                 let calls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));

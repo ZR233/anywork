@@ -514,75 +514,17 @@ pub enum EventBodyV3 {
 }
 
 /// One JSONL record written to `<output-dir>/events.jsonl`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EventV3 {
     pub schema_version: u32,
     pub run_id: String,
     pub event_seq: u64,
+    #[serde(flatten)]
     pub body: EventBodyV3,
     pub emitted_at: String,
     pub thread_id: Option<String>,
     pub source: EventSourceV3,
-}
-
-/// Bounded wire view for one event. `flatten` is applied to the event body map,
-/// not to the tagged enum itself, as required by Serde's flatten contract.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventV3Wire {
-    schema_version: u32,
-    run_id: String,
-    event_seq: u64,
-    emitted_at: String,
-    thread_id: Option<String>,
-    source: EventSourceV3,
-    #[serde(flatten)]
-    body: serde_json::Map<String, serde_json::Value>,
-}
-
-impl Serialize for EventV3 {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let body =
-            serde_json::to_value(&self.body).map_err(<S::Error as serde::ser::Error>::custom)?;
-        let serde_json::Value::Object(body) = body else {
-            return Err(<S::Error as serde::ser::Error>::custom(
-                "EventBodyV3 did not serialize as an object",
-            ));
-        };
-        EventV3Wire {
-            schema_version: self.schema_version,
-            run_id: self.run_id.clone(),
-            event_seq: self.event_seq,
-            emitted_at: self.emitted_at.clone(),
-            thread_id: self.thread_id.clone(),
-            source: self.source.clone(),
-            body,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for EventV3 {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = EventV3Wire::deserialize(deserializer)?;
-        let body = serde_json::from_value(serde_json::Value::Object(wire.body))
-            .map_err(<D::Error as serde::de::Error>::custom)?;
-        Ok(Self {
-            schema_version: wire.schema_version,
-            run_id: wire.run_id,
-            event_seq: wire.event_seq,
-            body,
-            emitted_at: wire.emitted_at,
-            thread_id: wire.thread_id,
-            source: wire.source,
-        })
-    }
 }
 
 /// Final exporter report isolated from native `StudioShutdownReport`.

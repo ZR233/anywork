@@ -226,11 +226,6 @@ impl ConfigRuntime {
                     crate::studio::delegation::validate_credential(&super::resolve_profile_route(
                         &config, profile,
                     )?)?;
-                } else {
-                    return Err(PureError::ConfigError(
-                        "CLI does not support enabled ACP delegation profiles".into(),
-                    )
-                    .into());
                 }
             }
         }

@@ -50,7 +50,7 @@ pub(crate) async fn prepare_open(
     let profiles = config.agent_profiles_snapshot()?;
     let host = owner.acp_agent_host(identity, resources, &profiles, selection)?;
     let instructions = if let Some(tools) = resources.workspace_tools.get() {
-        remote_instructions(&snapshot.config.instructions, identity, cwd, tools).await?
+        workspace_instructions(&snapshot.config.instructions, identity, cwd, tools).await?
     } else {
         instructions(&snapshot.config.instructions, identity, cwd)?
     };
@@ -154,7 +154,7 @@ fn append_documents(text: &mut String, documents: pl_tool::workspace::WorkspaceI
     }
 }
 
-async fn remote_instructions(
+async fn workspace_instructions(
     config: &crate::config::InstructionsConfig,
     identity: &crate::AgentThreadIdentity,
     cwd: &str,
@@ -162,7 +162,7 @@ async fn remote_instructions(
 ) -> Result<String> {
     let mut text = instruction_base(config, identity, cwd);
     let binding = &tools.binding;
-    let environment = &binding.remote.execution_environment;
+    let environment = &binding.environment;
     let files = binding
         .workspace
         .workspace()
@@ -170,27 +170,37 @@ async fn remote_instructions(
         .context("missing session files")?;
     text.push_str(&format!(
         "\nACP and its login state run on the Studio host. Host protocol cwd: {cwd}\n\
-         Business execution target: SSH; OS: {}; shell dialect: {}; shell executable: {}\n\
+         Business execution target: {}; OS: {}; shell dialect: {}; shell executable: {}\n\
          Business workspace root: {}\n\
          Execution-side session files, relative to that business root:\n\
          scratch: {}\nartifacts: {}\ncommands: {}\nuploads: {}\nPython environment: {}\n\
          Use the anywork_ workspace tools for business commands, files and enabled Git. \
-         Do not operate on remote paths with the agent's own local tools or infer paths from host cwd. \
+         These host tools retain the real execution identity, permissions, captures and cleanup owner. \
+         Do not infer business paths from host cwd or use local tools for an SSH workspace. \
          Use only tools actually present in the catalog; read/list/search require anywork_exec_command when enabled. \
          Absent commands grant no execution capability. Accepted executions remain owned by this instance. \
          Use anywork_wait and anywork_get_tool_task to read results, not another prompt's automatic delivery. \
          Tool permissions are not an OS sandbox and cannot disable the external agent's own host tools.\n",
+        if binding.remote.is_some() { "SSH" } else { "local" },
         environment.os.as_str(), environment.shell.as_str(), environment.shell_path_display(),
         binding.workspace.root().display(), files.scratch().display(), files.artifacts().display(),
         files.commands().display(), files.uploads().display(), files.python_environment().display(),
     ));
     let documents = pl_tool::workspace_file::load_workspace_instructions(
-        &binding.remote.files(),
+        &binding.execution.files(),
         config.project_doc_max_bytes,
         &config.project_doc_fallback_filenames,
     )
     .await?;
     append_documents(&mut text, documents);
+    if let Some((catalog, _)) = &binding.skills {
+        text.push_str("\nHost skills use anywork_skills_list and anywork_skill_view, including support files. \
+            Use anywork_skill_manage only when present. Unprefixed skill tool names in the index or \
+            documents refer to these host tools, not the external agent's own skill catalog.\n");
+        text.push_str(&pl_tool::skill::build_skills_prompt_from_catalog(
+            catalog.snapshot(),
+        ));
+    }
     Ok(text)
 }
 
@@ -1022,11 +1032,15 @@ mod tests {
             config.runtime.tool_capabilities.git = true;
             let tools = WorkspaceTools::new(open.target.thread_id.clone(), PreparedAcpWorkspace {
                 workspace: ToolWorkspace::new(AgentWorkspace::local(&root).with_session_files(files)),
-                remote: SshWorkspaceBinding {
+                execution: execution.clone(),
+                environment: ExecutionEnvironment::for_ssh(ExecutionOs::Linux, ShellDialect::Bash, "/bin/bash"),
+                skills: None,
+                lsp: None,
+                remote: Some(SshWorkspaceBinding {
                     profile: Arc::new(SshServerProfile { alias: "in-process-helper".into(), host_name: "fixture".into(), port: 22, username: "fixture".into(), identity_file: None }),
                     execution: execution.clone(),
                     execution_environment: ExecutionEnvironment::for_ssh(ExecutionOs::Linux, ShellDialect::Bash, "/bin/bash"),
-                },
+                }),
                 store: crate::resource_store::FileResourceStore::new(fixture.runtime.store.session_resources_dir_for(&fixture.workspace.id, &open.target.thread_id)?),
                 host_scratch: fixture.runtime.store.session_scratch_dir_for(&fixture.workspace.id, &open.target.thread_id)?,
             }, &config);
@@ -1246,7 +1260,18 @@ mod tests {
                         AgentWorkspace::local(&fixture.workspace.path)
                             .with_session_id(&open.target.thread_id),
                     ),
-                    remote: SshWorkspaceBinding {
+                    execution: WorkspaceExecutionBinding::new(
+                        executor.clone(),
+                        &fixture.workspace.path,
+                    )?,
+                    environment: ExecutionEnvironment::for_ssh(
+                        ExecutionOs::Linux,
+                        ShellDialect::Bash,
+                        "/bin/bash",
+                    ),
+                    skills: None,
+                    lsp: None,
+                    remote: Some(SshWorkspaceBinding {
                         profile: Arc::new(SshServerProfile {
                             alias: "helper-channel".into(),
                             host_name: "fixture".into(),
@@ -1263,7 +1288,7 @@ mod tests {
                             ShellDialect::Bash,
                             "/bin/bash",
                         ),
-                    },
+                    }),
                     store: crate::resource_store::FileResourceStore::new(
                         fixture.runtime.store.session_resources_dir_for(
                             &fixture.workspace.id,

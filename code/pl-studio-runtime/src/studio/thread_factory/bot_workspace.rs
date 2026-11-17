@@ -223,16 +223,12 @@ fn bot_workspace_refusal(id: &str, reason: &str) -> ThreadAssemblyError {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
-    use crate::studio::storage_fault_test_support::{
-        ThreadStorageSink, close_factory, spawn_live_projection,
-    };
+    use crate::studio::storage_fault_test_support::close_factory;
     use crate::thread_assembler::{
         StudioActivationFactory, StudioChildResources, ThreadActivation, ThreadPreparation,
     };
     use anyhow::{Context, Result};
-    use pl_core::thread::{
-        ThreadHandle, extensions::ExtensionMutation, history_sink::HistorySinkHandle,
-    };
+    use pl_core::thread::{ThreadHandle, extensions::ExtensionMutation};
     use pl_tool::workspace::SessionFiles;
 
     #[tokio::test]
@@ -548,9 +544,7 @@ mod migration_tests {
                 crate::studio::storage::current_writer::CurrentSource::from_thread(core.clone()),
             )
             .await?;
-        let sink = ThreadStorageSink::new(store.clone(), old.clone()).await?;
-        spawn_live_projection(&sink);
-        core.attach_history(HistorySinkHandle::new(sink)).await?;
+
         core.mutate_extensions(vec![
             ExtensionMutation::Put {
                 id: crate::studio::workspace_receipt::EXTENSION.into(),
@@ -565,14 +559,8 @@ mod migration_tests {
             },
         ])
         .await?;
-        core.flush().await?;
         current_store
             .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
-            .await?;
-        store
-            .thread_persistence()
-            .history_channel(&old.id)
-            .stop_and_join()
             .await?;
         let current = store
             .state_for(&old.workspace_id, &old.id)?
@@ -728,9 +716,7 @@ mod migration_tests {
                     ),
                 )
                 .await?;
-            let sink = ThreadStorageSink::new(store.clone(), registered.clone()).await?;
-            spawn_live_projection(&sink);
-            core.attach_history(HistorySinkHandle::new(sink)).await?;
+
             core.mutate_extensions(
                 extensions
                     .into_iter()
@@ -742,7 +728,6 @@ mod migration_tests {
                     .collect(),
             )
             .await?;
-            core.flush().await?;
             prepared.push((registered, core, current_store, epoch));
         }
         for (registered, core, current_store, epoch) in prepared.into_iter().rev() {
@@ -752,11 +737,6 @@ mod migration_tests {
             factory.begin_child_close(&registered, None, false).await?;
             current_store
                 .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
-                .await?;
-            store
-                .thread_persistence()
-                .history_channel(&registered.id)
-                .stop_and_join()
                 .await?;
             factory.finish_child_execution(&registered).await?;
             factory.finish_child_worktree_cleanup(&registered).await?;

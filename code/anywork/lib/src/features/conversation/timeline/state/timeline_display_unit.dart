@@ -30,7 +30,6 @@ final class TimelineExpansionIntent extends ChangeNotifier {
   Object bodyGeneration = Object();
   bool get isRetired => _retired;
   bool get bodyActive => !_retired && _bodyDisplays.isNotEmpty;
-  Future<ContentWindow> Function(Object, ContentRef, ContentRange)? readBody;
   Future<ContentWindow> Function(Object, HistoryEventBodyRef, ContentRange)?
   readHistoryBody;
   Future<ContentWindow> Function(Object, CurrentContentRef, ContentRange)?

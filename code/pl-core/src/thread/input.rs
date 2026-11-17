@@ -519,7 +519,15 @@ impl Owner {
             )
             .await
             .map(Some)
-            .map_err(|error| ThreadError::CurrentResume(Arc::new(error)))
+            .map_err(|error| match error {
+                current::CurrentError::Cancelled => ThreadError::Cancelled,
+                current::CurrentError::Owner(ref owner)
+                    if matches!(owner.as_ref(), ThreadError::Cancelled) =>
+                {
+                    ThreadError::Cancelled
+                }
+                error => ThreadError::CurrentResume(Arc::new(error)),
+            })
         } else if has_input {
             self.run_next_input(request).await
         } else {

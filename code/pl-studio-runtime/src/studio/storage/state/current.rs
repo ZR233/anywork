@@ -76,13 +76,17 @@ impl StateStore {
         epoch: RuntimeEpoch,
         purpose: crate::thread_assembler::ClosePurpose,
     ) -> Result<()> {
-        let current = self
-            .current
-            .as_ref()
-            .context("current source is not registered")?;
-        let result = current.writer.close(epoch).await;
-        // Both success and failure own a real join. A stale close cannot release a live successor.
-        if current.writer.is_joined() {
+        let Some(current) = self.current.as_ref() else {
+            // Preparation can be sealed before a Current source was ever admitted. Such an
+            // owner has no writer to join; this does not acknowledge a save or invent data.
+            return Ok(());
+        };
+        let result = current.writer.close(epoch, purpose).await;
+        // A failed final write keeps its lease and retained data for an explicit close retry.
+        // Deletion releases it only after the actual worker join; stale closes release nothing.
+        if current.writer.is_joined()
+            && (result.is_ok() || purpose == crate::thread_assembler::ClosePurpose::Delete)
+        {
             current
                 .coordinator
                 .release_current_writer(&self.thread_id, &current.writer);
@@ -381,7 +385,9 @@ mod tests {
                 .is_err(),
             "release before join cannot surrender physical ownership"
         );
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(writer.is_joined());
         assert!(
             coordinator
@@ -416,7 +422,8 @@ mod tests {
                 .await
                 .is_err()
         );
-        next.close(epoch).await?;
+        next.close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         coordinator.release_current_writer("foreign-owner", &next);
         Ok(())
     }
@@ -453,7 +460,10 @@ mod tests {
         );
         let epoch = RuntimeEpoch::new();
         assert!(
-            writer.close(epoch).await.is_err(),
+            writer
+                .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err(),
             "unbound close cannot invent a final state"
         );
         coordinator.release_current_writer("failed-prepare", &writer);

@@ -187,6 +187,8 @@ struct State {
     observer: Option<CancellationToken>,
     retry_at: Option<Instant>,
     close_result: Option<std::result::Result<(), CurrentFailure>>,
+    close_purpose: Option<crate::thread_assembler::ClosePurpose>,
+    final_current: Option<Arc<ThreadCurrent>>,
     joined: bool,
 }
 
@@ -301,6 +303,8 @@ impl CurrentWriter {
                 observer: None,
                 retry_at: None,
                 close_result: None,
+                close_purpose: None,
+                final_current: None,
                 joined: false,
             }),
             changed,
@@ -365,13 +369,22 @@ impl CurrentWriter {
 
     /// Closing is writer-owned, including when a caller drops its waiting future. The join handle
     /// remains in its owner slot across await; a cancelled waiter cannot detach the writer.
-    pub(crate) async fn close(&self, epoch: RuntimeEpoch) -> Result<()> {
+    pub(crate) async fn close(
+        &self,
+        epoch: RuntimeEpoch,
+        purpose: crate::thread_assembler::ClosePurpose,
+    ) -> Result<()> {
         self.shared.update(|state| -> Result<()> {
             ensure!(
                 state.view.runtime_epoch.is_none()
                     || state.view.runtime_epoch.as_ref() == Some(&epoch),
                 "stale current runtime epoch"
             );
+            if state.close_purpose.is_none()
+                || purpose == crate::thread_assembler::ClosePurpose::Delete
+            {
+                state.close_purpose = Some(purpose);
+            }
             if matches!(
                 state.view.lifecycle,
                 CurrentLifecycle::Unbound | CurrentLifecycle::Open
@@ -388,6 +401,32 @@ impl CurrentWriter {
         })?;
         self.shared.close.notify_one();
         let mut task = self.task.lock().await;
+        if task.is_none() {
+            let retry = self.shared.update(|state| {
+                if state.close_purpose == Some(crate::thread_assembler::ClosePurpose::Delete) {
+                    state.final_current = None;
+                    return None;
+                }
+                let current = state.final_current.clone()?;
+                if !matches!(state.close_result, Some(Err(_))) {
+                    return None;
+                }
+                state.view.lifecycle = CurrentLifecycle::Closing;
+                state.joined = false;
+                Some(current)
+            });
+            if let Some(current) = retry {
+                let file = self.file.clone();
+                let shared = self.shared.clone();
+                // The original producer is already joined. Retry only its retained final data,
+                // under this writer's lease and owned join slot, even if this waiter is dropped.
+                *task = Some(tokio::spawn(async move {
+                    let result =
+                        save_final(&file, &shared, current, &mut VerifiedResources::new()).await;
+                    record_close(&shared, result.map(|_| ()));
+                }));
+            }
+        }
         if let Some(handle) = task.as_mut() {
             let outcome = handle.await;
             *task = None;
@@ -400,6 +439,7 @@ impl CurrentWriter {
                     state.view.in_flight = false;
                     state.view.error = Some(failure.clone());
                     state.close_result = Some(Err(failure));
+                    state.final_current = None;
                 }
             });
         }
@@ -579,28 +619,30 @@ async fn run(file: CurrentFile, shared: Arc<Shared>, mut commands: mpsc::Receive
             let result = match active.as_mut() {
                 Some(owner) => {
                     let stopped = owner.stop_observer(&shared).await;
-                    let saved = finish(&file, &shared, owner).await;
+                    let saved = if shared.read(|state| state.close_purpose)
+                        == Some(crate::thread_assembler::ClosePurpose::Delete)
+                    {
+                        // The resource owner still closes and joins, but explicit deletion neither
+                        // retries a failed save nor publishes new persistence evidence.
+                        (owner.source.finish)(owner.epoch).await.map(|_| ())
+                    } else {
+                        finish(&file, &shared, owner).await.map(|_| ())
+                    };
                     match (stopped, saved) {
                         (Ok(()), result) => result,
-                        (Err(error), Ok(_)) => Err(error),
+                        (Err(error), Ok(_)) => {
+                            shared.update(|state| state.final_current = None);
+                            Err(error)
+                        }
                         (Err(error), Err(save)) => {
+                            shared.update(|state| state.final_current = None);
                             Err(error.context(format!("final current also failed: {save:#}")))
                         }
                     }
                 }
                 None => Err(anyhow!("current writer has no source for final handoff")),
             };
-            shared.update(|state| {
-                state.view.lifecycle = CurrentLifecycle::Closed;
-                state.close_result = Some(
-                    result
-                        .map(|_| ())
-                        .map_err(|error| CurrentFailure(Arc::new(error))),
-                );
-                if let Some(Err(error)) = &state.close_result {
-                    state.view.error = Some(error.clone());
-                }
-            });
+            record_close(&shared, result);
             break;
         }
         let retry_at = shared.read(|s| s.retry_at);
@@ -640,6 +682,25 @@ async fn run(file: CurrentFile, shared: Arc<Shared>, mut commands: mpsc::Receive
     }
     commands.close();
     // Rejected queued controls get channel closure, never a false save/admission receipt.
+}
+
+fn record_close(shared: &Shared, result: Result<()>) {
+    shared.update(|state| {
+        state.view.lifecycle = CurrentLifecycle::Closed;
+        state.close_result = Some(result.map_err(|error| CurrentFailure(Arc::new(error))));
+        state.view.in_flight = false;
+        if matches!(state.close_result, Some(Ok(())))
+            || state.close_purpose == Some(crate::thread_assembler::ClosePurpose::Delete)
+        {
+            state.final_current = None;
+        }
+        if let Some(Err(error)) = &state.close_result
+            && (state.close_purpose != Some(crate::thread_assembler::ClosePurpose::Delete)
+                || state.view.error.is_none())
+        {
+            state.view.error = Some(error.clone());
+        }
+    });
 }
 
 async fn retry_ready(deadline: Option<Instant>) {
@@ -687,7 +748,7 @@ async fn save(
         file.validate(&current, Some(&owner.epoch))?;
         file.verify_resources(&current, &mut owner.verified_resources, cancellation.clone()).await?;
         ensure!(!cancellation.is_cancelled(), "current capture cancelled");
-        publish(file, shared, current).await
+        publish(file, shared, Arc::new(current)).await
     }.await;
     complete_attempt(shared, result)
 }
@@ -701,19 +762,39 @@ async fn finish(
         state.view.in_flight = true;
         state.view.dirty = false;
     });
+    // A failed handoff has no snapshot to retry; keep its original failure. A successful handoff
+    // remains owned here across filesystem failures without recapturing a destroyed producer.
+    let current = match (owner.source.finish)(owner.epoch)
+        .await
+        .context("final current handoff")
+    {
+        Ok(mut current) => {
+            current.saved_at = utc_millis();
+            Arc::new(current)
+        }
+        Err(error) => return complete_attempt(shared, Err(error)),
+    };
+    shared.update(|state| state.final_current = Some(current.clone()));
+    save_final(file, shared, current, &mut owner.verified_resources).await
+}
+
+async fn save_final(
+    file: &CurrentFile,
+    shared: &Shared,
+    current: Arc<ThreadCurrent>,
+    resources: &mut VerifiedResources,
+) -> Result<CurrentSaveReceipt> {
+    shared.update(|state| {
+        state.view.in_flight = true;
+        state.view.dirty = false;
+    });
     let result = async {
-        // Core owns producer cancellation/join and hands over final data. No regular capture here.
-        let mut current = (owner.source.finish)(owner.epoch)
-            .await
-            .context("final current handoff")?;
-        current.saved_at = utc_millis();
-        file.validate(&current, Some(&owner.epoch))?;
-        file.verify_resources(
-            &current,
-            &mut owner.verified_resources,
-            CancellationToken::new(),
-        )
-        .await?;
+        let epoch = shared
+            .read(|state| state.view.runtime_epoch)
+            .context("final Current owner is absent")?;
+        file.validate(&current, Some(&epoch))?;
+        file.verify_resources(&current, resources, CancellationToken::new())
+            .await?;
         publish(file, shared, current).await
     }
     .await;
@@ -723,7 +804,7 @@ async fn finish(
 async fn publish(
     file: &CurrentFile,
     shared: &Shared,
-    current: ThreadCurrent,
+    current: Arc<ThreadCurrent>,
 ) -> Result<CurrentSaveReceipt> {
     let receipt = CurrentSaveReceipt {
         runtime_epoch: current.saved_runtime_epoch,
@@ -1279,7 +1360,9 @@ mod tests {
         })
         .await;
         assert_eq!(captures.load(Ordering::SeqCst), 2);
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert!(writer.is_joined());
         Ok(())
     }
@@ -1350,7 +1433,9 @@ mod tests {
             newer.observed_revision.unwrap()
         );
         assert!(!writer.snapshot().dirty);
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         owner.close().await?;
         Ok(())
     }
@@ -1419,7 +1504,9 @@ mod tests {
         assert!(saved.error.is_none() && saved.last_successful_save_at.is_some());
         assert!(saved.persistence_snapshot().snapshot_age_millis.is_some());
         assert_eq!(saved.receipt.unwrap().runtime_epoch, successor);
-        writer.close(successor).await?;
+        writer
+            .close(successor, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
@@ -1459,7 +1546,12 @@ mod tests {
             2,
             "explicit flush ignores the retry deadline but attempts once"
         );
-        assert!(writer.close(epoch).await.is_err());
+        assert!(
+            writer
+                .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err()
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             3,
@@ -1538,7 +1630,9 @@ mod tests {
         assert!(writer.flush(old).await.is_err());
         assert!(writer.activate(Some(old), old, producer).await.is_err());
         assert_eq!(epochs.lock().unwrap().as_slice(), &[old, old, new]);
-        writer.close(new).await?;
+        writer
+            .close(new, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         Ok(())
     }
 
@@ -1578,7 +1672,9 @@ mod tests {
         tokio::time::advance(SAVE_INTERVAL).await;
         let capture_cancellation = waiting.await?;
         let before = Instant::now();
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert_eq!(
             Instant::now(),
             before,
@@ -1591,7 +1687,9 @@ mod tests {
         writer.shared.mark_dirty(epoch, None);
         assert!(!writer.snapshot().dirty);
         assert!(writer.flush(epoch).await.is_err());
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert_eq!(finishes.load(Ordering::SeqCst), 1);
         Ok(())
     }
@@ -1630,7 +1728,9 @@ mod tests {
         assert!(token.is_cancelled());
         assert!(writer.snapshot().dirty);
         assert_eq!(writes.load(Ordering::SeqCst), 0);
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
         assert_eq!(writes.load(Ordering::SeqCst), 1);
         Ok(())
     }
@@ -1668,7 +1768,11 @@ mod tests {
         writer.activate(None, epoch, source).await?;
         let close = tokio::spawn({
             let writer = writer.clone();
-            async move { writer.close(epoch).await }
+            async move {
+                writer
+                    .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                    .await
+            }
         });
         waiting.await?;
         close.abort();
@@ -1676,7 +1780,10 @@ mod tests {
         release.send(()).unwrap();
         observed(&writer, |s| s.lifecycle == CurrentLifecycle::Closed).await;
         assert!(!writer.is_joined());
-        let error = writer.close(epoch).await.unwrap_err();
+        let error = writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await
+            .unwrap_err();
         assert!(format!("{error:#}").contains("producer did not hand off"));
         assert!(writer.is_joined());
         assert_eq!(
@@ -1757,7 +1864,123 @@ mod tests {
             serde_json::from_slice::<ThreadCurrent>(&std::fs::read(&path)?)?.snapshot_revision,
             4
         );
-        writer.close(epoch).await?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_final_write_retries_retained_data_without_recapturing_the_producer()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join(CURRENT_FILE_NAME);
+        std::fs::create_dir(&path)?;
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let source =
+            CurrentSource::new(|epoch, _| Box::pin(async move { Ok(current(epoch, 1)) }), {
+                let finishes = finishes.clone();
+                move |epoch| {
+                    assert_eq!(finishes.fetch_add(1, Ordering::AcqRel), 0);
+                    Box::pin(async move { Ok(current(epoch, 2)) })
+                }
+            });
+        let writer = CurrentWriter::new(
+            CurrentFile::new(directory.path().into(), "current-test".into()),
+            || {},
+        );
+        let epoch = RuntimeEpoch::new();
+        writer.activate(None, epoch, source).await?;
+        assert!(
+            writer
+                .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await
+                .is_err()
+        );
+        assert!(writer.is_joined());
+        let failed = writer.snapshot();
+        assert!(failed.error.is_some());
+        assert!(failed.receipt.is_none());
+        std::fs::remove_dir(&path)?;
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+            .await?;
+        assert!(writer.is_joined());
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        let saved = ThreadCurrent::from_json(&std::fs::read(path)?, "current-test")?;
+        assert_eq!(saved.saved_runtime_epoch, epoch);
+        assert_eq!(saved.snapshot_revision, 2);
+        let closed = writer.snapshot();
+        assert_eq!(
+            closed
+                .receipt
+                .as_ref()
+                .map(|receipt| receipt.snapshot_revision),
+            Some(2)
+        );
+        assert!(closed.error.is_none());
+        assert!(!closed.dirty && !closed.in_flight);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deletion_joins_the_original_source_without_retrying_or_acknowledging_a_save()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let epoch = RuntimeEpoch::new();
+        let fail_capture = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let source = CurrentSource::new(
+            {
+                let fail_capture = fail_capture.clone();
+                move |epoch, _| {
+                    let fail_capture = fail_capture.clone();
+                    Box::pin(async move {
+                        ensure!(
+                            !fail_capture.load(Ordering::Acquire),
+                            "original Current save failure"
+                        );
+                        Ok(current(epoch, 1))
+                    })
+                }
+            },
+            {
+                let finishes = finishes.clone();
+                move |epoch| {
+                    finishes.fetch_add(1, Ordering::AcqRel);
+                    Box::pin(async move { Ok(current(epoch, 2)) })
+                }
+            },
+        );
+        let writer = CurrentWriter::new(
+            CurrentFile::new(directory.path().into(), "current-test".into()),
+            || {},
+        );
+        writer.activate(None, epoch, source).await?;
+        writer.flush(epoch).await?;
+        let before = std::fs::read(directory.path().join(CURRENT_FILE_NAME))?;
+        fail_capture.store(true, Ordering::Release);
+        assert!(writer.flush(epoch).await.is_err());
+        let failed = writer.snapshot();
+        let original_error = failed.error.as_ref().unwrap().to_string();
+        writer
+            .close(epoch, crate::thread_assembler::ClosePurpose::Delete)
+            .await?;
+        assert!(writer.is_joined());
+        assert_eq!(finishes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            std::fs::read(directory.path().join(CURRENT_FILE_NAME))?,
+            before
+        );
+        let closed = writer.snapshot();
+        assert_eq!(closed.receipt, failed.receipt);
+        assert_eq!(
+            closed.last_successful_save_at,
+            failed.last_successful_save_at
+        );
+        assert_eq!(closed.error.as_ref().unwrap().to_string(), original_error);
+        assert!(!closed.in_flight);
+        assert!(!closed.observer_registered);
         Ok(())
     }
 }

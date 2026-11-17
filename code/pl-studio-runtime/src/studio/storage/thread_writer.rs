@@ -3719,15 +3719,6 @@ pub(crate) mod storage_fault_tests {
         })
     }
 
-    /// Drives the real projection for a writer-only sink. Current publication belongs to
-    /// ConversationStore; these writer fixtures hand only append-only history facts to the queue.
-    pub(crate) fn spawn_live_projection(sink: &ThreadStorageSink) {
-        drop(spawn_projection(
-            sink.0.store.clone(),
-            sink.0.thread.clone(),
-        ));
-    }
-
     pub(crate) fn spawn_live_projection_for_thread(
         store: StudioStore,
         id: &str,
@@ -3785,7 +3776,13 @@ pub(crate) mod storage_fault_tests {
                         .await
                     {
                         Ok(prepared) => {
-                            channel.prepare(prepared);
+                            if let Err(error) = channel.accept_prepared(Some(&write), prepared) {
+                                failed.insert(sequence);
+                                channel.fail_projection(
+                                    sequence,
+                                    format!("fixture History handoff failed: {error:#}"),
+                                );
+                            }
                         }
                         Err(error) => {
                             failed.insert(sequence);
@@ -4173,9 +4170,12 @@ mod writer_tests {
         let mut expected_metrics = calls_before;
         expected_metrics.statistics_gap = true;
         assert_eq!(fixture.store.calls().metrics(), expected_metrics);
+        let mut expected_materials = materials_before;
+        expected_materials.statistics_gap = true;
+        expected_materials.versions.status += 1;
         assert_eq!(
             *fixture.store.calls().subscribe_materials().borrow(),
-            materials_before
+            expected_materials
         );
         fixture
             .store

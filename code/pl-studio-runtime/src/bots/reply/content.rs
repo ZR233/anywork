@@ -2,8 +2,8 @@
 
 use super::projection::{ReplyProjection, gap};
 use crate::history::{
-    HistoryDemand, HistoryEntityHead, HistoryEntityState, HistoryEventBodyRef, HistoryEventDetail,
-    HistoryEventsQuery, HistoryReader, HistoryRowHead, HistoryTurnState,
+    HistoryDemand, HistoryEntityHead, HistoryEventBodyRef, HistoryEventDetail, HistoryEventsQuery,
+    HistoryReader, HistoryRowHead, HistoryTurnState,
 };
 use crate::{ChatAtomKind, ChatSourceId, ReadDemand, ThreadTextChannel, TurnState};
 use serde::Deserialize;
@@ -87,6 +87,7 @@ struct Envelope {
 pub(super) async fn history_turn_items(
     reader: &HistoryReader,
     turn_id: &str,
+    cut: crate::history::HistoryCut,
 ) -> Result<Vec<ReplyItem>, FinalError> {
     let mut cursor = None;
     let mut items = Vec::new();
@@ -96,7 +97,7 @@ pub(super) async fn history_turn_items(
                 HistoryEventsQuery::Turn {
                     turn_id: turn_id.to_owned(),
                 },
-                None,
+                Some(cut.clone()),
                 cursor,
                 HistoryDemand {
                     max_rows: 128,
@@ -141,7 +142,8 @@ pub(super) async fn history_turn_items(
 pub(super) async fn history_turn_terminal(
     reader: &HistoryReader,
     turn_id: &str,
-) -> Result<bool, FinalError> {
+    cut: crate::history::HistoryCut,
+) -> Result<Option<ReplyItem>, FinalError> {
     let mut cursor = None;
     loop {
         let page = reader
@@ -149,7 +151,7 @@ pub(super) async fn history_turn_terminal(
                 HistoryEventsQuery::Turn {
                     turn_id: turn_id.to_owned(),
                 },
-                None,
+                Some(cut.clone()),
                 cursor,
                 HistoryDemand {
                     max_rows: 128,
@@ -169,21 +171,25 @@ pub(super) async fn history_turn_terminal(
                             | HistoryTurnState::BudgetLimited
                     ) =>
                 {
-                    return Ok(true);
+                    let turn = crate::studio::runtime::history_turn(reader, head)
+                        .await
+                        .map_err(|error| {
+                            read_failure("reply immutable Turn detail failed", error)
+                        })?;
+                    if turn.id != turn_id || turn.state.completed_at().is_none() {
+                        return Err(gap("reply Turn detail does not prove its terminal outcome"));
+                    }
+                    return Ok(Some(ReplyItem {
+                        member_id: format!("turn:{turn_id}"),
+                        id: entry.header.event_id,
+                        kind: ReplyItemKind::Terminal(turn.state),
+                    }));
                 }
-                Some(HistoryRowHead::Single(HistoryEntityHead {
-                    state: HistoryEntityState::KnownTerminal { .. },
-                    ..
-                }))
-                | Some(HistoryRowHead::Member(HistoryEntityHead {
-                    state: HistoryEntityState::KnownTerminal { .. },
-                    ..
-                })) => return Ok(true),
                 _ => {}
             }
         }
         let Some(next) = page.next else {
-            return Ok(false);
+            return Ok(None);
         };
         cursor = Some(next);
     }

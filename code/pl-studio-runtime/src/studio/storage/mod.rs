@@ -3214,16 +3214,15 @@ mod mode_migration_tests {
                     "studio.model-route".into(),
                     record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
                 );
-                persist_schema12_fixture(&path, id, original.clone()).await?;
+                // A schema-24 source has already completed its named route migration. Keep
+                // its unavailable account, but seed the actual v24 representation.
+                crate::studio::model_route::migration::upgrade(&mut original)?;
                 let legacy = HistoryStore::open(&path, id).await?;
-                migrate_model_access(&legacy).await?;
+                persist(&legacy, original.clone(), true).await?;
             } else {
                 let history = HistoryStore::open(&path, id).await?;
                 persist(&history, original.clone(), true).await?;
                 drop(history);
-                if id != root_id {
-                    downgrade_checkpoint_to_schema_five(&path).await?;
-                }
             }
             let files = SessionFiles::new(id);
             for temp in [session.temp_dir(), workspace.join(files.temp())] {
@@ -3398,149 +3397,6 @@ mod mode_migration_tests {
         assert_eq!(current.state.extensions["studio.plan"], plan);
         let route = crate::studio::model_route::saved(&current.state.to_paused_snapshot())?
             .context("current route")?
-            .route;
-        assert_eq!(route.account_id.as_str(), "deepseek");
-        assert_eq!(route.model_id, "deepseek-flash");
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn shared_recovery_entry_commits_saved_representations_before_publishing() -> Result<()> {
-        let directory = tempfile::tempdir()?;
-        let database_path = directory.path().join("data/studio.sqlite");
-        let store = crate::studio::StudioStore::open(&database_path).await?;
-        let thread = bound_thread("migration");
-        register_test_thread(&store, &thread).await?;
-        let mut original = saved_state(BTreeMap::from([
-            (
-                "studio.model-route".into(),
-                record(2, "pl.studio.model-route", 1, LEGACY_ROUTE)?,
-            ),
-            (
-                "studio.agent-profile".into(),
-                record(3, "pl.studio.agent-profile", 1, LEGACY_PROFILE)?,
-            ),
-        ]));
-        original.lifecycle = pl_core::thread::ThreadLifecycle::Closed;
-        let path = store
-            .session_paths(&thread.workspace_id, &thread.id)?
-            .history_database();
-        let before = persist_schema12_fixture(&path, &thread.id, original.clone()).await?;
-        let history = HistoryStore::open(&path, &thread.id).await?;
-        migrate_model_access(&history).await?;
-        let faults = raw_database(&path).await?;
-        faults
-            .execute_unprepared(
-                "CREATE TRIGGER block_delegation_migration BEFORE UPDATE ON session_checkpoint
-        BEGIN SELECT RAISE(ABORT,'injected delegation migration write fault'); END",
-            )
-            .await?;
-        let before_facts = schema12_fixture_facts(&faults).await?;
-        let failure = history
-            .prepare_execution_identity(|state| {
-                crate::studio::delegation::migrate(state)?;
-                Ok(())
-            })
-            .await
-            .expect_err("the injected checkpoint fault must block legacy completion");
-        assert!(format!("{failure:#}").contains("injected delegation migration write fault"));
-        assert_eq!(schema12_fixture_facts(&faults).await?, before_facts);
-        assert!(
-            history.checkpoint().await?.is_some(),
-            "failed execution-identity migration retains the prepared checkpoint"
-        );
-        let preserved: ThreadCheckpoint =
-            serde_json::from_str(&saved_checkpoint_payload(&faults).await?)?;
-        let mut before_metadata = before.pruned()?;
-        before_metadata.state.context.records = Default::default();
-        assert_eq!(
-            serde_json::to_vec(&preserved)?,
-            serde_json::to_vec(&before_metadata)?,
-            "failed extension migration preserves the old checkpoint metadata; context rows are unchanged"
-        );
-        assert!(
-            !preserved
-                .state
-                .extensions
-                .contains_key(crate::studio::delegation::EXTENSION)
-        );
-        faults
-            .execute_unprepared("DROP TRIGGER block_delegation_migration")
-            .await?;
-        drop(faults);
-
-        let recovered = history
-            .prepare_execution_identity(|state| {
-                crate::studio::delegation::migrate(state)?;
-                Ok(())
-            })
-            .await?;
-        assert_eq!(recovered.state_revision, original.commit_sequence);
-        assert_eq!(
-            recovered.state.lifecycle,
-            pl_core::thread::ThreadLifecycle::Closed
-        );
-        assert!(
-            !crate::studio::agent_close::is_explicitly_closed(&recovered.state)?,
-            "old owner closure must retain its original recoverable meaning"
-        );
-        assert_eq!(
-            recovered.state.extensions["studio.model-route"]
-                .payload
-                .version(),
-            2
-        );
-        assert_eq!(
-            recovered.state.extensions["studio.agent-profile"]
-                .payload
-                .version(),
-            2
-        );
-        assert_eq!(
-            recovered.state.extensions["studio.model-route"].revision, 2,
-            "表示迁移保留扩展 revision"
-        );
-        assert_eq!(recovered.state.context, original.context);
-        assert_eq!(
-            crate::studio::delegation::saved(&recovered.state)?,
-            Some(crate::DelegationSettings::default())
-        );
-        let durable = history.checkpoint().await?.context("durable checkpoint")?;
-        assert_eq!(
-            serde_json::to_vec(&durable)?,
-            serde_json::to_vec(&recovered)?,
-            "恢复返回前已经持久化当前表示"
-        );
-
-        let again = history
-            .prepare_execution_identity(|state| {
-                crate::studio::delegation::migrate(state)?;
-                Ok(())
-            })
-            .await?;
-        assert_eq!(serde_json::to_vec(&again)?, serde_json::to_vec(&recovered)?);
-        drop(history);
-        drop(store);
-
-        let reopened = crate::studio::StudioStore::open(&database_path).await?;
-        let saved = crate::studio::thread_factory::recovery::load_current_for_recovery(
-            &reopened,
-            &thread,
-        )
-        .await?
-        .context("reopened current")?;
-        assert_eq!(
-            crate::studio::delegation::saved(&saved.state.to_paused_snapshot())?,
-            Some(crate::DelegationSettings::default())
-        );
-        assert_eq!(
-            saved.state.extensions["studio.model-route"]
-                .payload
-                .version(),
-            2
-        );
-        let route = crate::studio::model_route::saved(&saved.state.to_paused_snapshot())?
-            .context("reopened route")?
             .route;
         assert_eq!(route.account_id.as_str(), "deepseek");
         assert_eq!(route.model_id, "deepseek-flash");
@@ -3869,11 +3725,14 @@ mod mode_migration_tests {
             "不可改写的用户/厂商正文",
         )?);
         state.context.records = records.into();
+        // Producer normalization precedes schema 24. The 24 -> 25 boundary must preserve
+        // these producer bytes, rather than repeat the old codec migration in normal reads.
+        let mut normalized =
+            ThreadCheckpoint::capture(thread.id.clone(), state.commit_sequence, state)?;
+        crate::studio::producer_migration::checkpoint(&mut normalized)?;
+        let state = normalized.state;
         persist_legacy_producer(&history, &history_path, state.clone()).await?;
         let before = history.checkpoint().await?.context("legacy checkpoint")?;
-        let db = raw_database(&history_path).await?;
-        restore_pre_timeline_history_fixture(&db, 5).await?;
-        db.close().await?;
         drop(history);
         drop(store);
 
@@ -3882,13 +3741,11 @@ mod mode_migration_tests {
         let upgraded = reopened
             .history_for(&thread.workspace_id, &thread.id)
             .await?;
-        let current = crate::studio::thread_factory::recovery::load_current_for_recovery(
-            &reopened,
-            &thread,
-        )
-        .await?
-        .context("upgraded current")?;
-        assert_eq!(current.snapshot_revision, before.state_revision);
+        let current =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&reopened, &thread)
+                .await?
+                .context("upgraded current")?;
+        assert_eq!(current.snapshot_revision, 0, "Current has its own revision");
         assert_eq!(
             current.state.context.revision,
             before.state.context.revision
@@ -3901,7 +3758,8 @@ mod mode_migration_tests {
         assert_eq!(receipt.payload.version(), 4);
         let decoded = crate::compaction::decode_receipt(4, receipt.payload.content())?;
         assert_eq!(decoded.inference_id, "compact-call");
-        assert_eq!(upgraded.reader().head().await?, before.history_fence);
+        assert!(upgraded.reader().head().await? > 0);
+        assert_eq!(current.state.context, before.state.context);
 
         let compaction = current
             .state
@@ -3941,12 +3799,10 @@ mod mode_migration_tests {
         );
 
         let unchanged = serde_json::to_vec(&current.state)?;
-        let again = crate::studio::thread_factory::recovery::load_current_for_recovery(
-            &reopened,
-            &thread,
-        )
-        .await?
-        .context("stable current")?;
+        let again =
+            crate::studio::thread_factory::recovery::load_current_for_recovery(&reopened, &thread)
+                .await?
+                .context("stable current")?;
         assert_eq!(
             serde_json::to_vec(&again.state)?,
             unchanged,

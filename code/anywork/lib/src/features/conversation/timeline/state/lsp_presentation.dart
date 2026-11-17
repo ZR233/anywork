@@ -1,8 +1,32 @@
 import 'dart:convert';
 
+import '../../../../l10n/app_localizations.dart';
 import '../../../../shared/typed_json.dart';
-import 'tool_display_registry.dart';
+import 'tool_display.dart';
 import 'tool_presentation.dart';
+
+/// 操作枚举的本地化短名称。
+String timelineLspOperationLabel(
+  AppLocalizations l10n,
+  TimelineLspOperation operation, {
+  String? raw,
+}) => switch (operation) {
+  TimelineLspOperation.goToDefinition => l10n.timelineLspOpDefinition,
+  TimelineLspOperation.goToImplementation => l10n.timelineLspOpImplementation,
+  TimelineLspOperation.findReferences => l10n.timelineLspOpReferences,
+  TimelineLspOperation.hover => l10n.timelineLspOpHover,
+  TimelineLspOperation.documentSymbol => l10n.timelineLspOpDocumentSymbol,
+  TimelineLspOperation.workspaceSymbol => l10n.timelineLspOpWorkspaceSymbol,
+  TimelineLspOperation.prepareCallHierarchy =>
+    l10n.timelineLspOpPrepareCallHierarchy,
+  TimelineLspOperation.incomingCalls => l10n.timelineLspOpIncomingCalls,
+  TimelineLspOperation.outgoingCalls => l10n.timelineLspOpOutgoingCalls,
+  TimelineLspOperation.diagnostics => l10n.timelineLspOpDiagnostics,
+  TimelineLspOperation.unknown =>
+    (raw != null && raw.trim().isNotEmpty)
+        ? raw.trim()
+        : l10n.timelineLspQueryTitle,
+};
 
 /// LSP 系列工具（`builtin.lsp_query@1`、`builtin.lsp_capabilities@1`、
 /// `builtin.lsp_status@1`）的纯展示解析模型。
@@ -330,10 +354,11 @@ TimelineLspOperation timelineLspQueryOperation(TimelineToolPresentation item) {
 /// 解析 LSP 工具卡片的请求上下文与有界输出文本。
 TimelineLspPresentation? parseTimelineLspPresentation(
   TimelineToolPresentation tool, {
+  required ToolDetailKind? kind,
   String? outputOverride,
 }) {
   final output = outputOverride ?? tool.output;
-  return switch (toolDisplayRegistry[tool.presentationContract]?.kind) {
+  return switch (kind) {
     ToolDetailKind.lspQuery => _parseQuery(tool.arguments, output),
     ToolDetailKind.lspCapabilities => _parseCapabilities(output),
     ToolDetailKind.lspStatus => _parseStatus(output),

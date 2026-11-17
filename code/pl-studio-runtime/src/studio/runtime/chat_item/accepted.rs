@@ -193,17 +193,8 @@ fn freeze_accepted(
         })
         .unwrap_or_else(|| BodyKey::host("accepted.payload"));
     bodies.entry(original_key.clone()).or_insert(original_block);
-    let reference = ContentRef {
-        database_id: database_id.into(),
-        target: ContentTarget::Body {
-            owner: ContentOwner::Item {
-                item_id: item.id.clone(),
-            },
-            key: original_key.as_key(),
-        },
-    };
     descriptor["data"]["acceptedPayload"] = serde_json::json!({
-        "format": original.format(), "version": original.version(), "reference": reference,
+        "format": original.format(), "version": original.version(), "bodyKey": original_key.as_key(),
     });
     let mut metadata = atom(item);
     metadata.source = source;
@@ -275,13 +266,19 @@ mod tests {
         assert_eq!(atom.finished_at, Some(123));
         let envelope: serde_json::Value = serde_json::from_slice(&first.payload)?;
         assert_eq!(envelope["sealedAt"], 123);
-        let reference: ContentRef =
-            serde_json::from_value(envelope["data"]["acceptedPayload"]["reference"].clone())?;
-        let ContentTarget::Body { owner, key } = reference.target else {
-            anyhow::bail!("original body ref");
-        };
+        assert!(
+            envelope["data"]["acceptedPayload"]
+                .get("reference")
+                .is_none()
+        );
+        let key = envelope["data"]["acceptedPayload"]["bodyKey"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let content = &first.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+                item_id: first.item_id.clone(),
+            })?,
             key,
         }];
         assert_eq!(
@@ -345,13 +342,14 @@ mod tests {
         // Admission remains a Single fact even when its visible text is empty.
 
         let envelope: serde_json::Value = serde_json::from_slice(&draft.payload)?;
-        let reference: ContentRef =
-            serde_json::from_value(envelope["data"]["acceptedPayload"]["reference"].clone())?;
-        let ContentTarget::Body { owner, key } = reference.target else {
-            anyhow::bail!("original body ref");
-        };
+        let key = envelope["data"]["acceptedPayload"]["bodyKey"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let content = &draft.contents[&ChatContentKey {
-            owner: crate::studio::conversation_identity::content_owner_key(&owner)?,
+            owner: crate::studio::conversation_identity::content_owner_key(&ContentOwner::Item {
+                item_id: draft.item_id.clone(),
+            })?,
             key,
         }];
         assert_eq!(

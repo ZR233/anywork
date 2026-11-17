@@ -5,6 +5,7 @@ import '../../../../l10n/app_localizations.dart';
 import '../../../../l10n/studio_l10n.dart';
 import '../state/lsp_presentation.dart';
 import '../state/tool_presentation.dart';
+import '../state/tool_display_registry.dart';
 import 'timeline_markdown.dart';
 import 'timeline_tool_blocks.dart';
 
@@ -15,7 +16,10 @@ Widget? timelineLspInlineBody(
   TimelineToolPresentation tool, {
   TimelineLspMarkdownBuilder? markdownBuilder,
 }) {
-  final presentation = parseTimelineLspPresentation(tool);
+  final presentation = parseTimelineLspPresentation(
+    tool,
+    kind: toolDisplayRegistry[tool.presentationContract]?.kind,
+  );
   if (presentation == null) return null;
   // 无参数工具（capabilities / status）在尚无输出时不渲染空壳卡片，保留错误或运行态。
   switch (presentation) {
@@ -39,6 +43,7 @@ Widget timelineLspWindowBody(
 }) {
   final presentation = parseTimelineLspPresentation(
     tool,
+    kind: toolDisplayRegistry[tool.presentationContract]?.kind,
     outputOverride: windowText,
   );
   if (presentation == null) {
@@ -50,29 +55,6 @@ Widget timelineLspWindowBody(
     markdownBuilder: markdownBuilder,
   );
 }
-
-/// 操作枚举的本地化短名称。
-String timelineLspOperationLabel(
-  AppLocalizations l10n,
-  TimelineLspOperation operation, {
-  String? raw,
-}) => switch (operation) {
-  TimelineLspOperation.goToDefinition => l10n.timelineLspOpDefinition,
-  TimelineLspOperation.goToImplementation => l10n.timelineLspOpImplementation,
-  TimelineLspOperation.findReferences => l10n.timelineLspOpReferences,
-  TimelineLspOperation.hover => l10n.timelineLspOpHover,
-  TimelineLspOperation.documentSymbol => l10n.timelineLspOpDocumentSymbol,
-  TimelineLspOperation.workspaceSymbol => l10n.timelineLspOpWorkspaceSymbol,
-  TimelineLspOperation.prepareCallHierarchy =>
-    l10n.timelineLspOpPrepareCallHierarchy,
-  TimelineLspOperation.incomingCalls => l10n.timelineLspOpIncomingCalls,
-  TimelineLspOperation.outgoingCalls => l10n.timelineLspOpOutgoingCalls,
-  TimelineLspOperation.diagnostics => l10n.timelineLspOpDiagnostics,
-  TimelineLspOperation.unknown =>
-    (raw != null && raw.trim().isNotEmpty)
-        ? raw.trim()
-        : l10n.timelineLspQueryTitle,
-};
 
 IconData _lspOpIcon(TimelineLspOperation operation) => switch (operation) {
   TimelineLspOperation.goToDefinition => Icons.my_location_outlined,

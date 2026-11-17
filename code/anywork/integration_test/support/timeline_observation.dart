@@ -1,4 +1,3 @@
-import 'package:anywork/src/features/conversation/timeline/connectors/timeline_content_connector.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_unit.dart';
 import 'package:anywork/src/features/conversation/timeline/state/timeline_display_diagnostics.dart';
 import 'package:anywork/src/features/conversation/timeline/widgets/chat_item_view.dart';
@@ -227,14 +226,6 @@ final class TimelineObservation {
             if (element is StatefulElement &&
                 element.state is TimelineMemberDisplay)
               ...(element.state as TimelineMemberDisplay).windows,
-          for (final element
-              in find
-                  .descendant(
-                    of: reasoning,
-                    matching: find.byType(TimelineContentRangeConnector),
-                  )
-                  .evaluate())
-            (element as StatefulElement).state as TimelineCurrentWindowDisplay,
         ];
         for (final observation in observations) {
           expect(

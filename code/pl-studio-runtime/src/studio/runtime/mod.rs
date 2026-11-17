@@ -38,6 +38,7 @@ pub use current_reader::{CurrentBodyWatch, CurrentReader, CurrentWatch};
 mod delegation_models;
 mod directory_observation;
 mod history;
+pub(crate) use history::history_turn;
 mod lifecycle;
 pub(in crate::studio) mod lsp_state;
 mod mcp_api;
@@ -600,19 +601,6 @@ pub(crate) mod bot_archive_test_host {
 
         pub(crate) fn bots(&self) -> crate::bots::BotRuntime {
             self.runtime.bots.clone()
-        }
-
-        pub(crate) async fn restart(&self) -> Result<Self> {
-            let runtime = StudioRuntime::initialize(StudioRuntimeOptions {
-                studio_home: Some(self.runtime.store.paths().home().to_owned()),
-                host: StudioHostKind::Test,
-                ..StudioRuntimeOptions::desktop()
-            })
-            .await?;
-            Ok(Self {
-                runtime: Arc::new(runtime),
-                _endpoint: self._endpoint.try_clone()?,
-            })
         }
 
         pub(crate) fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {

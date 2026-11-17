@@ -986,9 +986,15 @@ mod tests {
             third.release();
             evict(&env.runtime, &session, &id).await?;
             let moved_repo = env.repo.with_file_name("temporarily-unavailable-repo");
-            std::fs::rename(&env.repo, &moved_repo)?;
-            let replay = env.runtime.continue_thread(id.clone(), request).await;
-            std::fs::rename(&moved_repo, &env.repo)?;
+            std::fs::rename(&env.repo, &moved_repo)
+                .context("hide the workspace for cold receipt replay")?;
+            let replay = env
+                .runtime
+                .continue_thread(id.clone(), request)
+                .await
+                .context("replay the saved continuation while the workspace is absent");
+            std::fs::rename(&moved_repo, &env.repo)
+                .context("restore the workspace after cold receipt replay")?;
             let replay = replay?;
             ensure!(
                 replay == accepted,

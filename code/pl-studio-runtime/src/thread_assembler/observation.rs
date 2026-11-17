@@ -647,10 +647,10 @@ impl SessionRuntime {
 mod storage_fault_tests {
 
     use super::*;
-    use crate::studio::StudioStore;
     use crate::studio::storage_fault_test_support::{
         HistoryChannel, ThreadStorageSink, register_test_thread, spawn_live_projection_for_thread,
     };
+    use crate::studio::{StudioStore, ThreadStorageBinding};
     use anyhow::Result;
     use pl_core::{
         context::{AgentMessageKind, ContextContent, OpaquePayload},
@@ -939,17 +939,18 @@ mod storage_fault_tests {
                 protocol.workspace_path = workspace.to_string_lossy().into_owned();
             }
             register_test_thread(&self.store, &protocol).await?;
-            let sink = ThreadStorageSink::new(self.store.clone(), protocol).await?;
-            let thread = ThreadHandle::restore_current(
-                pl_core::thread::current::ThreadCurrent::new(
-                    id.into(),
-                    pl_core::thread::current::RuntimeEpoch::new(),
-                ),
-                None,
-            )?;
+            let sink = ThreadStorageSink::new(self.store.clone(), protocol.clone()).await?;
+            let thread = ThreadHandle::start_current(id.into(), None)?;
             thread
                 .attach_history(HistorySinkHandle::new(sink.clone()))
                 .await?;
+            let channel = self.store.thread_persistence().history_channel(id);
+            let conversation = self
+                .store
+                .conversation_store_for(&protocol.workspace_id, id)
+                .await?;
+            conversation.attach_current(thread.clone()).await?;
+            let binding = Arc::new(ThreadStorageBinding::new(sink, channel, conversation));
             let activation = self.activation(id, parent);
             self.owner.0.state().insert_entry(
                 id.into(),
@@ -971,7 +972,7 @@ mod storage_fault_tests {
                                 ),
                             },
                             cleanup: Default::default(),
-                            close_storage: None,
+                            close_storage: Some(CloseStorage::Attached(binding)),
                             published_resources_closed: false,
                             workspace_disposition: None,
                         },
@@ -983,15 +984,34 @@ mod storage_fault_tests {
         }
 
         async fn stop_writers(&self) -> Result<()> {
-            let channels = self
+            let owners = self
                 .live
                 .lock()
                 .unwrap()
-                .values()
-                .map(|owner| owner.channel.clone())
+                .iter()
+                .map(|(id, owner)| (id.clone(), owner.clone()))
                 .collect::<Vec<_>>();
-            for channel in channels {
-                channel.stop_and_join().await?;
+            for (id, owner) in owners {
+                let through = owner.channel.handoff_ticket();
+                owner.channel.await_handoff_durable(&id, through).await?;
+                owner.channel.stop_and_join().await?;
+                let mut projection = owner.projection.lock().await;
+                if let Some(task) = projection.task.as_mut() {
+                    let result = task.await;
+                    projection.task = None;
+                    result?;
+                }
+                if let Some(error) = projection.failure.clone() {
+                    return Err(anyhow::Error::new(error));
+                }
+                drop(projection);
+                let mut owners = self.live.lock().unwrap();
+                if owners
+                    .get(&id)
+                    .is_some_and(|current| Arc::ptr_eq(&current.projection, &owner.projection))
+                {
+                    owners.remove(&id);
+                }
             }
             Ok(())
         }
@@ -1178,18 +1198,18 @@ mod storage_fault_tests {
                     .iter()
                     .all(|release| *release == WorkspaceRelease::Preserve)
             );
-            let current = store
-                .state_for("project-test", "parent")?
-                .load_current()
-                .await?
-                .context("durable closed current")?;
-            assert_eq!(current.state.lifecycle, ThreadLifecycle::Closed);
             fixture
                 .fail_drain_after_writer
                 .store(false, Ordering::SeqCst);
             fixture.owner.close_tree("parent", &[]).await?;
             assert!(fixture.owner.observed_thread("parent").is_none());
             assert!(fixture.owner.observed_thread("child").is_none());
+            let current = store
+                .state_for("project-test", "parent")?
+                .load_current()
+                .await?
+                .context("durable closed current after observation ACK retry")?;
+            assert_eq!(current.state.lifecycle, ThreadLifecycle::Closed);
             fixture.stop_writers().await?;
             Ok(())
         }
@@ -1330,13 +1350,7 @@ mod storage_fault_tests {
             let sink = ThreadStorageSink::new(store.clone(), protocol.clone()).await?;
             let projection = spawn_live_projection_for_thread(store.clone(), &protocol.id);
             let channel = store.thread_persistence().history_channel(&protocol.id);
-            let thread = ThreadHandle::restore_current(
-                pl_core::thread::current::ThreadCurrent::new(
-                    protocol.id.clone(),
-                    pl_core::thread::current::RuntimeEpoch::new(),
-                ),
-                None,
-            )?;
+            let thread = ThreadHandle::start_current(protocol.id.clone(), None)?;
             thread.attach_history(HistorySinkHandle::new(sink)).await?;
             let epoch = thread.runtime_epoch();
             let mut current_store = store.state_for(&protocol.workspace_id, &protocol.id)?;
@@ -1376,6 +1390,8 @@ mod storage_fault_tests {
             current_store
                 .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
                 .await?;
+            let through = channel.handoff_ticket();
+            channel.await_handoff_durable(&protocol.id, through).await?;
             channel.stop_and_join().await?;
             projection.await?;
             Ok(())

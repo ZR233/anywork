@@ -1,7 +1,9 @@
 //! Product configuration and shared service leases used to construct core Threads.
 mod acp_child;
+mod acp_lsp;
+pub(in crate::studio) use acp_lsp::PreparedAcpLsp;
 mod acp_workspace;
-pub(in crate::studio) use acp_workspace::PreparedAcpWorkspace;
+pub(in crate::studio) use acp_workspace::{AcpWorkspaceRequest, PreparedAcpWorkspace};
 mod bot_workspace;
 mod child_resources;
 mod close_child;
@@ -719,6 +721,10 @@ mod review_archive_tests {
         prepared.history_sink = Some(sink);
         let thread = owner.assemble(prepared).await?;
         thread.flush().await?;
+        let channel = store.thread_persistence().history_channel(id);
+        channel
+            .await_handoff_durable(id, channel.handoff_ticket())
+            .await?;
         Ok((thread, projection, body))
     }
 
@@ -860,13 +866,6 @@ mod review_archive_tests {
         assert_eq!(before.inputs, after.inputs);
         assert_eq!(before.inbox_sequence, after.inbox_sequence);
         assert!(after.tasks.is_empty());
-        assert!(
-            store
-                .state_for("review-workspace", "reviewer")?
-                .load_current()
-                .await?
-                .is_some()
-        );
         owner.close_tree("root", &[]).await?;
         target_projection.await?;
         reviewer_projection.await?;

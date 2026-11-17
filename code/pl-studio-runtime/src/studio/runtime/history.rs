@@ -89,7 +89,7 @@ impl StudioRuntime {
     }
 }
 
-async fn history_turn(
+pub(crate) async fn history_turn(
     reader: &crate::history::HistoryReader,
     head: crate::history::HistoryTurnHead,
 ) -> Result<crate::Turn> {

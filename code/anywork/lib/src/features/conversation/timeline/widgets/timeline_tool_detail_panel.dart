@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../../../../app/theme/studio_tokens.dart';
-import '../state/tool_display_registry.dart';
+import '../state/tool_display.dart';
 
 /// 工具详情与 diff 共用中性表面、间距及可选择代码风格。
 class TimelineToolDetailPanel extends StatelessWidget {

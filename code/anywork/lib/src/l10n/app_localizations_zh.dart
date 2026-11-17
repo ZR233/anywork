@@ -19,9 +19,6 @@ class AppLocalizationsZh extends AppLocalizations {
   String get studioFailureConversationResyncRequired => '会话内容需要重新同步，请重试。';
 
   @override
-  String get studioFailureConcurrentNext => '正在读取会话内容，请等待当前读取完成。';
-
-  @override
   String get conversationDirectoryUnavailable => '无法获取会话信息。请重试。';
 
   @override
@@ -6631,4 +6628,613 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get acpDraftUseCurrentConfiguration => '使用当前配置';
+
+  @override
+  String get timelineToolDetailProgram => '程序';
+
+  @override
+  String get timelineToolDetailStdin => '标准输入';
+
+  @override
+  String get timelineToolDetailQuery => '查询';
+
+  @override
+  String get timelineToolDetailFile => '文件';
+
+  @override
+  String get timelineToolDetailContent => '内容';
+
+  @override
+  String get timelineToolDetailPatch => '修改片段';
+
+  @override
+  String get timelineToolDetailWriteMode => '写入方式';
+
+  @override
+  String get timelineToolWriteCreate => '新建文件';
+
+  @override
+  String get timelineToolWriteOverwrite => '覆盖文件';
+
+  @override
+  String get timelineToolWriteAppend => '追加内容';
+
+  @override
+  String get timelineToolDetailCollision => '目标已存在时';
+
+  @override
+  String get timelineToolCollisionReject => '拒绝覆盖';
+
+  @override
+  String get timelineToolCollisionOverwrite => '覆盖';
+
+  @override
+  String get timelineToolDetailTask => '任务';
+
+  @override
+  String get timelineToolDetailProfile => '协作角色';
+
+  @override
+  String get timelineToolDetailTaskDescription => '任务说明';
+
+  @override
+  String get timelineToolDetailDeleteObject => '删除对象';
+
+  @override
+  String get timelineToolDeleteEmptyDirectory => '空目录';
+
+  @override
+  String get timelineToolDeleteRecursiveDirectory => '目录及其内容';
+
+  @override
+  String get timelineToolDetailMessage => '消息';
+
+  @override
+  String get timelineToolDetailDescription => '说明';
+
+  @override
+  String get timelineToolDetailReason => '原因';
+
+  @override
+  String get timelineToolDetailStageResult => '阶段结果';
+
+  @override
+  String get timelineToolDetailEvidence => '依据';
+
+  @override
+  String get timelineToolDetailPlanContent => '计划内容';
+
+  @override
+  String get timelineToolDetailWait => '等待';
+
+  @override
+  String get timelineToolDetailWebpage => '网页';
+
+  @override
+  String get timelineToolDetailFind => '查找';
+
+  @override
+  String get timelineToolDetailWeather => '天气';
+
+  @override
+  String get timelineToolDetailOpenPageLink => '打开页面链接';
+
+  @override
+  String get timelineToolDetailFinance => '行情';
+
+  @override
+  String get timelineToolDetailSports => '赛事';
+
+  @override
+  String get timelineToolDetailTimezone => '时区';
+
+  @override
+  String get timelineToolDetailScreenshot => '页面截图';
+
+  @override
+  String get timelineToolDetailSource => '来源';
+
+  @override
+  String get timelineToolDetailStdout => '标准输出';
+
+  @override
+  String get timelineToolDetailStderr => '标准错误';
+
+  @override
+  String get timelineToolDetailAcceptedBytes => '已接纳输入字节';
+
+  @override
+  String get timelineToolDetailInputCloseState => '输入关闭状态';
+
+  @override
+  String get timelineToolDetailInputOutcome => '输入结果';
+
+  @override
+  String get timelineToolDetailInputDiagnostic => '输入诊断';
+
+  @override
+  String get timelineToolDetailExitCode => '退出码';
+
+  @override
+  String get timelineToolDetailSignal => '信号';
+
+  @override
+  String get timelineToolDetailStatus => '状态';
+
+  @override
+  String get timelineToolStatusTimedOut => '已超时';
+
+  @override
+  String get timelineToolDetailStartLine => '起始行';
+
+  @override
+  String get timelineToolDetailEndLine => '结束行';
+
+  @override
+  String get timelineToolDetailNote => '笔记';
+
+  @override
+  String get timelineToolDetailLine => '行号';
+
+  @override
+  String get timelineToolDetailSearchResults => '搜索结果';
+
+  @override
+  String get timelineToolDetailMatches => '匹配';
+
+  @override
+  String get timelineToolDetailResult => '结果';
+
+  @override
+  String get timelineToolDetailTitle => '标题';
+
+  @override
+  String get timelineToolDetailLink => '链接';
+
+  @override
+  String get timelineToolDetailSummary => '摘要';
+
+  @override
+  String get timelineToolDetailColumn => '列号';
+
+  @override
+  String get timelineToolDetailBefore => '前文';
+
+  @override
+  String get timelineToolDetailAfter => '后文';
+
+  @override
+  String get timelineToolDetailExists => '存在';
+
+  @override
+  String get timelineToolDetailYes => '是';
+
+  @override
+  String get timelineToolDetailNo => '否';
+
+  @override
+  String get timelineToolDetailType => '类型';
+
+  @override
+  String get timelineToolDetailBytes => '字节数';
+
+  @override
+  String get timelineToolDetailReadOnly => '只读';
+
+  @override
+  String get timelineToolDetailModifiedAt => '修改时间';
+
+  @override
+  String get timelineToolDetailInputAccepted => '任务输入已接纳';
+
+  @override
+  String get timelineToolDetailReport => '汇报';
+
+  @override
+  String get timelineToolDetailTaskStatus => '任务状态';
+
+  @override
+  String get timelineToolDetailWaitTimedOut => '等待超时';
+
+  @override
+  String get timelineToolDetailMessagesReady => '消息已就绪';
+
+  @override
+  String get timelineToolDetailPlanPhase => '计划阶段';
+
+  @override
+  String get timelineToolDetailPlan => '计划';
+
+  @override
+  String get timelineToolDetailRevisionFeedback => '修订反馈';
+
+  @override
+  String get timelineToolDetailAvailableOperations => '可用操作';
+
+  @override
+  String get timelineToolDetailOperation => '操作';
+
+  @override
+  String get timelineToolDetailTargetPhase => '目标阶段';
+
+  @override
+  String get timelineToolDetailCondition => '条件';
+
+  @override
+  String get timelineToolDetailAction => '行动';
+
+  @override
+  String get timelineToolDetailHistory => '历史';
+
+  @override
+  String get timelineToolDetailCurrentPlan => '当前计划';
+
+  @override
+  String get timelineToolDetailWorkflow => '工作流';
+
+  @override
+  String get timelineToolWorkflowNotStarted => '尚未开始';
+
+  @override
+  String get timelineToolDetailGoal => '目标';
+
+  @override
+  String get timelineToolDetailCurrentPhase => '当前阶段';
+
+  @override
+  String get timelineToolDetailStageInstructions => '阶段说明';
+
+  @override
+  String get timelineToolDetailCompletionCriteria => '完成条件';
+
+  @override
+  String get timelineToolDetailAvailableTransitions => '可用转换';
+
+  @override
+  String get timelineToolDetailTransitionGuard => '转换条件';
+
+  @override
+  String get timelineToolDetailStages => '阶段';
+
+  @override
+  String get timelineToolDetailError => '错误';
+
+  @override
+  String get timelineToolDetailDiagnostic => '诊断';
+
+  @override
+  String get timelineToolDetailDiagnosticDetail => '诊断说明';
+
+  @override
+  String get timelineToolDetailDiagnosticCode => '诊断代码';
+
+  @override
+  String get timelineToolDetailNone => '无';
+
+  @override
+  String get timelineToolInvalidWriteMode => '缺少或无效的写入方式';
+
+  @override
+  String get timelineToolInvalidCollision => '无效的目标冲突处理方式';
+
+  @override
+  String get timelineToolMissingTransferPaths => '缺少来源或目标文件';
+
+  @override
+  String get timelineToolInvalidDeleteMode => '缺少或无效的删除对象类型';
+
+  @override
+  String get timelineToolInvalidEvidence => '无效的阶段完成依据';
+
+  @override
+  String get timelineToolMissingCompletion => '缺少阶段完成说明';
+
+  @override
+  String get timelineToolMissingDuration => '缺少等待时长';
+
+  @override
+  String get timelineToolInvalidSearchQuery => '无效的搜索词';
+
+  @override
+  String get timelineToolMissingSearchQuery => '缺少搜索词';
+
+  @override
+  String get timelineToolMissingWebUrl => '缺少网页地址';
+
+  @override
+  String get timelineToolUnknownWebQuery => '无法识别的网页查询';
+
+  @override
+  String get timelineToolNoWebQuery => '未提供可展示的网页查询';
+
+  @override
+  String get timelineToolStreamMalformed => '程序输出流格式错误';
+
+  @override
+  String get timelineToolExecutionMalformed => '程序结果格式错误';
+
+  @override
+  String get timelineToolStatMalformed => '文件元数据格式错误';
+
+  @override
+  String get timelineToolOperationRejected => '操作未接纳';
+
+  @override
+  String get timelineToolResultPending => '结果待确认';
+
+  @override
+  String get timelineToolAcceptanceUnavailable => '接纳回执不可用：窗口不完整或格式错误';
+
+  @override
+  String get timelineToolNumberOutOfRange => '工具内容格式错误：数值超出有效范围';
+
+  @override
+  String get timelineToolStructuredUnavailable => '结构化结果不可用：窗口不完整或格式错误';
+
+  @override
+  String get timelineToolExpectedStructured => '结构化结果不可用：预期结果对象或列表';
+
+  @override
+  String get timelineToolExpectedObject => '预期工具输入对象';
+
+  @override
+  String get timelineToolExpectedText => '预期文本结果';
+
+  @override
+  String get timelineToolResultMalformed => '结果内容格式错误';
+
+  @override
+  String get timelineToolNoSemanticContent => '此结果没有可展示的语义内容';
+
+  @override
+  String get timelineToolUnknownFormat => '未知工具展示格式';
+
+  @override
+  String get timelineToolArchivedUnfinished => '封存时尚未结束';
+
+  @override
+  String get timelineToolNotResumed => '工具尚未恢复';
+
+  @override
+  String get timelineToolSpawnRejected => '初始任务输入未接纳';
+
+  @override
+  String get timelineToolWorkflowRejected => '工作流变更未接纳';
+
+  @override
+  String timelineToolContentMalformed(String reason) {
+    return '工具内容格式错误：$reason';
+  }
+
+  @override
+  String timelineToolInvalidField(String field) {
+    return '缺少或无效的$field';
+  }
+
+  @override
+  String timelineToolFieldMalformed(String field) {
+    return '$field 的内容格式错误';
+  }
+
+  @override
+  String timelineToolSeconds(num seconds) {
+    return '$seconds 秒';
+  }
+
+  @override
+  String timelineToolWebLinkReference(String reference, int link) {
+    return '$reference · 链接 $link';
+  }
+
+  @override
+  String timelineToolWebPageReference(String reference, int page) {
+    return '$reference · 第 $page 页';
+  }
+
+  @override
+  String get timelineToolStateQueued => '排队中';
+
+  @override
+  String get timelineToolStateRunning => '运行中';
+
+  @override
+  String get timelineToolStateSucceeded => '已成功';
+
+  @override
+  String get timelineToolStateCompleted => '已完成';
+
+  @override
+  String get timelineToolStateFailed => '已失败';
+
+  @override
+  String get timelineToolStateCancelled => '已取消';
+
+  @override
+  String get timelineToolStateInterrupted => '已中断';
+
+  @override
+  String get timelineToolStateIdle => '空闲';
+
+  @override
+  String get timelineToolStateWaitingTool => '等待工具';
+
+  @override
+  String get timelineToolStateWaitingInteraction => '等待交互';
+
+  @override
+  String get timelineToolStateCancelling => '取消中';
+
+  @override
+  String get timelineToolStateClosing => '关闭中';
+
+  @override
+  String get timelineToolStateClosed => '已关闭';
+
+  @override
+  String get timelineToolStateFaulted => '故障';
+
+  @override
+  String get timelineToolStateBudgetLimited => '已达预算限制';
+
+  @override
+  String get timelineToolStateReady => '已就绪';
+
+  @override
+  String get timelineToolInputOpen => '打开';
+
+  @override
+  String get timelineToolInputClosing => '关闭中';
+
+  @override
+  String get timelineToolInputClosed => '已关闭';
+
+  @override
+  String get timelineToolInputComplete => '已全部接纳';
+
+  @override
+  String get timelineToolInputCancelled => '已取消';
+
+  @override
+  String get timelineToolInputPartial => '部分接纳';
+
+  @override
+  String get timelineToolInputFailed => '接纳失败';
+
+  @override
+  String get timelineToolPlanDrafting => '编写中';
+
+  @override
+  String get timelineToolPlanAwaitingConfirmation => '等待确认';
+
+  @override
+  String get timelineToolPlanRevisionRequested => '需要修订';
+
+  @override
+  String get timelineToolPlanApproved => '已批准';
+
+  @override
+  String get timelineToolPlanSubmit => '提交计划';
+
+  @override
+  String get timelineToolPlanApprove => '批准计划';
+
+  @override
+  String get timelineToolPlanRequestRevision => '要求修订';
+
+  @override
+  String get timelineToolPlanRestart => '重新规划';
+
+  @override
+  String get timelineToolWorkflowActive => '进行中';
+
+  @override
+  String get timelineToolWorkflowTerminal => '已结束';
+
+  @override
+  String get timelineToolFileTypeFile => '文件';
+
+  @override
+  String get timelineToolFileTypeDirectory => '目录';
+
+  @override
+  String get timelineToolFileTypeOther => '其他';
+
+  @override
+  String get timelineToolNameExec => '执行命令';
+
+  @override
+  String get timelineToolNameWriteStdin => '写入标准输入';
+
+  @override
+  String get timelineToolNameReadSessionNote => '读取会话笔记';
+
+  @override
+  String get timelineToolNameSearchSessionNote => '搜索会话笔记';
+
+  @override
+  String get timelineToolNameWriteSessionNote => '写入会话笔记';
+
+  @override
+  String get timelineToolNameApplySessionNotePatch => '修改会话笔记';
+
+  @override
+  String get timelineToolNameStatPath => '查看文件元数据';
+
+  @override
+  String get timelineToolNameWriteFile => '写入文件';
+
+  @override
+  String get timelineToolNameApplyPatch => '应用补丁';
+
+  @override
+  String get timelineToolNameCreateDirectory => '创建目录';
+
+  @override
+  String get timelineToolNameDeletePath => '删除路径';
+
+  @override
+  String get timelineToolNameCopyPath => '复制路径';
+
+  @override
+  String get timelineToolNameMovePath => '移动路径';
+
+  @override
+  String get timelineToolNameSpawnAgent => '派发协作任务';
+
+  @override
+  String get timelineToolNameSendMessage => '发送消息';
+
+  @override
+  String get timelineToolNameWait => '等待任务';
+
+  @override
+  String get timelineToolNameSleep => '等待计时';
+
+  @override
+  String get timelineToolNameViewImage => '查看图片';
+
+  @override
+  String get timelineToolNameShowFiles => '展示文件';
+
+  @override
+  String get timelineToolNamePlanCurrent => '查询当前计划';
+
+  @override
+  String get timelineToolNamePlanNext => '查询计划可用操作';
+
+  @override
+  String get timelineToolNamePlanHistory => '查询计划历史';
+
+  @override
+  String get timelineToolNamePlanSubmit => '提交计划';
+
+  @override
+  String get timelineToolNamePlanRestart => '重新规划';
+
+  @override
+  String get timelineToolNameWorkflowCurrent => '查询当前工作流';
+
+  @override
+  String get timelineToolNameWorkflowNext => '查询工作流后续阶段';
+
+  @override
+  String get timelineToolNameWorkflowGraph => '查询工作流图';
+
+  @override
+  String get timelineToolNameWorkflowHistory => '查询工作流历史';
+
+  @override
+  String get timelineToolNameWorkflowTransition => '推进工作流';
+
+  @override
+  String get timelineToolNameWorkflowRestart => '重启工作流';
+
+  @override
+  String get timelineToolNameWebSearch => '网页查询';
+
+  @override
+  String get timelineToolNameDeepseekWebSearch => 'DeepSeek 网页搜索';
+
+  @override
+  String get timelineToolNameDeepseekWebFetch => 'DeepSeek 网页抓取';
 }

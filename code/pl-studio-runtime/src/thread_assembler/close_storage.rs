@@ -669,12 +669,14 @@ impl SessionRuntime {
                 .close_current(&thread, ClosePurpose::Preserve)
                 .await
                 .map_err(preparation_storage_error)?;
-            if original.is_some() {
-                self.observed_thread(id)
-                    .ok_or(ThreadAssemblyError::Closed)?
-                    .flush()
-                    .await?;
-            }
+            // Closing the producer can admit its final History facts after Current has saved.
+            // Drain this History owner's actual handoff; a Current receipt or Core revision is
+            // neither evidence that these facts are durable nor a reason to stop its worker.
+            binding
+                .channel
+                .await_handoff_durable(id, binding.channel.handoff_ticket())
+                .await
+                .map_err(preparation_storage_error)?;
             binding.channel.stop_and_join().await.map_err(|source| {
                 ThreadAssemblyError::Resource {
                     operation: "join close-only Thread storage",

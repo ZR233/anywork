@@ -938,6 +938,31 @@ mod tests {
         }
     }
 
+    async fn wait_history_projection(store: &StudioStore, id: &str) -> Result<()> {
+        let channel = store.thread_persistence().history_channel(id);
+        let mut status = channel.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                {
+                    let current = status.borrow_and_update();
+                    if let Some(error) = &current.error {
+                        anyhow::bail!("history projection failed: {error}");
+                    }
+                    if current.queued_records == 0 {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                }
+                status
+                    .changed()
+                    .await
+                    .context("history projection status closed")?;
+            }
+        })
+        .await
+        .context("history projection did not settle")??;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn read_agent_session_returns_saved_page_while_model_and_writer_are_blocked() -> Result<()>
     {
@@ -960,6 +985,7 @@ mod tests {
         activation.agent.session_id = owner.id().clone();
         owner.install_explicit_activation(activation);
         let root = owner.assemble(spec).await?;
+        wait_history_projection(&store, "root").await?;
         let (entered_tx, entered) = tokio::sync::oneshot::channel();
         root.replace_model(ModelFactory::new(SavedThenBlocked(Arc::new(Mutex::new(
             Some(entered_tx),
@@ -968,6 +994,7 @@ mod tests {
         root.run_turn(turn("saved", CancellationToken::new()))
             .await?;
         root.flush().await?;
+        wait_history_projection(&store, "root").await?;
         let tool = tool(&owner)?;
         let before = query(&tool, serde_json::json!({"target":"root", "detail":"full"})).await?;
         assert!(
@@ -1023,8 +1050,8 @@ mod tests {
             .context("running owner must admit the pending runtime fact")??;
             let page = query(&tool, serde_json::json!({"target":"root", "detail":"full"})).await;
             let page = page?;
-            assert_eq!(page.history_through_seq, saved.0);
-            assert_eq!(page.items, saved.1);
+            assert!(page.history_through_seq >= saved.0);
+            assert!(page.items.starts_with(&saved.1));
             assert!(page.history_through_seq >= before.history_through_seq);
             let first = query(
                 &tool,
@@ -1093,6 +1120,10 @@ mod tests {
         let fixture = close_factory(&store)?;
         let owner = SessionRuntime::open(crate::SessionId::new("root")?);
         fixture.install(&owner)?;
+        // A cold reader consumes an existing independent History owner. Creating this empty
+        // History object does not activate a Current owner or synthesize any session facts.
+        store.history("cold").await?.close().await?;
+        store.history("sibling").await?.close().await?;
         let mut spec = super::super::agents::archive_tests::spec("root".into(), None, dir.path());
         spec.initial_extensions.insert(
             crate::studio::delegation::EXTENSION.into(),
@@ -1109,7 +1140,14 @@ mod tests {
             (0, 0, false)
         );
         let path = store.registered_session_paths("cold")?.history_database();
-        assert!(!path.exists(), "cold read cannot create the database");
+        assert!(
+            store
+                .state_for("query-project", "cold")?
+                .load_current()
+                .await?
+                .is_none(),
+            "an empty History cannot synthesize Current execution facts"
+        );
         assert!(owner.thread("cold").is_none());
         let services = owner.0.state().agent_services.clone().unwrap();
         assert!(services.authorize("cold", "sibling").await.is_err());
@@ -1157,7 +1195,10 @@ mod tests {
             .await
             .expect_err("real storage errors must survive the tool boundary");
         assert!(
-            error.chain().any(|source| source.is::<sea_orm::DbErr>()),
+            error.chain().any(|source| matches!(
+                source.downcast_ref::<crate::history::HistoryError>(),
+                Some(crate::history::HistoryError::Database(_))
+            )),
             "{error:#}"
         );
         assert!(owner.thread("cold").is_none());

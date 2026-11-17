@@ -4207,6 +4207,7 @@ mod append_only_history_tests {
                 attempt_id: attempt_id.clone(),
             };
             let active_state = ThreadSnapshot {
+                commit_sequence: 1,
                 active_context_compaction: Some(active),
                 ..Default::default()
             };
@@ -4238,7 +4239,10 @@ mod append_only_history_tests {
             assert!(matches!(atom.lifecycle, ChatAtomLifecycle::Active { .. }));
             assert!(atom.contents.is_empty());
 
-            let finished_state = ThreadSnapshot::default();
+            let finished_state = ThreadSnapshot {
+                commit_sequence: 2,
+                ..Default::default()
+            };
             let finish = ThreadEffectBatch {
                 thread_id: thread.id.clone(),
                 sequence: 2,

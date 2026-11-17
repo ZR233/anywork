@@ -508,6 +508,30 @@ mod standalone_tests {
         }
     }
 
+    async fn await_projected_history_durable(
+        runtime: &StudioRuntime,
+        id: &str,
+        sequence: u64,
+    ) -> Result<()> {
+        let channel = runtime.store.thread_persistence().history_channel(id);
+        let mut status = channel.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while channel.handoff_ticket() < sequence {
+                if let Some(error) = status.borrow_and_update().error.clone() {
+                    anyhow::bail!("History projection failed before handoff: {error}");
+                }
+                status
+                    .changed()
+                    .await
+                    .context("History projection progress channel closed")?;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("History projection did not reach its committed handoff")??;
+        channel.await_handoff_durable(id, sequence).await
+    }
+
     #[tokio::test]
     async fn archive_private_preparation_failed_retirement_survives_restart_and_preserves_delivery()
     -> Result<()> {
@@ -2456,7 +2480,11 @@ mod standalone_tests {
                 ThreadAssemblyError, archive_test_spec, spawn_failed_archive_fixture,
             },
         };
-        use pl_core::thread::{ThreadHandle, history_sink::HistorySinkHandle};
+        use pl_core::thread::{
+            ThreadHandle,
+            current::{RuntimeEpoch, ThreadCurrent},
+            history_sink::HistorySinkHandle,
+        };
         use sea_orm::ConnectionTrait;
         use std::{sync::Arc, time::Duration};
 
@@ -2798,9 +2826,41 @@ mod standalone_tests {
             // A real older incarnation leaves durable earlier Current before private attachment.
             let old = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
             let projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
-            let previous = ThreadHandle::resume_without_model(protocol.id.clone(), None)?;
+            let previous = ThreadHandle::restore_current(
+                ThreadCurrent::new(protocol.id.clone(), RuntimeEpoch::new()),
+                None,
+            )?;
+            let epoch = previous.runtime_epoch();
+            let mut current_store = runtime
+                .store
+                .state_for(&protocol.workspace_id, &protocol.id)?;
+            current_store
+                .attach_current(
+                    runtime.store.thread_persistence().clone(),
+                    None,
+                    epoch,
+                    crate::studio::storage::current_writer::CurrentSource::from_thread(
+                        previous.clone(),
+                    ),
+                )
+                .await?;
             previous.attach_history(HistorySinkHandle::new(old)).await?;
-            previous.close().await?;
+            previous
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: "fixture.private-seed".into(),
+                    expected_revision: None,
+                    payload: pl_core::context::OpaquePayload::text("durable earlier Current"),
+                }])
+                .await?;
+            current_store
+                .close_current(epoch, crate::thread_assembler::ClosePurpose::Preserve)
+                .await?;
+            await_projected_history_durable(
+                &runtime,
+                &protocol.id,
+                previous.snapshot().commit_sequence,
+            )
+            .await?;
             runtime
                 .store
                 .thread_persistence()
@@ -2849,19 +2909,6 @@ mod standalone_tests {
                 .context("seeded durable earlier current")?;
             eprintln!("private crash fixture: seeded protocol and current read");
             let old_fence = current.snapshot_revision;
-            if !receipt {
-                let path = runtime
-                    .store
-                    .registered_session_paths(&protocol.id)?
-                    .current_file();
-                tokio::fs::write(
-                    base.join("blocked-current-path"),
-                    path.to_string_lossy().as_bytes(),
-                )
-                .await?;
-                tokio::fs::rename(&path, path.with_extension("json.saved")).await?;
-                tokio::fs::create_dir(&path).await?;
-            }
             let physical = close_factory(&runtime.store)?;
             runtime
                 .store
@@ -2902,6 +2949,19 @@ mod standalone_tests {
             }
             let sink = ThreadStorageSink::new(runtime.store.clone(), protocol.clone()).await?;
             let _projection = spawn_live_projection_for_thread(runtime.store.clone(), &protocol.id);
+            if !receipt {
+                let path = runtime
+                    .store
+                    .registered_session_paths(&protocol.id)?
+                    .current_file();
+                tokio::fs::write(
+                    base.join("blocked-current-path"),
+                    path.to_string_lossy().as_bytes(),
+                )
+                .await?;
+                tokio::fs::rename(&path, path.with_extension("json.saved")).await?;
+                tokio::fs::create_dir(&path).await?;
+            }
             let mut spec = archive_test_spec(
                 protocol.id.clone(),
                 protocol.parent_thread_id.clone(),
@@ -2909,17 +2969,23 @@ mod standalone_tests {
             );
             spec.history_sink = Some(sink);
             spec.initial_extensions.insert(
-                String::new(),
-                pl_core::context::OpaquePayload::text("invalid initialization"),
+                "fixture.private-initialization".into(),
+                pl_core::context::OpaquePayload::text("valid initialization"),
             );
-            eprintln!("private crash fixture: attach and fail initialization");
-            assert!(
-                runtime
-                    .session_for_roots(&["required-root".to_owned()])?
-                    .assemble(spec)
-                    .await
-                    .is_err()
+            eprintln!("private crash fixture: attach and close the original owner");
+            let session = runtime.session_for_roots(&["required-root".to_owned()])?;
+            let owner = session.assemble(spec).await?;
+            let close = session.close(&protocol.id).await;
+            ensure!(
+                close.is_err(),
+                "the original private close must retain its real failure"
             );
+            await_projected_history_durable(
+                &runtime,
+                &protocol.id,
+                owner.snapshot().commit_sequence,
+            )
+            .await?;
             eprintln!("private crash fixture: original failure retained");
             let record = runtime
                 .store
@@ -3460,7 +3526,11 @@ mod standalone_tests {
                 thread_preparation::PreparationIdentity,
             },
         };
-        use pl_core::thread::{ThreadHandle, history_sink::HistorySinkHandle};
+        use pl_core::thread::{
+            ThreadHandle,
+            current::{RuntimeEpoch, ThreadCurrent},
+            history_sink::HistorySinkHandle,
+        };
         use pl_tool::workspace::SessionFiles;
         use sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
@@ -3780,16 +3850,16 @@ mod standalone_tests {
             );
 
             let host = runtime.store.session_paths(&project.id, &root.id)?;
-            let db = sea_orm::Database::connect(
-                crate::studio::paths::sqlite_file_options(
-                    &host.history_database(),
-                    crate::studio::paths::SqliteFileMode::ReadWrite,
-                    |options| options,
-                )
-                .await?,
-            )
-            .await?;
-            db.execute_unprepared("CREATE TRIGGER reject_delete_save BEFORE UPDATE ON session_checkpoint BEGIN SELECT RAISE(ABORT,'permanent deletion must not repair this save'); END").await?;
+            let conversation = runtime.store.conversation_store(&root.id).await?;
+            conversation.flush_current(owner.runtime_epoch()).await?;
+            let current_writer = runtime
+                .store
+                .thread_persistence()
+                .current_writer(&root.id, host.root().to_path_buf())
+                .await?;
+            let current_file = host.current_file();
+            tokio::fs::rename(&current_file, current_file.with_extension("json.saved")).await?;
+            tokio::fs::create_dir(&current_file).await?;
             owner
                 .mutate_extensions(vec![ExtensionMutation::Put {
                     id: "delete-fault".into(),
@@ -3797,19 +3867,23 @@ mod standalone_tests {
                     payload: OpaquePayload::text("unsaved content"),
                 }])
                 .await?;
-            let save_error =
-                tokio::time::timeout(std::time::Duration::from_secs(10), owner.flush())
-                    .await?
-                    .expect_err("the live writer must expose its real save failure");
+            let save_error = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                conversation.flush_current(owner.runtime_epoch()),
+            )
+            .await?
+            .expect_err("the live Current writer must expose its real save failure");
             ensure!(
-                format!("{save_error:#}").contains("permanent deletion must not repair"),
+                format!("{save_error:#}").contains("current.json"),
                 "{save_error:#}"
             );
-            db.close().await?;
+            let failed_current = current_writer
+                .snapshot()
+                .error
+                .map(|error| error.to_string())
+                .context("blocked Current save failure")?;
             let channel = runtime.store.thread_persistence().history_channel(&root.id);
-            let durable = channel.subscribe().borrow().committed_sequence;
             let unsaved_sequence = owner.snapshot().commit_sequence;
-            assert!(durable < unsaved_sequence);
             assert!(runtime.thread_observations.live_feed(&root.id).is_some());
 
             tokio::time::timeout(
@@ -3824,9 +3898,12 @@ mod standalone_tests {
             );
             assert!(channel.deletion_joined(), "writer must actually join");
             assert_eq!(
-                channel.subscribe().borrow().committed_sequence,
-                durable,
-                "deletion must not invent a save ACK"
+                current_writer
+                    .snapshot()
+                    .error
+                    .map(|error| error.to_string()),
+                Some(failed_current),
+                "deletion must not retry or replace the original Current failure"
             );
             assert_eq!(
                 owner.snapshot().commit_sequence,
@@ -3878,9 +3955,21 @@ mod standalone_tests {
                 .await?;
             let sink = ThreadStorageSink::new(runtime.store.clone(), child.clone()).await?;
             let projection = spawn_live_projection_for_thread(runtime.store.clone(), &child.id);
-            let owner = ThreadHandle::resume_without_model(child.id.clone(), None)?;
+            let owner = ThreadHandle::restore_current(
+                ThreadCurrent::new(child.id.clone(), RuntimeEpoch::new()),
+                None,
+            )?;
             owner.attach_history(HistorySinkHandle::new(sink)).await?;
+            owner
+                .mutate_extensions(vec![pl_core::thread::extensions::ExtensionMutation::Put {
+                    id: "fixture.cold-child".into(),
+                    expected_revision: None,
+                    payload: pl_core::context::OpaquePayload::text("durable cold history"),
+                }])
+                .await?;
             owner.close().await?;
+            await_projected_history_durable(runtime, &child.id, owner.snapshot().commit_sequence)
+                .await?;
             runtime
                 .store
                 .thread_persistence()
@@ -5466,9 +5555,9 @@ mod standalone_tests {
                         .into_owned(),
                 )?;
                 runtime.store.bind_thread_preparation(id, &binding).await?;
+                let sink = ThreadStorageSink::new(runtime.store.clone(), private).await?;
                 let current_file = runtime.store.registered_session_paths(id)?.current_file();
                 tokio::fs::create_dir_all(&current_file).await?;
-                let sink = ThreadStorageSink::new(runtime.store.clone(), private).await?;
                 let projection = spawn_live_projection_for_thread(runtime.store.clone(), id);
                 let mut spec = crate::thread_assembler::archive_test_spec(
                     id.into(),
@@ -5477,15 +5566,35 @@ mod standalone_tests {
                 );
                 spec.history_sink = Some(sink);
                 spec.initial_extensions.insert(
-                    String::new(),
-                    pl_core::context::OpaquePayload::text("invalid initialization"),
+                    "fixture.private-required".into(),
+                    pl_core::context::OpaquePayload::text("valid initialization"),
                 );
-                assert!(
-                    runtime
-                        .session_for_roots(std::slice::from_ref(&root.id))?
-                        .assemble(spec)
-                        .await
-                        .is_err()
+                let thread = runtime
+                    .session_for_roots(std::slice::from_ref(&root.id))?
+                    .assemble(spec)
+                    .await?;
+                let conversation = runtime.store.conversation_store(id).await?;
+                let current_writer = runtime
+                    .store
+                    .thread_persistence()
+                    .current_writer(
+                        id,
+                        runtime
+                            .store
+                            .registered_session_paths(id)?
+                            .root()
+                            .to_path_buf(),
+                    )
+                    .await?;
+                let save_error = tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    conversation.flush_current(thread.runtime_epoch()),
+                )
+                .await?
+                .expect_err("the private owner must retain its real Current failure");
+                ensure!(
+                    format!("{save_error:#}").contains("current.json"),
+                    "{save_error:#}"
                 );
                 let record = runtime
                     .store
@@ -5494,10 +5603,8 @@ mod standalone_tests {
                     .context("retained private owner")?;
                 assert_eq!(record.save, PreparationSave::Required);
                 assert!(!record.stopped);
-                let before = runtime
-                    .store
-                    .state_for(&project.id, id)?
-                    .current_save_state()?
+                let before = current_writer
+                    .snapshot()
                     .error
                     .map(|error| error.to_string())
                     .context("blocked private current save failure")?;
@@ -5544,10 +5651,8 @@ mod standalone_tests {
                     PreparationBinding::Bound { identity: binding }
                 );
                 assert_eq!(
-                    runtime
-                        .store
-                        .state_for(&project.id, id)?
-                        .current_save_state()?
+                    current_writer
+                        .snapshot()
                         .error
                         .map(|error| error.to_string()),
                     Some(before),

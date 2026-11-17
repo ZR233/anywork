@@ -48,6 +48,10 @@ pub struct AgentMessage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentSpawn {
     pub profile_id: String,
+    /// Ordered session options for ACP targets, applied before the first message.
+    /// Use the service's declared option IDs and string value IDs or booleans.
+    #[serde(default)]
+    pub acp_config: Vec<AcpSessionConfig>,
     /// Required only for Native targets in automatic delegation; ACP always rejects overrides.
     #[serde(default)]
     pub model_selection: Option<NewThreadModelRoute>,
@@ -66,6 +70,20 @@ pub struct AgentSpawn {
     #[serde(default)]
     #[schemars(skip)]
     pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpSessionConfig {
+    pub id: String,
+    pub value: AcpSessionConfigValue,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+pub enum AcpSessionConfigValue {
+    Select(String),
+    Boolean(bool),
 }
 
 pub use pl_protocol::AgentReviewFeedback as ReviewFeedback;

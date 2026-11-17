@@ -7,7 +7,6 @@ use std::{
     path::PathBuf,
 };
 
-#[cfg(test)]
 use std::sync::Arc;
 
 use anyhow::{Context, Result, ensure};
@@ -147,7 +146,8 @@ impl CurrentFile {
 
     /// Encoding and the complete write are owned by the writer until they finish.
     /// A failed or interrupted overwrite may leave an incomplete file.
-    pub(super) async fn save(&self, current: ThreadCurrent) -> Result<()> {
+    pub(super) async fn save(&self, current: impl Into<Arc<ThreadCurrent>>) -> Result<()> {
+        let current = current.into();
         let bytes = tokio::task::spawn_blocking(move || serde_json::to_vec(&current))
             .await
             .context("join current encoder")?

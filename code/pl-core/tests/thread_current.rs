@@ -1903,3 +1903,46 @@ async fn explicit_input_resumes_saved_current_through_the_existing_queue_driver(
         thread.close().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn stopping_a_resumed_current_queue_preserves_a_paused_continuation() {
+    let saved = ThreadCurrent::new("stop-current-queue".into(), RuntimeEpoch::new());
+    let session = ProducerSession::new();
+    let thread =
+        ThreadHandle::restore_current(saved, Some(DynModelSession::new(session.clone()))).unwrap();
+    thread
+        .submit_input_and_continue(
+            input::ThreadInput {
+                id: "explicit-resume".into(),
+                purpose: input::InputPurpose::Message,
+                payload: OpaquePayload::text("resume then stop"),
+                context: vec![text("resume then stop")],
+            },
+            input::InputDriverOptions {
+                max_model_steps: ModelStepLimit::Unlimited,
+            },
+        )
+        .await
+        .unwrap();
+    session.prepare_entered.notified().await;
+    session.prepare_release.notify_one();
+    wait_running(&thread).await;
+    let execution = thread.snapshot().execution.unwrap().id;
+    let mut updates = thread.subscribe();
+    thread.interrupt_execution(execution).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(snapshot) = updates.next().await {
+            if snapshot.execution.is_none() && snapshot.continuation.is_some() {
+                assert!(matches!(
+                    snapshot.input_execution,
+                    input::InputExecution::Paused
+                ));
+                return;
+            }
+        }
+        panic!("Current owner closed before stop settled");
+    })
+    .await
+    .unwrap();
+    thread.close().await.unwrap();
+}
